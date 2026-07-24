@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ir_emitter.tv — Emit a valid LLVM IR module via streaming write().
+//
+// Proof of concept for the self-hosting compiler's IR emission strategy.
+// No snprintf, no variadic functions, no buffer — just write() calls.
+//
+// The emitted IR prints "42" and exits. Verification:
+//   ./ir_emitter /tmp/out.ll
+//   llc -filetype=obj /tmp/out.ll -o /tmp/out.o
+//   clang /tmp/out.o -o /tmp/out
+//   /tmp/out          # prints: 42
+//
+// Expected output on stderr: wrote /tmp/out.ll
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+// macOS: O_WRONLY=1, O_CREAT=0x200, O_TRUNC=0x400
+let O_WRONLY_CREAT_TRUNC: i32 = 1537;  // 0x601
+
+// --- Write helpers (foundation of the self-hosting IR emission) ---
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn wr_reg(fd: i32, r: i32) {
+    wr(fd, "%t");
+    wr_int(fd, r as i64);
+}
+
+// Write a byte as LLVM hex escape: \XX
+fn wr_hex(fd: i32, b: u8) {
+    let hi: i32 = (b >> 4) & 15;
+    let lo: i32 = b & 15;
+    var buf: [u8; 4] = 0;
+    buf[0] = 92;  // backslash
+    if hi < 10 { buf[1] = (hi + 48) as u8; } else { buf[1] = (hi + 55) as u8; }
+    if lo < 10 { buf[2] = (lo + 48) as u8; } else { buf[2] = (lo + 55) as u8; }
+    write(fd, &buf[0], 3);
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: ir_emitter <output.ll>\n");
+        exit(1);
+    }
+
+    let path: *u8 = argv[1];
+    let fd: i32 = open(path, O_WRONLY_CREAT_TRUNC, 420);  // 0644 = 420
+    if fd < 0 {
+        wr(2, "error: cannot create output file\n");
+        exit(1);
+    }
+
+    // --- Emit a complete LLVM IR module ---
+
+    // Declare printf
+    wr(fd, "declare i32 @printf(i8*, ...)\n");
+    wr(fd, "\n");
+
+    // String constant: "%d\n\0"  →  [4 x i8] c"%d\0A\00"
+    wr(fd, "@.fmt = private unnamed_addr constant [4 x i8] c\"%d");
+    wr_hex(fd, 10);   // \0A = newline
+    wr_hex(fd, 0);    // \00 = null terminator
+    wr(fd, "\"\n");
+
+    // main function
+    wr(fd, "\n");
+    wr(fd, "define i32 @main() {\n");
+    wr(fd, "entry:\n");
+
+    // %t0 = call i32 (i8*, ...) @printf(i8* getelementptr ([4 x i8], [4 x i8]* @.fmt, i32 0, i32 0), i32 42)
+    wr(fd, "  ");
+    wr_reg(fd, 0);
+    wr(fd, " = call i32 (i8*, ...) @printf(i8* getelementptr ([4 x i8], [4 x i8]* @.fmt, i32 0, i32 0), i32 ");
+    wr_int(fd, 42);
+    wr(fd, ")\n");
+
+    // ret i32 0
+    wr(fd, "  ret i32 0\n");
+    wr(fd, "}\n");
+
+    close(fd);
+
+    // Report success to stderr
+    wr(2, "wrote ");
+    let plen: usize = strlen(path);
+    write(2, path, plen);
+    wr(2, "\n");
+}

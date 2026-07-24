@@ -1,0 +1,25 @@
+intersect_solid enc=0 p=251: PASS
+intersect_solid enc=0 p=65521: PASS
+intersect_solid enc=0 p=65537: PASS
+intersect_annulus enc=36 p=251: PASS
+intersect_annulus enc=36 p=65521: PASS
+intersect_annulus enc=36 p=65537: PASS
+intersect_checker enc=49 p=251: PASS
+intersect_checker enc=49 p=65521: PASS
+intersect_checker enc=49 p=65537: PASS
+persist_enc t=0 enc=36 p=251: PASS
+persist_enc t=0 enc=36 p=65521: PASS
+persist_enc t=0 enc=36 p=65537: PASS
+persist_enc t=30 enc=36 p=251: PASS
+persist_enc t=30 enc=36 p=65521: PASS
+persist_enc t=30 enc=36 p=65537: PASS
+persist_enc t=64 enc=6 p=251: PASS
+persist_enc t=64 enc=6 p=65521: PASS
+persist_enc t=64 enc=6 p=65537: PASS
+persist_enc t=65 enc=0 p=251: PASS
+persist_enc t=65 enc=0 p=65521: PASS
+persist_enc t=65 enc=0 p=65537: PASS
+compare t=30 bnd=18 enc=36 p=251: PASS
+compare t=30 bnd=18 enc=36 p=65521: PASS
+compare t=30 bnd=18 enc=36 p=65537: PASS
+24 tests, 24 passed

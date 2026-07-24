@@ -1,0 +1,370 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// piecewise_segment_c.tv — codec split module imported by piecewise_codec.tv:
+// particle_scan + segment_greedy_bounded + the unified segmenter.
+// @internal-design: codec
+
+// ===== Particle scan — regime boundary detection =====
+
+// Walks the entire signal with the particle filter; emits NO segments, only
+// regime boundary positions (retracement to entry level or ESS collapse).
+
+#[export]
+fn particle_scan(samples: *i32, n: i32,
+    boundaries: *i32, max_boundaries: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    if n < 2 { return 0; }
+
+    // Particle state
+    let p_order: *i32 = alloc(N_PARTICLES);
+    let p_reg: *i32 = alloc(N_PARTICLES * (MAX_ORDER + 1));
+    let p_weight: *i64 = alloc(N_PARTICLES);
+    let p_cost: *i64 = alloc(N_PARTICLES);
+    let p_steps: *i32 = alloc(N_PARTICLES);
+    let p_reg_tmp: *i32 = alloc(N_PARTICLES * (MAX_ORDER + 1));
+    let p_order_tmp: *i32 = alloc(N_PARTICLES);
+    let p_weight_tmp: *i64 = alloc(N_PARTICLES);
+
+    particle_init(p_order, p_reg, p_weight, p_cost, p_steps, samples[0]);
+
+    // Step outputs
+    let out_ess: *i32 = alloc(1);
+    let out_mw: *i64 = alloc(1);
+    let out_ws: *i64 = alloc(1);
+
+    // Manifold state
+    var initial_dist: i64 = WEIGHT_SCALE;
+    var floor_dist: i64 = WEIGHT_SCALE;
+    var retrace_warm: i32 = 0;
+
+    var n_bounds: i32 = 0;
+    var regime_start: i32 = 0;
+    var j: i32 = 1;
+
+    while j < n {
+        particle_step_all(p_order, p_reg, p_weight, p_cost, p_steps,
+            samples, j, out_ess, out_mw, out_ws, f);
+        let ess: i32 = out_ess[0];
+        let mean_weight: i64 = out_mw[0];
+        let weight_sum: i64 = out_ws[0];
+        let mean_dist: i64 = WEIGHT_SCALE - mean_weight;
+        let seg_len: i32 = j - regime_start + 1;
+
+        // Manifold tracking
+        if retrace_warm == 0 && seg_len >= MIN_SEGMENT {
+            initial_dist = mean_dist;
+            floor_dist = mean_dist;
+            retrace_warm = 1;
+        }
+        if retrace_warm == 1 && mean_dist < floor_dist {
+            floor_dist = mean_dist;
+        }
+
+        // Boundary detection
+        var boundary: i32 = 0;
+        if seg_len >= MAX_SEGMENT { boundary = 1; }
+        if retrace_warm == 1 && seg_len >= MIN_SEGMENT * 2 {
+            if mean_dist > initial_dist { boundary = 1; }
+        }
+        if ess <= N_PARTICLES / 5 && seg_len >= MIN_SEGMENT { boundary = 1; }
+        if j == n - 1 { boundary = 1; }
+
+        if boundary == 1 {
+            if n_bounds < max_boundaries {
+                boundaries[n_bounds] = j + 1;
+                n_bounds = n_bounds + 1;
+            }
+            regime_start = j + 1;
+            initial_dist = WEIGHT_SCALE;
+            floor_dist = WEIGHT_SCALE;
+            retrace_warm = 0;
+            // Reset cost accumulators but not registers/weights
+            var pi: i32 = 0;
+            while pi < N_PARTICLES {
+                p_cost[pi] = 0;
+                p_steps[pi] = 0;
+                pi = pi + 1;
+            }
+        }
+
+        // Resample (only when not at a boundary)
+        if boundary == 0 && seg_len >= MIN_SEGMENT / 2 {
+            particle_maybe_resample(p_order, p_reg, p_weight,
+                p_order_tmp, p_reg_tmp, p_weight_tmp,
+                weight_sum, mean_weight);
+        }
+
+        j = j + 1;
+    }
+
+    free(out_ws); free(out_mw); free(out_ess);
+    free(p_weight_tmp); free(p_order_tmp); free(p_reg_tmp);
+    free(p_steps); free(p_cost); free(p_weight); free(p_reg); free(p_order);
+    return n_bounds;
+}
+
+// ===== Greedy segmenter within pre-computed regime boundaries =====
+
+// The core greedy search: given regime boundaries from particle_scan, optimize
+// within each regime. Handles CONT, predictive gate, literal fallback.
+// Used by pc_segment_unified and pc_encode_layered.
+
+fn segment_greedy_bounded(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    boundaries: *i32, n_bounds: i32,
+    f: Field) -> i32 {
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+    let tmp_res: *i32 = alloc(MAX_SEGMENT);
+    var cursor: i32 = 0;
+    var seg_idx: i32 = 0;
+    var res_offset: i32 = 0;
+
+    // CONT state
+    let cont_reg: *i32 = alloc(MAX_ORDER + 1);
+    var cont_degree: i32 = 0;
+    var cont_active: i32 = 0;
+
+    var bi: i32 = 0;
+    while bi < n_bounds {
+        let regime_end: i32 = boundaries[bi];
+
+        while cursor < regime_end {
+            if seg_idx >= max_segments { break; }
+
+            let remaining: i32 = regime_end - cursor;
+            if remaining < MIN_SEGMENT {
+                // Tail: literal
+                segments[seg_idx].start = cursor;
+                segments[seg_idx].length = remaining;
+                segments[seg_idx].order = 0 - 1;
+                segments[seg_idx].n_headers = 0;
+                segments[seg_idx].is_cont = 0;
+                segments[seg_idx].is_predictive = 0;
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = remaining;
+                var r: i32 = 0;
+                while r < remaining {
+                    if res_offset + r < max_residuals {
+                        residuals_buf[res_offset + r] = samples[cursor + r];
+                    }
+                    r = r + 1;
+                }
+                res_offset = res_offset + remaining;
+                segments[seg_idx].encoded_bits = literal_cost(remaining, f);
+                cont_active = 0;
+                seg_idx = seg_idx + 1;
+                cursor = regime_end;
+                break;
+            }
+
+            // CONT check
+            if cont_active == 1 {
+                var cont_len: i32 = remaining;
+                if cont_len > MAX_SEGMENT { cont_len = MAX_SEGMENT; }
+                let matched: i32 = check_continuation(cont_reg, cont_degree,
+                    &samples[cursor], cont_len, f);
+                if matched >= MIN_SEGMENT {
+                    segments[seg_idx].start = cursor;
+                    segments[seg_idx].length = matched;
+                    segments[seg_idx].order = cont_degree;
+                    segments[seg_idx].n_headers = 0;
+                    segments[seg_idx].is_cont = 1;
+                    segments[seg_idx].is_predictive = 0;
+                    segments[seg_idx].res_offset = res_offset;
+                    segments[seg_idx].res_count = 0;
+                    segments[seg_idx].encoded_bits = CONT_COST_BITS;
+                    advance_register(cont_reg, cont_degree, matched, f);
+                    cursor = cursor + matched;
+                    seg_idx = seg_idx + 1;
+                    continue;
+                }
+            }
+
+            // Greedy search capped at regime boundary
+            var best_bps: i64 = 9223372036854775807;
+            var best_len: i32 = MIN_SEGMENT;
+            var best_order: i32 = 1;
+
+            var length: i32 = MIN_SEGMENT;
+            while length <= remaining {
+                if length > MAX_SEGMENT { length = MAX_SEGMENT; }
+                var actual_len: i32 = length;
+                if cursor + length > regime_end { actual_len = regime_end - cursor; }
+
+                var order: i32 = 1;
+                while order <= MAX_ORDER {
+                    if actual_len < order + 1 {
+                        order = order + 1;
+                        continue;
+                    }
+                    let cost: i64 = segment_cost(&samples[cursor], actual_len, order, f);
+                    let bps: i64 = cost * 1000 / actual_len as i64;
+                    if bps < best_bps {
+                        best_bps = bps;
+                        best_len = actual_len;
+                        best_order = order;
+                    }
+                    order = order + 1;
+                }
+
+                let lit_bps: i64 = literal_cost(actual_len, f) * 1000 / actual_len as i64;
+                if lit_bps < best_bps {
+                    best_bps = lit_bps;
+                    best_len = actual_len;
+                    best_order = 0 - 1;
+                }
+
+                if length >= MAX_SEGMENT { break; }
+                if length >= remaining { break; }
+                length = length * 2;
+            }
+
+            // Emit segment
+            segments[seg_idx].start = cursor;
+            segments[seg_idx].length = best_len;
+            segments[seg_idx].order = best_order;
+            segments[seg_idx].is_cont = 0;
+            segments[seg_idx].is_predictive = 0;
+
+            if best_order >= 1 {
+                var final_cost: i64 = segment_cost(&samples[cursor], best_len, best_order, f);
+                let n_res: i32 = pc_forward_diff(&samples[cursor], best_len, best_order,
+                    headers, tmp_res, f);
+
+                // Predictive gate: mean |centered residual| > 1 → try predictive
+                var sum_abs: i64 = 0;
+                var ri: i32 = 0;
+                while ri < n_res {
+                    let c: i32 = center(tmp_res[ri], f);
+                    if c < 0 { sum_abs = sum_abs + (0 - c) as i64; }
+                    else { sum_abs = sum_abs + c as i64; }
+                    ri = ri + 1;
+                }
+                let mean_abs: i64 = sum_abs / (n_res as i64 + 1);
+
+                if mean_abs > 1 && best_len >= best_order + 1 {
+                    let pred_h: *i32 = alloc(MAX_ORDER + 1);
+                    let pred_r: *i32 = alloc(best_len);
+                    let pred_n: i32 = predictive_diff(&samples[cursor], best_len,
+                        best_order, pred_h, pred_r, f);
+                    let pred_bits: i64 = (SEGMENT_OVERHEAD_BYTES + best_order * 4) as i64 * 8
+                    + rice_partitioned_bits(pred_r, pred_n, MAX_PART_ORDER, f);
+                    if pred_bits < final_cost {
+                        segments[seg_idx].is_predictive = 1;
+                        final_cost = pred_bits;
+                        var hk: i32 = 0;
+                        while hk < best_order {
+                            headers[hk] = pred_h[hk];
+                            hk = hk + 1;
+                        }
+                        var pr: i32 = 0;
+                        while pr < pred_n {
+                            tmp_res[pr] = pred_r[pr];
+                            pr = pr + 1;
+                        }
+                        segments[seg_idx].n_headers = best_order;
+                        hk = 0;
+                        while hk < best_order {
+                            seg_set_header(&segments[seg_idx], hk, headers[hk]);
+                            hk = hk + 1;
+                        }
+                        segments[seg_idx].res_offset = res_offset;
+                        segments[seg_idx].res_count = pred_n;
+                        var r: i32 = 0;
+                        while r < pred_n {
+                            if res_offset + r < max_residuals {
+                                residuals_buf[res_offset + r] = tmp_res[r];
+                            }
+                            r = r + 1;
+                        }
+                        res_offset = res_offset + pred_n;
+                        segments[seg_idx].encoded_bits = final_cost;
+                        // Build register for CONT (predictive)
+                        build_register_state_predictive(headers, best_order,
+                            tmp_res, pred_n, cont_reg, f);
+                        cont_degree = best_order;
+                        cont_active = 1;
+                        free(pred_r);
+                        free(pred_h);
+                        cursor = cursor + best_len;
+                        seg_idx = seg_idx + 1;
+                        continue;
+                    }
+                    free(pred_r);
+                    free(pred_h);
+                }
+
+                // Newton emit
+                segments[seg_idx].n_headers = best_order;
+                var hk: i32 = 0;
+                while hk < best_order {
+                    seg_set_header(&segments[seg_idx], hk, headers[hk]);
+                    hk = hk + 1;
+                }
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = n_res;
+                var r: i32 = 0;
+                while r < n_res {
+                    if res_offset + r < max_residuals {
+                        residuals_buf[res_offset + r] = tmp_res[r];
+                    }
+                    r = r + 1;
+                }
+                res_offset = res_offset + n_res;
+                segments[seg_idx].encoded_bits = final_cost;
+
+                // Build register for CONT (Newton)
+                build_register_state(headers, best_order, tmp_res, n_res, best_len, cont_reg, f);
+                cont_degree = best_order;
+                cont_active = 1;
+            } else {
+                // Literal
+                segments[seg_idx].n_headers = 0;
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = best_len;
+                var r: i32 = 0;
+                while r < best_len {
+                    if res_offset + r < max_residuals {
+                        residuals_buf[res_offset + r] = samples[cursor + r];
+                    }
+                    r = r + 1;
+                }
+                res_offset = res_offset + best_len;
+                segments[seg_idx].encoded_bits = literal_cost(best_len, f);
+                cont_active = 0;
+            }
+
+            cursor = cursor + best_len;
+            seg_idx = seg_idx + 1;
+        }
+
+        bi = bi + 1;
+    }
+
+    free(cont_reg);
+    free(tmp_res);
+    free(headers);
+    return seg_idx;
+}
+
+// ===== Unified segmenter =====
+// particle_scan finds regime boundaries, then segment_greedy_bounded
+// optimizes within each regime.
+
+#[export]
+fn pc_segment_unified(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    let max_bounds: i32 = n / MIN_SEGMENT + 2;
+    let boundaries: *i32 = alloc(max_bounds);
+    let n_bounds: i32 = particle_scan(samples, n, boundaries, max_bounds, p);
+    let result: i32 = segment_greedy_bounded(samples, n, segments, max_segments,
+        residuals_buf, max_residuals,
+        boundaries, n_bounds, f);
+    free(boundaries);
+    return result;
+}

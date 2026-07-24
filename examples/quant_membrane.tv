@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// quant_membrane.tv — pinned-case gate for src/lib/float/quant.tv.
+// Every expected value is hand-derived from the f32 bit pattern (dyadic M*2^E,
+// round-half-away-from-zero, clamp). Prints got-values + refusal codes; the
+// golden pins the ONE rounding rule. Cases: exact ints, half boundaries (0.5,
+// 1.5, 2.5, 126.5), clamp edges, big-exponent saturation, subnormal counting,
+// signed zero, inf/nan refusals, k=+2/-1 scales, and the ternary (k=0,qmax=1)
+// equivalence with the shipped |x|>=1/2 rule.
+import "../src/lib/float/quant.tv";
+
+// NOTE global `var x: [i64; 1] = 0;` emits invalid IR ([1 x i64] 0) — filed;
+// locals passed by pointer instead.
+var g_q: *i64 = null;
+var g_ns: *i64 = null;
+
+fn q(bits: i64, k: i64, qmax: i64) -> i64 {
+    let rc: i32 = quant_f32(bits, k, qmax, g_q, g_ns);
+    if rc != 0 { return 999999; }              // refusal sentinel for the golden
+    return g_q[0];
+}
+
+fn main() -> i32 {
+    g_q = alloc(1);
+    g_ns = alloc(1);
+    g_ns[0] = 0;
+    // k=0, qmax=127 (the int8 head scale)
+    print(q(0x3F800000, 0, 127));   // 1.0        -> 1
+    print(q(0x3F000000, 0, 127));   // 0.5        -> 1   (half away)
+    print(q(0x3EFFFFFF, 0, 127));   // 0.49999997 -> 0
+    print(q(0x3FC00000, 0, 127));   // 1.5        -> 2   (half away)
+    print(q(0x40200000, 0, 127));   // 2.5        -> 3   (half away, not banker's 2)
+    print(q(0xC0200000, 0, 127));   // -2.5       -> -3
+    print(q(0x42FD0000, 0, 127));   // 126.5      -> 127 (rounds TO qmax, not clamped)
+    print(q(0x42FF0000, 0, 127));   // 127.5      -> 127 (clamped)
+    print(q(0x43480000, 0, 127));   // 200.0      -> 127 (clamped)
+    print(q(0x71800000, 0, 127));   // 2^100      -> 127 (doubling-loop saturation)
+    print(q(0x00000001, 0, 127));   // min subnormal -> 0 (and counts)
+    print(q(0x80000000, 0, 127));   // -0.0       -> 0
+    // scales
+    print(q(0x3F800000, 2, 127));   // 1.0  * 2^2 -> 4
+    print(q(0x3F600000, 2, 127));   // 0.875* 2^2 = 3.5 -> 4 (half away)
+    print(q(0x40400000, 0 - 1, 127)); // 3.0 * 2^-1 = 1.5 -> 2 (half away)
+    // int16 clamp (the FT path headroom test)
+    print(q(0x471C4000, 0, 32767)); // 40000.0    -> 32767 (clamped)
+    print(q(0x46FFFE00, 0, 32767)); // 32767.0    -> 32767 (exact, unclamped)
+    // ternary equivalence: k=0, qmax=1 == the shipped |x|>=1/2 sign rule
+    print(q(0x3F000000, 0, 1));     // 0.5        -> 1
+    print(q(0x3EFFFFFF, 0, 1));     // just under -> 0
+    print(q(0xC0200000, 0, 1));     // -2.5       -> -1
+    // refusals: inf / -inf / nan -> sentinel
+    print(q(0x7F800000, 0, 127));
+    print(q(0xFF800000, 0, 127));
+    print(q(0x7FC00000, 0, 127));
+    // subnormal counter observed exactly once
+    print(g_ns[0]);
+    return 0;
+}

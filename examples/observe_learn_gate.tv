@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_learn_gate.tv — golden gate for the observe-learn bit-accounting
+// (learn.tv): deterministic synthetic anchors, no WAV; any accounting change
+// flips a golden. Anchor derivations below are the oracle values — keep.
+// @internal-design: observability (observe-learn gate)
+//
+// Eight anchors:
+//   1. A hand-verifiable all-zero case (residual=0, momentum=0): every Rice code
+//      costs 1+k bits, best k=0 -> exactly n bits for marginal/conditional/floor.
+//   2. A deterministic mixed signal exercising multiple momentum buckets, Rice
+//      parameters, windows, and forward-difference orders (a quadratic, whose
+//      2nd forward difference is constant -> multiorder must prefer order 2).
+//   3. The FOLD on the quadratic: Delta^3 annihilates it, so the fixed arm must
+//      win every window -> codec = multiorder + 1 mode bit exactly, split (1,0).
+//   4. The FOLD's LPC arm: a period-6 recurrence y[i]-DC = (y[i-1]-DC)-(y[i-2]-DC)
+//      (10 exact periods, so the window mean is exact). NO finite Delta order
+//      annihilates it, but the order-2 LPC coefficients [1,-1] are EXACT in Q15
+//      (hand-derived: k1=16384, k2=-32768 -> qa=[32768,-32768]), residual = 0
+//      from i=2 on -> the LPC arm must win -> codec = lpc + 1, split (0,1).
+//   5. The STEREO fold's MS arm + tie-break: r == l makes MS == LS exactly;
+//      the locked pair precedence (LR, MS, LS, RS; strict <) must pick MS,
+//      and the total is hand-derivable: 477 + 69 + 2 = 548.
+//   6. The STEREO fold's LR arm: structure-mismatched l (quadratic) and r
+//      (rough) — mid/side both inherit the roughness, mixing loses strictly.
+//   7. Partitioned Rice: a scale-asymmetric window (constant half, rough half)
+//      where partition r=1 must engage at the len/2 boundary.
+//
+// Link: observe_learn_gate.o + learn.o
+// Prints (one integer per line):
+//   [zero-case]  marginal, conditional, floor, best_k, n
+//   [mixed]      marginal, conditional, floor, best_k, n
+//   window-16 adaptive
+//   window-16 +momentum
+//   multiorder window-16 (0..4)
+//   multiorder window-64 (0..4)   (full window: should lock onto order 2)
+//   lpc window-64 (ladder<=8)
+//   [fold, quadratic]  codec w64, fixed-window count, lpc-window count
+//   [period-6]         multiorder w60, lpc w60
+//   [fold, period-6]   codec w60, fixed-window count, lpc-window count
+//   [stereo, mono]     total, then LR/MS/LS/RS window counts (0,1,0,0)
+//   [stereo, mismatch] total, then LR/MS/LS/RS window counts (1,0,0,0)
+//   [partition]        multiorder w60, codec w60, fixed count, lpc count
+//   [transfer]         apply(fit(X),X) == conditional (594), X-map on zeros,
+//                      zero-map on X (the asymmetry = transfer cost)
+
+extern "C" fn learn_momentum_bits(residual: *i32, momentum: *i32, n: i32, p: i32, out: *i64);
+extern "C" fn learn_windowed_bits(residual: *i32, n: i32, p: i32, window: i32, hdr_bits: i32) -> i64;
+extern "C" fn learn_window_momentum_bits(residual: *i32, momentum: *i32, n: i32, p: i32, window: i32, hdr_bits: i32) -> i64;
+extern "C" fn multiorder_windowed_bits(x: *i32, n: i32, p: i32, window: i32, max_order: i32, hdr_bits: i32) -> i64;
+extern "C" fn lpc_windowed_bits(x: *i32, n: i32, p: i32, window: i32, max_order: i32, coef_bits: i32) -> i64;
+extern "C" fn codec_windowed_bits(x: *i32, n: i32, p: i32, window: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64;
+extern "C" fn codec_stereo_windowed_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, window: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64;
+extern "C" fn learn_momentum_fit(residual: *i32, momentum: *i32, n: i32, p: i32, kmap: *i64);
+extern "C" fn learn_momentum_apply(residual: *i32, momentum: *i32, n: i32, p: i32, kmap: *i64) -> i64;
+
+let GATE_P: i32 = 65537;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    let p: i32 = GATE_P;
+
+    // ---- Anchor 1: all-zero (hand-verifiable) ----
+    let zn: i32 = 100;
+    let zres: *i32 = alloc(zn);
+    let zmom: *i32 = alloc(zn);
+    var i: i32 = 0;
+    while i < zn { zres[i] = 0; zmom[i] = 0; i = i + 1; }
+
+    let zout: *i64 = alloc(5);
+    learn_momentum_bits(zres, zmom, zn, p, zout);
+    print(zout[0]);   // marginal    -> 100
+    print(zout[1]);   // conditional -> 100
+    print(zout[2]);   // floor       -> 100
+    print(zout[3]);   // best_k      -> 0
+    print(zout[4]);   // n           -> 100
+
+    // ---- Anchor 2: deterministic mixed signal ----
+    let n: i32 = 64;
+    // quadratic x[i] = 3 i^2 + 7 i + 11 (< p for i<64, so no field wrap); its
+    // 2nd forward difference is the constant 6 -> a clean order-2 target.
+    let x: *i32 = alloc(n);
+    i = 0;
+    while i < n { x[i] = 3 * i * i + 7 * i + 11; i = i + 1; }
+
+    // residual: small deterministic magnitudes across many buckets/params;
+    // momentum: a separate deterministic spread so buckets are exercised.
+    let residual: *i32 = alloc(n);
+    let momentum: *i32 = alloc(n);
+    i = 0;
+    while i < n {
+        residual[i] = (i * i * 13 + i * 29) % 251;   // in [0,251), zz = 2*v
+        momentum[i] = (i * 37 + 5) % 1024;            // spreads log2 buckets
+        i = i + 1;
+    }
+
+    let out: *i64 = alloc(5);
+    learn_momentum_bits(residual, momentum, n, p, out);
+    print(out[0]);
+    print(out[1]);
+    print(out[2]);
+    print(out[3]);
+    print(out[4]);
+
+    print(learn_windowed_bits(residual, n, p, 16, 5));
+    print(learn_window_momentum_bits(residual, momentum, n, p, 16, 5));
+    print(multiorder_windowed_bits(x, n, p, 16, 4, 8));
+    print(multiorder_windowed_bits(x, n, p, 64, 4, 8));
+    // exact-integer LPC: deterministic (captured, not hand-derived). A quadratic
+    // is non-stationary so autocorrelation-LPC won't annihilate it like Δ^3 —
+    // the point is regression coverage of the Levinson/quantize/residual path.
+    print(lpc_windowed_bits(x, n, p, 64, 8, 17));
+
+    // ---- Anchor 3: the fold, fixed arm (quadratic) ----
+    // one w64 window; fixed cost = multiorder golden (72), LPC cost = 735
+    // -> codec = 72 + 1 mode bit = 73, mode split (1,0).
+    let cout: *i64 = alloc(2);
+    print(codec_windowed_bits(x, n, p, 64, 4, 8, 8, 17, cout));
+    print(cout[0]);
+    print(cout[1]);
+
+    // ---- Anchor 4: the fold, LPC arm (period-6 recurrence) ----
+    // y[i] = (y[i-1]-DC) - (y[i-2]-DC) + DC, DC=5000, amplitude 600: pattern
+    // 0,600,600,0,-600,-600 around DC. n=60 = 10 exact periods -> window mean
+    // = DC exactly. No finite Δ annihilates a period-6 signal; integer LPC
+    // order 2 finds [1,-1] exactly in Q15 -> residual 0 from i=2 on.
+    let m6: i32 = 60;
+    let y: *i32 = alloc(m6);
+    y[0] = 5000;
+    y[1] = 5600;
+    i = 2;
+    while i < m6 {
+        y[i] = (y[i - 1] - 5000) - (y[i - 2] - 5000) + 5000;
+        i = i + 1;
+    }
+    print(multiorder_windowed_bits(y, m6, p, 60, 4, 8));
+    print(lpc_windowed_bits(y, m6, p, 60, 8, 17));
+    print(codec_windowed_bits(y, m6, p, 60, 4, 8, 8, 17, cout));
+    print(cout[0]);
+    print(cout[1]);
+
+    // ---- Anchor 5: stereo fold, mono pair (MS arm + the LOCKED tie-break) ----
+    // r == l: mid == l exactly, side == 0. cost(M) == cost(L) = the anchor-4
+    // fold (477); cost(S) = 69 (order-1 annihilates the constant: 60 bits +
+    // hdr 8 + mode bit). MS == LS exactly (546) — the precedence LR,MS,LS,RS
+    // with strict < must pick MS. total = 477 + 69 + 2 = 548, split (0,1,0,0).
+    let mf: *i32 = alloc(m6);
+    let sf: *i32 = alloc(m6);
+    i = 0;
+    while i < m6 {
+        mf[i] = (y[i] + y[i]) >> 1;         // == y[i]
+        sf[i] = (y[i] - y[i]) + 65535;      // side 0 at offset +65535
+        i = i + 1;
+    }
+    let sout: *i64 = alloc(4);
+    print(codec_stereo_windowed_bits(y, y, mf, sf, m6, p, 131071, 60, 4, 8, 8, 17, sout));
+    print(sout[0]);
+    print(sout[1]);
+    print(sout[2]);
+    print(sout[3]);
+
+    // ---- Anchor 6: stereo fold, structure-mismatched pair (LR arm) ----
+    // l = the quadratic (Delta^3-annihilated, ~69 bits); r = a rough mod-251
+    // pattern scaled x23 (no cheap predictor). mid and side BOTH inherit r's
+    // roughness, so mixing loses strictly: LR must win, split (1,0,0,0).
+    let l2: *i32 = alloc(m6);
+    let r2: *i32 = alloc(m6);
+    let mf2: *i32 = alloc(m6);
+    let sf2: *i32 = alloc(m6);
+    i = 0;
+    while i < m6 {
+        l2[i] = 3 * i * i + 7 * i + 11;
+        r2[i] = 5000 + ((i * i * 13 + i * 29) % 251) * 23;
+        mf2[i] = (l2[i] + r2[i]) >> 1;
+        sf2[i] = (l2[i] - r2[i]) + 65535;
+        i = i + 1;
+    }
+    print(codec_stereo_windowed_bits(l2, r2, mf2, sf2, m6, p, 131071, 60, 4, 8, 8, 17, sout));
+    print(sout[0]);
+    print(sout[1]);
+    print(sout[2]);
+    print(sout[3]);
+
+    // ---- Anchor 7: partitioned Rice (the scale-asymmetric window) ----
+    // One w60 window, constant for i<30 (order-1 residual = 0), rough for
+    // i>=30 (zz ~ thousands). A single window k must compromise; partition
+    // r=1 splits exactly at the q2 = len/2 = 30 boundary and codes the silent
+    // half at k=0. The captured value must sit far below the single-k cost
+    // (hand bound: r=0 forces >= 30*(1+k_rough) on the silent half alone).
+    let z: *i32 = alloc(m6);
+    i = 0;
+    while i < m6 {
+        if i < 30 { z[i] = 4000; }
+        else { z[i] = 4000 + ((i * 337 + 11) % 89) * 113; }
+        i = i + 1;
+    }
+    print(multiorder_windowed_bits(z, m6, p, 60, 4, 8));
+    print(codec_windowed_bits(z, m6, p, 60, 4, 8, 8, 17, cout));
+    print(cout[0]);
+    print(cout[1]);
+
+    // ---- Anchor 8: transfer — fit exposes the map, apply replays it ----
+    // Identity: apply(fit(X), X) == conditional(X) — must equal line 7's
+    // golden (594) by construction. Then both cross-directions: the mixed
+    // signal's map on the zero signal (cheap — zeros cost 1+k under any k)
+    // and the zero signal's map (all k=0) on the mixed signal (expensive —
+    // every zz pays full unary). The asymmetry IS the transfer cost.
+    let kmap: *i64 = alloc(18);
+    learn_momentum_fit(residual, momentum, n, p, kmap);
+    print(learn_momentum_apply(residual, momentum, n, p, kmap));
+    print(learn_momentum_apply(zres, zmom, zn, p, kmap));
+    learn_momentum_fit(zres, zmom, zn, p, kmap);
+    print(learn_momentum_apply(residual, momentum, n, p, kmap));
+    free(kmap);
+
+    free(z);
+    free(sf2); free(mf2); free(r2); free(l2);
+    free(sout); free(sf); free(mf);
+    free(y); free(cout);
+    free(out); free(momentum); free(residual); free(x);
+    free(zout); free(zmom); free(zres);
+    return 0;
+}

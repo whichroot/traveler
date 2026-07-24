@@ -1,0 +1,8 @@
+// #56: the global const-init resolver (#52) is u64-wide by contract; a
+// text-wide initializer wrapped silently (G = 2^64 became 0).
+let G: u64 = 18446744073709551616;
+
+fn main() -> i32 {
+    print(G as i64);
+    return 0;
+}

@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// quant.tv — exact dyadic scaled-int quantization over the ieee.tv decoder.
+// q = clamp(round(x * 2^k), -qmax, +qmax), round = HALF-AWAY-FROM-ZERO, computed
+// by integer shifts on the dyadic (sign, M, E+k); the FPU is never touched.
+// The ternary rule (|x| >= 1/2 -> sign) is the k=0, qmax=1 special case.
+// Refusals: inf/nan return 1 (whole-tensor imports should abort); subnormals
+// quantize like any tiny value and are COUNTED via out_nsub. @internal-design: float.
+import "ieee.tv";
+
+// round(M * 2^e2) to the nearest non-negative integer, half away from zero,
+// saturated at qmax. pre: M >= 1 (finite nonzero magnitude), qmax >= 1.
+fn quant_mag(M: i64, e2: i64, qmax: i64) -> i64 {
+    if e2 >= 0 {
+        // integer scaling up: double with early saturation (no overflow possible)
+        var v: i64 = M;
+        var i: i64 = 0;
+        while i < e2 {
+            v = v * 2;
+            if v > qmax { return qmax; }
+            i = i + 1;
+        }
+        if v > qmax { return qmax; }
+        return v;
+    }
+    let s: i64 = 0 - e2;
+    // for any decoder mantissa M < 2^61, s >= 62 means |x|*2^k < 1/2 exactly
+    if s >= 62 { return 0; }
+    let r: i64 = (M + (1 << (s - 1))) >> s;    // add half, truncate = half-away
+    if r > qmax { return qmax; }
+    return r;
+}
+
+// Quantize one f32 bit pattern at scale 2^k into [-qmax, +qmax].
+// Returns 0 = ok (out_q written), 1 = refused (inf/nan; out_q untouched).
+#[export]
+fn quant_f32(bits: i64, k: i64, qmax: i64, out_q: *i64, out_nsub: *i64) -> i32 {
+    var sg: [i64; 1] = 0;
+    var M: [i64; 1] = 0;
+    var E: [i64; 1] = 0;
+    let cls: i32 = f32_decode(bits, &sg[0], &M[0], &E[0]);
+    if cls == 3 { return 1; }                  // inf
+    if cls == 4 { return 1; }                  // nan
+    if cls == 2 { out_nsub[0] = out_nsub[0] + 1; }
+    if cls == 0 { out_q[0] = 0; return 0; }    // +/- zero
+    var q: i64 = quant_mag(M[0], E[0] + k, qmax);
+    if sg[0] == 1 { q = 0 - q; }
+    out_q[0] = q;
+    return 0;
+}

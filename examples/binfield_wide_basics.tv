@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// binfield_wide_basics.tv — the BinField<K != 8> unlock at three widths:
+// GF(2^6) (i8 carrier), GF(2^16) (i16), GF(2^60) (the Mobius-closure field).
+// tvc_self-only (the frozen C seed refuses K != 8).
+// @internal-design: nt
+
+type B6 = BinField<6, 0x43>;                    // x^6 + x + 1
+type B16 = BinField<16, 0x1100B>;               // x^16 + x^12 + x^3 + x + 1
+type B60 = BinField<60, 1152921504606846979>;   // x^60 + x + 1
+
+fn main() {
+    // --- GF(2^6): mul oracle, inv round-trip, char-2, cast mask ---
+    let a6: B6 = 37 as B6;
+    let b6: B6 = 51 as B6;
+    print(a6 * b6);                       // 49
+    print(a6 * (1 / a6));                 // 1
+    print((a6 + b6) + (a6 - b6));         // 2a = 0 (char 2; sub == add)
+    let m6: B6 = 200 as B6;               // 200 & 63
+    print(m6);                            // 8
+
+    // --- GF(2^16): mul oracle, div round-trip, Frobenius, pow ---
+    let a16: B16 = 4660 as B16;           // 0x1234
+    let b16: B16 = 43981 as B16;          // 0xABCD
+    print(a16 * b16);                     // 18322
+    print((a16 / b16) * b16);             // 4660
+    let e16: i64 = 65536;                 // 2^16
+    print((a16 ** e16) + a16);            // Frobenius: x^(2^16) == x -> 0
+    print(a16 ** 3);                      // 48066
+
+    // --- GF(2^60): mul oracle, inv round-trip, char-2, cast mask ---
+    let a60: B60 = 81985529216486895 as B60;    // 0x0123456789ABCDEF
+    let b60: B60 = 811429405942700370 as B60;
+    print(a60 * b60);                     // 821440195035997907
+    print(a60 * (1 / a60));               // 1
+    print(a60 + a60);                     // 0
+    let e60: i64 = 1152921504606846976;   // 2^60
+    print((a60 ** e60) + a60);            // Frobenius over GF(2^60) -> 0
+    let big: B60 = 2305843009213693951 as B60;  // 2^61-1 masked to low 60 bits
+    print(big);                           // 1152921504606846975
+
+    // --- distributivity spot check at K=60: a*(b+c) == a*b + a*c ---
+    let c60: B60 = 999999999999999999 as B60;
+    let lhs: B60 = a60 * (b60 + c60);
+    let rhs: B60 = a60 * b60 + a60 * c60;
+    var ok: i32 = 0;
+    if (lhs + rhs) == (0 as B60) { ok = 1; }
+    print(ok);                            // 1
+}

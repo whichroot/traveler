@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poseidon2_test.tv — Poseidon2 test suite (Goldilocks width 8)
+//
+// Verifies the Poseidon2 permutation against Plonky3's known test vector.
+//
+// Test 1: S-box x^7 basic verification
+// Test 2: Full permutation: input [0..7] -> Plonky3 expected output
+//
+// Expected output: 2 lines of "1" (all tests pass)
+
+type Goldilocks = Field<18446744069414584321>;
+
+// Import from poseidon2.tv (via extern mangled names)
+extern "C" fn poseidon2_permute_8_Field18446744069414584321(
+    state: *Goldilocks, rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+extern "C" fn sbox7_Field18446744069414584321(x: Goldilocks) -> Goldilocks;
+
+fn main() -> i32 {
+    // Test 1: S-box verification — 2^7 = 128
+    let two: Goldilocks = 2;
+    let result: Goldilocks = sbox7_Field18446744069414584321(two);
+    let expect: Goldilocks = 128;
+    if result == expect { print(1); } else { print(0); }
+
+    // Test 2: Full permutation — Plonky3 test vector
+    let state: *Goldilocks = alloc(8);
+    for i in 0..8 {
+        state[i] = i as Goldilocks;
+    }
+
+    // Allocate and fill round constants
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    // Run permutation
+    poseidon2_permute_8_Field18446744069414584321(state, rc_init, rc_term, rc_int, diag);
+
+    // Check against Plonky3 expected output
+    let expected: *Goldilocks = alloc(8);
+    expected[0] = 0x020cf04a1b214d14;
+    expected[1] = 0x84e14aaaeacaed25;
+    expected[2] = 0x1ae0f640e81c7457;
+    expected[3] = 0xa4d204cbaeb0d8a5;
+    expected[4] = 0x0cf637b627b3a7ff;
+    expected[5] = 0x788d304d948b486b;
+    expected[6] = 0x7327133ea1949af4;
+    expected[7] = 0xf415abb924da395b;
+
+    var pass: i32 = 1;
+    for i in 0..8 {
+        if state[i] != expected[i] {
+            pass = 0;
+            // Debug: print actual vs expected
+            print(state[i]);
+            print(expected[i]);
+        }
+    }
+    print(pass);
+
+    free(state);
+    free(rc_init);
+    free(rc_term);
+    free(rc_int);
+    free(diag);
+    free(expected);
+
+    return 0;
+}

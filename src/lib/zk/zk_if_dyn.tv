@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_if_dyn.tv — #[zk] branchless select over a RUNTIME prime: select(sel,a,b) =
+// sel*a + (1-sel)*b. <dyn> emits native select_val_dyn + select_val_zk_prove_dyn.
+// Link: plonk_dyn.o + zk_if_dyn.o + zk_if_dyn_test.o
+// @internal-design: zk
+
+#[zk]
+fn select_val<F: Field>(sel: F, a: F, b: F) -> F {
+    let sa: F = sel * a;
+    let one_minus_sel: F = 1 - sel;
+    let sb: F = one_minus_sel * b;
+    return sa + sb;
+}
+
+instantiate select_val<dyn>;

@@ -1,0 +1,18 @@
+======================================================================
+  14-bit key, 120 slots.  Exhaustive over every difference pattern.
+  classical = XOR of random 14-bit words
+  syndrome  = (S_1, S_3) over GF(2^7) = BinField<7, 0x83>
+======================================================================
+
+  weight |      patterns |  classical invisible |  syndrome invisible
+  -------+---------------+----------------------+--------------------
+       1 |           120 |                    0 |                   0
+       2 |          7140 |                    1 |                   0
+       3 |        280840 |                   19 |                   0
+       4 |       8214570 |                  454 |                   0
+       5 |     190578024 |                11620 |               12006
+
+  Rows 1-4: the BCH bound (designed distance 2T+1 = 5) forbids an
+  invisible difference of weight <= 4. Zero, over every pattern.
+  Row 5: the bound stops. The syndrome key collides too -- the
+  theorem is TIGHT, not conservative.

@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_classify_test.tv — hermetic validation of the verifiable genus
+// classifier (Phase 2): embedded MNIST image 0 (label 7), full ZK argmin chain.
+// @internal-design: genus (genus_classifier section)
+//
+// Tests (each 1 = pass):
+//   1. feature vector reproduces the oracle EXACTLY (13 ints)               -> 1
+//   2. nearest-signature decision = class 7 (the true label, correct here)  -> 1
+//   3. winner's weighted distance is the minimum (margin > 0)               -> 1
+//   4. argmin DOMINANCE certificate VERIFIES (9 leq proofs all accept)      -> 1
+//   5. a TAMPERED decision (claim class 3) is REJECTED by the certificate   -> 0
+//   6. field-invariant: same classification over BabyBear                   -> 1
+//
+// Expected output: 1 1 1 1 0 1
+//
+// Link: plonk_dyn.o + regime_fri.o + zk_range.o + genus_classifier.o +
+//       genus_classify_test.o (tvc_self-only).
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn gc_features(
+    f: Field, cx: *i64, cy: *i64, n: i32,
+    vbuf: *i64, t: *i64, cert: *i64, work: *i64, out: *i64) -> i32;
+extern "C" fn gc_classify(fv: *i64, ref_tbl: *i64, w: *i64, dists: *i64) -> i32;
+extern "C" fn gc_certify_argmin(p: i64, dists: *i64, claim: i32, nbits: i32) -> i32;
+
+fn wr(fd: i32, s: *u8) { let len: usize = strlen(s); write(fd, s, len); }
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn is_ink(img: *u8, x: i32, y: i32, thr: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x > 27 { return 0; }
+    if y > 27 { return 0; }
+    if (img[y * 28 + x] as i32) > thr { return 1; }
+    return 0;
+}
+fn trace_contour(img: *u8, thr: i32, cx: *i64, cy: *i64, max_len: i32) -> i32 {
+    var dx: [i32; 8] = 0;
+    var dy: [i32; 8] = 0;
+    dx[0]=1;  dy[0]=0;
+    dx[1]=1;  dy[1]=1;
+    dx[2]=0;  dy[2]=1;
+    dx[3]=0-1; dy[3]=1;
+    dx[4]=0-1; dy[4]=0;
+    dx[5]=0-1; dy[5]=0-1;
+    dx[6]=0;  dy[6]=0-1;
+    dx[7]=1;  dy[7]=0-1;
+    var sx: i32 = 0-1;
+    var sy: i32 = 0-1;
+    var yy: i32 = 0;
+    while yy < 28 {
+        var xx: i32 = 0;
+        while xx < 28 {
+            if is_ink(img, xx, yy, thr) == 1 { sx = xx; sy = yy; xx = 28; yy = 28; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    if sx < 0 { return 0; }
+    cx[0] = sx as i64; cy[0] = sy as i64;
+    var clen: i32 = 1;
+    var curx: i32 = sx;
+    var cury: i32 = sy;
+    var b: i32 = 4;
+    var steps: i32 = 0;
+    while steps < max_len {
+        var found: i32 = 0 - 1;
+        var k: i32 = 0;
+        while k < 8 {
+            let dd: i32 = (b + 1 + k) % 8;
+            let nx: i32 = curx + dx[dd];
+            let ny: i32 = cury + dy[dd];
+            if is_ink(img, nx, ny, thr) == 1 { found = dd; k = 8; }
+            k = k + 1;
+        }
+        if found < 0 { return clen; }
+        let nxp: i32 = curx + dx[found];
+        let nyp: i32 = cury + dy[found];
+        if nxp == sx { if nyp == sy { return clen; } }
+        if clen < max_len {
+            cx[clen] = nxp as i64; cy[clen] = nyp as i64; clen = clen + 1;
+        } else { return clen; }
+        curx = nxp; cury = nyp;
+        b = (found + 4) % 8;
+        steps = steps + 1;
+    }
+    return clen;
+}
+
+// Embed MNIST test image 0 (true label 7): 116 nonzero pixels.
+fn fill_image(img: *u8) {
+    var i: i32 = 0;
+    while i < 784 { img[i] = 0; i = i + 1; }
+    img[202] = 84; img[203] = 185; img[204] = 159; img[205] = 151; img[206] = 60;
+    img[207] = 36; img[230] = 222; img[231] = 254; img[232] = 254; img[233] = 254;
+    img[234] = 254; img[235] = 241; img[236] = 198; img[237] = 198; img[238] = 198;
+    img[239] = 198; img[240] = 198; img[241] = 198; img[242] = 198; img[243] = 198;
+    img[244] = 170; img[245] = 52; img[258] = 67; img[259] = 114; img[260] = 72;
+    img[261] = 114; img[262] = 163; img[263] = 227; img[264] = 254; img[265] = 225;
+    img[266] = 254; img[267] = 254; img[268] = 254; img[269] = 250; img[270] = 229;
+    img[271] = 254; img[272] = 254; img[273] = 140; img[291] = 17; img[292] = 66;
+    img[293] = 14; img[294] = 67; img[295] = 67; img[296] = 67; img[297] = 59;
+    img[298] = 21; img[299] = 236; img[300] = 254; img[301] = 106; img[326] = 83;
+    img[327] = 253; img[328] = 209; img[329] = 18; img[353] = 22; img[354] = 233;
+    img[355] = 255; img[356] = 83; img[381] = 129; img[382] = 254; img[383] = 238;
+    img[384] = 44; img[408] = 59; img[409] = 249; img[410] = 254; img[411] = 62;
+    img[436] = 133; img[437] = 254; img[438] = 187; img[439] = 5; img[463] = 9;
+    img[464] = 205; img[465] = 248; img[466] = 58; img[491] = 126; img[492] = 254;
+    img[493] = 182; img[518] = 75; img[519] = 251; img[520] = 240; img[521] = 57;
+    img[545] = 19; img[546] = 221; img[547] = 254; img[548] = 166; img[572] = 3;
+    img[573] = 203; img[574] = 254; img[575] = 219; img[576] = 35; img[600] = 38;
+    img[601] = 254; img[602] = 254; img[603] = 77; img[627] = 31; img[628] = 224;
+    img[629] = 254; img[630] = 115; img[631] = 1; img[655] = 133; img[656] = 254;
+    img[657] = 254; img[658] = 52; img[682] = 61; img[683] = 242; img[684] = 254;
+    img[685] = 254; img[686] = 52; img[710] = 121; img[711] = 254; img[712] = 254;
+    img[713] = 219; img[714] = 40; img[738] = 121; img[739] = 254; img[740] = 207;
+    img[741] = 18;
+}
+
+fn fill_reftable(ref: *i64, w: *i64) {
+    w[0] = 6; w[1] = 7; w[2] = 8; w[3] = 9; w[4] = 5; w[5] = 5; w[6] = 4;
+    w[7] = 5; w[8] = 31; w[9] = 43; w[10] = 63; w[11] = 44; w[12] = 79;
+    ref[0]=11; ref[1]=10; ref[2]=8; ref[3]=8; ref[4]=16; ref[5]=14; ref[6]=17;
+    ref[7]=14; ref[8]=1; ref[9]=2; ref[10]=1; ref[11]=2; ref[12]=0;
+    ref[13]=12; ref[14]=11; ref[15]=4; ref[16]=4; ref[17]=12; ref[18]=10;
+    ref[19]=13; ref[20]=11; ref[21]=0; ref[22]=2; ref[23]=0; ref[24]=2; ref[25]=0;
+    ref[26]=13; ref[27]=12; ref[28]=16; ref[29]=15; ref[30]=23; ref[31]=19;
+    ref[32]=24; ref[33]=20; ref[34]=2; ref[35]=2; ref[36]=0; ref[37]=2; ref[38]=0-2;
+    ref[39]=14; ref[40]=13; ref[41]=19; ref[42]=17; ref[43]=25; ref[44]=21;
+    ref[45]=26; ref[46]=21; ref[47]=8; ref[48]=2; ref[49]=3; ref[50]=0-2; ref[51]=0-1;
+    ref[52]=19; ref[53]=16; ref[54]=11; ref[55]=10; ref[56]=22; ref[57]=18;
+    ref[58]=23; ref[59]=19; ref[60]=0; ref[61]=0; ref[62]=0; ref[63]=2; ref[64]=0-2;
+    ref[65]=12; ref[66]=11; ref[67]=18; ref[68]=16; ref[69]=23; ref[70]=19;
+    ref[71]=23; ref[72]=20; ref[73]=2; ref[74]=1; ref[75]=1; ref[76]=0; ref[77]=0;
+    ref[78]=15; ref[79]=13; ref[80]=10; ref[81]=9; ref[82]=20; ref[83]=16;
+    ref[84]=20; ref[85]=17; ref[86]=0-2; ref[87]=1; ref[88]=0; ref[89]=2; ref[90]=1;
+    ref[91]=14; ref[92]=13; ref[93]=10; ref[94]=9; ref[95]=18; ref[96]=16;
+    ref[97]=19; ref[98]=16; ref[99]=3; ref[100]=2; ref[101]=1; ref[102]=0; ref[103]=0;
+    ref[104]=13; ref[105]=12; ref[106]=10; ref[107]=9; ref[108]=18; ref[109]=15;
+    ref[110]=19; ref[111]=16; ref[112]=0-1; ref[113]=2; ref[114]=0; ref[115]=2; ref[116]=0;
+    ref[117]=14; ref[118]=12; ref[119]=9; ref[120]=8; ref[121]=17; ref[122]=14;
+    ref[123]=18; ref[124]=15; ref[125]=1; ref[126]=2; ref[127]=0; ref[128]=0; ref[129]=1;
+}
+
+// expected oracle feature vector for test image 0 (label 7)
+fn fill_expected(e: *i64) {
+    e[0]=18; e[1]=14; e[2]=10; e[3]=9; e[4]=22; e[5]=17; e[6]=23; e[7]=19;
+    e[8]=2; e[9]=3; e[10]=1; e[11]=3; e[12]=0-1;
+}
+
+fn classify_image(p: i64, ref: *i64, w: *i64, fv: *i64, dists: *i64) -> i32 {
+    let f: Field = field(p);
+    let cap: i32 = 4096;
+    let img: *u8 = alloc(784);
+    let cx: *i64 = alloc(cap);
+    let cy: *i64 = alloc(cap);
+    let vbuf: *i64 = alloc(cap);
+    let t: *i64 = alloc(cap);
+    let cert: *i64 = alloc(cap * 3);
+    let work: *i64 = alloc(cap);
+    fill_image(img);
+    let n: i32 = trace_contour(img, 64, cx, cy, cap);
+    gc_features(f, cx, cy, n, vbuf, t, cert, work, fv);
+    let bc: i32 = gc_classify(fv, ref, w, dists);
+    free(img); free(cx); free(cy); free(vbuf); free(t); free(cert); free(work);
+    return bc;
+}
+
+fn main() -> i32 {
+    let gold: i64 = 18446744069414584321;
+    let baby: i64 = 2013265921;
+    let nbits: i32 = 20;
+
+    let ref: *i64 = alloc(130);
+    let w: *i64 = alloc(13);
+    fill_reftable(ref, w);
+    let expected: *i64 = alloc(13);
+    fill_expected(expected);
+
+    let fv: *i64 = alloc(13);
+    let dists: *i64 = alloc(10);
+    let bc: i32 = classify_image(gold, ref, w, fv, dists);
+
+    wr(2, "feature vector: ");
+    var j: i32 = 0;
+    while j < 13 { wr_int(2, fv[j]); wr(2, " "); j = j + 1; }
+    wr(2, "\nweighted distances: ");
+    j = 0;
+    while j < 10 { wr_int(2, dists[j]); wr(2, " "); j = j + 1; }
+    wr(2, "\nargmin class: "); wr_int(2, bc as i64); wr(2, "\n");
+
+    // ---- Test 1: feature vector matches oracle ----
+    var t1: i32 = 1;
+    j = 0;
+    while j < 13 { if fv[j] != expected[j] { t1 = 0; } j = j + 1; }
+
+    // ---- Test 2: decision = class 7 ----
+    var t2: i32 = 0;
+    if bc == 7 { t2 = 1; }
+
+    // ---- Test 3: winner distance is strict minimum ----
+    var t3: i32 = 1;
+    j = 0;
+    while j < 10 {
+        if j != bc { if dists[j] <= dists[bc] { t3 = 0; } }
+        j = j + 1;
+    }
+
+    // ---- Test 4: argmin dominance certificate verifies (honest claim = bc) ----
+    let t4: i32 = gc_certify_argmin(gold, dists, bc, nbits);
+
+    // ---- Test 5: tampered decision (claim 3) is rejected ----
+    let t5: i32 = gc_certify_argmin(gold, dists, 3, nbits);
+
+    // ---- Test 6: field-invariant classification over BabyBear ----
+    let fv_b: *i64 = alloc(13);
+    let dists_b: *i64 = alloc(10);
+    let bc_b: i32 = classify_image(baby, ref, w, fv_b, dists_b);
+    var t6: i32 = 0;
+    if bc_b == bc { t6 = 1; }
+
+    print(t1);
+    print(t2);
+    print(t3);
+    print(t4);
+    print(t5);
+    print(t6);
+
+    return 0;
+}

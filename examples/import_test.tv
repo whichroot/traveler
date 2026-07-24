@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// import_test.tv — module system gate (B1b Slice 1, single-level import):
+// one merged unit, imported fns resolve directly — no extern/instantiate/link.
+// tvc_self ONLY (gated in tests/dynfield/run.sh).
+// @internal-design: examples (import_test).
+//
+// Expected output:
+//   7      (ml_add(3, 4))
+//   25     (ml_square(5))
+//   30     (ml_scale<i32>(10, 3) = 10+10+10)
+//   149    (ml_scale<Field<251>>(100, 4) = 400 mod 251 = 149)
+
+type F = Field<251>;
+
+import "../src/lib/util/import_mathlib.tv";
+
+fn main() -> i32 {
+    print(ml_add(3, 4));        // 7
+    print(ml_square(5));        // 25
+    print(ml_scale(10, 3));     // 30 (generic over i32)
+
+    let x: F = 100;
+    let r: F = ml_scale(x, 4);  // generic over Field<251>: 400 mod 251 = 149
+    print(r);                   // 149
+    return 0;
+}

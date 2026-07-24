@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_onset.tv — O0 GATE #2: observe_residual + agg_regime writing into an
+// own-cell Trace, everything in-field (p > 0); exact register-based decisions.
+// @internal-design: observability (trace.tv sections)
+//
+// @internal-oracle: observe_onset (independent
+// re-implementation of forward_diff + regime_detect).
+import "../src/lib/observe/trace.tv";
+
+fn main() -> i32 {
+    let p: i32 = 65537;
+
+    // Part A — observe_residual: a degree-2 signal f(i) = 3i^2 + 2i + 1.
+    // forward_diff inward returns the ONSET (degree+1 = 3) and the Newton coeffs.
+    let na: i32 = 8;
+    let sbuf: *i32 = alloc(na);
+    let ta: *Trace = alloc(1);
+    trace_init(ta, sbuf, na, 1);
+    let rec: *i32 = alloc(1);
+    var i: i32 = 0;
+    while i < na {
+        rec[0] = 3 * i * i + 2 * i + 1;     // 1,6,17,34,57,86,121,162
+        trace_at(ta, i, rec);               // OWN-CELL: i = loop index
+        i = i + 1;
+    }
+    let coeffs: *i32 = alloc(4);
+    let work: *i32 = alloc(na);
+    let ord: i32 = observe_residual(ta.buf, trace_len(ta), coeffs, 3, p, work);
+    print(ord);                             // 3  (onset degree d* = 2)
+    print(coeffs[0]); print(coeffs[1]); print(coeffs[2]);   // 1 5 6
+
+    // Part B — agg_regime (the DECIDER): a signal that is i^2 for the first 8
+    // samples then switches regime. regime_detect(order=2) returns the boundary.
+    let nb: i32 = 12;
+    let s2: *i32 = alloc(nb);
+    let tb: *Trace = alloc(1);
+    trace_init(tb, s2, nb, 1);
+    i = 0;
+    while i < 8 {
+        rec[0] = i * i;                     // 0,1,4,9,16,25,36,49
+        trace_at(tb, i, rec);               // OWN-CELL
+        i = i + 1;
+    }
+    while i < nb {
+        rec[0] = 1000 * (i - 7);            // 1000,2000,3000,4000  (new regime)
+        trace_at(tb, i, rec);
+        i = i + 1;
+    }
+    let reg: *i32 = alloc(3);
+    let bnd: i32 = agg_regime(tb, 2, 0, p, reg);
+    print(bnd);                             // 8  (regime break)
+
+    return 0;
+}

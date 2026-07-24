@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// algebraic_loops.tv — the algebraic bound model: loops bounded by data length
+// (n), polynomial degree (d), or field order (p); forward-sum, break, enumeration.
+// @internal-design: examples (algebraic_loops).
+
+type F = Field<251>;
+
+// Forward summation: the core decode loop from polycompress.
+// Outer bound: n (data length). Inner bound: degree.
+fn forward_sum(c0: F, c1: F, c2: F, n: i32) -> F {
+    var r0: F = c0;
+    var r1: F = c1;
+    var r2: F = c2;
+
+    // Evaluate degree-2 polynomial at n consecutive points
+    // Bound: n, a compile-time-known data length
+    for i in 1..n {
+        r0 = r0 + r1;
+        r1 = r1 + r2;
+        // r2 is constant (degree 2)
+    }
+    return r0;
+}
+
+// Early termination with break: the analyze() pattern.
+// Bound: max_degree. Exit early if data isn't polynomial.
+fn find_first_nonzero(data_len: i32) -> i32 {
+    var result: i32 = -1;
+    for i in 0..data_len {
+        // Simulate: if difference level i is all-zero, we found the degree
+        if i == 5 {
+            result = i;
+            break;  // early exit — no fuel needed
+        }
+    }
+    return result;
+}
+
+fn main() {
+    // Newton coefficients [10, 3, 1] over Z/251Z: forward_sum advances 9 steps,
+    // so val = f(9) in the Newton basis = 10 + 3*9 + 1*C(9,2) = 73.
+    let val = forward_sum(10, 3, 1, 10);
+    print(val);  // f(9) in Newton basis = 10 + 3*9 + 1*9*8/2 = 10+27+36 = 73
+
+    // Test break: should find 5
+    let idx = find_first_nonzero(100);
+    print(idx);  // 5
+
+    // Field enumeration: sum all elements of Z/251Z. 0+1+...+250 = 31375 = 125*251,
+    // so the total is 0 (the sum of all elements of Z/pZ is 0 for p > 2).
+    var total: F = 0;
+    for i in 0..251 {
+        var x: F = 0;
+        // Build i as a field element by repeated addition (predates `as F` casts)
+        for j in 0..i {
+            x = x + 1;
+        }
+        total = total + x;
+    }
+    print(total);  // 0 (algebraic identity: sum of Z/pZ = 0)
+}

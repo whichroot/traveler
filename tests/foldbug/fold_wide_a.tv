@@ -1,0 +1,21 @@
+// fold_wide_a.tv — half of the i512 (multi-limb) fold reproducer (#15, Item 2).
+//
+// Each of fold_wide_a / fold_wide_b independently emits the `internal
+// @field_wide_*` runtime (BN254 Fr, 4-limb i256 elements, i512 product reduced
+// by i1024 Barrett). The HYPOTHESIS: -O2 identical-code-folding mis-merges the
+// duplicate file-local wide runtime one width up from the i128 case. If it
+// recurs, the error is 2^256 mod p — UNRECOGNIZABLE for non-Solinas BN254 Fr,
+// so we compare against exact oracle limbs, not a magnitude.
+//
+// wsub_a computes (0 - 1) mod Fr = Fr-1 into a caller buffer.
+extern "C" fn field_wide_sub(dst: *i64, a: *i64, b: *i64, f: *i64);
+
+#[export]
+fn wsub_a(out: *i64) {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+    let z: *i64 = alloc(4);
+    wide("0x0", z);
+    let one: *i64 = alloc(4);
+    wide("0x1", one);
+    field_wide_sub(out, z, one, f);   // 0 - 1 = Fr-1
+}

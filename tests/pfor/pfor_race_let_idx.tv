@@ -1,0 +1,49 @@
+// pfor_race_let_idx.tv — HOLE 5: let-bound write index
+//
+// let t = i / 2; out[t] = out[t] + slow(a[i]) — the write index is a
+// loop-local binding.  At analysis time `t` is not in the symbol table,
+// so sym_find fails and the walk accepts it "conservatively" — but for a
+// WRITE index, unknown must mean reject.  The binding hides the same
+// non-injective i/2 map as hole 3.
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.  Expected output: 50000.
+
+field F = Field<2013265921>;
+
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        out[w] = 0;
+        w = w + 1;
+    }
+
+    // RACE: t = i/2 is non-injective, hidden behind a let binding
+    for i in 0..n {
+        let t: i32 = i / 2;
+        out[t] = out[t] + slow(a[i]);
+    }
+
+    let mut s: F = 0;
+    w = 0;
+    while w < n {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

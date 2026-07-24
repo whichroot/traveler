@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// extern_fn.tv — External C function declarations and calls.
+//
+// Demonstrates calling libc functions from Traveler via extern "C".
+// Uses putchar (libc) to print 'A' and 'B' without printf.
+//
+// Expected output: AB42
+
+extern "C" fn putchar(c: i32) -> i32;
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn main() {
+    // Call libc putchar directly
+    putchar(65);    // 'A'
+    putchar(66);    // 'B'
+
+    // Mix extern calls with regular functions
+    let sum: i32 = add(40, 2);
+    print(sum);     // 42
+}

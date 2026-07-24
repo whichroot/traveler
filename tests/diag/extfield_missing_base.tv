@@ -1,0 +1,9 @@
+// Negative: an extension whose base prime field is never declared. Previously a
+// silent return (the alias then failed downstream as an unknown type); now a
+// located diagnostic naming the missing base.
+extfield E = ExtField<Field<97>, 2>;
+
+fn main() {
+    let x: E = 5;
+    print(x);
+}

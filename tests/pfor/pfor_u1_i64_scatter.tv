@@ -1,0 +1,44 @@
+// pfor_u1_i64_scatter.tv — U1 (Stage D) via-negativa: non-injective write,
+// i64 flavor. out[i / 2] maps two iterations onto one cell — an RMW race
+// under parallel dispatch. The write-index classifier refuses it
+// (`noninjective`) regardless of element type; U1 changes nothing here.
+// Mirrors pfor_race_noninjective.tv (the Field<> original).
+//
+// MUST NOT PARALLELIZE. Expected workers: 0 (stage1).
+// Serial ground truth: total mass conserved: sum = n = 50000.
+fn slow(x: i64) -> i64 {
+    let mut acc: i64 = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        acc = acc + 0;
+        k = k + 1;
+    }
+    return acc;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let a: *i64 = alloc(n);
+    let out: *i64 = alloc(n);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        out[w] = 0;
+        w = w + 1;
+    }
+
+    // RACE: i/2 maps pairs of iterations onto one cell.
+    for i in 0..n {
+        out[i / 2] = out[i / 2] + slow(a[i]);
+    }
+
+    let mut s: i64 = 0;
+    w = 0;
+    while w < n {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

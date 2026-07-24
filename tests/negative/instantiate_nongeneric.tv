@@ -1,0 +1,12 @@
+// Negative test: instantiate on non-generic function should error
+field F = Field<251>;
+
+fn add(a: F, b: F) -> F {
+    return a + b;
+}
+
+instantiate add<Field<251>>;
+
+fn main() {
+    print(add(10, 20));
+}

@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// #54 gate: for-loop bound WIDTH ADOPTION — the iterator adopts the bound
+// width (i32 default; i64 when a bound is 64-bit-typed / u32 / a literal
+// >= 2^31). Serial + pfor-dispatched (the i64 dispatch ABI) + the
+// prepeek-miss path (call-typed bound). tvc_self-only: the frozen C seed
+// refuses wide bounds (i32-only iteration space).
+// @internal-note: plan-for-bound-width
+
+type F = Field<65521>;
+
+fn len64() -> i64 {
+    return 5;
+}
+
+fn main() -> i32 {
+    // (1) i64-typed bounds, serial
+    let n: i64 = 10;
+    var acc: i64 = 0;
+    for i in 0..n {
+        acc = acc + i;
+    }
+    print(acc);                     // 45
+
+    // (2) usize bound (unsigned-64: exercises the residue-guard pass path)
+    let m: usize = 6;
+    var acc2: i64 = 0;
+    for i in 0..m {
+        acc2 = acc2 + 2;
+    }
+    print(acc2);                    // 12
+
+    // (3) u32 promote: a high-bit u32 bound iterates past 2^31 correctly
+    var ub: u32 = 2147483650;
+    var cnt3: i64 = 0;
+    var first3: i64 = 0 - 1;
+    for i in 2147483646..ub {
+        cnt3 = cnt3 + 1;
+        if first3 < 0 { first3 = i; }
+    }
+    print(cnt3);                    // 4
+    print(first3);                  // 2147483646
+
+    // (4) narrow bound widens (i16 -> i32 space)
+    var nb: i16 = 7;
+    var cnt4: i64 = 0;
+    for i in 0..nb { cnt4 = cnt4 + 1; }
+    print(cnt4);                    // 7
+
+    // (5) literal bounds straddling 2^31 (the silent-zero-iteration bug shape)
+    var cnt5: i64 = 0;
+    var last5: i64 = 0;
+    for i in 2147483640..2147483650 {
+        cnt5 = cnt5 + 1;
+        last5 = i;
+    }
+    print(cnt5);                    // 10
+    print(last5);                   // 2147483649
+
+    // (6) negative start (the i32 space, unchanged semantics)
+    var sum6: i64 = 0;
+    for i in -3..4 { sum6 = sum6 + i as i64; }
+    print(sum6);                    // 0
+
+    // (7) pfor-dispatched field loop over an i64 bound (the i64 dispatch ABI:
+    //     __parallel_for_i64 + (ptr, i64, i64) worker)
+    let len: i64 = 4096;
+    let a: *F = alloc(4096);
+    for j in 0..len {
+        a[j] = (j as F) * (3 as F);
+    }
+    var chk: i64 = 0;
+    var k: i64 = 0;
+    while k < 4096 {
+        chk = chk + (a[k] as i64);
+        k = k + 1;
+    }
+    print(chk);                     // 3 * 4095*4096/2 = 25159680
+
+    // (8) prepeek-miss path: a CALL-typed i64 bound (the post-codegen type is
+    //     authoritative; the literal start widens after the fact)
+    var cnt8: i64 = 0;
+    for i in 0..len64() { cnt8 = cnt8 + 1; }
+    print(cnt8);                    // 5
+
+    return 0;
+}

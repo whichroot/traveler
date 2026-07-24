@@ -1,0 +1,39 @@
+// pfor_ok_pure_call.tv — POSITIVE CONTROL: canonical safe parallel loop
+//
+// out[i] = cube(a[i]) — injective write index (the loop var itself),
+// pure call, no cross-iteration reads.  This is the pattern Layer 2/5
+// were built for and it must KEEP parallelizing after the soundness fix.
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+field F = Field<2013265921>;
+
+fn cube(x: F) -> F {
+    return x * x * x;
+}
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = (w % 7 + 1) as F;
+        w = w + 1;
+    }
+
+    // SAFE: write index is the loop variable, cube is pure
+    for i in 0..n {
+        out[i] = cube(a[i]);
+    }
+
+    let mut s: F = 0;
+    w = 0;
+    while w < 16 {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// addr_scalar.tv — &var on i32/u8/i64 locals, across a call boundary, and on a
+// global; plus raw write(2)-vs-buffered-print output ordering under redirection.
+// @internal-design: examples (addr_scalar).
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+
+var g_counter: i64 = 40;
+
+fn bump(p: *i32, by: i32) {
+    p[0] = p[0] + by;
+}
+
+fn main() {
+    // &scalar local: write through the pointer, observe via the name.
+    var x: i32 = 7;
+    let px: *i32 = &x;
+    px[0] = px[0] * 6;
+    print(x);              // 42
+
+    // Negative round-trip at 32 bits.
+    var y: i32 = 0 - 5;
+    let py: *i32 = &y;
+    py[0] = py[0] - 37;
+    print(y);              // -42
+
+    // u8-width access through the pointer.
+    var b: u8 = 200;
+    let pb: *u8 = &b;
+    pb[0] = pb[0] + 55;
+    print(b as i32);       // 255
+
+    // i64 width.
+    var w: i64 = 1000000007;
+    let pw: *i64 = &w;
+    pw[0] = pw[0] * 3;
+    print(w);              // 3000000021
+
+    // Pointer through a call boundary.
+    var acc: i32 = 10;
+    bump(&acc, 32);
+    print(acc);            // 42
+
+    // &global.
+    let pg: *i64 = &g_counter;
+    pg[0] = pg[0] + 2;
+    print(g_counter);      // 42
+
+    // Raw write: lands BEFORE all print output when stdout is redirected.
+    write(1, "raw\n", 4);
+}

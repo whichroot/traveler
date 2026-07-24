@@ -1,0 +1,4 @@
+wrong number of arguments in indirect call
+expected 2
+found 1
+arity_fnptr.tv:8

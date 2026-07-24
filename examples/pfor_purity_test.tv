@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// pfor_purity_test.tv — auto-parallelization purity: proven-pure calls admit
+// a loop to pfor; a loop-carried accumulator stays serial.
+//
+// Three tests:
+//   1. Pure function call in loop body (should parallelize)
+//   2. Loop-local let binding with pure call (should parallelize)
+//   3. Forward sum with accumulator (should NOT parallelize)
+//
+// Expected output: 36 231 73
+
+type F = Field<251>;
+
+// Pure function: no I/O, no heap, no globals — just field arithmetic
+fn cube(x: F) -> F {
+    return x * x * x;
+}
+
+// Pure function: calls another pure function
+fn cube_plus(x: F, y: F) -> F {
+    return cube(x) + y;
+}
+
+fn main() -> i32 {
+    let n: i32 = 10000;
+    let a: *F = alloc(n);
+    let b: *F = alloc(n);
+    let out: *F = alloc(n);
+
+    // Initialize
+    for i in 0..n {
+        a[i] = (i * 7 + 3) as F;
+        b[i] = (i * 3 + 1) as F;
+    }
+
+    // Test 1: pure function call — should auto-parallelize
+    for i in 0..n {
+        out[i] = cube(a[i]);
+    }
+    var cs1: F = 0;
+    for i in 0..8 { cs1 = cs1 + out[i]; }
+    print(cs1);
+
+    // Test 2: let binding + pure call — should auto-parallelize
+    for i in 0..n {
+        let tmp: F = cube_plus(a[i], b[i]);
+        out[i] = tmp;
+    }
+    var cs2: F = 0;
+    for i in 0..8 { cs2 = cs2 + out[i]; }
+    print(cs2);
+
+    // Test 3: forward sum — should NOT parallelize (loop-carried dep)
+    var s0: F = 10;
+    var s1: F = 3;
+    var s2: F = 1;
+    for i in 0..n {
+        out[i] = s0;
+        s0 = s0 + s1;
+        s1 = s1 + s2;
+    }
+    var cs3: F = 0;
+    for i in 0..8 { cs3 = cs3 + out[i]; }
+    print(cs3);
+
+    return 0;
+}

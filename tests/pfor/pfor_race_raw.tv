@@ -1,0 +1,45 @@
+// pfor_race_raw.tv — HOLE 4: cross-iteration read-after-write
+//
+// out[i] = out[i + 1] + a[i] — reads a cell that a *different* iteration
+// writes.  Serial semantics (ascending i) read the ORIGINAL out[i+1];
+// parallel chunks race at their boundaries: a thread may read its
+// neighbor's already-updated cell.
+//
+// The race window here is narrow, so the output check may pass by luck —
+// the WORKER COUNT assertion is the deterministic check for this hole.
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.
+// Serial ground truth: out[i] = (i+1) + 1 = i+2; sum out[0..8] = 44.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let n: i32 = 8192;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n + 1);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        w = w + 1;
+    }
+    w = 0;
+    while w < n + 1 {
+        out[w] = w as F;
+        w = w + 1;
+    }
+
+    // RACE: reads out[i+1], a cell written by iteration i+1
+    for i in 0..n {
+        out[i] = out[i + 1] + a[i];
+    }
+
+    let mut s: F = 0;
+    w = 0;
+    while w < 8 {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

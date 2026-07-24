@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// builtin_shadow.tv — regression: a user fn whose name collides with a name-based
+// builtin (advance / eval / signed) SHADOWS the builtin at every call site.
+// @internal-design: examples (builtin_shadow).
+
+fn advance() -> i32 {
+    return 7;
+}
+
+fn eval(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn signed(x: i32) -> i32 {
+    return x - 100;
+}
+
+#[export]
+fn main() -> i32 {
+    print(advance());        // user advance -> 7
+    print(eval(3, 4));       // user eval    -> 7
+    print(signed(150));      // user signed  -> 50
+    return 0;
+}

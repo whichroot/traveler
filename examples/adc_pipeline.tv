@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// adc_pipeline.tv — raw stdin bytes as Field<251> ADC samples: Newton forward
+// differences (compress), forward summation (reconstruct); no floats anywhere.
+// @internal-design: examples (adc_pipeline).
+//
+// Usage:
+//   printf '\x0A\x0E\x14\x1C\x26\x32' | ./adc_pipeline
+//
+// Input: 6 bytes representing f(t) = 10 + 4t + t(t-1) evaluated at t=0..5
+//   f(0)=10, f(1)=14, f(2)=20, f(3)=28, f(4)=38, f(5)=50
+//
+// Expected output:
+//   Newton coefficients: 10 4 2
+//   Reconstructed: 10 14 20 28 38 50
+
+type F = Field<251>;
+
+fn main() {
+    // Read raw ADC bytes from stdin — these ARE the integer samples
+    // No float conversion. No quantization. Direct field elements.
+    var buf: [u8; 16] = 0;
+    read_bytes(0, buf, 6);
+
+    // Interpret raw bytes as field elements (strict modulation: urem by 251)
+    let v0: F = buf[0];
+    let v1: F = buf[1];
+    let v2: F = buf[2];
+    let v3: F = buf[3];
+    let v4: F = buf[4];
+    let v5: F = buf[5];
+
+    // --- ANALYZE: Newton forward differences ---
+    // Level 0: raw values
+    // Level 1: first differences (Delta f)
+    let d1_0: F = v1 - v0;     // f(1) - f(0)
+    let d1_1: F = v2 - v1;     // f(2) - f(1)
+    let d1_2: F = v3 - v2;
+    let d1_3: F = v4 - v3;
+    let d1_4: F = v5 - v4;
+
+    // Level 2: second differences (Delta^2 f)
+    let d2_0: F = d1_1 - d1_0;
+    let d2_1: F = d1_2 - d1_1;
+    let d2_2: F = d1_3 - d1_2;
+    let d2_3: F = d1_4 - d1_3;
+
+    // Level 3: third differences (Delta^3 f) — should be 0 for degree-2 data
+    let d3_0: F = d2_1 - d2_0;
+
+    // Newton coefficients: N[0] = v0, N[1] = d1_0, N[2] = d2_0 — these 3 values
+    // ARE the compressed form (they encode any number of degree-2 samples).
+    print(v0);     // N[0]
+    print(d1_0);   // N[1]
+    print(d2_0);   // N[2]
+
+    // --- RECONSTRUCT: Forward summation ---
+    // Start with Newton coefficients, recover all original values
+    var r0: F = v0;
+    var r1: F = d1_0;
+    let r2: F = d2_0;
+
+    // f(0) = r0
+    print(r0);
+
+    // f(1)
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+    print(r0);
+
+    // f(2)
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+    print(r0);
+
+    // f(3)
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+    print(r0);
+
+    // f(4)
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+    print(r0);
+
+    // f(5)
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+    print(r0);
+}

@@ -1,0 +1,274 @@
+
+
+#
+#
+#
+#     (gated in tests/dynfield/run.sh for its error output).
+#     (u8->i32 on `c = buf[p]`; gated by assign_widen.tv). It still does not
+#     `advance` was misrouted into the register builtin -> "unhandled node kind
+#     10"; gated by builtin_shadow.tv) and implicit widening on plain assignment
+#     compile: it calls `print("string literal")`, but `print` formats integers/
+#     correctness bug). Add back if/when string printing lands.
+#     exposed are now FIXED: the name-based-builtin hijack (a zero-arg user
+#     field elements only (a feature gap — string printing — not a codegen
+#   examples/mini_parser.tv — ungated aspirational demo. Two codegen defects it
+#   examples/trait_bound_violation.tv — NEGATIVE diag test, MUST fail to compile
+# (every example that compiles standalone under stage1) + the standalone lib
+# (re-bless with --update) vs. "this was supposed to be output-neutral" (a bug).
+# ===================== examples/ (full compiling tree) =====================
+# ===================== standalone library kernels =====================
+# A change to tvc_self that alters emitted IR for any of these will flip its hash;
+# against tests/codegen_diff/golden.txt. One path per line (relative to repo
+# BREADTH (W6, 2026-07-02): the corpus is the WHOLE compiling examples tree
+# Codegen-diff corpus — .tv sources whose emitted LLVM IR is hashed and gated
+# deterministic (same input -> byte-identical IR), so the hash manifest is sound.
+# EXCLUSIONS (compile standalone under stage1 is the membership test):
+# kernels — not a curated subset. Every new example strengthens the golden; the
+# per-landing re-bless diff IS the codegen review artifact. Emitted IR is
+# root); blank lines and #-comments ignored.
+# The big lib files that compile standalone (import manifests + leaf modules).
+# the gate then forces a conscious "yes, this change was meant to alter codegen"
+# The point (IR-graph Stage 0): catch UNINTENDED codegen drift on real programs.
+# This is the process-replay idea (borrowed from tinygrad) without an IR yet.
+examples/adc_pipeline.tv
+examples/address_of.tv
+examples/aes_sbox.tv
+examples/algebraic_loops.tv
+examples/alloc_ptr_table.tv
+examples/assign_widen.tv
+examples/barrett_test.tv
+examples/binfield_basics.tv
+examples/binfield_newton.tv
+examples/binfield_wide_basics.tv
+examples/bitwise_ops.tv
+examples/builtin_shadow.tv
+examples/cascade_shape.tv
+examples/closure_basics.tv
+examples/closure_eval.tv
+examples/closure_prove_through.tv
+examples/compare_let.tv
+examples/const_generic.tv
+examples/convergence_test.tv
+examples/dp_test.tv
+examples/dyn_fri_test.tv
+examples/dyn_kernel_test.tv
+examples/dyn_merkle_test.tv
+examples/dyn_mul_boundary_test.tv
+examples/dyn_nested_test.tv
+examples/dyn_ntt_test.tv
+examples/dyn_poseidon2_test.tv
+examples/dyn_regime_proof_test.tv
+examples/dyn_register_test.tv
+examples/dynfield_spike.tv
+examples/edge_cases.tv
+examples/embed_roundtrip_test.tv
+examples/enum_basics.tv
+examples/export_test.tv
+examples/extern_fn.tv
+examples/extfield_basics.tv
+examples/extfield_edge.tv
+examples/extfield_goldilocks.tv
+examples/extfield_runtime.tv
+examples/field_basics.tv
+examples/file_reader.tv
+examples/fn_pointer_fence.tv
+examples/fn_pointer.tv
+examples/fri_highdeg_test.tv
+examples/fri_test.tv
+examples/frobenius_rmt.tv
+examples/generic_enum.tv
+examples/generic_export.tv
+examples/generic_extfield.tv
+examples/generic_kernel.tv
+examples/generic_multi.tv
+examples/generic_struct.tv
+examples/generic_test.tv
+examples/genus_adaptive_certify.tv
+examples/genus_alias_test.tv
+examples/genus_blend_test.tv
+examples/genus_certify.tv
+examples/genus_classify_test.tv
+examples/genus_edge_test.tv
+examples/genus_global_certify.tv
+examples/genus_invariance_test.tv
+examples/genus_probe_test.tv
+examples/genus_profile_certify.tv
+examples/genus_soft_test.tv
+examples/genus_wav.tv
+examples/glyph_convergence_test.tv
+examples/grain_lfsr_test.tv
+examples/grain_poseidon2_test.tv
+examples/hashmap_test.tv
+examples/ieee_decode_test.tv
+examples/import_test.tv
+examples/import_vec_test.tv
+examples/int_match.tv
+examples/intern_stress.tv
+examples/ir_emitter.tv
+examples/lnbounds_selftest.tv
+examples/mds_check_test.tv
+examples/mds_live_test.tv
+examples/merkle_test.tv
+examples/method_basics.tv
+examples/mini_lexer.tv
+examples/mnist_classify.tv
+examples/mnist_genus_census.tv
+examples/mnist_genus_classifier.tv
+examples/mnist_multiview_census.tv
+examples/mnist_persistence.tv
+examples/mnist_register.tv
+examples/mnist_relational_census.tv
+examples/mnist_topology.tv
+examples/mnist_turning_census.tv
+examples/mobius_coset.tv
+examples/mobius_cutoff.tv
+examples/mobius_extremal.tv
+examples/mobius_local.tv
+examples/mobius_partner.tv
+examples/mobius_profile.tv
+examples/mobius_signed.tv
+examples/multiview_test.tv
+examples/neuron_read_test.tv
+examples/nt_bm_carriers.tv
+examples/nt_linalg.tv
+examples/nt_polyfield.tv
+examples/nt_radical.tv
+examples/ntt_link_test.tv
+examples/ntt_roots_test.tv
+examples/ntt_test.tv
+examples/observe_learn_audio.tv
+examples/observe_learn_gate.tv
+examples/observe_lossy_audio.tv
+examples/observe_lossy_gate.tv
+examples/observe_onset.tv
+examples/observe_satotate.tv
+examples/observe_stereo_probe.tv
+examples/observe_transfer_probe.tv
+examples/observe_wire_audio.tv
+examples/observe_wire_gate.tv
+examples/operator_overload.tv
+examples/optical_compressor_test.tv
+examples/pc_golden.tv
+examples/pfor_purity_test.tv
+examples/piecewise_continuation_test.tv
+examples/plonk_dyn_test.tv
+examples/plonk_test.tv
+examples/pointer_basics.tv
+examples/pointer_index.tv
+examples/poly_classify.tv
+examples/poly_core_generic_test.tv
+examples/poly_core_test.tv
+examples/poly_discrim.tv
+examples/poseidon2_babybear_test.tv
+examples/poseidon2_test.tv
+examples/poseidon2_wide_test.tv
+examples/predict_decide.tv
+examples/reed_solomon_test.tv
+examples/regime_2d_test.tv
+examples/regime_basics.tv
+examples/regime_fri_test.tv
+examples/regime_fri_zk_test.tv
+examples/regime_intersect_test.tv
+examples/regime_invariance_test.tv
+examples/regime_mnist_zk_test.tv
+examples/regime_topology_test.tv
+examples/regime_wav_zk_test.tv
+examples/register_basics.tv
+examples/relational_test.tv
+examples/repr_tracking_65521.tv
+examples/repr_tracking.tv
+examples/rns_dyn_matmul.tv
+examples/rs_error_decode_test.tv
+examples/rs16_errdec_test.tv
+examples/runtime_circuit_test.tv
+examples/satotate_cm_eisenstein.tv
+examples/satotate_cm_gauss.tv
+examples/satotate_horizontal.tv
+examples/satotate_vertical.tv
+examples/segment_test.tv
+examples/self_host_test.tv
+examples/short_circuit.tv
+examples/simd_bench.tv
+examples/str_compare.tv
+examples/string_basics.tv
+examples/string_test.tv
+examples/struct_basics.tv
+examples/trait_dispatch.tv
+examples/trait_impl.tv
+examples/turning_test.tv
+examples/tvc_lexer.tv
+examples/two_fields.tv
+examples/vec_export_test.tv
+examples/vec_test.tv
+examples/verify_basics.tv
+examples/wav_analyze.tv
+examples/wav_compress.tv
+examples/wav_reverse.tv
+examples/weil_recover_ec.tv
+examples/weil_recover_rns.tv
+examples/weil_zeta_ec.tv
+examples/weil_zeta_g2.tv
+examples/weil_zeta_line.tv
+examples/wide_acc_matmul.tv
+examples/wide_field_test.tv
+examples/wide_fri_test.tv
+examples/wide_i128_add.tv
+examples/wide_i256_add.tv
+examples/wide_literal.tv
+examples/wide_merkle_test.tv
+examples/wide_ntt_test.tv
+examples/wide_plonk_test.tv
+examples/wide_poseidon2_test.tv
+examples/wide_print.tv
+examples/wideint_selftest.tv
+examples/zeta_classical_edge.tv
+examples/zk_cubic_dyn_test.tv
+examples/zk_cubic_test.tv
+examples/zk_describe_test.tv
+examples/zk_forward_sum_dyn_test.tv
+examples/zk_forward_sum_test.tv
+examples/zk_if_dyn_test.tv
+examples/zk_if_test_driver.tv
+examples/zk_if_test.tv
+examples/zk_loop_dyn_test.tv
+examples/zk_loop_test_driver.tv
+examples/zk_loop_test.tv
+examples/zk_range_test.tv
+src/lib/codec/piecewise_codec.tv
+src/lib/core/poly_core.tv
+src/lib/crypto/ntt.tv
+src/lib/ecc/reed_solomon.tv
+src/lib/ecc/rs_errdec.tv
+src/lib/float/embed.tv
+src/lib/float/ieee.tv
+examples/mobius_coeff.tv
+examples/syntax_var.tv
+examples/syntax_type.tv
+examples/syntax_print.tv
+examples/syntax_shadow.tv
+examples/syntax_compound.tv
+examples/enum_match_nested.tv
+examples/match_nested_scalar.tv
+examples/result_basics.tv
+examples/qmark_basics.tv
+examples/fs_basics.tv
+examples/lab_emit.tv
+examples/lab_request.tv
+examples/lab_experiment.tv
+examples/net_loopback.tv
+examples/net_zk_serve.tv
+examples/time_basics.tv
+examples/time_deltas.tv
+examples/time_regime.tv
+examples/addr_scalar.tv
+examples/dynfield_eval.tv
+examples/bool_branch.tv
+examples/struct_reassign.tv
+examples/gpu_field_map.tv
+tests/pfor/pfor_global_capture.tv
+examples/perfect_square.tv
+examples/nn_kit_gate.tv
+examples/for_i64_bounds.tv              # 54: bound width adoption (i64/usize/u32 + i64 pfor ABI)
+tests/pfor/pfor_i64_bounds.tv           # 54: i64-bound dispatched loop (__parallel_for_i64)
+examples/i64min_print.tv                # 55: INT64_MIN literal/print (wr_int/fmt_i64 magnitude fix)
+examples/wide_literal_casts.tv          # 56: text-wide literals via let-annotation + completed as-cast rule

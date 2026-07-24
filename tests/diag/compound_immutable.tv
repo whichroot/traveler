@@ -1,0 +1,9 @@
+// Negative: a compound assignment `x += e` desugars to `x = x + e`, so it hits
+// the SAME immutability check as a plain assignment — an immutable `let` binding
+// is refused (declare with `var`/`let mut`). This proves the desugar flows
+// through strict-`let` for free. plan-syntax-modernization Phase 1.
+fn main() -> i32 {
+    let total: i32 = 0;
+    total += 5;
+    return total;
+}

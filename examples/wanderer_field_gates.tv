@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wanderer_field_gates.tv — regression gates for the Wanderer-customer bugs
+// (#37-#41): each golden pins the correct result (was silent-wrong or llc-loud).
+// tvc_self-only, NOT dual parity (the frozen seed still exhibits several).
+// @internal-note: plan-wanderer-customer-bugs.
+field M61 = Field<2305843009213693951>;   // 2^61 - 1 (in the Barrett broken band)
+field F = Field<251>;
+
+fn main() {
+    // Bug 1 — Barrett constant overflow: multiplication over a prime in
+    // 2^32 < p < 2^64 - 2^32 used a closed form that wrapped u64. -> garbage.
+    let a: M61 = 988218432520726550;
+    let b: M61 = 1048110458733497262;
+    print(a * b);            // 2186058956793612546  (was > p: pure garbage)
+
+    // Bug 2 — operand-order literal coercion: a bare integer literal on the
+    // LEFT of a field binop degraded the whole expression to integer arithmetic.
+    let x: F = 200;
+    print(2 * x);            // 149  (was 400: unreduced integer multiply)
+    print(1 / x);            // 187  (was 0:   integer divide, not field inverse)
+    print(x * 2);            // 149  (right operand always worked)
+
+    // Bug 3 — casts do not reduce (spec §5.9): a runtime integer >= p passed
+    // straight through / truncated instead of reducing mod p.
+    let k: i64 = 4611686018427387904;    // 2^62
+    print(k as M61);         // 2   (was 4611686018427387904: unreduced)
+    let big: i64 = 300;
+    print(big as F);         // 49  (was 44: i64->i8 truncation, not 300 mod 251)
+
+    // Bug 6 — pow exponent width: `**` fed a 64-bit field's pow() an i32 literal
+    // exponent where the signature wants i64 -> llc type error.
+    let c: M61 = 7;
+    print(c ** 60);          // 1345914031581363310
+
+    // Bug 5 — bare `return;` in main emitted `ret void` into `define i32 @main()`.
+    return;
+}

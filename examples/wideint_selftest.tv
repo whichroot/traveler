@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wideint_selftest.tv — validate the 31-bit-limb wide primitives three ways: pow-2
+// identities (high limbs), i64 reconstruction, mod-9 checksum past i64 (2.5e19).
+// @internal-design: mobius-inclusion (sec 2)
+// Expected output: 0 1 -1 1 7 1 4.
+
+import "../src/lib/util/wideint.tv";
+
+fn main() -> i32 {
+    let B: i64 = 2147483648;
+    let nl: i32 = 8;
+    let x: *i64 = alloc(nl);
+    let y: *i64 = alloc(nl);
+    let p: *i64 = alloc(nl);
+    let q: *i64 = alloc(nl);
+
+    // t1: 2^61 * 2^61 == 2^122  (exact, high limbs)
+    w_set_pow2(x, nl, 61);
+    w_mul(x, x, p, nl);
+    w_set_pow2(q, nl, 122);
+    print(w_cmp(p, q, nl));                 // 0
+
+    // t2: 2^122 > 2^61 * 2^60
+    w_set_pow2(x, nl, 61);
+    w_set_pow2(y, nl, 60);
+    w_mul(x, y, p, nl);
+    w_set_pow2(q, nl, 122);
+    print(w_cmp(q, p, nl));                 // 1
+
+    // t3: 2^122 < 2^62 * 2^61
+    w_set_pow2(x, nl, 62);
+    w_set_pow2(y, nl, 61);
+    w_mul(x, y, p, nl);
+    w_set_pow2(q, nl, 122);
+    print(w_cmp(q, p, nl));                 // -1
+
+    // t4: product fits i64 (9.45e12) -> exact reconstruction vs native
+    w_set_i64(x, nl, 1234567);
+    w_set_i64(y, nl, 7654321);
+    w_mul(x, y, p, nl);
+    let recon4: i64 = p[0] + p[1] * B;
+    var ok4: i32 = 0;
+    if recon4 == 1234567 * 7654321 { ok4 = 1; }
+    print(ok4);                             // 1
+
+    // t5: product 2.5e19 OVERFLOWS i64 -> checked mod 9 (5e9 mod9 = 5; 5^2 mod9 = 7)
+    w_set_i64(x, nl, 5000000000);
+    w_mul(x, x, p, nl);
+    print(w_mod_small(p, nl, 9) as i32);    // 7
+
+    // t6: product 1.52e16 (< 2^62) -> exact reconstruction + mod-9 cross (7^2 mod9 = 4)
+    w_set_i64(x, nl, 123456787);
+    w_mul(x, x, p, nl);
+    let recon6: i64 = p[0] + p[1] * B;
+    var ok6: i32 = 0;
+    if recon6 == 123456787 * 123456787 { ok6 = 1; }
+    print(ok6);                             // 1
+    print(w_mod_small(p, nl, 9) as i32);    // 4
+
+    free(x);
+    free(y);
+    free(p);
+    free(q);
+    return 0;
+}

@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// bool_branch.tv — gate for known-issues #34: a STORED `bool` as an if/while
+// condition, plus the return-path sibling (`-> bool` returning a comparison).
+// @internal-design: examples (bool_branch, #34).
+
+fn is_big(x: i32) -> bool { return x > 10; }   // predicate: comparison -> bool
+
+fn main() -> i32 {
+    // stored bool as an if condition (the #34 case: load i8 then br)
+    var flag: bool = true;
+    if flag { print(1); } else { print(2); }
+
+    // stored bool as a while condition, mutated to exit
+    var run: bool = true;
+    var i: i32 = 0;
+    while run {
+        print(i);
+        i = i + 1;
+        if i == 3 { run = false; }
+    }
+
+    // -> bool predicate consumed directly (the return-path sibling)
+    if is_big(50) { print(100); } else { print(200); }
+    if is_big(4)  { print(100); } else { print(200); }
+
+    // -> bool result stored, then used as a stored-bool condition
+    var t: bool = is_big(99);
+    if t { print(7); }
+
+    return 0;
+}

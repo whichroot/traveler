@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poly_classify.tv — polynomial discriminant classification over Z/65521Z:
+// per-class Newton polynomials evaluated by forward summation, argmax score.
+// Thesis + MNIST numbers: @internal-design: examples (poly_classify).
+
+type F = Field<65521>;
+
+// Forward summation: evaluate a degree-4 Newton polynomial at point t — the
+// polycompress decode kernel repurposed; O(d) additions, no mul overflow.
+fn eval_poly4(c0: F, c1: F, c2: F, c3: F, c4: F, t: i32) -> F {
+    var r0: F = c0;
+    var r1: F = c1;
+    var r2: F = c2;
+    var r3: F = c3;
+    var r4: F = c4;
+
+    // Forward summation: each step adds registers upward
+    // After t steps, r0 = polynomial evaluated at point t
+    for i in 0..t {
+        r0 = r0 + r1;
+        r1 = r1 + r2;
+        r2 = r2 + r3;
+        r3 = r3 + r4;
+    }
+    return r0;
+}
+
+// Simplified classifier: 2 classes, 4 features (row sums of a 4-row image).
+//
+// Class 0: "horizontal bar" — row 1 has high density, others low
+//   Histogram for row 0: f(0)=4, f(1)=0, f(2)=0, f(3)=0, f(4)=0
+//   Histogram for row 1: f(0)=0, f(1)=0, f(2)=0, f(3)=0, f(4)=4
+//   Histogram for row 2: f(0)=4, f(1)=0, f(2)=0, f(3)=0, f(4)=0
+//   Histogram for row 3: f(0)=4, f(1)=0, f(2)=0, f(3)=0, f(4)=0
+//
+// Class 1: "vertical bar" — each row has exactly 1 pixel on
+//   Histogram for all rows: f(0)=0, f(1)=4, f(2)=0, f(3)=0, f(4)=0
+//
+// Newton coefficients (computed by analyze/Newton forward differences):
+//   Class 0 row 0: [4, 65517, 4, 65517, 4]  (65517 = -4 mod 65521)
+//   Class 0 row 1: [0, 0, 0, 0, 4]          (only degree-4 term nonzero — sparse!)
+//   Class 1 all:   [0, 4, 65513, 12, 65505]  (65513 = -8, 65505 = -16 mod 65521)
+
+fn class0_row0(v: i32) -> F {
+    return eval_poly4(4, 65517, 4, 65517, 4, v);
+}
+
+fn class0_row1(v: i32) -> F {
+    return eval_poly4(0, 0, 0, 0, 4, v);
+}
+
+fn class0_row23(v: i32) -> F {
+    return eval_poly4(4, 65517, 4, 65517, 4, v);
+}
+
+fn class1_anyrow(v: i32) -> F {
+    return eval_poly4(0, 4, 65513, 12, 65505, v);
+}
+
+fn main() {
+    // Test input: a horizontal bar in row 1
+    // Row sums: [0, 4, 0, 0]
+    let r0: i32 = 0;  // row 0 sum = 0
+    let r1: i32 = 4;  // row 1 sum = 4 (all pixels on)
+    let r2: i32 = 0;  // row 2 sum = 0
+    let r3: i32 = 0;  // row 3 sum = 0
+
+    // Evaluate class 0 polynomial at each feature value
+    let s0_r0: F = class0_row0(r0);    // f(0) = 4
+    let s0_r1: F = class0_row1(r1);    // f(4) = 4
+    let s0_r2: F = class0_row23(r2);   // f(0) = 4
+    let s0_r3: F = class0_row23(r3);   // f(0) = 4
+
+    // Score = sum of polynomial evaluations (bounded: 4 * max_eval)
+    let score0: F = s0_r0 + s0_r1 + s0_r2 + s0_r3;
+
+    // Evaluate class 1 polynomial at each feature value
+    let s1_r0: F = class1_anyrow(r0);  // f(0) = 0
+    let s1_r1: F = class1_anyrow(r1);  // f(4) = 0
+    let s1_r2: F = class1_anyrow(r2);  // f(0) = 0
+    let s1_r3: F = class1_anyrow(r3);  // f(0) = 0
+
+    let score1: F = s1_r0 + s1_r1 + s1_r2 + s1_r3;
+
+    // Print scores
+    print(score0);  // Should be 16 (4+4+4+4) — high for class 0
+    print(score1);  // Should be 0 (0+0+0+0) — low for class 1
+
+    // Classification: argmax
+    if score0 > score1 {
+        print(0);  // Predicted: class 0 (horizontal bar) ✓
+    } else {
+        print(1);  // Predicted: class 1 (vertical bar)
+    }
+
+    // Now test with a vertical bar: row sums [1, 1, 1, 1]
+    let v0: i32 = 1;
+    let v1: i32 = 1;
+    let v2: i32 = 1;
+    let v3: i32 = 1;
+
+    let vs0: F = class0_row0(v0) + class0_row1(v1) + class0_row23(v2) + class0_row23(v3);
+    let vs1: F = class1_anyrow(v0) + class1_anyrow(v1) + class1_anyrow(v2) + class1_anyrow(v3);
+
+    print(vs0);  // Should be 0 (0+0+0+0) — low for class 0
+    print(vs1);  // Should be 16 (4+4+4+4) — high for class 1
+
+    if vs0 > vs1 {
+        print(0);
+    } else {
+        print(1);  // Predicted: class 1 (vertical bar) ✓
+    }
+}

@@ -1,0 +1,245 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mini_lexer.tv — a minimal lexer written in Traveler: the first self-hosting
+// proof — tvc.c's lexer algorithm, written in the language it compiles.
+//
+// Usage: ./mini_lexer <input.tv>
+// Expected output for test input "let x: i32 = 42;":
+//   KW_LET
+//   ID x
+//   COLON
+//   ID i32
+//   ASSIGN
+//   INT 42
+//   SEMI
+//   EOF
+
+extern "C" fn fopen(path: *u8, mode: *u8) -> *u8;
+extern "C" fn fread(buf: *u8, size: i32, count: i32, file: *u8) -> i32;
+extern "C" fn fclose(file: *u8) -> i32;
+extern "C" fn putchar(c: i32) -> i32;
+extern "C" fn strcmp(a: *u8, b: *u8) -> i32;
+
+// Token kinds
+// 0=EOF 1=INT 2=IDENT 3=KW_LET 4=KW_FN 5=KW_IF 6=KW_ELSE
+// 7=KW_FOR 8=KW_WHILE 9=KW_RETURN 10=KW_FIELD
+// 20=LPAREN 21=RPAREN 22=LBRACE 23=RBRACE 24=SEMI 25=COLON
+// 26=COMMA 27=ASSIGN 28=PLUS 29=MINUS 30=STAR 31=SLASH
+// 32=LT 33=GT 34=DOT 35=ARROW
+
+struct Token {
+    kind: i32,
+    start: i32,
+    len: i32,
+}
+
+fn is_alpha(c: i32) -> i32 {
+    if c >= 'a' && c <= 'z' { return 1; }
+    if c >= 'A' && c <= 'Z' { return 1; }
+    if c == '_' { return 1; }
+    return 0;
+}
+
+fn is_digit(c: i32) -> i32 {
+    if c >= '0' && c <= '9' { return 1; }
+    return 0;
+}
+
+fn is_space(c: i32) -> i32 {
+    if c == ' ' { return 1; }
+    if c == '\n' { return 1; }
+    if c == '\t' { return 1; }
+    if c == '\r' { return 1; }
+    return 0;
+}
+
+// Print a slice of the source buffer
+fn print_slice(buf: *u8, start: i32, len: i32) {
+    var i: i32 = 0;
+    while i < len {
+        putchar(buf[start + i]);
+        i = i + 1;
+    }
+}
+
+// Check if a slice matches a keyword
+fn slice_eq(buf: *u8, start: i32, len: i32, kw: *u8, kwlen: i32) -> i32 {
+    if len != kwlen { return 0; }
+    var i: i32 = 0;
+    while i < len {
+        let a: i32 = buf[start + i];
+        let b: i32 = kw[i];
+        if a != b { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Print a label followed by a newline
+fn print_label(s: *u8) {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        putchar(s[i]);
+        i = i + 1;
+    }
+    putchar('\n');
+}
+
+fn print_token(buf: *u8, tok: *Token) {
+    let k: i32 = tok.kind;
+    if k == 0 { print_label("EOF"); return; }
+    if k == 1 {
+        // INT <value>  — inline on one line
+        putchar('I'); putchar('N'); putchar('T'); putchar(' ');
+        print_slice(buf, tok.start, tok.len);
+        putchar('\n');
+        return;
+    }
+    if k == 2 {
+        // IDENT <name>
+        putchar('I'); putchar('D'); putchar(' ');
+        print_slice(buf, tok.start, tok.len);
+        putchar('\n');
+        return;
+    }
+    if k == 3  { print_label("KW_LET"); return; }
+    if k == 4  { print_label("KW_FN"); return; }
+    if k == 5  { print_label("KW_IF"); return; }
+    if k == 6  { print_label("KW_ELSE"); return; }
+    if k == 7  { print_label("KW_FOR"); return; }
+    if k == 8  { print_label("KW_WHILE"); return; }
+    if k == 9  { print_label("KW_RETURN"); return; }
+    if k == 10 { print_label("KW_FIELD"); return; }
+    if k == 20 { print_label("LPAREN"); return; }
+    if k == 21 { print_label("RPAREN"); return; }
+    if k == 22 { print_label("LBRACE"); return; }
+    if k == 23 { print_label("RBRACE"); return; }
+    if k == 24 { print_label("SEMI"); return; }
+    if k == 25 { print_label("COLON"); return; }
+    if k == 26 { print_label("COMMA"); return; }
+    if k == 27 { print_label("ASSIGN"); return; }
+    if k == 28 { print_label("PLUS"); return; }
+    if k == 29 { print_label("MINUS"); return; }
+    if k == 30 { print_label("STAR"); return; }
+    if k == 31 { print_label("SLASH"); return; }
+    if k == 32 { print_label("LT"); return; }
+    if k == 33 { print_label("GT"); return; }
+    if k == 34 { print_label("DOT"); return; }
+    print_label("UNKNOWN");
+}
+
+fn lex_next(buf: *u8, len: i32, pos: *i32) -> *Token {
+    let tok: *Token = alloc(1);
+    tok.kind = 0;
+    tok.start = 0;
+    tok.len = 0;
+
+    // Load current position
+    var p: i32 = pos[0];
+
+    // Skip whitespace
+    while p < len && is_space(buf[p]) == 1 {
+        p = p + 1;
+    }
+
+    // Skip // line comments
+    while p < len - 1 && buf[p] == '/' && buf[p + 1] == '/' {
+        while p < len && buf[p] != '\n' {
+            p = p + 1;
+        }
+        // Skip whitespace after comment
+        while p < len && is_space(buf[p]) == 1 {
+            p = p + 1;
+        }
+    }
+
+    if p >= len || buf[p] == 0 {
+        tok.kind = 0; // EOF
+        pos[0] = p;
+        return tok;
+    }
+
+    let ch: i32 = buf[p];
+
+    // Single-character tokens
+    if ch == '(' { tok.kind = 20; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == ')' { tok.kind = 21; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '{' { tok.kind = 22; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '}' { tok.kind = 23; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == ';' { tok.kind = 24; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == ':' { tok.kind = 25; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == ',' { tok.kind = 26; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '=' { tok.kind = 27; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '+' { tok.kind = 28; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '-' { tok.kind = 29; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '*' { tok.kind = 30; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '<' { tok.kind = 32; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '>' { tok.kind = 33; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+    if ch == '.' { tok.kind = 34; tok.start = p; tok.len = 1; pos[0] = p + 1; return tok; }
+
+    // Integer literal
+    if is_digit(ch) == 1 {
+        let start: i32 = p;
+        while p < len && is_digit(buf[p]) == 1 {
+            p = p + 1;
+        }
+        tok.kind = 1;
+        tok.start = start;
+        tok.len = p - start;
+        pos[0] = p;
+        return tok;
+    }
+
+    // Identifier or keyword
+    if is_alpha(ch) == 1 {
+        let start: i32 = p;
+        while p < len && (is_alpha(buf[p]) == 1 || is_digit(buf[p]) == 1) {
+            p = p + 1;
+        }
+        tok.start = start;
+        tok.len = p - start;
+        pos[0] = p;
+
+        // Check keywords
+        if slice_eq(buf, start, tok.len, "let", 3) == 1    { tok.kind = 3; return tok; }
+        if slice_eq(buf, start, tok.len, "fn", 2) == 1     { tok.kind = 4; return tok; }
+        if slice_eq(buf, start, tok.len, "if", 2) == 1     { tok.kind = 5; return tok; }
+        if slice_eq(buf, start, tok.len, "else", 4) == 1   { tok.kind = 6; return tok; }
+        if slice_eq(buf, start, tok.len, "for", 3) == 1    { tok.kind = 7; return tok; }
+        if slice_eq(buf, start, tok.len, "while", 5) == 1  { tok.kind = 8; return tok; }
+        if slice_eq(buf, start, tok.len, "return", 6) == 1 { tok.kind = 9; return tok; }
+        if slice_eq(buf, start, tok.len, "field", 5) == 1  { tok.kind = 10; return tok; }
+
+        tok.kind = 2; // IDENT
+        return tok;
+    }
+
+    // Unknown character — skip it
+    tok.kind = 99;
+    tok.start = p;
+    tok.len = 1;
+    pos[0] = p + 1;
+    return tok;
+}
+
+fn main() {
+    // Hardcoded test input (avoids CLI arg parsing for now)
+    let src: *u8 = "let x: i32 = 42;";
+    let len: i32 = 17;
+
+    // Position is stored in a single-element *i32 so lex_next can mutate it
+    let pos: *i32 = alloc(1);
+    pos[0] = 0;
+
+    var done: i32 = 0;
+    while done == 0 {
+        let tok: *Token = lex_next(src, len, pos);
+        print_token(src, tok);
+        if tok.kind == 0 {
+            done = 1;
+        }
+        free(tok);
+    }
+
+    free(pos);
+}

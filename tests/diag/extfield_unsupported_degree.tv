@@ -1,0 +1,9 @@
+// Negative: ExtField<F,D> with D != 2. The backend realizes only the quadratic
+// tower (a + b*i, i^2 = nr); a non-2 degree must be diagnosed at registration.
+field F251 = Field<251>;
+extfield E = ExtField<Field<251>, 3>;
+
+fn main() {
+    let x: E = 5;
+    print(x);
+}

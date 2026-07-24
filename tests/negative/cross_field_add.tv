@@ -1,0 +1,10 @@
+// Negative test: cross-field addition should produce type error
+field F1 = Field<251>;
+field F2 = Field<65521>;
+
+fn main() {
+    let a: F1 = 100;
+    let b: F2 = 200;
+    let c: F1 = a + b;
+    print(c);
+}

@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fs_basics.tv — the fs/ wrap layer end-to-end (systems-interface Tier 0):
+// write/exists/size/read-back/append through `?`, then the Err arm by kind.
+// tvc_self ONLY (imports fs/). Design: @internal-design: fs.
+//
+// Expected output:
+//   6     bytes written ("hi fs\n")
+//   1     the file exists
+//   6     fs_size
+//   6     read-back Str length
+//   104   first byte 'h'
+//   10    last byte '\n'
+//   12    size after append
+//   700   the ? pipeline completed
+//   0     missing path does not exist
+//   404   read of missing path -> Err(OpenFailed)
+
+import "../src/lib/fs/fs.tv";
+
+fn mk_msg() -> Str {
+    var s: Str = str_new();
+    str_push(&s, 104);  // h
+    str_push(&s, 105);  // i
+    str_push(&s, 32);   //
+    str_push(&s, 102);  // f
+    str_push(&s, 115);  // s
+    str_push(&s, 10);   // \n
+    return s;
+}
+
+fn run(path: *u8) -> Result<i64, FsError> {
+    var s: Str = mk_msg();
+    let w: i64 = fs_write_string(path, &s)?;
+    print(w);
+    print(fs_exists(path));
+    print(fs_size(path)?);
+    let t: Str = fs_read_to_string(path)?;
+    print(str_len(&t) as i32);
+    print(str_byte(&t, 0) as i32);
+    print(str_byte(&t, 5) as i32);
+    fs_append_string(path, &s)?;
+    print(fs_size(path)?);
+    str_free(&t);
+    str_free(&s);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run("/tmp/traveler_fs_basics.txt") {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    print(fs_exists("/tmp/traveler_fs_basics_missing.txt"));
+    match fs_read_to_string("/tmp/traveler_fs_basics_missing.txt") {
+        Result::Ok(t2) => { print(0 - 2); }
+        Result::Err(e) => {
+            match e {
+                FsError::OpenFailed => { print(404); }
+                FsError::ReadFailed => { print(0 - 3); }
+                FsError::WriteFailed => { print(0 - 4); }
+                FsError::SeekFailed => { print(0 - 5); }
+                FsError::CloseFailed => { print(0 - 6); }
+                FsError::RenameFailed => { print(0 - 7); }
+                FsError::MkdirFailed => { print(0 - 8); }
+            }
+        }
+    }
+    return 0;
+}

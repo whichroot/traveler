@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// optical_compressor_test.tv — standalone driver for
+// src/lib/dsp/optical_compressor.tv (two-file link).
+// @internal-design: dsp
+//
+// Build:
+//   tvc src/lib/dsp/optical_compressor.tv -o /tmp/optcomp_core.ll
+//   tvc examples/optical_compressor_test.tv -o /tmp/optcomp_test.ll
+//   llc -O2 -filetype=obj /tmp/optcomp_core.ll -o /tmp/optcomp_core.o
+//   llc -O2 -filetype=obj /tmp/optcomp_test.ll -o /tmp/optcomp_test.o
+//   clang /tmp/optcomp_core.o /tmp/optcomp_test.o -o /tmp/optcomp_test
+//
+// Expected: compressor reduces loud signal, passes quiet signal,
+// gain reduction visible in output values.
+
+extern "C" fn optcomp_init(state: *i32, sample_rate: i32);
+extern "C" fn optcomp_process(state: *i32, input: *i32, output: *i32, n: i32);
+extern "C" fn optcomp_set_peak_reduction(state: *i32, value: i32);
+extern "C" fn optcomp_set_gain(state: *i32, value: i32);
+extern "C" fn optcomp_set_mode(state: *i32, mode: i32);
+extern "C" fn optcomp_get_gr(state: *i32) -> i32;
+extern "C" fn malloc(n: usize) -> *u8;
+extern "C" fn free(p: *u8);
+
+fn main() {
+    // Allocate state (64 * 4 = 256 bytes)
+    let state: *i32 = malloc(256) as *i32;
+    optcomp_init(state, 44100);
+
+    // Set moderate compression: peak_reduction=700 (70%), gain=500 (unity, knob at 50)
+    optcomp_set_peak_reduction(state, 700);
+    optcomp_set_gain(state, 500);
+    optcomp_set_mode(state, 0);  // compress mode
+
+    // ---- Test 1: Silence (32768 = zero crossing) ----
+    // 64 samples of silence should pass through unchanged
+    let input: *i32 = malloc(256 * 4) as *i32;
+    let output: *i32 = malloc(256 * 4) as *i32;
+
+    var i: i32 = 0;
+    while i < 64 {
+        input[i] = 32768;  // silence
+        i = i + 1;
+    }
+
+    optcomp_process(state, input, output, 64);
+
+    // Output should be ~32768 (silence through, no compression)
+    print(output[0]);    // expect ~32768
+    print(output[63]);   // expect ~32768
+    let gr1: i32 = optcomp_get_gr(state);
+    print(gr1);          // expect 0 (no gain reduction on silence)
+
+    // ---- Test 2: Loud signal (step up) ----
+    // 256 samples of loud signal: value 60000 (well above center)
+    // Absolute level = 60000 - 32768 = 27232 (loud)
+    i = 0;
+    while i < 256 {
+        input[i] = 60000;
+        i = i + 1;
+    }
+
+    optcomp_process(state, input, output, 256);
+
+    // Output should be compressed — lower than 60000
+    print(output[0]);    // first sample: little compression yet
+    print(output[127]);  // mid: compression building
+    print(output[255]);  // end: near steady-state compression
+    let gr2: i32 = optcomp_get_gr(state);
+    print(gr2);          // expect > 0 (gain reduction active)
+
+    // ---- Test 3: Signal drops → release ----
+    // 256 samples of moderate signal
+    i = 0;
+    while i < 256 {
+        input[i] = 40000;  // moderate (abs = 7232)
+        i = i + 1;
+    }
+
+    optcomp_process(state, input, output, 256);
+    let gr3: i32 = optcomp_get_gr(state);
+    print(gr3);          // expect: less GR than test 2 (releasing)
+
+    // ---- Test 4: Back to silence → full release ----
+    i = 0;
+    while i < 256 {
+        input[i] = 32768;
+        i = i + 1;
+    }
+
+    // Process several blocks to allow release
+    var blk: i32 = 0;
+    while blk < 20 {
+        optcomp_process(state, input, output, 256);
+        blk = blk + 1;
+    }
+    let gr4: i32 = optcomp_get_gr(state);
+    print(gr4);          // expect: ~0 (fully released)
+
+    // ---- Test 5: Limit mode ----
+    optcomp_set_mode(state, 1);  // limit
+    optcomp_set_peak_reduction(state, 700);
+
+    i = 0;
+    while i < 256 {
+        input[i] = 60000;
+        i = i + 1;
+    }
+
+    optcomp_process(state, input, output, 256);
+    let gr5: i32 = optcomp_get_gr(state);
+    print(gr5);          // expect: higher GR than compress mode
+
+    // Print summary marker
+    print(999);
+
+    free(state as *u8);
+    free(input as *u8);
+    free(output as *u8);
+}

@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ieee.tv — dyadic-reduction decoder (no main): finite IEEE-754 float ->
+// (sign, M, E), value = (-1)^sign * M * 2^E, integer shifts/masks only (no FPU).
+// Layouts: f64 1|11|52 bias1023, f32 1|8|23 bias127, bf16 1|8|7 bias127.
+// Class codes: 0=zero 1=normal 2=subnormal 3=inf 4=nan (3/4: no field image).
+// @internal-design: float
+
+// ===== f32 — the GPT-2 path (every GPT-2 tensor is F32) =====
+// bits: the 32-bit pattern in the low bits of an i64 (always non-negative).
+// Returns class code; writes (sign in {0,1}, M >= 0, E) for finite classes.
+#[export]
+fn f32_decode(bits: i64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32 {
+    let sign: i64 = (bits >> 31) & 1;
+    let exp:  i64 = (bits >> 23) & 255;        // 0xFF
+    let mant: i64 = bits & 8388607;            // 0x7FFFFF, 23 bits
+
+    out_sign[0] = sign;
+
+    if exp == 0 {
+        if mant == 0 {
+            out_M[0] = 0;
+            out_E[0] = 0;
+            return 0;                          // zero
+        }
+        // subnormal: value = mant * 2^(1 - 127 - 23) = mant * 2^-149
+        out_M[0] = mant;
+        out_E[0] = 0 - 149;
+        return 2;
+    }
+
+    if exp == 255 {
+        out_M[0] = 0;
+        out_E[0] = 0;
+        if mant == 0 { return 3; }             // +/- infinity
+        return 4;                              // NaN
+    }
+
+    // normal: value = (2^23 + mant) * 2^(exp - 127 - 23)
+    out_M[0] = 8388608 + mant;                 // 2^23 + mant, the implicit 1
+    out_E[0] = exp - 150;                      // exp - 127 - 23
+    return 1;
+}
+
+// ===== bf16 — truncated f32 (7-bit mantissa, same 8-bit exponent) =====
+// bits: the 16-bit pattern in the low bits of an i64.
+#[export]
+fn bf16_decode(bits: i64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32 {
+    let sign: i64 = (bits >> 15) & 1;
+    let exp:  i64 = (bits >> 7) & 255;         // 8-bit exponent
+    let mant: i64 = bits & 127;                // 0x7F, 7 bits
+
+    out_sign[0] = sign;
+
+    if exp == 0 {
+        if mant == 0 {
+            out_M[0] = 0;
+            out_E[0] = 0;
+            return 0;
+        }
+        // subnormal: mant * 2^(1 - 127 - 7) = mant * 2^-133
+        out_M[0] = mant;
+        out_E[0] = 0 - 133;
+        return 2;
+    }
+
+    if exp == 255 {
+        out_M[0] = 0;
+        out_E[0] = 0;
+        if mant == 0 { return 3; }
+        return 4;
+    }
+
+    // normal: (2^7 + mant) * 2^(exp - 127 - 7)
+    out_M[0] = 128 + mant;                     // 2^7 + mant
+    out_E[0] = exp - 134;                      // exp - 127 - 7
+    return 1;
+}
+
+// ===== f64 — full double (52-bit mantissa); u64 container: logical shift =====
+// M = 2^52 + mant fits in i64 (2^53 < 2^63), so the dyadic numerator is exact.
+#[export]
+fn f64_decode(bits: u64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32 {
+    // 52-bit mantissa mask and the implicit 2^52 bit (wide i64 literals, direct).
+    let mant_mask: u64 = 4503599627370495;   // 2^52 - 1 = 0xFFFFFFFFFFFFF
+    let implicit:  i64 = 4503599627370496;   // 2^52
+
+    let sign: u64 = (bits >> 63) & 1;
+    let exp:  u64 = (bits >> 52) & 2047;       // 0x7FF, 11 bits
+    let mant: u64 = bits & mant_mask;          // low 52 bits
+
+    out_sign[0] = sign as i64;
+
+    if exp == 0 {
+        if mant == 0 {
+            out_M[0] = 0;
+            out_E[0] = 0;
+            return 0;
+        }
+        // subnormal: mant * 2^(1 - 1023 - 52) = mant * 2^-1074
+        out_M[0] = mant as i64;
+        out_E[0] = 0 - 1074;
+        return 2;
+    }
+
+    if exp == 2047 {
+        out_M[0] = 0;
+        out_E[0] = 0;
+        if mant == 0 { return 3; }
+        return 4;
+    }
+
+    // normal: (2^52 + mant) * 2^(exp - 1023 - 52)
+    out_M[0] = implicit + (mant as i64);           // 2^52 + mant
+    out_E[0] = (exp as i64) - 1075;                // exp - 1023 - 52
+    return 1;
+}

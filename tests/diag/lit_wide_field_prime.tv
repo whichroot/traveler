@@ -1,0 +1,11 @@
+// #56: Field<2^64+13> silently registered as Field<13> (the prime text
+// wrapped at lex, Miller-Rabin passed on the wrap) — the whole program
+// computed in the WRONG FIELD. Static Field<p> is u64-only; wide primes are
+// the dyn-field surface (field(p) with multi-limb carriers).
+type F = Field<18446744073709551629>;
+
+fn main() -> i32 {
+    let x: F = 5;
+    print(x as i64);
+    return 0;
+}

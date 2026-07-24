@@ -1,0 +1,251 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// weil_zeta_g2.tv — Weil zeta of a genus-2 curve: L(T) (degree 4) recovered from
+// two point counts via Newton's identities; RH region + F_{p^3} cross-check.
+// @internal-design: nt (+ @internal-design: field-domains-boundary L1.4)
+// f(x) = x^5 + x + 1, squarefree (=> genus 2) over p = 5, 11, 13.
+// Per curve (in order): c1, c2, #C(F_p), #C(F_{p^2}), #C(F_{p^3}), rh_flag, n3_flag.
+// @internal-oracle: weil_zeta_g2 (bit-for-bit).
+
+fn mod_pos(x: i32, p: i32) -> i32 {
+    let r: i32 = x % p;
+    if r < 0 { return r + p; }
+    return r;
+}
+
+fn modpow(base: i32, e: i32, p: i32) -> i32 {
+    var r: i32 = 1;
+    var b: i32 = mod_pos(base, p);
+    var ee: i32 = e;
+    while ee > 0 {
+        if (ee % 2) == 1 { r = (r * b) % p; }
+        b = (b * b) % p;
+        ee = ee / 2;
+    }
+    return r;
+}
+
+fn legendre(z: i32, p: i32) -> i32 {
+    let zz: i32 = mod_pos(z, p);
+    if zz == 0 { return 0; }
+    let c: i32 = modpow(zz, (p - 1) / 2, p);
+    if c == 1 { return 1; }
+    return -1;
+}
+
+fn smallest_nonresidue(p: i32) -> i32 {
+    var nr: i32 = 2;
+    while nr < p {
+        if legendre(nr, p) == -1 { return nr; }
+        nr = nr + 1;
+    }
+    return 0;
+}
+
+// #C(F_p) = p + 1 + sum_x chi(x^5 + x + 1)   (+1 = the single point at infinity)
+fn count_fp(p: i32) -> i32 {
+    var s: i32 = 0;
+    var x: i32 = 0;
+    while x < p {
+        let x2: i32 = (x * x) % p;
+        let x4: i32 = (x2 * x2) % p;
+        let x5: i32 = (x4 * x) % p;
+        let fx: i32 = (x5 + x + 1) % p;
+        s = s + legendre(fx, p);
+        x = x + 1;
+    }
+    return p + 1 + s;
+}
+
+// ---- F_{p^2} = F_p[i]/(i^2 = nr) ----
+fn gf2re(a0: i32, a1: i32, b0: i32, b1: i32, p: i32, nr: i32) -> i32 {
+    return (a0 * b0 % p + (a1 * b1 % p) * nr % p) % p;
+}
+fn gf2im(a0: i32, a1: i32, b0: i32, b1: i32, p: i32) -> i32 {
+    return (a0 * b1 % p + a1 * b0 % p) % p;
+}
+
+fn count_fp2(p: i32) -> i32 {
+    let nr: i32 = smallest_nonresidue(p);
+    let n: i32 = p * p;
+    let sq: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n { sq[i] = 0; i = i + 1; }
+    var u: i32 = 0;
+    while u < p {
+        var v: i32 = 0;
+        while v < p {
+            let s0: i32 = gf2re(u, v, u, v, p, nr);
+            let s1: i32 = gf2im(u, v, u, v, p);
+            sq[s0 * p + s1] = 1;
+            v = v + 1;
+        }
+        u = u + 1;
+    }
+    var total: i32 = 0;
+    var uu: i32 = 0;
+    while uu < p {
+        var vv: i32 = 0;
+        while vv < p {
+            let x2r: i32 = gf2re(uu, vv, uu, vv, p, nr);
+            let x2i: i32 = gf2im(uu, vv, uu, vv, p);
+            let x3r: i32 = gf2re(x2r, x2i, uu, vv, p, nr);
+            let x3i: i32 = gf2im(x2r, x2i, uu, vv, p);
+            let x4r: i32 = gf2re(x3r, x3i, uu, vv, p, nr);
+            let x4i: i32 = gf2im(x3r, x3i, uu, vv, p);
+            let x5r: i32 = gf2re(x4r, x4i, uu, vv, p, nr);
+            let x5i: i32 = gf2im(x4r, x4i, uu, vv, p);
+            let f0: i32 = (x5r + uu + 1) % p;
+            let f1: i32 = (x5i + vv) % p;
+            if f0 != 0 || f1 != 0 {
+                if sq[f0 * p + f1] == 1 { total = total + 1; }
+                else { total = total - 1; }
+            }
+            vv = vv + 1;
+        }
+        uu = uu + 1;
+    }
+    free(sq);
+    return n + 1 + total;
+}
+
+// ---- F_{p^3} = F_p[t]/(t^3 + m1*t + m0), irreducible depressed cubic ----
+// t^3 = -m1*t - m0;  t^4 = -m1*t^2 - m0*t. Element (a0,a1,a2) = a0 + a1 t + a2 t^2.
+fn gf3mul(a0: i32, a1: i32, a2: i32, b0: i32, b1: i32, b2: i32,
+    p: i32, m1: i32, m0: i32, out: *i32) {
+    let c0: i32 = a0 * b0;
+    let c1: i32 = a0 * b1 + a1 * b0;
+    let c2: i32 = a0 * b2 + a1 * b1 + a2 * b0;
+    let c3: i32 = a1 * b2 + a2 * b1;
+    let c4: i32 = a2 * b2;
+    out[0] = mod_pos(c0 - m0 * c3, p);
+    out[1] = mod_pos(c1 - m1 * c3 - m0 * c4, p);
+    out[2] = mod_pos(c2 - m1 * c4, p);
+}
+
+fn count_fp3(p: i32) -> i32 {
+    // find an irreducible depressed cubic t^3 + m1*t + m0 (no root in F_p)
+    var m1: i32 = 0;
+    var m0: i32 = 0;
+    var found: i32 = 0;
+    var mm1: i32 = 0;
+    while mm1 < p {
+        var mm0: i32 = 0;
+        while mm0 < p {
+            if found == 0 {
+                var hasroot: i32 = 0;
+                var t: i32 = 0;
+                while t < p {
+                    let t3: i32 = ((t * t % p) * t) % p;
+                    if (t3 + mm1 * t + mm0) % p == 0 { hasroot = 1; }
+                    t = t + 1;
+                }
+                if hasroot == 0 { m1 = mm1; m0 = mm0; found = 1; }
+            }
+            mm0 = mm0 + 1;
+        }
+        mm1 = mm1 + 1;
+    }
+
+    let pp: i32 = p * p;
+    let n: i32 = pp * p;
+    let sq: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n { sq[i] = 0; i = i + 1; }
+    let tmp: *i32 = alloc(3);
+    let x2: *i32 = alloc(3);
+    let x3: *i32 = alloc(3);
+    let x4: *i32 = alloc(3);
+    let x5: *i32 = alloc(3);
+
+    // mark every square
+    var a0: i32 = 0;
+    while a0 < p {
+        var a1: i32 = 0;
+        while a1 < p {
+            var a2: i32 = 0;
+            while a2 < p {
+                gf3mul(a0, a1, a2, a0, a1, a2, p, m1, m0, tmp);
+                sq[tmp[0] * pp + tmp[1] * p + tmp[2]] = 1;
+                a2 = a2 + 1;
+            }
+            a1 = a1 + 1;
+        }
+        a0 = a0 + 1;
+    }
+
+    // sum chi3(f(x)) over all x in F_{p^3}, f = x^5 + x + 1
+    var total: i32 = 0;
+    var b0: i32 = 0;
+    while b0 < p {
+        var b1: i32 = 0;
+        while b1 < p {
+            var b2: i32 = 0;
+            while b2 < p {
+                gf3mul(b0, b1, b2, b0, b1, b2, p, m1, m0, x2);
+                gf3mul(x2[0], x2[1], x2[2], b0, b1, b2, p, m1, m0, x3);
+                gf3mul(x3[0], x3[1], x3[2], b0, b1, b2, p, m1, m0, x4);
+                gf3mul(x4[0], x4[1], x4[2], b0, b1, b2, p, m1, m0, x5);
+                let f0: i32 = mod_pos(x5[0] + b0 + 1, p);
+                let f1: i32 = mod_pos(x5[1] + b1, p);
+                let f2: i32 = mod_pos(x5[2] + b2, p);
+                if f0 != 0 || f1 != 0 || f2 != 0 {
+                    if sq[f0 * pp + f1 * p + f2] == 1 { total = total + 1; }
+                    else { total = total - 1; }
+                }
+                b2 = b2 + 1;
+            }
+            b1 = b1 + 1;
+        }
+        b0 = b0 + 1;
+    }
+    free(sq); free(tmp); free(x2); free(x3); free(x4); free(x5);
+    return n + 1 + total;
+}
+
+fn report2(p: i32) {
+    let cfp: i32 = count_fp(p);
+    let cfp2: i32 = count_fp2(p);
+    let cfp3: i32 = count_fp3(p);
+
+    let p1: i32 = (p + 1) - cfp;
+    let p2: i32 = (p * p + 1) - cfp2;
+    let p3: i32 = (p * p * p + 1) - cfp3;
+
+    // Newton's identities + functional equation
+    let c1: i32 = 0 - p1;
+    let c2: i32 = (p1 * p1 - p2) / 2;
+    let c3: i32 = p * c1;
+
+    // RH region: real Weil poly y^2 + c1 y + (c2 - 2p), both roots in [-2sqrt p, 2sqrt p]
+    let disc: i32 = c1 * c1 - 4 * (c2 - 2 * p);
+    let s: i32 = 2 * p + c2;
+    var rh: i32 = 0;
+    if disc >= 0 {
+        if s >= 0 {
+            if s * s >= 4 * p * c1 * c1 {
+                if c1 * c1 <= 16 * p { rh = 1; }
+            }
+        }
+    }
+
+    // n=3 cross-check: p3 from count vs Newton-backward
+    let p3n: i32 = 0 - c1 * p2 - c2 * p1 - 3 * c3;
+    var n3: i32 = 0;
+    if p3 == p3n { n3 = 1; }
+
+    print(c1);
+    print(c2);
+    print(cfp);
+    print(cfp2);
+    print(cfp3);
+    print(rh);
+    print(n3);
+}
+
+fn main() -> i32 {
+    report2(5);
+    report2(11);
+    report2(13);
+    return 0;
+}

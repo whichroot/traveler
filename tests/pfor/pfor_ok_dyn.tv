@@ -1,0 +1,43 @@
+// pfor_ok_dyn.tv — POSITIVE CONTROL: dyn-instantiated loop must dispatch
+//
+// out[i] = a[i] + b[i] over a runtime field (instantiate <dyn>).  The
+// loop body's field ops route through @field_dyn_add with the implicit
+// %__field carrier captured into the worker context.  Element
+// independence holds identically to the baked case (field axioms are
+// field-axioms regardless of when the modulus binds); the index map is
+// stride-1 affine.  If has_field_element doesn't fire for TYPE_DYNFIELD
+// pointees, this loop silently loses parallelization — the regression
+// this control pins.
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+fn vec_add<F: Field>(a: *F, b: *F, out: *F, n: i32) {
+    for i in 0..n {
+        out[i] = a[i] + b[i];
+    }
+}
+
+instantiate vec_add<dyn>;
+
+fn main() -> i32 {
+    let f: Field = field(65521);
+    let n: i32 = 4096;
+    let a: *i64 = alloc(4096);
+    let b: *i64 = alloc(4096);
+    let out: *i64 = alloc(4096);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 60000 + w % 7;
+        b[w] = 60000;
+        w = w + 1;
+    }
+
+    vec_add_dyn(f, a, b, out, n);
+
+    // (60000+k + 60000) mod 65521 = 54479 + k
+    print(out[0]);     // 54479
+    print(out[3]);     // 54482
+    print(out[4095]);  // 4095 % 7 = 0 -> 54479
+    return 0;
+}

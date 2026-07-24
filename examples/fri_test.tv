@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fri_test.tv — FRI polynomial commitment test suite
+//
+// Test 1: Commit to polynomial 1 + 2x + 3x^2 + 4x^3 (degree 3).
+//         Prove and verify. Expected: pass.
+// Test 2: Tamper with final polynomial value. Expected: fail.
+//
+// Links: ntt.o + poseidon2.o + merkle.o + fri.o + fri_test.o
+// Expected output:
+//   1    (valid proof verifies)
+//   0    (tampered proof fails)
+
+type Goldilocks = Field<18446744069414584321>;
+
+// Poseidon2 init
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+// FRI functions
+extern "C" fn fri_prove(
+    coeffs: *Goldilocks, degree: i32, log_blowup: i32,
+    shift: Goldilocks, num_queries: i32,
+    roots: *Goldilocks, challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks, query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32;
+
+extern "C" fn fri_verify(
+    degree: i32, log_blowup: i32, shift: Goldilocks,
+    num_queries: i32, n_rounds: i32,
+    roots: *Goldilocks, challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks, query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32;
+
+fn main() -> i32 {
+    // Initialize Poseidon2 context
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    // Polynomial: f(x) = 1 + 2x + 3x^2 + 4x^3
+    let degree: i32 = 3;
+    let coeffs: *Goldilocks = alloc(4);
+    coeffs[0] = 1;
+    coeffs[1] = 2;
+    coeffs[2] = 3;
+    coeffs[3] = 4;
+
+    let log_blowup: i32 = 1;   // 2x blowup
+    let shift: Goldilocks = 7;  // coset generator (Goldilocks generator)
+    let num_queries: i32 = 3;
+
+    // LDE domain = 2^(ceil(log2(4)) + 1) = 2^3 = 8
+    // max rounds = 3, max_depth = 3
+    let max_rounds: i32 = 4;
+    let max_depth: i32 = 4;
+
+    // Allocate proof buffers
+    let roots: *Goldilocks = alloc(max_rounds * 4);
+    let challenges: *Goldilocks = alloc(max_rounds);
+    let final_poly: *Goldilocks = alloc(1);
+    let query_values: *Goldilocks = alloc(num_queries * max_rounds * 2);
+    let query_paths: *Goldilocks = alloc(num_queries * max_rounds * max_depth * 4);
+    let query_indices: *i32 = alloc(num_queries);
+
+    // Test 1: Prove and verify (should pass)
+    let n_rounds: i32 = fri_prove(
+        coeffs, degree, log_blowup, shift, num_queries,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices,
+        rc_init, rc_term, rc_int, diag);
+
+    let ok: i32 = fri_verify(
+        degree, log_blowup, shift, num_queries, n_rounds,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices,
+        rc_init, rc_term, rc_int, diag);
+    print(ok);  // expected: 1
+
+    // Test 2: Tamper with final polynomial — should fail
+    let saved: Goldilocks = final_poly[0];
+    final_poly[0] = final_poly[0] + 1;
+    let bad: i32 = fri_verify(
+        degree, log_blowup, shift, num_queries, n_rounds,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices,
+        rc_init, rc_term, rc_int, diag);
+    print(bad);  // expected: 0
+
+    // Cleanup
+    free(coeffs);
+    free(roots);
+    free(challenges);
+    free(final_poly);
+    free(query_values);
+    free(query_paths);
+    free(query_indices);
+    free(rc_init);
+    free(rc_term);
+    free(rc_int);
+    free(diag);
+
+    return 0;
+}

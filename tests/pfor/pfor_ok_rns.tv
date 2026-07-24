@@ -1,0 +1,80 @@
+// pfor_ok_rns.tv — POSITIVE CONTROL: multi-prime RNS matmul MAC parallelizes.
+//
+// The exact-NN-inference kernel pattern (src/lib/rns/): a flattened matmul
+// `for o in 0..(T*N) { r[o] = dot(...) }` over a Field<p> residue channel, with
+// the inner product hoisted into a PURE helper. This is the form pfor was built
+// for — a *Field<p> array sets has_field, the pure same-module call keeps the
+// body flat — so EACH of the three per-prime MAC passes must dispatch a worker.
+//
+// Three primes, three parallel MAC passes -> 3 workers. Output is the checksum of
+// the three residue arrays, DETERMINISTIC across any TRAVELER_THREADS (the whole
+// point: parallel == serial, bit-identical).
+//
+// MUST PARALLELIZE. Expected workers: 3. Output deterministic.
+
+field FP0 = Field<2013265921>;
+field FP1 = Field<1811939329>;
+field FP2 = Field<469762049>;
+
+fn dot0(x: *FP0, w: *FP0, K: i32, N: i32, o: i32) -> FP0 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    let mut acc: FP0 = 0 as FP0;
+    let mut k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+fn dot1(x: *FP1, w: *FP1, K: i32, N: i32, o: i32) -> FP1 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    let mut acc: FP1 = 0 as FP1;
+    let mut k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+fn dot2(x: *FP2, w: *FP2, K: i32, N: i32, o: i32) -> FP2 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    let mut acc: FP2 = 0 as FP2;
+    let mut k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+
+fn main() -> i32 {
+    let T: i32 = 8;
+    let K: i32 = 64;
+    let N: i32 = 192;                 // T*N = 1536 > 1024 pfor threshold
+    let total: i32 = T * N;
+
+    let x0: *FP0 = alloc(T * K); let w0: *FP0 = alloc(K * N); let r0: *FP0 = alloc(total);
+    let x1: *FP1 = alloc(T * K); let w1: *FP1 = alloc(K * N); let r1: *FP1 = alloc(total);
+    let x2: *FP2 = alloc(T * K); let w2: *FP2 = alloc(K * N); let r2: *FP2 = alloc(total);
+
+    let mut i: i32 = 0;
+    while i < T * K {
+        let v: i32 = (i % 97) + 1;
+        x0[i] = v as FP0; x1[i] = v as FP1; x2[i] = v as FP2;
+        i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        let v: i32 = (i % 89) + 1;
+        w0[i] = v as FP0; w1[i] = v as FP1; w2[i] = v as FP2;
+        i = i + 1;
+    }
+
+    // Three parallel MAC passes (one per prime). Each MUST dispatch a worker.
+    for o in 0..total { r0[o] = dot0(x0, w0, K, N, o); }
+    for o in 0..total { r1[o] = dot1(x1, w1, K, N, o); }
+    for o in 0..total { r2[o] = dot2(x2, w2, K, N, o); }
+
+    // Deterministic checksum over the first 16 outputs of each channel.
+    let mut s0: FP0 = 0; let mut s1: FP1 = 0; let mut s2: FP2 = 0;
+    i = 0;
+    while i < 16 { s0 = s0 + r0[i]; s1 = s1 + r1[i]; s2 = s2 + r2[i]; i = i + 1; }
+    print(s0);
+    print(s1);
+    print(s2);
+    return 0;
+}

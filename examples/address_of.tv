@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// address_of.tv — Test the & (address-of) operator.
+//
+// Tests: &local, &global, &struct, pass-by-pointer mutation.
+//
+// Expected output: 10 42 43 12 0 0 10 20 100 101
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+var g_val: i32 = 100;
+
+fn set_to(p: *i32, v: i32) {
+    p[0] = v;
+}
+
+fn increment(p: *i32) {
+    p[0] = p[0] + 1;
+}
+
+fn set_point(p: *Point, x: i32, y: i32) {
+    p.x = x;
+    p.y = y;
+}
+
+fn modify_global(p: *i32) {
+    p[0] = p[0] + 1;
+}
+
+fn main() {
+    // &local: pass mutable local by pointer, modify through it
+    var x: i32 = 10;
+    print(x);               // 10
+    set_to(&x, 42);
+    print(x);               // 42
+    increment(&x);
+    print(x);               // 43
+
+    // Store address in a pointer variable
+    var a: i32 = 5;
+    var b: i32 = 7;
+    let pa: *i32 = &a;
+    let pb: *i32 = &b;
+    pa[0] = pa[0] + pb[0];
+    print(a);               // 12
+
+    // &struct: pass struct by pointer, modify fields
+    var pt: Point = Point { x: 0, y: 0 };
+    print(pt.x);            // 0
+    print(pt.y);            // 0
+    set_point(&pt, 10, 20);
+    print(pt.x);            // 10
+    print(pt.y);            // 20
+
+    // &global: take address of global, modify through pointer
+    print(g_val);           // 100
+    modify_global(&g_val);
+    print(g_val);           // 101
+}

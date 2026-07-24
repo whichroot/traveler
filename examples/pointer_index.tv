@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// pointer_index.tv — Pointer indexing: ptr[i] read and write.
+//
+// Replaces the C pattern: int *arr = malloc(n * sizeof(int)); arr[i] = val;
+// This is how ASTNode **args, **stmts, **decls work in the self-hosting compiler.
+//
+// Expected output: 10 20 30 60
+
+fn main() {
+    // Allocate an array of 4 i32 values
+    let buf: *i32 = alloc(4);
+    buf[0] = 10;
+    buf[1] = 20;
+    buf[2] = 30;
+
+    print(buf[0]);    // 10
+    print(buf[1]);    // 20
+    print(buf[2]);    // 30
+
+    // Sum via pointer indexing
+    let sum: i32 = buf[0] + buf[1] + buf[2];
+    print(sum);       // 60
+
+    free(buf);
+}

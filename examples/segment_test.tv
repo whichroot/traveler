@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// segment_test.tv — Segment and Stream as concrete structs
+//
+// Validates Level 3 of the Section 17 type hierarchy:
+//   Segment: regime boundaries + polynomial coefficients + residuals
+//   Stream: ordered sequence of segments with continuation detection
+//
+// Design: FieldCtx pattern — prime as runtime parameter, not type parameter.
+// The state variable inherits its properties. No generic struct needed.
+//
+// Tests:
+//   1. Create two segments from known data
+//   2. Forward sum from segment coefficients, verify against original
+//   3. Check continuation relation (should be false for different polynomials)
+//   4. Stream push + count
+//
+// Expected output: 10 13 16 19 50 53 56 59 2 0
+
+type F = Field<251>;
+
+struct Segment {
+    start: i32,
+    end: i32,
+    order: i32,
+    c0: i32,
+    c1: i32,
+    c2: i32,
+    c3: i32,
+}
+
+struct Stream {
+    segments: *Segment,
+    n_segments: i32,
+    capacity: i32,
+}
+
+fn segment_new(start: i32, end: i32, order: i32, c0: i32, c1: i32, c2: i32, c3: i32) -> Segment {
+    return Segment { start: start, end: end, order: order, c0: c0, c1: c1, c2: c2, c3: c3 };
+}
+
+// Forward sum from segment coefficients for n steps
+fn segment_forward_sum(seg: *Segment, out: *i32, n: i32) {
+    var r0: i32 = seg.c0;
+    var r1: i32 = seg.c1;
+    var r2: i32 = seg.c2;
+    var r3: i32 = seg.c3;
+    let ord: i32 = seg.order;
+    var i: i32 = 0;
+    while i < n {
+        out[i] = r0 % 251;
+        // Advance register
+        r0 = (r0 + r1) % 251;
+        if ord > 0 {
+            r1 = (r1 + r2) % 251;
+        }
+        if ord > 1 {
+            r2 = (r2 + r3) % 251;
+        }
+        i = i + 1;
+    }
+}
+
+// Check if seg2 continues the polynomial from seg1
+// Returns 1 if continuation, 0 if not
+fn is_continuation(seg1: *Segment, seg2: *Segment) -> i32 {
+    if seg1.order != seg2.order { return 0; }
+    // Advance seg1's register through its span to get the expected state at seg2.start
+    let span: i32 = seg1.end - seg1.start;
+    var r0: i32 = seg1.c0;
+    var r1: i32 = seg1.c1;
+    let ord: i32 = seg1.order;
+    var i: i32 = 0;
+    while i < span {
+        r0 = (r0 + r1) % 251;
+        if ord > 0 {
+            r1 = (r1 + seg1.c2) % 251;
+        }
+        i = i + 1;
+    }
+    // r0 should equal seg2.c0 and r1 should equal seg2.c1 for continuation
+    if r0 != seg2.c0 { return 0; }
+    if r1 != seg2.c1 { return 0; }
+    return 1;
+}
+
+fn stream_new(cap: i32) -> Stream {
+    let segs: *Segment = alloc(cap);
+    return Stream { segments: segs, n_segments: 0, capacity: cap };
+}
+
+fn stream_push(stream: *Stream, seg: *Segment) {
+    let idx: i32 = stream.n_segments;
+    let segs: *Segment = stream.segments;
+    let dst: *Segment = &segs[idx];
+    dst.start = seg.start;
+    dst.end = seg.end;
+    dst.order = seg.order;
+    dst.c0 = seg.c0;
+    dst.c1 = seg.c1;
+    dst.c2 = seg.c2;
+    dst.c3 = seg.c3;
+    stream.n_segments = idx + 1;
+}
+
+fn stream_free(stream: *Stream) {
+    free(stream.segments);
+}
+
+fn main() {
+    // Segment 1: linear, slope 3, starting at 10, indices 0..4
+    let seg1: Segment = segment_new(0, 4, 1, 10, 3, 0, 0);
+
+    // Segment 2: linear, slope 3, starting at 50, indices 4..8
+    let seg2: Segment = segment_new(4, 8, 1, 50, 3, 0, 0);
+
+    // Forward sum from segment 1 coefficients
+    var out1: [i32; 4] = 0;
+    segment_forward_sum(&seg1, &out1[0], 4);
+    print(out1[0] as F);  // 10
+    print(out1[1] as F);  // 13
+    print(out1[2] as F);  // 16
+    print(out1[3] as F);  // 19
+
+    // Forward sum from segment 2 coefficients
+    var out2: [i32; 4] = 0;
+    segment_forward_sum(&seg2, &out2[0], 4);
+    print(out2[0] as F);  // 50
+    print(out2[1] as F);  // 53
+    print(out2[2] as F);  // 56
+    print(out2[3] as F);  // 59
+
+    // Stream: push both segments
+    var stream: Stream = stream_new(16);
+    stream_push(&stream, &seg1);
+    stream_push(&stream, &seg2);
+    print(stream.n_segments as F);  // 2
+
+    // Continuation check: seg2 does NOT continue seg1
+    // (seg1 at index 4 would predict 22, not 50)
+    let cont: i32 = is_continuation(&seg1, &seg2);
+    print(cont as F);  // 0
+
+    stream_free(&stream);
+}

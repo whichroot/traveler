@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// qmark_basics.tv — the `?` operator: Ok yields the T payload in place, Err
+// rebuilds the enclosing fn's Result and returns; E must match exactly.
+// tvc_self ONLY. Design: @internal-design: fs (the `?` operator).
+//
+// Expected output:
+//   50    total(2,3): both ? succeed, 20+30
+//   404   total(2,-1): second ? propagates Err(NotFound) through two frames
+//   50    chain(1,4): two ? in ONE expression (10+40)
+//   68    use_buf(1): aggregate T through ? (Buf payload, 3+65)
+//   510   use_buf(0): Err(ReadFailed) propagated from the Buf path
+
+import "../src/lib/core/result.tv";
+
+enum FsError {
+    NotFound,
+    ReadFailed,
+}
+
+struct Buf {
+    data: *u8,
+    len: i32,
+    cap: i32,
+}
+
+fn get(i: i32) -> Result<i64, FsError> {
+    if i < 0 { return Result::Err(FsError::NotFound); }
+    return Result::Ok((i * 10) as i64);
+}
+
+// `?` in statement position: each fallible call unwraps or early-returns.
+fn total(a: i32, b: i32) -> Result<i64, FsError> {
+    let x: i64 = get(a)?;
+    let y: i64 = get(b)?;
+    return Result::Ok(x + y);
+}
+
+// `?` chained inside one expression.
+fn chain(a: i32, b: i32) -> Result<i64, FsError> {
+    return Result::Ok(get(a)? + get(b)?);
+}
+
+fn mk(ok: i32) -> Result<Buf, FsError> {
+    if ok == 0 { return Result::Err(FsError::ReadFailed); }
+    let d: *u8 = alloc(4);
+    d[0] = 65;
+    return Result::Ok(Buf { data: d, len: 3, cap: 4 });
+}
+
+// Aggregate T through `?`: the payload binds by pointer (the enum/struct
+// IRValue convention), then reads like any struct.
+fn use_buf(ok: i32) -> Result<i64, FsError> {
+    let b: Buf = mk(ok)?;
+    return Result::Ok((b.len as i64) + (b.data[0] as i64));
+}
+
+fn show(r: Result<i64, FsError>) {
+    match r {
+        Result::Ok(v) => { print(v); }
+        Result::Err(e) => {
+            match e {
+                FsError::NotFound => { print(404); }
+                FsError::ReadFailed => { print(510); }
+            }
+        }
+    }
+}
+
+fn main() -> i32 {
+    show(total(2, 3));
+    show(total(2, 0 - 1));
+    show(chain(1, 4));
+    show(use_buf(1));
+    show(use_buf(0));
+    return 0;
+}

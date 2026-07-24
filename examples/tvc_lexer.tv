@@ -1,0 +1,705 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// tvc_lexer.tv — self-hosting lexer (Stage 3a): tokenizes .tv source into flat
+// Token structs, matching the bootstrap lexer (tvc.c:513-774) token-for-token.
+//
+// Usage: ./tvc_lexer examples/field_basics.tv
+// Output: one line per token: KIND line:col [text] [int_val]
+//
+// All 80 token kinds, 25 keywords, 13 type keywords, 22 operators,
+// 15 punctuation, nestable block comments, string/char/hex literals.
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+// --- Token kind constants (match tvc.c enum exactly: 0-79) ---
+
+// Literals
+let TOK_INT_LIT: i32 = 0;
+let TOK_BOOL_LIT: i32 = 1;
+let TOK_STR_LIT: i32 = 2;
+// Identifiers
+let TOK_IDENT: i32 = 3;
+// Keywords
+let TOK_KW_FIELD: i32 = 4;
+let TOK_KW_FN: i32 = 5;
+let TOK_KW_LET: i32 = 6;
+let TOK_KW_MUT: i32 = 7;
+let TOK_KW_IF: i32 = 8;
+let TOK_KW_ELSE: i32 = 9;
+let TOK_KW_FOR: i32 = 10;
+let TOK_KW_IN: i32 = 11;
+let TOK_KW_WHILE: i32 = 12;
+let TOK_KW_RETURN: i32 = 13;
+let TOK_KW_TRUE: i32 = 14;
+let TOK_KW_FALSE: i32 = 15;
+let TOK_KW_AS: i32 = 16;
+let TOK_KW_CONST: i32 = 17;
+let TOK_KW_PUB: i32 = 18;
+let TOK_KW_STRUCT: i32 = 19;
+let TOK_KW_ENUM: i32 = 20;
+let TOK_KW_MATCH: i32 = 21;
+let TOK_KW_NULL: i32 = 22;
+let TOK_KW_UNSAFE: i32 = 23;
+let TOK_KW_EXTERN: i32 = 24;
+let TOK_KW_PRINT: i32 = 25;
+let TOK_KW_BREAK: i32 = 26;
+let TOK_KW_CONTINUE: i32 = 27;
+let TOK_KW_BINFIELD: i32 = 28;
+// Type keywords
+let TOK_TY_U8: i32 = 29;
+let TOK_TY_U16: i32 = 30;
+let TOK_TY_U32: i32 = 31;
+let TOK_TY_U64: i32 = 32;
+let TOK_TY_I8: i32 = 33;
+let TOK_TY_I16: i32 = 34;
+let TOK_TY_I32: i32 = 35;
+let TOK_TY_I64: i32 = 36;
+let TOK_TY_USIZE: i32 = 37;
+let TOK_TY_BOOL: i32 = 38;
+let TOK_TY_FIELD: i32 = 39;
+let TOK_TY_BINFIELD: i32 = 40;
+let TOK_TY_POLY: i32 = 41;
+// Operators
+let TOK_PLUS: i32 = 42;
+let TOK_MINUS: i32 = 43;
+let TOK_STAR: i32 = 44;
+let TOK_SLASH: i32 = 45;
+let TOK_PERCENT: i32 = 46;
+let TOK_STARSTAR: i32 = 47;
+let TOK_EQ: i32 = 48;
+let TOK_NEQ: i32 = 49;
+let TOK_LT: i32 = 50;
+let TOK_GT: i32 = 51;
+let TOK_LE: i32 = 52;
+let TOK_GE: i32 = 53;
+let TOK_AND: i32 = 54;
+let TOK_OR: i32 = 55;
+let TOK_NOT: i32 = 56;
+let TOK_AMPERSAND: i32 = 57;
+let TOK_PIPE: i32 = 58;
+let TOK_CARET: i32 = 59;
+let TOK_TILDE: i32 = 60;
+let TOK_SHL: i32 = 61;
+let TOK_SHR: i32 = 62;
+let TOK_ASSIGN: i32 = 63;
+// Punctuation
+let TOK_LPAREN: i32 = 64;
+let TOK_RPAREN: i32 = 65;
+let TOK_LBRACE: i32 = 66;
+let TOK_RBRACE: i32 = 67;
+let TOK_LBRACKET: i32 = 68;
+let TOK_RBRACKET: i32 = 69;
+let TOK_SEMI: i32 = 70;
+let TOK_COLON: i32 = 71;
+let TOK_COMMA: i32 = 72;
+let TOK_DOT: i32 = 73;
+let TOK_ARROW: i32 = 74;
+let TOK_FAT_ARROW: i32 = 75;
+let TOK_COLONCOLON: i32 = 76;
+let TOK_DOTDOT: i32 = 77;
+let TOK_HASH_LBRACKET: i32 = 78;
+// Special
+let TOK_EOF: i32 = 79;
+
+let MAX_TOKENS: i32 = 65536;
+let MAX_IDENT: i32 = 256;
+
+// --- Token struct ---
+
+struct Token {
+    kind: i32,
+    line: i32,
+    col: i32,
+    text: [u8; 256],
+    int_val: u64,
+}
+
+// --- Write helpers ---
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// --- String helpers ---
+
+fn str_len(s: *u8) -> i32 {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        i = i + 1;
+    }
+    return i;
+}
+
+fn bytes_eq(a: *u8, b: *u8, len: i32) -> i32 {
+    var i: i32 = 0;
+    while i < len {
+        if a[i] != b[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn str_eq(a: *u8, b: *u8) -> i32 {
+    let la: i32 = str_len(a);
+    let lb: i32 = str_len(b);
+    if la != lb { return 0; }
+    return bytes_eq(a, b, la);
+}
+
+// --- Character classification ---
+
+fn is_alpha(c: u8) -> i32 {
+    if c >= 65 && c <= 90 { return 1; }   // A-Z
+    if c >= 97 && c <= 122 { return 1; }  // a-z
+    if c == 95 { return 1; }              // _
+    return 0;
+}
+
+fn is_digit(c: u8) -> i32 {
+    if c >= 48 && c <= 57 { return 1; }   // 0-9
+    return 0;
+}
+
+fn is_alnum(c: u8) -> i32 {
+    if is_alpha(c) == 1 { return 1; }
+    if is_digit(c) == 1 { return 1; }
+    return 0;
+}
+
+fn is_hex(c: u8) -> i32 {
+    if is_digit(c) == 1 { return 1; }
+    if c >= 65 && c <= 70 { return 1; }   // A-F
+    if c >= 97 && c <= 102 { return 1; }  // a-f
+    return 0;
+}
+
+fn hex_val(c: u8) -> i32 {
+    if c >= 48 && c <= 57 { return (c - 48) as i32; }
+    if c >= 65 && c <= 70 { return (c - 55) as i32; }
+    if c >= 97 && c <= 102 { return (c - 87) as i32; }
+    return 0;
+}
+
+// --- Copy bytes into token text ---
+
+fn tok_set_text(tok: *Token, s: *u8, len: i32) {
+    var i: i32 = 0;
+    while i < len && i < 255 {
+        tok.text[i] = s[i];
+        i = i + 1;
+    }
+    tok.text[i] = 0;
+}
+
+fn tok_set_str(tok: *Token, s: *u8) {
+    tok_set_text(tok, s, str_len(s));
+}
+
+// --- Keyword lookup ---
+// Returns the token kind if `text` is a keyword, or TOK_IDENT.
+
+fn keyword_kind(text: *u8) -> i32 {
+    // Keywords
+    if str_eq(text, "field") == 1 { return 4; }
+    if str_eq(text, "fn") == 1 { return 5; }
+    if str_eq(text, "let") == 1 { return 6; }
+    if str_eq(text, "mut") == 1 { return 7; }
+    if str_eq(text, "if") == 1 { return 8; }
+    if str_eq(text, "else") == 1 { return 9; }
+    if str_eq(text, "for") == 1 { return 10; }
+    if str_eq(text, "in") == 1 { return 11; }
+    if str_eq(text, "while") == 1 { return 12; }
+    if str_eq(text, "return") == 1 { return 13; }
+    if str_eq(text, "true") == 1 { return 14; }
+    if str_eq(text, "false") == 1 { return 15; }
+    if str_eq(text, "as") == 1 { return 16; }
+    if str_eq(text, "const") == 1 { return 17; }
+    if str_eq(text, "pub") == 1 { return 18; }
+    if str_eq(text, "struct") == 1 { return 19; }
+    if str_eq(text, "enum") == 1 { return 20; }
+    if str_eq(text, "match") == 1 { return 21; }
+    if str_eq(text, "null") == 1 { return 22; }
+    if str_eq(text, "unsafe") == 1 { return 23; }
+    if str_eq(text, "extern") == 1 { return 24; }
+    if str_eq(text, "print") == 1 { return 25; }
+    if str_eq(text, "break") == 1 { return 26; }
+    if str_eq(text, "continue") == 1 { return 27; }
+    if str_eq(text, "binfield") == 1 { return 28; }
+    // Type keywords
+    if str_eq(text, "u8") == 1 { return 29; }
+    if str_eq(text, "u16") == 1 { return 30; }
+    if str_eq(text, "u32") == 1 { return 31; }
+    if str_eq(text, "u64") == 1 { return 32; }
+    if str_eq(text, "i8") == 1 { return 33; }
+    if str_eq(text, "i16") == 1 { return 34; }
+    if str_eq(text, "i32") == 1 { return 35; }
+    if str_eq(text, "i64") == 1 { return 36; }
+    if str_eq(text, "usize") == 1 { return 37; }
+    if str_eq(text, "bool") == 1 { return 38; }
+    if str_eq(text, "Field") == 1 { return 39; }
+    if str_eq(text, "BinField") == 1 { return 40; }
+    if str_eq(text, "Poly") == 1 { return 41; }
+    return 3; // TOK_IDENT
+}
+
+// --- Lexer ---
+// Returns number of tokens (including EOF).
+
+fn lex(src: *u8, len: i32, tokens: *Token) -> i32 {
+    var pos: i32 = 0;
+    var line: i32 = 1;
+    var col: i32 = 1;
+    var ntok: i32 = 0;
+
+    while pos < len {
+        let c: u8 = src[pos];
+
+        // Skip whitespace
+        if c == 32 || c == 9 || c == 13 {
+            pos = pos + 1;
+            col = col + 1;
+            continue;
+        }
+        if c == 10 {
+            pos = pos + 1;
+            line = line + 1;
+            col = 1;
+            continue;
+        }
+
+        // Line comment: //
+        if c == 47 && pos + 1 < len && src[pos + 1] == 47 {
+            pos = pos + 2;
+            while pos < len && src[pos] != 10 {
+                pos = pos + 1;
+            }
+            continue;
+        }
+
+        // Block comment: /* ... */ (nestable)
+        if c == 47 && pos + 1 < len && src[pos + 1] == 42 {
+            pos = pos + 2;
+            col = col + 2;
+            var depth: i32 = 1;
+            while pos < len && depth > 0 {
+                if src[pos] == 47 && pos + 1 < len && src[pos + 1] == 42 {
+                    depth = depth + 1;
+                    pos = pos + 2;
+                    col = col + 2;
+                } else if src[pos] == 42 && pos + 1 < len && src[pos + 1] == 47 {
+                    depth = depth - 1;
+                    pos = pos + 2;
+                    col = col + 2;
+                } else {
+                    if src[pos] == 10 {
+                        line = line + 1;
+                        col = 1;
+                    } else {
+                        col = col + 1;
+                    }
+                    pos = pos + 1;
+                }
+            }
+            continue;
+        }
+
+        // #[ attribute marker
+        if c == 35 && pos + 1 < len && src[pos + 1] == 91 {
+            tokens[ntok].kind = TOK_HASH_LBRACKET;
+            tokens[ntok].line = line;
+            tokens[ntok].col = col;
+            tok_set_str(&tokens[ntok], "#[");
+            ntok = ntok + 1;
+            pos = pos + 2;
+            col = col + 2;
+            continue;
+        }
+
+        // String literal: "..."
+        if c == 34 {
+            let start_line: i32 = line;
+            let start_col: i32 = col;
+            pos = pos + 1;
+            col = col + 1;
+            var j: i32 = 0;
+            while pos < len && src[pos] != 34 {
+                if src[pos] == 92 && pos + 1 < len {
+                    // Escape sequence
+                    pos = pos + 1;
+                    col = col + 1;
+                    let esc: u8 = src[pos];
+                    if esc == 110 { tokens[ntok].text[j] = 10; }       // \n
+                    else if esc == 116 { tokens[ntok].text[j] = 9; }   // \t
+                    else if esc == 114 { tokens[ntok].text[j] = 13; }  // \r
+                    else if esc == 48 { tokens[ntok].text[j] = 0; }    // \0
+                    else if esc == 92 { tokens[ntok].text[j] = 92; }   // \\
+                    else if esc == 34 { tokens[ntok].text[j] = 34; }   // \"
+                    else { tokens[ntok].text[j] = esc; }
+                } else {
+                    tokens[ntok].text[j] = src[pos];
+                }
+                j = j + 1;
+                pos = pos + 1;
+                col = col + 1;
+                if j >= 255 { break; }
+            }
+            tokens[ntok].text[j] = 0;
+            if pos < len { pos = pos + 1; col = col + 1; } // skip closing "
+            tokens[ntok].kind = TOK_STR_LIT;
+            tokens[ntok].line = start_line;
+            tokens[ntok].col = start_col;
+            ntok = ntok + 1;
+            continue;
+        }
+
+        // Character literal: 'x' or '\n'
+        if c == 39 {
+            let start_col2: i32 = col;
+            pos = pos + 1;
+            col = col + 1;
+            var ch_val: u64 = 0;
+            if pos < len && src[pos] == 92 && pos + 1 < len {
+                // Escape char
+                pos = pos + 1;
+                col = col + 1;
+                let esc2: u8 = src[pos];
+                if esc2 == 110 { ch_val = 10; }        // \n
+                else if esc2 == 116 { ch_val = 9; }    // \t
+                else if esc2 == 114 { ch_val = 13; }   // \r
+                else if esc2 == 48 { ch_val = 0; }     // \0
+                else if esc2 == 92 { ch_val = 92; }    // \\
+                else if esc2 == 39 { ch_val = 39; }    // \'
+                else { ch_val = esc2 as u64; }
+            } else if pos < len {
+                ch_val = src[pos] as u64;
+            }
+            pos = pos + 1;
+            col = col + 1;
+            if pos < len && src[pos] == 39 {
+                pos = pos + 1;
+                col = col + 1;
+            }
+            tokens[ntok].kind = TOK_INT_LIT;
+            tokens[ntok].line = line;
+            tokens[ntok].col = start_col2;
+            tokens[ntok].int_val = ch_val;
+            // Store the char representation in text
+            var tb: [u8; 8] = 0;
+            tb[0] = 39; // '
+            tb[1] = ch_val as u8;
+            tb[2] = 39;
+            tb[3] = 0;
+            tok_set_text(&tokens[ntok], &tb[0], 3);
+            ntok = ntok + 1;
+            continue;
+        }
+
+        // Integer literals: decimal, 0x hex
+        if is_digit(c) == 1 {
+            let start_col3: i32 = col;
+            var val: u64 = 0;
+            var j2: i32 = 0;
+
+            if c == 48 && pos + 1 < len && (src[pos + 1] == 120 || src[pos + 1] == 88) {
+                // Hex literal: 0x...
+                tokens[ntok].text[0] = 48;
+                tokens[ntok].text[1] = 120;
+                j2 = 2;
+                pos = pos + 2;
+                col = col + 2;
+                while pos < len && is_hex(src[pos]) == 1 {
+                    val = val * 16 + hex_val(src[pos]) as u64;
+                    if j2 < 255 {
+                        tokens[ntok].text[j2] = src[pos];
+                        j2 = j2 + 1;
+                    }
+                    pos = pos + 1;
+                    col = col + 1;
+                }
+            } else {
+                // Decimal literal
+                while pos < len && is_digit(src[pos]) == 1 {
+                    val = val * 10 + (src[pos] - 48) as u64;
+                    if j2 < 255 {
+                        tokens[ntok].text[j2] = src[pos];
+                        j2 = j2 + 1;
+                    }
+                    pos = pos + 1;
+                    col = col + 1;
+                }
+            }
+            tokens[ntok].text[j2] = 0;
+            tokens[ntok].kind = TOK_INT_LIT;
+            tokens[ntok].line = line;
+            tokens[ntok].col = start_col3;
+            tokens[ntok].int_val = val;
+            ntok = ntok + 1;
+            continue;
+        }
+
+        // Identifiers and keywords
+        if is_alpha(c) == 1 {
+            let start_col4: i32 = col;
+            var j3: i32 = 0;
+            while pos < len && is_alnum(src[pos]) == 1 {
+                if j3 < 255 {
+                    tokens[ntok].text[j3] = src[pos];
+                    j3 = j3 + 1;
+                }
+                pos = pos + 1;
+                col = col + 1;
+            }
+            tokens[ntok].text[j3] = 0;
+            tokens[ntok].kind = keyword_kind(&tokens[ntok].text[0]);
+            tokens[ntok].line = line;
+            tokens[ntok].col = start_col4;
+            // For true/false, store the boolean value in int_val
+            if tokens[ntok].kind == TOK_KW_TRUE { tokens[ntok].int_val = 1; }
+            if tokens[ntok].kind == TOK_KW_FALSE { tokens[ntok].int_val = 0; }
+            ntok = ntok + 1;
+            continue;
+        }
+
+        // Multi-char operators (check before single-char)
+        var c2: u8 = 0;
+        if pos + 1 < len { c2 = src[pos + 1]; }
+
+        if c == 42 && c2 == 42 { tokens[ntok].kind = TOK_STARSTAR; tok_set_str(&tokens[ntok], "**"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 45 && c2 == 62 { tokens[ntok].kind = TOK_ARROW; tok_set_str(&tokens[ntok], "->"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 61 && c2 == 62 { tokens[ntok].kind = TOK_FAT_ARROW; tok_set_str(&tokens[ntok], "=>"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 58 && c2 == 58 { tokens[ntok].kind = TOK_COLONCOLON; tok_set_str(&tokens[ntok], "::"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 46 && c2 == 46 { tokens[ntok].kind = TOK_DOTDOT; tok_set_str(&tokens[ntok], ".."); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 61 && c2 == 61 { tokens[ntok].kind = TOK_EQ; tok_set_str(&tokens[ntok], "=="); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 33 && c2 == 61 { tokens[ntok].kind = TOK_NEQ; tok_set_str(&tokens[ntok], "!="); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 60 && c2 == 61 { tokens[ntok].kind = TOK_LE; tok_set_str(&tokens[ntok], "<="); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 62 && c2 == 61 { tokens[ntok].kind = TOK_GE; tok_set_str(&tokens[ntok], ">="); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 38 && c2 == 38 { tokens[ntok].kind = TOK_AND; tok_set_str(&tokens[ntok], "&&"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 124 && c2 == 124 { tokens[ntok].kind = TOK_OR; tok_set_str(&tokens[ntok], "||"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 60 && c2 == 60 { tokens[ntok].kind = TOK_SHL; tok_set_str(&tokens[ntok], "<<"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+        if c == 62 && c2 == 62 { tokens[ntok].kind = TOK_SHR; tok_set_str(&tokens[ntok], ">>"); tokens[ntok].line = line; tokens[ntok].col = col; ntok = ntok + 1; pos = pos + 2; col = col + 2; continue; }
+
+        // Single-char operators and punctuation
+        var kind: i32 = -1;
+        if c == 43 { kind = TOK_PLUS; }
+        if c == 45 { kind = TOK_MINUS; }
+        if c == 42 { kind = TOK_STAR; }
+        if c == 47 { kind = TOK_SLASH; }
+        if c == 37 { kind = TOK_PERCENT; }
+        if c == 61 { kind = TOK_ASSIGN; }
+        if c == 60 { kind = TOK_LT; }
+        if c == 62 { kind = TOK_GT; }
+        if c == 33 { kind = TOK_NOT; }
+        if c == 38 { kind = TOK_AMPERSAND; }
+        if c == 124 { kind = TOK_PIPE; }
+        if c == 94 { kind = TOK_CARET; }
+        if c == 126 { kind = TOK_TILDE; }
+        if c == 40 { kind = TOK_LPAREN; }
+        if c == 41 { kind = TOK_RPAREN; }
+        if c == 123 { kind = TOK_LBRACE; }
+        if c == 125 { kind = TOK_RBRACE; }
+        if c == 91 { kind = TOK_LBRACKET; }
+        if c == 93 { kind = TOK_RBRACKET; }
+        if c == 59 { kind = TOK_SEMI; }
+        if c == 58 { kind = TOK_COLON; }
+        if c == 44 { kind = TOK_COMMA; }
+        if c == 46 { kind = TOK_DOT; }
+
+        if kind >= 0 {
+            tokens[ntok].kind = kind;
+            tokens[ntok].line = line;
+            tokens[ntok].col = col;
+            tokens[ntok].text[0] = c;
+            tokens[ntok].text[1] = 0;
+            ntok = ntok + 1;
+            pos = pos + 1;
+            col = col + 1;
+            continue;
+        }
+
+        // Unknown character — skip
+        pos = pos + 1;
+        col = col + 1;
+    }
+
+    // EOF token
+    tokens[ntok].kind = TOK_EOF;
+    tokens[ntok].line = line;
+    tokens[ntok].col = col;
+    tok_set_str(&tokens[ntok], "<eof>");
+    ntok = ntok + 1;
+
+    return ntok;
+}
+
+// --- Token kind name for printing ---
+
+fn print_kind_name(fd: i32, kind: i32) {
+    if kind == 0 { wr(fd, "INT"); return; }
+    if kind == 1 { wr(fd, "BOOL"); return; }
+    if kind == 2 { wr(fd, "STR"); return; }
+    if kind == 3 { wr(fd, "IDENT"); return; }
+    if kind == 4 { wr(fd, "KW_FIELD"); return; }
+    if kind == 5 { wr(fd, "KW_FN"); return; }
+    if kind == 6 { wr(fd, "KW_LET"); return; }
+    if kind == 7 { wr(fd, "KW_MUT"); return; }
+    if kind == 8 { wr(fd, "KW_IF"); return; }
+    if kind == 9 { wr(fd, "KW_ELSE"); return; }
+    if kind == 10 { wr(fd, "KW_FOR"); return; }
+    if kind == 11 { wr(fd, "KW_IN"); return; }
+    if kind == 12 { wr(fd, "KW_WHILE"); return; }
+    if kind == 13 { wr(fd, "KW_RETURN"); return; }
+    if kind == 14 { wr(fd, "KW_TRUE"); return; }
+    if kind == 15 { wr(fd, "KW_FALSE"); return; }
+    if kind == 16 { wr(fd, "KW_AS"); return; }
+    if kind == 17 { wr(fd, "KW_CONST"); return; }
+    if kind == 18 { wr(fd, "KW_PUB"); return; }
+    if kind == 19 { wr(fd, "KW_STRUCT"); return; }
+    if kind == 20 { wr(fd, "KW_ENUM"); return; }
+    if kind == 21 { wr(fd, "KW_MATCH"); return; }
+    if kind == 22 { wr(fd, "KW_NULL"); return; }
+    if kind == 23 { wr(fd, "KW_UNSAFE"); return; }
+    if kind == 24 { wr(fd, "KW_EXTERN"); return; }
+    if kind == 25 { wr(fd, "KW_PRINT"); return; }
+    if kind == 26 { wr(fd, "KW_BREAK"); return; }
+    if kind == 27 { wr(fd, "KW_CONTINUE"); return; }
+    if kind == 28 { wr(fd, "KW_BINFIELD"); return; }
+    if kind == 29 { wr(fd, "TY_U8"); return; }
+    if kind == 30 { wr(fd, "TY_U16"); return; }
+    if kind == 31 { wr(fd, "TY_U32"); return; }
+    if kind == 32 { wr(fd, "TY_U64"); return; }
+    if kind == 33 { wr(fd, "TY_I8"); return; }
+    if kind == 34 { wr(fd, "TY_I16"); return; }
+    if kind == 35 { wr(fd, "TY_I32"); return; }
+    if kind == 36 { wr(fd, "TY_I64"); return; }
+    if kind == 37 { wr(fd, "TY_USIZE"); return; }
+    if kind == 38 { wr(fd, "TY_BOOL"); return; }
+    if kind == 39 { wr(fd, "TY_FIELD"); return; }
+    if kind == 40 { wr(fd, "TY_BINFIELD"); return; }
+    if kind == 41 { wr(fd, "TY_POLY"); return; }
+    if kind == 42 { wr(fd, "PLUS"); return; }
+    if kind == 43 { wr(fd, "MINUS"); return; }
+    if kind == 44 { wr(fd, "STAR"); return; }
+    if kind == 45 { wr(fd, "SLASH"); return; }
+    if kind == 46 { wr(fd, "PERCENT"); return; }
+    if kind == 47 { wr(fd, "STARSTAR"); return; }
+    if kind == 48 { wr(fd, "EQ"); return; }
+    if kind == 49 { wr(fd, "NEQ"); return; }
+    if kind == 50 { wr(fd, "LT"); return; }
+    if kind == 51 { wr(fd, "GT"); return; }
+    if kind == 52 { wr(fd, "LE"); return; }
+    if kind == 53 { wr(fd, "GE"); return; }
+    if kind == 54 { wr(fd, "AND"); return; }
+    if kind == 55 { wr(fd, "OR"); return; }
+    if kind == 56 { wr(fd, "NOT"); return; }
+    if kind == 57 { wr(fd, "AMPERSAND"); return; }
+    if kind == 58 { wr(fd, "PIPE"); return; }
+    if kind == 59 { wr(fd, "CARET"); return; }
+    if kind == 60 { wr(fd, "TILDE"); return; }
+    if kind == 61 { wr(fd, "SHL"); return; }
+    if kind == 62 { wr(fd, "SHR"); return; }
+    if kind == 63 { wr(fd, "ASSIGN"); return; }
+    if kind == 64 { wr(fd, "LPAREN"); return; }
+    if kind == 65 { wr(fd, "RPAREN"); return; }
+    if kind == 66 { wr(fd, "LBRACE"); return; }
+    if kind == 67 { wr(fd, "RBRACE"); return; }
+    if kind == 68 { wr(fd, "LBRACKET"); return; }
+    if kind == 69 { wr(fd, "RBRACKET"); return; }
+    if kind == 70 { wr(fd, "SEMI"); return; }
+    if kind == 71 { wr(fd, "COLON"); return; }
+    if kind == 72 { wr(fd, "COMMA"); return; }
+    if kind == 73 { wr(fd, "DOT"); return; }
+    if kind == 74 { wr(fd, "ARROW"); return; }
+    if kind == 75 { wr(fd, "FAT_ARROW"); return; }
+    if kind == 76 { wr(fd, "COLONCOLON"); return; }
+    if kind == 77 { wr(fd, "DOTDOT"); return; }
+    if kind == 78 { wr(fd, "HASH_LBRACKET"); return; }
+    if kind == 79 { wr(fd, "EOF"); return; }
+    wr(fd, "UNKNOWN");
+}
+
+// --- Print a single token ---
+
+fn print_token(fd: i32, tok: *Token) {
+    print_kind_name(fd, tok.kind);
+    wr(fd, " ");
+    wr_int(fd, tok.line as i64);
+    wr(fd, ":");
+    wr_int(fd, tok.col as i64);
+
+    // Print text for identifiers, keywords, and string literals
+    if tok.kind == TOK_IDENT || tok.kind == TOK_STR_LIT {
+        wr(fd, " ");
+        wr(fd, &tok.text[0]);
+    }
+
+    // Print value for integer and bool literals
+    if tok.kind == TOK_INT_LIT {
+        wr(fd, " ");
+        wr(fd, &tok.text[0]);
+        wr(fd, " =");
+        wr_int(fd, tok.int_val as i64);
+    }
+
+    wr(fd, "\n");
+}
+
+// --- Main ---
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: tvc_lexer <source.tv>\n");
+        exit(1);
+    }
+
+    let path: *u8 = argv[1];
+
+    // Open and read source file
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 {
+        wr(2, "error: cannot open file\n");
+        exit(1);
+    }
+    let src: *u8 = alloc(131072); // 128 KB max source
+    let n: i64 = read_bytes(fd, src, 131072);
+    close(fd);
+
+    // Allocate token pool
+    let tokens: *Token = alloc(MAX_TOKENS);
+
+    // Lex
+    let ntok: i32 = lex(src, n as i32, tokens);
+
+    // Print summary to stderr
+    wr(2, "tokens: ");
+    wr_int(2, ntok as i64);
+    wr(2, "\n");
+
+    // Print each token to stdout
+    var i: i32 = 0;
+    while i < ntok {
+        print_token(1, &tokens[i]);
+        i = i + 1;
+    }
+
+    free(src);
+    free(tokens);
+}

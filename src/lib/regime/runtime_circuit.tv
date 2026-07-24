@@ -1,0 +1,355 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// runtime_circuit.tv — runtime PLONK circuit topology (reusable library, no
+// main): builds selectors/witness/sigma from a DATA-DISCOVERED regime descriptor
+// at runtime, handed to the dyn PLONK prover/verifier (plonk_dyn.tv).
+// Link: plonk_dyn.o + regime_fri.o + runtime_circuit.o + <driver>.o.
+// @internal-design: regime
+
+extern "C" fn fill_rc(rc_init: *i64, rc_term: *i64, rc_int: *i64);
+extern "C" fn poseidon2_diag_dyn(f: Field, diag: *i64);
+extern "C" fn fmul_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn fadd_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn fsub_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn plonk_omega_dyn(f: Field, log_n: i32) -> i64;
+extern "C" fn plonk_prove_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+extern "C" fn plonk_verify_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_n_rounds: i32,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+
+// From regime_fri.tv (the canonical-segmentation primitive, dyn):
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+// From plonk_dyn.tv (transcript sponge + Merkle, dyn):
+extern "C" fn merkle_build_dyn(
+    f: Field, leaves: *i64, n_leaves: i32, tree: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64);
+extern "C" fn transcript_init_dyn(f: Field, state: *i64);
+extern "C" fn transcript_absorb_dyn(
+    f: Field, state: *i64, absorb_pos: *i32, input: *i64, n: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64);
+extern "C" fn transcript_squeeze_dyn(
+    f: Field, state: *i64, absorb_pos: *i32, out: *i64, n: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64);
+
+// ===== descriptor + small integer helpers =====
+
+// Real gate count for a degree-d segmentation: sum over segments of
+// deg*(len-1). (deg levels, len-1 recurrence steps.)
+#[export]
+fn rc_count_gates(desc: *i32, nseg: i32) -> i32 {
+    var total: i32 = 0;
+    for s in 0..nseg {
+        let len: i32 = desc[s * 3 + 1];
+        let deg: i32 = desc[s * 3 + 2];
+        // Triangular difference tableau: level L (1..deg) has (len-L) gates,
+        // each verifying tab[L-1][i] + tab[L][i] = tab[L-1][i+1].
+        for L in 1..(deg + 1) {
+            total = total + (len - L);
+        }
+    }
+    return total;
+}
+
+#[export]
+fn rc_next_pow2(x: i32) -> i32 {
+    var p: i32 = 1;
+    while p < x { p = p * 2; }
+    return p;
+}
+
+#[export]
+fn rc_ilog2(n: i32) -> i32 {
+    var l: i32 = 0;
+    var v: i32 = n;
+    while v > 1 { v = v / 2; l = l + 1; }
+    return l;
+}
+
+// ===== union-find (port of the compiler's zk_uf_find / zk_build_perm) =====
+
+fn rc_uf_find(uf: *i32, x: i32) -> i32 {
+    var v: i32 = x;
+    while uf[v] != v {
+        uf[v] = uf[uf[v]];   // path compression
+        v = uf[v];
+    }
+    return v;
+}
+
+fn rc_union(uf: *i32, a: i32, b: i32) {
+    let ra: i32 = rc_uf_find(uf, a);
+    let rb: i32 = rc_uf_find(uf, b);
+    if ra != rb { uf[ra] = rb; }
+}
+
+fn rc_sigma_val(f: Field, op: *i64, g: i32, pos: i32, k1: i64, k2: i64) -> i64 {
+    let base: i64 = op[g];
+    if pos == 1 { return fmul_dyn(f, k1, base); }
+    if pos == 2 { return fmul_dyn(f, k2, base); }
+    return base;
+}
+
+// Record that wire `slot` (gate*3+pos) holds tableau cell `cell`: the first
+// occurrence is the representative, later ones union'd (copy-constrained equal).
+fn rc_wire_cell(uf: *i32, cell_first: *i32, cell: i32, slot: i32) {
+    if cell_first[cell] < 0 {
+        cell_first[cell] = slot;
+    } else {
+        rc_union(uf, slot, cell_first[cell]);
+    }
+}
+
+// ===== the runtime circuit builder =====
+
+// Fills q_*, wa/wb/wc and sigma_* (all caller-allocated, length padded_n) from a
+// degree-d regime descriptor over `data`: gates, witness, and copy constraints
+// in a single walk, then the permutation closed by union-find cycle formation.
+#[export]
+fn rc_build(
+    f: Field, desc: *i32, nseg: i32, data: *i64,
+    padded_n: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64
+) {
+    let neg1: i64 = fsub_dyn(f, 0, 1);
+
+    for i in 0..padded_n {
+        q_L[i] = 0; q_R[i] = 0; q_O[i] = 0; q_M[i] = 0; q_C[i] = 0;
+        wa[i] = 0; wb[i] = 0; wc[i] = 0;
+    }
+
+    let total_cells: i32 = padded_n * 3;
+    let uf: *i32 = alloc(total_cells);
+    for i in 0..total_cells { uf[i] = i; }
+
+    // cell_first[c] = first wire slot carrying tableau cell c (-1 = unseen);
+    // cell id = per-segment tableau index + offset (no collisions). padded_n*4
+    // covers every cell.
+    let max_cells: i32 = padded_n * 4 + 16;
+    let cell_first: *i32 = alloc(max_cells);
+    for i in 0..max_cells { cell_first[i] = 0 - 1; }
+    var cell_base: i32 = 0;
+
+    var gi: i32 = 0;
+    for s in 0..nseg {
+        let start: i32 = desc[s * 3 + 0];
+        let len: i32 = desc[s * 3 + 1];
+        let deg: i32 = desc[s * 3 + 2];
+
+        // Difference tableau over the ACTUAL data (this is what binds the proof
+        // to the data): tab[L*len + i] = Δ^L data[start+i], L = 0..deg, i = 0..len-L.
+        let tab: *i64 = alloc((deg + 1) * len);
+        for i in 0..len { tab[i] = data[start + i]; }
+        for L in 1..(deg + 1) {
+            for i in 0..(len - L) {
+                tab[L * len + i] =
+                fsub_dyn(f, tab[(L - 1) * len + i + 1], tab[(L - 1) * len + i]);
+            }
+        }
+
+        // Tableau cell id helper: cell(L, i) = cell_base + L*len + i.
+        // Emit one gate per difference relation:
+        //   level L (1..deg), index i (0..len-L-1):
+        //     tab[L-1][i] + tab[L][i] = tab[L-1][i+1]
+        //   wa = tab[L-1][i], wb = tab[L][i], wc = tab[L-1][i+1].
+        for L in 1..(deg + 1) {
+            for i in 0..(len - L) {
+                let g: i32 = gi;
+                let a: i64 = tab[(L - 1) * len + i];
+                let b: i64 = tab[L * len + i];
+                wa[g] = a;
+                wb[g] = b;
+                wc[g] = fadd_dyn(f, a, b);
+                q_L[g] = 1; q_R[g] = 1; q_O[g] = neg1;
+                // Wire each wire slot to the tableau cell it carries.
+                rc_wire_cell(uf, cell_first, cell_base + (L - 1) * len + i,     g * 3 + 0);
+                rc_wire_cell(uf, cell_first, cell_base + L * len + i,           g * 3 + 1);
+                rc_wire_cell(uf, cell_first, cell_base + (L - 1) * len + i + 1, g * 3 + 2);
+                gi = gi + 1;
+            }
+        }
+
+        // Degree claim: wire every top d-th-difference cell tab[deg][i] (the wb
+        // of the top-level gates) to the FIRST one — one equality class/cycle.
+        for i in 1..(len - deg) {
+            rc_wire_cell(uf, cell_first, cell_base + deg * len + 0,
+                (gi - (len - deg) + i) * 3 + 1);
+        }
+
+        cell_base = cell_base + (deg + 1) * len;
+        free(tab);
+    }
+    free(cell_first);
+
+    // ---- omega powers op[0..padded_n) ----
+    let omega: i64 = plonk_omega_dyn(f, log_n);
+    let op: *i64 = alloc(padded_n);
+    op[0] = 1;
+    for i in 1..padded_n { op[i] = fmul_dyn(f, op[i - 1], omega); }
+
+    // ---- permutation: identity, then close each class as a cycle ----
+    let pa_g: *i32 = alloc(padded_n); let pa_p: *i32 = alloc(padded_n);
+    let pb_g: *i32 = alloc(padded_n); let pb_p: *i32 = alloc(padded_n);
+    let pc_g: *i32 = alloc(padded_n); let pc_p: *i32 = alloc(padded_n);
+    for i in 0..padded_n {
+        pa_g[i] = i; pa_p[i] = 0;
+        pb_g[i] = i; pb_p[i] = 1;
+        pc_g[i] = i; pc_p[i] = 2;
+    }
+
+    let members: *i32 = alloc(total_cells);
+    let visited: *i32 = alloc(total_cells);
+    for i in 0..total_cells { visited[i] = 0; }
+
+    for i in 0..total_cells {
+        let root: i32 = rc_uf_find(uf, i);
+        if visited[root] == 0 {
+            visited[root] = 1;
+            var nm: i32 = 0;
+            for j in 0..total_cells {
+                if rc_uf_find(uf, j) == root {
+                    members[nm] = j;
+                    nm = nm + 1;
+                }
+            }
+            if nm > 1 {
+                for k in 0..nm {
+                    let src: i32 = members[k];
+                    let dst: i32 = members[(k + 1) % nm];
+                    let sg: i32 = src / 3;
+                    let sp: i32 = src % 3;
+                    let dg: i32 = dst / 3;
+                    let dp: i32 = dst % 3;
+                    if sp == 0 { pa_g[sg] = dg; pa_p[sg] = dp; }
+                    if sp == 1 { pb_g[sg] = dg; pb_p[sg] = dp; }
+                    if sp == 2 { pc_g[sg] = dg; pc_p[sg] = dp; }
+                }
+            }
+        }
+    }
+
+    // ---- encode sigma: sigma_col[i] = op[perm.gate] * kfactor[perm.pos] ----
+    let k1: i64 = 13;
+    let k2: i64 = 17;
+    for i in 0..padded_n {
+        sigma_a[i] = rc_sigma_val(f, op, pa_g[i], pa_p[i], k1, k2);
+        sigma_b[i] = rc_sigma_val(f, op, pb_g[i], pb_p[i], k1, k2);
+        sigma_c[i] = rc_sigma_val(f, op, pc_g[i], pc_p[i], k1, k2);
+    }
+
+    free(uf); free(op);
+    free(pa_g); free(pa_p); free(pb_g); free(pb_p); free(pc_g); free(pc_p);
+    free(members); free(visited);
+}
+
+// ===== data binding: Merkle commit + Fiat-Shamir fingerprint =====
+
+#[export]
+fn rc_commit_data(
+    f: Field, data: *i64, n_leaves: i32,
+    leaves: *i64, tree: *i64, data_root: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) {
+    for i in 0..n_leaves {
+        leaves[i * 4] = data[i];
+        leaves[i * 4 + 1] = 0;
+        leaves[i * 4 + 2] = 0;
+        leaves[i * 4 + 3] = 0;
+    }
+    merkle_build_dyn(f, leaves, n_leaves, tree, rc_init, rc_term, rc_int, diag);
+    for j in 0..4 { data_root[j] = tree[4 + j]; }
+}
+
+// Freeze the (data, segmentation) pair: absorb data_root (4) + flattened
+// descriptor (nseg*3 i64) into a transcript, squeeze a 4-elem fingerprint.
+#[export]
+fn rc_make_fingerprint(
+    f: Field, data_root: *i64, cert: *i64, nseg: i32, fp: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) {
+    let ts: *i64 = alloc(8);
+    let tp: *i32 = alloc(1);
+    transcript_init_dyn(f, ts);
+    tp[0] = 0;
+    transcript_absorb_dyn(f, ts, tp, data_root, 4, rc_init, rc_term, rc_int, diag);
+    transcript_absorb_dyn(f, ts, tp, cert, nseg * 3, rc_init, rc_term, rc_int, diag);
+    transcript_squeeze_dyn(f, ts, tp, fp, 4, rc_init, rc_term, rc_int, diag);
+    free(ts);
+    free(tp);
+}
+
+// Full verify: (a) recompute data_root == committed; (b) recompute fingerprint
+// == committed; (c) REBUILD the circuit from the committed descriptor and run
+// the runtime PLONK verifier on the supplied proof. Returns 1 iff all pass.
+#[export]
+fn rc_verify(
+    f: Field, data: *i64, n: i32, n_leaves: i32,
+    cert_i64: *i64, desc: *i32, nseg: i32, padded_n: i32, log_n: i32,
+    committed_root: *i64, committed_fp: *i64,
+    eval_out: *i64, fri_n_rounds: i32,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, num_queries: i32,
+    leaves: *i64, tree: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) -> i32 {
+    // (a) data root
+    let root2: *i64 = alloc(4);
+    rc_commit_data(f, data, n_leaves, leaves, tree, root2, rc_init, rc_term, rc_int, diag);
+    var root_ok: i32 = 1;
+    for j in 0..4 { if root2[j] != committed_root[j] { root_ok = 0; } }
+    free(root2);
+    if root_ok == 0 { return 0; }
+
+    // (b) fingerprint
+    let fp2: *i64 = alloc(4);
+    rc_make_fingerprint(f, committed_root, cert_i64, nseg, fp2, rc_init, rc_term, rc_int, diag);
+    var fp_ok: i32 = 1;
+    for j in 0..4 { if fp2[j] != committed_fp[j] { fp_ok = 0; } }
+    free(fp2);
+    if fp_ok == 0 { return 0; }
+
+    // (c) rebuild circuit selectors + sigma from descriptor, run PLONK verify.
+    let q_L: *i64 = alloc(padded_n); let q_R: *i64 = alloc(padded_n);
+    let q_O: *i64 = alloc(padded_n); let q_M: *i64 = alloc(padded_n);
+    let q_C: *i64 = alloc(padded_n);
+    let wa: *i64 = alloc(padded_n); let wb: *i64 = alloc(padded_n);
+    let wc: *i64 = alloc(padded_n);
+    let sa: *i64 = alloc(padded_n); let sb: *i64 = alloc(padded_n);
+    let sc: *i64 = alloc(padded_n);
+    rc_build(f, desc, nseg, data, padded_n, log_n,
+        q_L, q_R, q_O, q_M, q_C, wa, wb, wc, sa, sb, sc);
+
+    let v: i32 = plonk_verify_dyn(f, padded_n, log_n,
+        q_L, q_R, q_O, q_M, q_C, sa, sb, sc,
+        eval_out, fri_n_rounds,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        num_queries, rc_init, rc_term, rc_int, diag);
+
+    free(q_L); free(q_R); free(q_O); free(q_M); free(q_C);
+    free(wa); free(wb); free(wc); free(sa); free(sb); free(sc);
+
+    if v == 1 { return 1; }
+    return 0;
+}

@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// weil_zeta_line.tv — Weil zeta of the affine LINE A^1/F_q: the exact function-field
+// PNT. I_q(n) computed three independent ways (Mobius / brute / zeta identity).
+// @internal-design: nt
+// Output per (q, n) in the test set, in order:  q, n, I_q(n), brute_ok, zeta_ok.
+// @internal-oracle: weil_zeta_line (bit-for-bit).
+
+fn modq(x: i32, q: i32) -> i32 {
+    let r: i32 = x % q;
+    if r < 0 { return r + q; }
+    return r;
+}
+
+fn ipow(b: i32, e: i32) -> i32 {
+    var r: i32 = 1;
+    var i: i32 = 0;
+    while i < e { r = r * b; i = i + 1; }
+    return r;
+}
+
+// mu(d): 0 if squareful, else (-1)^(number of distinct prime factors).
+fn mobius(d: i32) -> i32 {
+    if d == 1 { return 1; }
+    var n: i32 = d;
+    var k: i32 = 0;
+    var p: i32 = 2;
+    while p * p <= n {
+        if n % p == 0 {
+            n = n / p;
+            k = k + 1;
+            if n % p == 0 { return 0; }      // p^2 | d  => squareful
+        }
+        p = p + 1;
+    }
+    if n > 1 { k = k + 1; }                   // one remaining prime factor
+    if k % 2 == 0 { return 1; }
+    return -1;
+}
+
+// I_q(n) = (1/n) sum_{d|n} mu(d) q^(n/d).  Exact: the sum is divisible by n.
+fn count_mobius(q: i32, n: i32) -> i32 {
+    var acc: i32 = 0;
+    var d: i32 = 1;
+    while d <= n {
+        if n % d == 0 { acc = acc + mobius(d) * ipow(q, n / d); }
+        d = d + 1;
+    }
+    return acc / n;
+}
+
+// idx -> arr[0..k-1], the k low coeffs base q (caller sets the monic arr[k]=1).
+fn decode(idx: i32, q: i32, k: i32, arr: *i32) {
+    var x: i32 = idx;
+    var i: i32 = 0;
+    while i < k {
+        arr[i] = x % q;
+        x = x / q;
+        i = i + 1;
+    }
+}
+
+// Does monic g (degree dg) divide monic f (degree df) over F_q?  r is scratch
+// (length df+1). Polynomial long division; g monic so no leading inverse needed.
+fn divides(g: *i32, dg: i32, f: *i32, df: i32, q: i32, r: *i32) -> i32 {
+    var i: i32 = 0;
+    while i <= df { r[i] = f[i]; i = i + 1; }
+    var m: i32 = df;
+    while m >= dg {
+        let lc: i32 = modq(r[m], q);          // quotient coeff (g is monic)
+        if lc != 0 {
+            var j: i32 = 0;
+            while j <= dg {
+                r[m - dg + j] = modq(r[m - dg + j] - lc * g[j], q);
+                j = j + 1;
+            }
+        }
+        m = m - 1;
+    }
+    var k: i32 = 0;                        // remainder = r[0..dg-1]
+    while k < dg {
+        if modq(r[k], q) != 0 { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+// f monic degree n (f[0..n-1] set, f[n]=1). Irreducible iff no monic divisor of
+// degree 1..n/2 (the smallest factor of a reducible poly has degree <= n/2).
+fn is_irreducible(f: *i32, n: i32, q: i32) -> i32 {
+    if n <= 0 { return 0; }
+    if n == 1 { return 1; }                    // every monic linear poly is irreducible
+    let half: i32 = n / 2;
+    let g: *i32 = alloc(half + 1);
+    let r: *i32 = alloc(n + 1);
+    var d: i32 = 1;
+    while d <= half {
+        let gtot: i32 = ipow(q, d);
+        var gi: i32 = 0;
+        while gi < gtot {
+            decode(gi, q, d, g);
+            g[d] = 1;
+            if divides(g, d, f, n, q, r) == 1 {
+                free(g);
+                free(r);
+                return 0;
+            }
+            gi = gi + 1;
+        }
+        d = d + 1;
+    }
+    free(g);
+    free(r);
+    return 1;
+}
+
+// The definition: count monic irreducible degree-n polynomials over F_q directly.
+fn count_brute(q: i32, n: i32) -> i32 {
+    let tot: i32 = ipow(q, n);
+    let f: *i32 = alloc(n + 1);
+    var cnt: i32 = 0;
+    var idx: i32 = 0;
+    while idx < tot {
+        decode(idx, q, n, f);
+        f[n] = 1;
+        if is_irreducible(f, n, q) == 1 { cnt = cnt + 1; }
+        idx = idx + 1;
+    }
+    free(f);
+    return cnt;
+}
+
+// Per q: print  q, n, I_q(n), brute_ok, zeta_ok  for n = 1..maxn.
+fn run_q(q: i32, maxn: i32) {
+    let ibr: *i32 = alloc(maxn + 1);
+    var n: i32 = 1;
+    while n <= maxn {
+        let im: i32 = count_mobius(q, n);
+        let ib: i32 = count_brute(q, n);
+        ibr[n] = ib;
+
+        var brute_ok: i32 = 0;
+        if im == ib { brute_ok = 1; }
+
+        // zeta identity: sum_{d|n} d * I_q(d) == q^n  (closed points <-> points)
+        var s: i32 = 0;
+        var d: i32 = 1;
+        while d <= n {
+            if n % d == 0 { s = s + d * ibr[d]; }
+            d = d + 1;
+        }
+        var zeta_ok: i32 = 0;
+        if s == ipow(q, n) { zeta_ok = 1; }
+
+        print(q);
+        print(n);
+        print(im);
+        print(brute_ok);
+        print(zeta_ok);
+        n = n + 1;
+    }
+    free(ibr);
+}
+
+fn main() -> i32 {
+    run_q(2, 6);
+    run_q(3, 4);
+    run_q(5, 3);
+    return 0;
+}

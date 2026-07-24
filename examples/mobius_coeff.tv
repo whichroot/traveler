@@ -1,0 +1,767 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_coeff.tv — Mobius W-B B6: the F_2^60 coefficient-function closure — the
+// STRONG Lemma 5.1(c) (q=3/F_2) checked per solution over 15 exact BinField<m>
+// splitting-field carriers. tvc_self-only (import).
+// @internal-design: nt (Mobius W-B, B6 section); @internal-note: plan-mobius-inclusion.
+
+import "../src/lib/nt/linalg.tv";     // la_fpow, la_solve
+import "../src/lib/nt/linrec.tv";     // bm
+
+type F2 = Field<2>;
+
+// The 15 splitting-field carriers (moduli = lex-first irreducible of each degree).
+type B2  = BinField<2, 7>;                     // x^2+x+1
+type B4  = BinField<4, 19>;                    // x^4+x+1
+type B6  = BinField<6, 67>;                    // x^6+x+1
+type B8  = BinField<8, 283>;                   // x^8+x^4+x^3+x+1 (0x11B, legacy)
+type B10 = BinField<10, 1033>;                 // x^10+x^3+1
+type B12 = BinField<12, 4105>;                 // x^12+x^3+1
+type B14 = BinField<14, 16417>;                // x^14+x^5+1
+type B18 = BinField<18, 262153>;               // x^18+x^3+1
+type B20 = BinField<20, 1048585>;              // x^20+x^3+1
+type B22 = BinField<22, 4194307>;              // x^22+x+1
+type B24 = BinField<24, 16777243>;             // x^24+x^4+x^3+x+1
+type B28 = BinField<28, 268435459>;            // x^28+x+1
+type B30 = BinField<30, 1073741827>;           // x^30+x+1
+type B42 = BinField<42, 4398046511143>;        // x^42+x^5+x^2+x+1
+type B60 = BinField<60, 1152921504606846979>;  // x^60+x+1  (the closure field)
+
+// ============================================================
+//  i64 helpers: integer pow-of-two, small factoring, gcd/lcm
+// ============================================================
+
+fn ipow2(k: i64) -> i64 {
+    var r: i64 = 1;
+    var i: i64 = 0;
+    while i < k { r = r * 2; i = i + 1; }
+    return r;
+}
+
+// distinct prime factors of nn into primes[]; returns the count.
+fn factor_small(nn: i64, primes: *i64) -> i32 {
+    var x: i64 = nn;
+    var np: i32 = 0;
+    var d: i64 = 2;
+    while d * d <= x {
+        if (x % d) == 0 {
+            primes[np] = d; np = np + 1;
+            while (x % d) == 0 { x = x / d; }
+        }
+        d = d + 1;
+    }
+    if x > 1 { primes[np] = x; np = np + 1; }
+    return np;
+}
+
+fn igcd(a: i64, b: i64) -> i64 {
+    var x: i64 = a;
+    var y: i64 = b;
+    while y != 0 { let t: i64 = x % y; x = y; y = t; }
+    return x;
+}
+
+fn ilcm(a: i64, b: i64) -> i64 { return (a / igcd(a, b)) * b; }
+
+// ============================================================
+//  F_2[x] as i64 bitmasks: degree, mul, mod, gcd, powmod, irreducibility
+// ============================================================
+
+fn pdeg(a: i64) -> i32 {
+    if a == 0 { return 0 - 1; }
+    var d: i32 = 0;
+    var x: i64 = a;
+    while x > 1 { x = x / 2; d = d + 1; }
+    return d;
+}
+
+fn pmul(a: i64, b: i64) -> i64 {
+    var r: i64 = 0;
+    var aa: i64 = a;
+    var bb: i64 = b;
+    while bb != 0 {
+        if (bb & 1) == 1 { r = r ^ aa; }
+        aa = aa << 1;
+        bb = bb >> 1;
+    }
+    return r;
+}
+
+fn pmod(a: i64, g: i64) -> i64 {
+    let dg: i32 = pdeg(g);
+    var x: i64 = a;
+    while pdeg(x) >= dg && x != 0 {
+        x = x ^ (g << ((pdeg(x) - dg) as i64));
+    }
+    return x;
+}
+
+fn pgcd(a: i64, b: i64) -> i64 {
+    var x: i64 = a;
+    var y: i64 = b;
+    while y != 0 { let t: i64 = pmod(x, y); x = y; y = t; }
+    return x;
+}
+
+fn ppowmod(a: i64, e: i64, g: i64) -> i64 {
+    var r: i64 = 1;
+    var aa: i64 = pmod(a, g);
+    var ee: i64 = e;
+    while ee != 0 {
+        if (ee & 1) == 1 { r = pmod(pmul(r, aa), g); }
+        aa = pmod(pmul(aa, aa), g);
+        ee = ee >> 1;
+    }
+    return r;
+}
+
+// Rabin/Ben-Or irreducibility over F_2: x^(2^m) == x mod g, and gcd(x^(2^(m/l))-x,g)=1
+// for every prime l | m.
+fn is_irred_f2(g: i64) -> i32 {
+    let m: i32 = pdeg(g);
+    if m <= 0 { return 0; }
+    let xr: i64 = pmod(2, g);
+    if ppowmod(2, ipow2(m as i64), g) != xr { return 0; }
+    let pr: *i64 = alloc(16);
+    let np: i32 = factor_small(m as i64, pr);
+    var ok: i32 = 1;
+    var i: i32 = 0;
+    while i < np {
+        let e: i64 = ipow2((m as i64) / pr[i]);
+        let v: i64 = ppowmod(2, e, g) ^ xr;
+        if pgcd(v, g) != 1 { ok = 0; }
+        i = i + 1;
+    }
+    free(pr);
+    return ok;
+}
+
+// irreducibles of degree 1..6 (const term 1) into IRR[]; returns count. Enough to
+// trial-divide any degree-<=12 poly (a reducible one has a factor of degree <=6).
+fn build_irr(IRR: *i64) -> i32 {
+    var n: i32 = 0;
+    var d: i32 = 1;
+    while d <= 6 {
+        let lo: i64 = ipow2(d as i64) | 1;
+        let hi: i64 = ipow2((d as i64) + 1);
+        var g: i64 = lo;
+        while g < hi {
+            if is_irred_f2(g) == 1 { IRR[n] = g; n = n + 1; }
+            g = g + 2;
+        }
+        d = d + 1;
+    }
+    return n;
+}
+
+// lex-first irreducible of a given degree (for the m=70 refusal probe).
+fn first_irred(d: i32) -> i64 {
+    let lo: i64 = ipow2(d as i64) | 1;
+    let hi: i64 = ipow2((d as i64) + 1);
+    var g: i64 = lo;
+    while g < hi {
+        if is_irred_f2(g) == 1 { return g; }
+        g = g + 2;
+    }
+    return 0;
+}
+
+// exact quotient f / h (assumes h | f exactly).
+fn pdiv_exact(f: i64, h: i64) -> i64 {
+    let dh: i32 = pdeg(h);
+    var a: i64 = f;
+    var q: i64 = 0;
+    while pdeg(a) >= dh && a != 0 {
+        let sh: i32 = pdeg(a) - dh;
+        q = q ^ (ipow2(sh as i64));
+        a = a ^ (h << (sh as i64));
+    }
+    return q;
+}
+
+// factor f over F_2 into caller-owned (fbits, fdeg, fmul; >=16 slots); returns the
+// distinct-irreducible count. Trial-divides IRR (deg<=6); a deg>=7 remainder is irreducible.
+fn factor_f2(fin: i64, IRR: *i64, nirr: i32, fbits: *i64, fdeg: *i32, fmul: *i32) -> i32 {
+    var f: i64 = fin;
+    var nf: i32 = 0;
+    var hi: i32 = 0;
+    while hi < nirr {
+        let h: i64 = IRR[hi];
+        if pdeg(h) > pdeg(f) { hi = nirr; }
+        else {
+            var mult: i32 = 0;
+            while pdeg(f) >= pdeg(h) && pmod(f, h) == 0 {
+                mult = mult + 1;
+                f = pdiv_exact(f, h);
+            }
+            if mult > 0 {
+                fbits[nf] = h; fdeg[nf] = pdeg(h); fmul[nf] = mult; nf = nf + 1;
+            }
+            hi = hi + 1;
+        }
+    }
+    if pdeg(f) >= 1 {
+        fbits[nf] = f; fdeg[nf] = pdeg(f); fmul[nf] = 1; nf = nf + 1;
+    }
+    return nf;
+}
+
+// carrier index 0..14 for the 15 supported m; -1 = refusal (m > 63, i.e. m=70).
+fn m_index(m: i64) -> i32 {
+    if m == 2  { return 0; }
+    if m == 4  { return 1; }
+    if m == 6  { return 2; }
+    if m == 8  { return 3; }
+    if m == 10 { return 4; }
+    if m == 12 { return 5; }
+    if m == 14 { return 6; }
+    if m == 18 { return 7; }
+    if m == 20 { return 8; }
+    if m == 22 { return 9; }
+    if m == 24 { return 10; }
+    if m == 28 { return 11; }
+    if m == 30 { return 12; }
+    if m == 42 { return 13; }
+    if m == 60 { return 14; }
+    return 0 - 1;
+}
+
+// ============================================================
+//  carrier-generic core over F = BinField<m>
+// ============================================================
+
+fn lucas(n: i64, j: i64) -> i32 {
+    if (n & j) == j { return 1; }
+    return 0;
+}
+
+// the field element whose F_2-bit-pattern is k, via +,*,literal casts only
+// (no runtime int->F cast). x2 = the element "x" (bitmask 2).
+fn elem_from_bits<F: Field>(k: i64, x2: F) -> F {
+    var r: F = 0 as F;
+    var xp: F = 1 as F;
+    var kk: i64 = k;
+    while kk > 0 {
+        if (kk % 2) == 1 { r = r + xp; }
+        xp = xp * x2;
+        kk = kk / 2;
+    }
+    return r;
+}
+
+// Partner scan for one U_3 multiplier wp (called with omega and omega^2).
+// Returns 0 ok / 1 coset-membership / 2 multiplicity / 3 coefficient-function.
+fn partner_scan<F: Field>(rts: *F, rml: *i32, insup: *i32, nr: i32,
+    xsol: *F, ubase: *i32, a2: i32, wp: F) -> i32 {
+    let y2: F = rts[a2] * wp;
+    var b: i32 = 0 - 1;
+    var s: i32 = 0;
+    while s < nr {
+        if rts[s] == y2 { b = s; }
+        s = s + 1;
+    }
+    if b < 0 { return 1; }
+    if insup[b] == 0 { return 1; }
+    if rml[b] != rml[a2] { return 2; }
+    var j: i32 = 0;
+    while j < rml[a2] {
+        let ca: F = xsol[ubase[a2] + j];
+        let cb: F = xsol[ubase[b] + j];
+        if ca == cb { } else { return 3; }
+        j = j + 1;
+    }
+    return 0;
+}
+
+// evaluate the F_2 polynomial with bitmask hb (degree dh) at y in F (Horner).
+fn peval_bits<F: Field>(hb: i64, dh: i32, y: F) -> F {
+    var v: F = 0 as F;
+    var i: i32 = dh;
+    while i >= 0 {
+        v = v * y;
+        if ((hb >> (i as i64)) & 1) == 1 { v = v + (1 as F); }
+        i = i - 1;
+    }
+    return v;
+}
+
+// generator of the subfield F_{2^d} inside F = F_{2^m}: beta = t^((2^m-1)/(2^d-1))
+// for the first t whose projection generates F_{2^d}*; d==1 -> 1. w0 = F-typed witness.
+fn subfield_gen<F: Field>(w0: F, order: i64, d: i32) -> F {
+    if d == 1 { return 1 as F; }
+    let x2: F = 2 as F;
+    let sd1: i64 = ipow2(d as i64) - 1;
+    let E: i64 = order / sd1;
+    let primes: *i64 = alloc(20);
+    let np: i32 = factor_small(sd1, primes);
+    var res: F = 1 as F;
+    var found: i32 = 0;
+    var k: i64 = 2;
+    while found == 0 && k < 100000 {
+        let t: F = elem_from_bits(k, x2);
+        if t == (0 as F) { k = k + 1; }
+        else {
+            let b: F = la_fpow(t, E);
+            if b == (1 as F) { k = k + 1; }
+            else {
+                var ok: i32 = 1;
+                var pi: i32 = 0;
+                while pi < np {
+                    let ee: i64 = sd1 / primes[pi];
+                    if la_fpow(b, ee) == (1 as F) { ok = 0; }
+                    pi = pi + 1;
+                }
+                if ok == 1 { res = b; found = 1; } else { k = k + 1; }
+            }
+        }
+    }
+    free(primes);
+    return res;
+}
+
+// Full Lemma 5.1(c) on one solution over F = BinField<m>. seqi is the 0/1 sequence
+// (seqi[n] = a_n), fbits/fdeg/fmul/nf its Mrev factorization. Returns:
+//   0 ok · 1 coset-membership · 2 multiplicity · 3 coefficient-function
+//   4 reconstruction · 5 singular system · 9 root-location failure.
+fn coeff_check<F: Field>(w0: F, order: i64,
+    seqi: *i64, nseq: i32,
+    fbits: *i64, fdeg: *i32, fmul: *i32, nf: i32) -> i32 {
+    let qm2: i64 = order - 1;
+    let omega: F = subfield_gen(w0, order, 2);
+    let omega2: F = omega * omega;
+
+    var d: i32 = 0;
+    var nrmax: i32 = 0;
+    var fi: i32 = 0;
+    while fi < nf {
+        d = d + fdeg[fi] * fmul[fi];
+        nrmax = nrmax + fdeg[fi];
+        fi = fi + 1;
+    }
+
+    let rts: *F = alloc(nrmax);
+    let rml: *i32 = alloc(nrmax);
+    var nr: i32 = 0;
+
+    // locate roots with multiplicity by subfield enumeration
+    var locate_ok: i32 = 1;
+    fi = 0;
+    while fi < nf {
+        let dh: i32 = fdeg[fi];
+        let beta: F = subfield_gen(w0, order, dh);
+        let sd1: i64 = ipow2(dh as i64) - 1;
+        var got: i32 = 0;
+        var yp: F = 1 as F;
+        var ii: i64 = 0;
+        while ii < sd1 {
+            if peval_bits(fbits[fi], dh, yp) == (0 as F) {
+                rts[nr] = yp; rml[nr] = fmul[fi]; nr = nr + 1; got = got + 1;
+            }
+            yp = yp * beta;
+            ii = ii + 1;
+        }
+        if got != dh { locate_ok = 0; }
+        fi = fi + 1;
+    }
+    if locate_ok == 0 { free(rts); free(rml); return 9; }
+
+    // unknown list (root, j), grouped by root; ubase[ri] = first unknown of root ri
+    let ubase: *i32 = alloc(nr);
+    let unk_r: *i32 = alloc(d);
+    let unk_j: *i32 = alloc(d);
+    var u: i32 = 0;
+    var ri: i32 = 0;
+    while ri < nr {
+        ubase[ri] = u;
+        var j: i32 = 0;
+        while j < rml[ri] { unk_r[u] = ri; unk_j[u] = j; u = u + 1; j = j + 1; }
+        ri = ri + 1;
+    }
+
+    // confluent system A x = b at n = 1..d :  A[r][c] = Lucas(n,j_c) * gamma_c^n
+    let A: *F = alloc(d * d);
+    let bvec: *F = alloc(d);
+    var rr: i32 = 0;
+    while rr < d {
+        let n: i64 = (rr + 1) as i64;
+        var cc: i32 = 0;
+        while cc < d {
+            if lucas(n, unk_j[cc] as i64) == 1 {
+                A[rr * d + cc] = la_fpow(rts[unk_r[cc]], n);
+            } else {
+                A[rr * d + cc] = 0 as F;
+            }
+            cc = cc + 1;
+        }
+        // exponent n=rr+1 pairs with array value seqi[n]: our enumeration is 0-indexed
+        // (seqi[k]=a_k, valid for all k>=0), so the oracle's a_n = seqi[n].
+        if seqi[rr + 1] == 1 { bvec[rr] = 1 as F; } else { bvec[rr] = 0 as F; }
+        rr = rr + 1;
+    }
+
+    let xsol: *F = alloc(d);
+    let solved: i32 = la_solve(A, d, bvec, xsol, qm2);
+    var code: i32 = 0;
+    if solved == 0 { code = 5; }
+
+    // reconstruct on 40 fresh terms
+    if code == 0 {
+        let lim: i32 = d + 40;
+        var n: i32 = d + 1;
+        while n <= lim && n < nseq && code == 0 {
+            let nn: i64 = n as i64;
+            var v: F = 0 as F;
+            var cc: i32 = 0;
+            while cc < d {
+                if lucas(nn, unk_j[cc] as i64) == 1 {
+                    v = v + xsol[cc] * la_fpow(rts[unk_r[cc]], nn);
+                }
+                cc = cc + 1;
+            }
+            // reconstruct a_n = seqi[n] (exponent n pairs with array index n)
+            var bad: i32 = 0;
+            if seqi[n] == 1 { if v == (1 as F) { } else { bad = 1; } }
+            else { if v == (0 as F) { } else { bad = 1; } }
+            if bad == 1 { code = 4; }
+            n = n + 1;
+        }
+    }
+
+    // FULL Lemma 5.1(c): support union of U_3-cosets, equal mult + equal coeffs
+    if code == 0 {
+        let insup: *i32 = alloc(nr);
+        var z: i32 = 0;
+        while z < nr { insup[z] = 0; z = z + 1; }
+        var cc: i32 = 0;
+        while cc < d {
+            if xsol[cc] == (0 as F) { } else { insup[unk_r[cc]] = 1; }
+            cc = cc + 1;
+        }
+        var a2: i32 = 0;
+        while a2 < nr && code == 0 {
+            if insup[a2] == 1 {
+                let c1: i32 = partner_scan(rts, rml, insup, nr, xsol, ubase, a2, omega);
+                if c1 != 0 { code = c1; }
+                if code == 0 {
+                    let c2: i32 = partner_scan(rts, rml, insup, nr, xsol, ubase, a2, omega2);
+                    if c2 != 0 { code = c2; }
+                }
+            }
+            a2 = a2 + 1;
+        }
+        free(insup);
+    }
+
+    free(rts); free(rml); free(ubase); free(unk_r); free(unk_j);
+    free(A); free(bvec); free(xsol);
+    return code;
+}
+
+// Factor Mrev, compute m, dispatch to the matching BinField<m> carrier; mi_out[0]
+// = carrier index (or -1). Returns coeff_check's code, or 7 = refusal (m>63), 8 = zero root.
+fn dispatch(seqi: *i64, nseq: i32, mrev: i64, IRR: *i64, nirr: i32, mi_out: *i32) -> i32 {
+    if (mrev & 1) == 0 { mi_out[0] = 0 - 1; return 8; }
+    let fbits: *i64 = alloc(16);
+    let fdeg: *i32 = alloc(16);
+    let fmul: *i32 = alloc(16);
+    let nf: i32 = factor_f2(mrev, IRR, nirr, fbits, fdeg, fmul);
+    var m: i64 = 2;
+    var i: i32 = 0;
+    while i < nf { m = ilcm(m, fdeg[i] as i64); i = i + 1; }
+    let idx: i32 = m_index(m);
+    if idx < 0 {
+        free(fbits); free(fdeg); free(fmul);
+        mi_out[0] = 0 - 1; return 7;
+    }
+    mi_out[0] = idx;
+    // exactly one m matches; independent guarded arms (no nesting)
+    var code: i32 = 0;
+    if m == 2  { let w: B2  = 0 as B2;  code = coeff_check(w, 3, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 4  { let w: B4  = 0 as B4;  code = coeff_check(w, 15, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 6  { let w: B6  = 0 as B6;  code = coeff_check(w, 63, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 8  { let w: B8  = 0 as B8;  code = coeff_check(w, 255, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 10 { let w: B10 = 0 as B10; code = coeff_check(w, 1023, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 12 { let w: B12 = 0 as B12; code = coeff_check(w, 4095, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 14 { let w: B14 = 0 as B14; code = coeff_check(w, 16383, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 18 { let w: B18 = 0 as B18; code = coeff_check(w, 262143, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 20 { let w: B20 = 0 as B20; code = coeff_check(w, 1048575, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 22 { let w: B22 = 0 as B22; code = coeff_check(w, 4194303, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 24 { let w: B24 = 0 as B24; code = coeff_check(w, 16777215, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 28 { let w: B28 = 0 as B28; code = coeff_check(w, 268435455, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 30 { let w: B30 = 0 as B30; code = coeff_check(w, 1073741823, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 42 { let w: B42 = 0 as B42; code = coeff_check(w, 4398046511103, seqi, nseq, fbits, fdeg, fmul, nf); }
+    if m == 60 { let w: B60 = 0 as B60; code = coeff_check(w, 1152921504606846975, seqi, nseq, fbits, fdeg, fmul, nf); }
+    free(fbits); free(fdeg); free(fmul);
+    return code;
+}
+
+// BM -> Mrev bits -> seqi -> dispatch, for one nonzero F_2 sequence a.
+fn check_seq(a: *F2, L: i32, seqi: *i64, NGEN: i32,
+    IRR: *i64, nirr: i32, mi_out: *i32) -> i32 {
+    let Cf: *F2 = alloc(2 * L + 3);
+    let Lm: i32 = bm(a, 2 * L + 2, Cf, 0);
+    var mrev: i64 = 0;
+    var ci: i32 = 0;
+    while ci <= Lm {
+        if Cf[ci] == (1 as F2) { mrev = mrev | ipow2((Lm - ci) as i64); }
+        ci = ci + 1;
+    }
+    free(Cf);
+    var si: i32 = 0;
+    while si < NGEN {
+        if a[si] == (1 as F2) { seqi[si] = 1; } else { seqi[si] = 0; }
+        si = si + 1;
+    }
+    return dispatch(seqi, NGEN, mrev, IRR, nirr, mi_out);
+}
+
+// ============================================================
+//  driver: enumerate solutions, run the full closure check
+// ============================================================
+
+fn main() {
+    let q: i32 = 3;
+    let NGEN: i32 = 4 * 12 * q + 8;      // 152: window + promotion + fresh terms
+
+    let IRR: *i64 = alloc(64);
+    let nirr: i32 = build_irr(IRR);
+
+    let mi_out: *i32 = alloc(1);
+    let seqi: *i64 = alloc(NGEN);
+
+    // main distinct-sequence signatures
+    let SIGCAP: i32 = 4096;
+    let sigs: *i64 = alloc(SIGCAP);
+    var nsig: i32 = 0;
+
+    // control (short-window) signatures
+    let CTRLCAP: i32 = 16384;
+    let csigs: *i64 = alloc(CTRLCAP);
+    var ncsig: i32 = 0;
+
+    var instances: i32 = 0;
+    var distinct: i32 = 0;
+    var v_coset: i32 = 0;
+    var v_mult: i32 = 0;
+    var v_coeff: i32 = 0;
+    var v_recon: i32 = 0;
+    var v_sing: i32 = 0;
+    var refuse: i32 = 0;
+    var zeroroot: i32 = 0;
+    let hist: *i32 = alloc(15);
+    var hz: i32 = 0;
+    while hz < 15 { hist[hz] = 0; hz = hz + 1; }
+
+    var ctrl_distinct: i32 = 0;
+    var ctrl_pass: i32 = 0;
+    var ctrl_viol: i32 = 0;
+    var ctrl_refuse: i32 = 0;
+
+    var L: i32 = 1;
+    while L <= 12 {
+        let B: *F2 = alloc(NGEN * L);
+        let a: *F2 = alloc(NGEN);
+        let winK: i32 = 2 * L;
+        let nrows: i32 = winK * (q - 1);
+        let M: *F2 = alloc(nrows * L);
+        let ns: *F2 = alloc(L * L);
+        let shK: i32 = L / 2 + 1;
+        let shRows: i32 = shK * (q - 1);
+        let Msh: *F2 = alloc(shRows * L);
+        let nsh: *F2 = alloc(L * L);
+
+        let masks: i32 = 1 << (L - 1);
+        var mask: i32 = 0;
+        while mask < masks {
+            // build B[n][j] = coeff of initial a_j in a_n
+            var n: i32 = 0;
+            while n < NGEN {
+                var j: i32 = 0;
+                while j < L { B[n * L + j] = 0 as F2; j = j + 1; }
+                if n < L {
+                    B[n * L + n] = 1 as F2;
+                } else {
+                    var i: i32 = 1;
+                    while i <= L {
+                        var bit: i32 = 0;
+                        if i == L { bit = 1; } else { bit = (mask >> (i - 1)) & 1; }
+                        if bit == 1 {
+                            var j2: i32 = 0;
+                            while j2 < L {
+                                B[n * L + j2] = B[n * L + j2] + B[(n - i) * L + j2];
+                                j2 = j2 + 1;
+                            }
+                        }
+                        i = i + 1;
+                    }
+                }
+                n = n + 1;
+            }
+
+            // --- correct window: nullspace, enumerate, full check on distinct ---
+            var row: i32 = 0;
+            var k: i32 = 0;
+            while k < winK {
+                var j: i32 = 1;
+                while j < q {
+                    let nn: i32 = q * k + j;
+                    var c: i32 = 0;
+                    while c < L { M[row * L + c] = B[nn * L + c]; c = c + 1; }
+                    row = row + 1;
+                    j = j + 1;
+                }
+                k = k + 1;
+            }
+            let dim: i32 = la_nullspace(M, nrows, L, 0, ns);
+            let combos: i32 = 1 << dim;
+            var combo: i32 = 1;
+            while combo < combos {
+                var n2: i32 = 0;
+                while n2 < NGEN {
+                    var acc: F2 = 0 as F2;
+                    var jb: i32 = 0;
+                    while jb < dim {
+                        if ((combo >> jb) & 1) == 1 {
+                            var jc: i32 = 0;
+                            while jc < L {
+                                if ns[jb * L + jc] == (1 as F2) { acc = acc + B[n2 * L + jc]; }
+                                jc = jc + 1;
+                            }
+                        }
+                        jb = jb + 1;
+                    }
+                    a[n2] = acc;
+                    n2 = n2 + 1;
+                }
+                instances = instances + 1;
+                // distinct signature (first 63 terms; complexity <= 12 so faithful)
+                var sig: i64 = 0;
+                var si: i32 = 0;
+                while si < 63 {
+                    if a[si] == (1 as F2) { sig = sig | (1 << (si as i64)); }
+                    si = si + 1;
+                }
+                var seen: i32 = 0;
+                var zz: i32 = 0;
+                while zz < nsig { if sigs[zz] == sig { seen = 1; } zz = zz + 1; }
+                if seen == 0 {
+                    if nsig < SIGCAP { sigs[nsig] = sig; nsig = nsig + 1; }
+                    distinct = distinct + 1;
+                    let code: i32 = check_seq(a, L, seqi, NGEN, IRR, nirr, mi_out);
+                    if mi_out[0] >= 0 { hist[mi_out[0]] = hist[mi_out[0]] + 1; }
+                    if code == 1 { v_coset = v_coset + 1; }
+                    else { if code == 2 { v_mult = v_mult + 1; }
+                        else { if code == 3 { v_coeff = v_coeff + 1; }
+                            else { if code == 4 { v_recon = v_recon + 1; }
+                                else { if code == 9 { v_recon = v_recon + 1; }
+                                    else { if code == 5 { v_sing = v_sing + 1; }
+                                        else { if code == 7 { refuse = refuse + 1; }
+                                            else { if code == 8 { zeroroot = zeroroot + 1; } } } } } } } }
+                }
+                combo = combo + 1;
+            }
+
+            // --- short-window control: full check on distinct short solutions ---
+            var rs: i32 = 0;
+            var ks: i32 = 0;
+            while ks < shK {
+                var j: i32 = 1;
+                while j < q {
+                    let nn: i32 = q * ks + j;
+                    var c: i32 = 0;
+                    while c < L { Msh[rs * L + c] = B[nn * L + c]; c = c + 1; }
+                    rs = rs + 1;
+                    j = j + 1;
+                }
+                ks = ks + 1;
+            }
+            let dimsh: i32 = la_nullspace(Msh, shRows, L, 0, nsh);
+            let combosh: i32 = 1 << dimsh;
+            var cs: i32 = 1;
+            while cs < combosh {
+                var n3: i32 = 0;
+                while n3 < NGEN {
+                    var acc: F2 = 0 as F2;
+                    var jb: i32 = 0;
+                    while jb < dimsh {
+                        if ((cs >> jb) & 1) == 1 {
+                            var jc: i32 = 0;
+                            while jc < L {
+                                if nsh[jb * L + jc] == (1 as F2) { acc = acc + B[n3 * L + jc]; }
+                                jc = jc + 1;
+                            }
+                        }
+                        jb = jb + 1;
+                    }
+                    a[n3] = acc;
+                    n3 = n3 + 1;
+                }
+                // nonzero?
+                var nz: i32 = 0;
+                var zc: i32 = 0;
+                while zc < NGEN { if a[zc] == (1 as F2) { nz = 1; } zc = zc + 1; }
+                if nz == 1 {
+                    var sig: i64 = 0;
+                    var si: i32 = 0;
+                    while si < 63 {
+                        if a[si] == (1 as F2) { sig = sig | (1 << (si as i64)); }
+                        si = si + 1;
+                    }
+                    var seen: i32 = 0;
+                    var zz: i32 = 0;
+                    while zz < ncsig { if csigs[zz] == sig { seen = 1; } zz = zz + 1; }
+                    if seen == 0 {
+                        if ncsig < CTRLCAP { csigs[ncsig] = sig; ncsig = ncsig + 1; }
+                        ctrl_distinct = ctrl_distinct + 1;
+                        let code: i32 = check_seq(a, L, seqi, NGEN, IRR, nirr, mi_out);
+                        if code == 0 { ctrl_pass = ctrl_pass + 1; }
+                        else {
+                            ctrl_viol = ctrl_viol + 1;
+                            if code == 7 { ctrl_refuse = ctrl_refuse + 1; }
+                        }
+                    }
+                }
+                cs = cs + 1;
+            }
+
+            mask = mask + 1;
+        }
+        free(B); free(a); free(M); free(ns); free(Msh); free(nsh);
+        L = L + 1;
+    }
+
+    // --- main ledger ---
+    print(instances);      // 1085
+    print(distinct);       // 112
+    print(v_coset);        // 0
+    print(v_mult);         // 0
+    print(v_coeff);        // 0
+    print(v_recon);        // 0
+    print(v_sing);         // 0
+    print(refuse);         // 0 (no genuine solution needs m>63)
+    print(zeroroot);       // 0
+
+    // --- m-histogram: the occurring splitting-degree spectrum (the FINDING) ---
+    // order: 2 4 6 8 10 12 14 18 20 22 24 28 30 42 60
+    var hp: i32 = 0;
+    while hp < 15 { print(hist[hp]); hp = hp + 1; }
+
+    // --- control ledger ---
+    print(ctrl_distinct);
+    print(ctrl_pass);
+    print(ctrl_viol);
+    print(ctrl_refuse);
+
+    // --- deterministic m=70 refusal probe: Mrev = (deg-5 irr)(deg-7 irr) ---
+    let p5: i64 = first_irred(5);
+    let p7: i64 = first_irred(7);
+    let mrev70: i64 = pmul(p5, p7);
+    let dummy: *i64 = alloc(NGEN);
+    var di: i32 = 0;
+    while di < NGEN { dummy[di] = 0; di = di + 1; }
+    let rc: i32 = dispatch(dummy, NGEN, mrev70, IRR, nirr, mi_out);
+    print(rc);             // 7 (refusal)
+    free(dummy);
+
+    free(IRR); free(mi_out); free(seqi); free(sigs); free(csigs); free(hist);
+}

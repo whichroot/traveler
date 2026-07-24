@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// crtsolve_test.tv -- the gate for src/lib/nt/crtsolve.tv (the F1 Stage-3 seed:
+// multi-modular exact integer linear solve, "precision = prime count").
+//   (1) 2x2 known-rational system: w = (4/5, 7/5) -> Q20 ints 838861/1468006,
+//       det bits 3, sign +1 -- hand-checkable exactness.
+//   (2) n=12 deterministic integer system: full pipeline, status 0 = the
+//       internal FRESH-prime certificate held (A*num == det*b mod 3 primes
+//       never used in the solve); then the reconstructed exact solution is
+//       re-checked mod 2013265921 against la_solve<Field<2013265921>> -- two
+//       independent paths (Cramer-CRT reconstruction vs carrier-contract rref)
+//       must agree on all 12 components.
+//   (3) a singular system refuses loudly (status 2, via negativa).
+import "../src/lib/nt/crtsolve.tv";
+import "../src/lib/nt/linalg.tv";
+
+type P9 = Field<2013265921>;
+
+// deterministic 32-bit mix (structured index patterns mod small primes collapse
+// rank -- a pointwise function of a linear form is low-rank; hash properly).
+fn cst_mix(x: i64) -> i64 {
+    var z: i64 = (x * 2654435761 + 2246822519) % 4294967296;
+    z = ((z ^ (z >> 15)) * 40503) % 4294967296;
+    return z ^ (z >> 13);
+}
+
+fn main() -> i32 {
+    // ---- (1) the hand-checkable case ----
+    let A2: *i64 = alloc(4);
+    A2[0] = 2; A2[1] = 1; A2[2] = 1; A2[3] = 3;
+    let b2: *i64 = alloc(2);
+    b2[0] = 3; b2[1] = 5;
+    let q2: *i64 = alloc(2);
+    let info: *i64 = alloc(8);
+    print(crt_solve(A2, b2, 2, 20, q2, info) as i64);   // 0
+    print(q2[0]);                                       // 838861  = round(4/5 * 2^20)
+    print(q2[1]);                                       // 1468006 = round(7/5 * 2^20)
+    print(info[2]);                                     // det bits: |det| = 5 -> 3
+    print(info[3]);                                     // det sign: +1
+
+    // ---- (2) n=12 deterministic system + the carrier cross-check ----
+    let n: i32 = 12;
+    let A: *i64 = alloc(n * n);
+    let b: *i64 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        var j: i32 = 0;
+        while j < n {
+            A[i * n + j] = cst_mix((i * n + j) as i64) % 19 - 9;
+            j = j + 1;
+        }
+        b[i] = cst_mix((1000 + i) as i64) % 199 - 99;
+        i = i + 1;
+    }
+    let q: *i64 = alloc(n);
+    print(crt_solve(A, b, n, 20, q, info) as i64);      // 0 (certificate held)
+    print(info[0]);                                     // K primes (Hadamard-bound)
+    print(info[1]);                                     // unlucky primes skipped
+    let p: i64 = 2013265921;
+    let AF: *P9 = alloc(n * n);
+    let bF: *P9 = alloc(n);
+    let oF: *P9 = alloc(n);
+    i = 0;
+    while i < n {
+        var j2: i32 = 0;
+        while j2 < n { AF[i * n + j2] = modp(A[i * n + j2], p) as P9; j2 = j2 + 1; }
+        bF[i] = modp(b[i], p) as P9;
+        i = i + 1;
+    }
+    print(la_solve(AF, n, bF, oF, 2013265919) as i64);  // 1 (unique solution mod p)
+    var detq: i64 = limbs_mod(g_cs_detmag, g_cs_nl, p);
+    if g_cs_detsign < 0 { detq = modp(0 - detq, p); }
+    let dinv: i64 = cs_powmod(detq, p - 2, p);
+    var agree: i32 = 0;
+    i = 0;
+    while i < n {
+        var nq: i64 = limbs_mod(&g_cs_mags[i * g_cs_nl], g_cs_nl, p);
+        if g_cs_signs[i] < 0 { nq = modp(0 - nq, p); }
+        let wstar: i64 = (nq * dinv) % p;
+        if oF[i] == wstar as P9 { agree = agree + 1; }
+        i = i + 1;
+    }
+    print(agree as i64);                                // 12 (the two paths agree)
+
+    // ---- (3) singular refusal ----
+    let A3: *i64 = alloc(9);
+    A3[0] = 1; A3[1] = 2; A3[2] = 3;
+    A3[3] = 2; A3[4] = 4; A3[5] = 6;                    // row1 = 2*row0: det = 0
+    A3[6] = 1; A3[7] = 0; A3[8] = 1;
+    let b3: *i64 = alloc(3);
+    b3[0] = 1; b3[1] = 2; b3[2] = 3;
+    let q3: *i64 = alloc(3);
+    print(crt_solve(A3, b3, 3, 20, q3, info) as i64);   // 2 (singular, loud)
+    return 0;
+}

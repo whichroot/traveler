@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_fri.tv — canonical regime segmentation proof over a runtime prime:
+// prove/verify that data decomposes into maximal low-degree polynomial regimes.
+// Certificate (flat *i64): seg[3k]=start, seg[3k+1]=len, seg[3k+2]=deg.
+// @internal-design: regime
+
+// --- m-th forward difference of len points at data[a..a+len), into work ---
+// Returns the surviving count (len - m); work[0..ret) hold the differences.
+fn fdiff<F: Field>(data: *F, a: i32, len: i32, m: i32, work: *F) -> i32 {
+    for i in 0..len { work[i] = data[a + i]; }
+    var rem: i32 = len;
+    var level: i32 = 0;
+    while level < m {
+        for j in 0..(rem - 1) {
+            work[j] = work[j + 1] - work[j];
+        }
+        rem = rem - 1;
+        level = level + 1;
+    }
+    return rem;
+}
+
+// Segment [a, a+len) fits degree `deg` iff its (deg+1)-th forward difference
+// vanishes. Windows of <= deg+1 points trivially fit (interpolation).
+fn seg_fits<F: Field>(data: *F, a: i32, len: i32, deg: i32, work: *F) -> i32 {
+    if len <= deg + 1 { return 1; }
+    let rem: i32 = fdiff(data, a, len, deg + 1, work);
+    var ok: i32 = 1;
+    for i in 0..rem {
+        if work[i] != 0 { ok = 0; }
+    }
+    return ok;
+}
+
+// Boundary at index b (left segment degree `deg`) is FORCED iff the (deg+1)-th
+// forward difference of data[b-deg-1 .. b] is nonzero, witnessed in-field by
+// err * inv(err) == 1 (zero has no inverse, so a false boundary fails).
+fn boundary_forced<F: Field>(data: *F, b: i32, deg: i32, work: *F) -> i32 {
+    fdiff(data, b - deg - 1, deg + 2, deg + 1, work);
+    let err: F = work[0];
+    let inv: F = 1 / err;
+    let chk: F = err * inv;
+    if chk == 1 { return 1; }
+    return 0;
+}
+
+// Greedy canonical segmentation at fixed degree `deg`: each segment grows
+// maximally while it fits, so every cut is a forced boundary. Returns nseg.
+fn regime_prove<F: Field>(
+    data: *F, n: i32, deg: i32, cert: *i64, work: *F
+) -> i32 {
+    var nseg: i32 = 0;
+    var start: i32 = 0;
+    while start < n {
+        // Minimal segment is deg+1 points (trivially fits); clamp to the tail.
+        var len: i32 = deg + 1;
+        if start + len > n { len = n - start; }
+        while (start + len) < n {
+            let test_len: i32 = len + 1;
+            if seg_fits(data, start, test_len, deg, work) == 0 { break; }
+            len = test_len;
+        }
+        cert[nseg * 3] = start as i64;
+        cert[nseg * 3 + 1] = len as i64;
+        cert[nseg * 3 + 2] = deg as i64;
+        nseg = nseg + 1;
+        start = start + len;
+    }
+    return nseg;
+}
+
+// Verify a canonical-segmentation certificate: (1) segments partition [0, n)
+// exactly in order; (2) each fits its claimed order; (3) each INTERIOR boundary
+// is forced. Returns 1 iff valid.
+fn regime_verify<F: Field>(
+    data: *F, n: i32, cert: *i64, nseg: i32, work: *F
+) -> i32 {
+    var expect_start: i32 = 0;
+    for k in 0..nseg {
+        let s: i32 = cert[k * 3] as i32;
+        let len: i32 = cert[k * 3 + 1] as i32;
+        let d: i32 = cert[k * 3 + 2] as i32;
+        // (1) partition: contiguous, in order
+        if s != expect_start { return 0; }
+        if len < 1 { return 0; }
+        // (2) fit
+        if seg_fits(data, s, len, d, work) == 0 { return 0; }
+        // (3) forced boundary at interior segment ends
+        let b: i32 = s + len;
+        if b < n {
+            if boundary_forced(data, b, d, work) == 0 { return 0; }
+        }
+        expect_start = b;
+    }
+    if expect_start != n { return 0; }
+    return 1;
+}
+
+instantiate fdiff<dyn>;
+instantiate seg_fits<dyn>;
+instantiate boundary_forced<dyn>;
+instantiate regime_prove<dyn>;
+instantiate regime_verify<dyn>;

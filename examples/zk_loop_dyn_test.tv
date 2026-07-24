@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_loop_dyn_test.tv — driver for #[zk] for-loop over a runtime prime (7d-L0)
+//
+// Calls (matching the baked zk_loop_test / zk_cubic_dyn contract):
+//   1. forward_sum_loop_dyn(f, 10, 3, 1) natively -> 62
+//   2. forward_sum_loop_zk_prove_dyn(f, 10, 3, 1, ...) -> dyn PLONK proof, 1
+//
+// Drives the dyn for-loop unrolling path (zk_emit_stmt_dyn AST_FOR) over two
+// runtime primes (Goldilocks, BabyBear).
+//
+// Link: plonk_dyn.o + zk_loop_dyn.o + zk_loop_dyn_test.o
+// Expected output: 62 1  62 1
+
+extern "C" fn fill_rc(rc_init: *i64, rc_term: *i64, rc_int: *i64);
+extern "C" fn poseidon2_diag_dyn(f: Field, diag: *i64);
+
+extern "C" fn forward_sum_loop_dyn(f: Field, c0: i64, c1: i64, c2: i64) -> i64;
+extern "C" fn forward_sum_loop_zk_prove_dyn(
+    f: Field, c0: i64, c1: i64, c2: i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+
+fn run(p: i64) {
+    let f: Field = field(p);
+    let rc_init: *i64 = alloc(32);
+    let rc_term: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let diag: *i64 = alloc(8);
+    fill_rc(rc_init, rc_term, rc_int);
+    poseidon2_diag_dyn(f, diag);
+
+    // 1. native
+    print(forward_sum_loop_dyn(f, 10, 3, 1));   // 62
+
+    // 2. prove
+    let num_queries: i32 = 3;
+    let eval_out: *i64 = alloc(16);
+    let fri_roots: *i64 = alloc(128);
+    let fri_challenges: *i64 = alloc(32);
+    let fri_final_poly: *i64 = alloc(4);
+    let fri_query_values: *i64 = alloc(512);
+    let fri_query_paths: *i64 = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    let ok: i32 = forward_sum_loop_zk_prove_dyn(f, 10, 3, 1, eval_out,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        fri_n_rounds, num_queries, rc_init, rc_term, rc_int, diag);
+    print(ok);   // 1
+
+    free(eval_out); free(fri_roots); free(fri_challenges); free(fri_final_poly);
+    free(fri_query_values); free(fri_query_paths); free(fri_query_indices); free(fri_n_rounds);
+    free(rc_init); free(rc_term); free(rc_int); free(diag);
+}
+
+fn main() -> i32 {
+    run(18446744069414584321);
+    run(2013265921);
+    return 0;
+}

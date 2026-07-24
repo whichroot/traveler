@@ -1,0 +1,17 @@
+// fold_a.tv — half of the i128 multi-object field-runtime fold reproducer (#15).
+//
+// Each of fold_a / fold_b independently emits `internal @field_dyn_sub` (the
+// i128 wide-prime subtract). Linking the two objects under -O2 lets the
+// toolchain's identical-code-folding mis-merge the duplicate file-local copies
+// and drop a reduction on the Goldilocks path: 0 - v comes back wrong by
+// exactly 2^32-1 (= 2^64 mod p). See @internal-note: known-issues #15.
+//
+// neg_a computes (0 - v) mod p over a runtime Goldilocks field.
+fn fsub_g<F: Field>(a: F, b: F) -> F { return a - b; }
+instantiate fsub_g<dyn>;
+
+#[export]
+fn neg_a(p: i64, v: i64) -> i64 {
+    let f: Field = field(p);
+    return fsub_g_dyn(f, 0, v);
+}

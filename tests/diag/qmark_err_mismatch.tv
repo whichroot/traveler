@@ -1,0 +1,12 @@
+// qmark_err_mismatch.tv — `?` negative gate. The operand's Err payload type
+// must equal the enclosing function's (no From/Into conversion — via
+// negativa; declare the same E on both Results).
+enum FsError { A, }
+enum NetError { B, }
+enum Result<T, E> { Ok(T), Err(E), }
+fn g() -> Result<i32, NetError> { return Result::Ok(1); }
+fn f() -> Result<i32, FsError> {
+    let y: i32 = g()?;
+    return Result::Ok(y);
+}
+fn main() -> i32 { return 0; }

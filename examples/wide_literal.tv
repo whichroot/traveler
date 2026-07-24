@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_literal.tv — Slice 3 gate: integer literals > 2^64; hex converts to
+// decimal AT COMPILE TIME (i64-only long division). BN254 Fr hex == decimal.
+// @internal-note: plan-wide-int-surface-types + @internal-design: examples (wide-int gates).
+
+fn main() {
+    // BN254 Fr modulus, hex form vs decimal form — one i256 value two ways.
+    let mhex: i256 = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001;
+    let mdec: i256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    print((mhex == mdec) as i32);          // 1  (hex->dec conversion is exact)
+
+    // 2^64 exactly: doesn't fit i64. Low word truncates to 0; bit 64 is set.
+    let two64: u128 = 18446744073709551616;
+    print(two64 as i64);                   // 0
+    print((two64 >> 64) as i64);           // 1
+    let two64h: u128 = 0x10000000000000000;
+    print((two64h == two64) as i32);       // 1  (hex 2^64 == decimal 2^64)
+
+    // max u128 = 2^128 - 1: both 64-bit words are all-ones (-1 as i64).
+    let maxu: u128 = 340282366920938463463374607431768211455;
+    print(maxu as i64);                    // -1
+    print((maxu >> 64) as i64);            // -1
+
+    // Recover known words of the 254-bit modulus by truncation/shift.
+    print(mhex as i64);                    // 4891460686036598785   (low 64 bits)
+    print((mhex >> 192) as i64);           // 3486998266802970665   (top 64 bits)
+}

@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// string_basics.tv — String literals: global constants, extern calls.
+//
+// String literals are *u8 pointers to null-terminated global constants.
+// Combined with extern "C", this enables calling puts/printf from Traveler.
+//
+// Expected output:
+// hello traveler
+// AB
+// 99
+
+extern "C" fn puts(s: *u8) -> i32;
+extern "C" fn putchar(c: i32) -> i32;
+
+fn main() {
+    // String literal as *u8 passed to libc puts()
+    puts("hello traveler");
+
+    // Combine string and char output
+    putchar(65);    // 'A'
+    putchar(66);    // 'B'
+    putchar(10);    // newline
+
+    // Regular print still works
+    let x: i32 = 99;
+    print(x);
+}

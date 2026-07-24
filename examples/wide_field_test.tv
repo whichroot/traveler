@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_field_test.tv — W1 gate: multi-limb field arithmetic over BN254 Fr
+// (254 bits, SNARK-class), 4-limb i256 elements via the field_wide_* ABI.
+// @internal-oracle: wide_field.
+// @internal-design: core
+//
+// Wide literals (W-lit), parsed into 4 limbs at compile time:
+//   field_wide("0x...")   builds the carrier from the prime hex string
+//   wide("0x...", buf)    fills a 4-limb buffer with a hex constant
+//
+// Expected output:  1 1 1 1 1 1
+//   1  add(a,b) == R-8
+//   1  sub(a,b) == 2
+//   1  sub(b,a) == R-2
+//   1  mul(a,b) == 15      (Barrett reduction of a 508-bit product)
+//   1  mul(c,inv(c)) == 1  (Fermat inversion round-trip)
+//   1  div(a,b)*b == a     (division round-trip)
+//
+// Link: wide_field_test.o only (field_wide_* are emitted into every module).
+
+extern "C" fn field_wide_add(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_sub(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_mul(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_pow(dst: *i64, base: *i64, exp: *i64, f: *i64);
+extern "C" fn field_wide_inv(dst: *i64, a: *i64, f: *i64);
+extern "C" fn field_wide_div(dst: *i64, a: *i64, b: *i64, f: *i64);
+
+fn eq4(x: *i64, y: *i64) -> i32 {
+    if x[0] != y[0] { return 0; }
+    if x[1] != y[1] { return 0; }
+    if x[2] != y[2] { return 0; }
+    if x[3] != y[3] { return 0; }
+    return 1;
+}
+
+fn main() -> i32 {
+    // BN254 Fr as a hex string — parsed into 4 limbs at compile time.
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+    let a: *i64 = alloc(4);
+    wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593effffffe", a);  // R-3
+    let b: *i64 = alloc(4);
+    wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593effffffc", b);  // R-5
+    let c: *i64 = alloc(4);
+    wide("0x27e41b3246bec9b16e398115", c);                                          // small
+
+    let r: *i64 = alloc(4);
+    let exp: *i64 = alloc(4);
+
+    // add(a,b) = R-8
+    field_wide_add(r, a, b, f);
+    wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593effffff9", exp);
+    print(eq4(r, exp));
+
+    // sub(a,b) = 2
+    field_wide_sub(r, a, b, f);
+    wide("0x2", exp);
+    print(eq4(r, exp));
+
+    // sub(b,a) = R-2
+    field_wide_sub(r, b, a, f);
+    wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593efffffff", exp);
+    print(eq4(r, exp));
+
+    // mul(a,b) = 15
+    field_wide_mul(r, a, b, f);
+    wide("0xf", exp);
+    print(eq4(r, exp));
+
+    // mul(c, inv(c)) = 1
+    let ci: *i64 = alloc(4);
+    field_wide_inv(ci, c, f);
+    field_wide_mul(r, c, ci, f);
+    wide("0x1", exp);
+    print(eq4(r, exp));
+
+    // div(a,b)*b == a
+    let q: *i64 = alloc(4);
+    field_wide_div(q, a, b, f);
+    field_wide_mul(r, q, b, f);
+    print(eq4(r, a));
+
+    return 0;
+}

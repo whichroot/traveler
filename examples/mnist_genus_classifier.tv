@@ -1,0 +1,281 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_genus_classifier.tv — verifiable genus classifier, FULL MNIST run:
+// train reference table in-Traveler, classify test set, emit a ZK argmin cert.
+// @internal-design: genus (genus_classifier section)
+//
+// Feature vector (13 ints): 8 multi-angle nseg counts (x,y,x+y,x-y@d1,d2) + 5
+// turning signed-profile ints (asym + 4 quartiles). x-y shifted +28 (field-safe).
+//
+// Five-file link: plonk_dyn.o + regime_fri.o + zk_range.o + genus_classifier.o +
+//                 mnist_genus_classifier.o
+// Usage: ./mnist_genus_classifier <data_directory>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+extern "C" fn gc_features(
+    f: Field, cx: *i64, cy: *i64, n: i32,
+    vbuf: *i64, t: *i64, cert: *i64, work: *i64, out: *i64) -> i32;
+extern "C" fn gc_classify(fv: *i64, ref_tbl: *i64, w: *i64, dists: *i64) -> i32;
+extern "C" fn gc_certify_argmin(p: i64, dists: *i64, claim: i32, nbits: i32) -> i32;
+
+fn wr(fd: i32, s: *u8) { let len: usize = strlen(s); write(fd, s, len); }
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+fn wr_pad(fd: i32, n: i64, wdt: i32) {
+    var tmp: i64 = n; if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = wdt - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216 + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256 + (buf[off + 3] as i32);
+}
+
+fn is_ink(img: *u8, x: i32, y: i32, thr: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x > 27 { return 0; }
+    if y > 27 { return 0; }
+    if (img[y * 28 + x] as i32) > thr { return 1; }
+    return 0;
+}
+fn trace_contour(img: *u8, thr: i32, cx: *i64, cy: *i64, max_len: i32) -> i32 {
+    var dx: [i32; 8] = 0;
+    var dy: [i32; 8] = 0;
+    dx[0]=1;  dy[0]=0;
+    dx[1]=1;  dy[1]=1;
+    dx[2]=0;  dy[2]=1;
+    dx[3]=0-1; dy[3]=1;
+    dx[4]=0-1; dy[4]=0;
+    dx[5]=0-1; dy[5]=0-1;
+    dx[6]=0;  dy[6]=0-1;
+    dx[7]=1;  dy[7]=0-1;
+    var sx: i32 = 0-1;
+    var sy: i32 = 0-1;
+    var yy: i32 = 0;
+    while yy < 28 {
+        var xx: i32 = 0;
+        while xx < 28 {
+            if is_ink(img, xx, yy, thr) == 1 { sx = xx; sy = yy; xx = 28; yy = 28; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    if sx < 0 { return 0; }
+    cx[0] = sx as i64; cy[0] = sy as i64;
+    var clen: i32 = 1;
+    var curx: i32 = sx;
+    var cury: i32 = sy;
+    var b: i32 = 4;
+    var steps: i32 = 0;
+    while steps < max_len {
+        var found: i32 = 0 - 1;
+        var k: i32 = 0;
+        while k < 8 {
+            let dd: i32 = (b + 1 + k) % 8;
+            let nx: i32 = curx + dx[dd];
+            let ny: i32 = cury + dy[dd];
+            if is_ink(img, nx, ny, thr) == 1 { found = dd; k = 8; }
+            k = k + 1;
+        }
+        if found < 0 { return clen; }
+        let nxp: i32 = curx + dx[found];
+        let nyp: i32 = cury + dy[found];
+        if nxp == sx { if nyp == sy { return clen; } }
+        if clen < max_len {
+            cx[clen] = nxp as i64; cy[clen] = nyp as i64; clen = clen + 1;
+        } else { return clen; }
+        curx = nxp; cury = nyp;
+        b = (found + 4) % 8;
+        steps = steps + 1;
+    }
+    return clen;
+}
+
+// Extract the 13-int feature vector for image `img` into fv. Returns narcs (0 if none).
+fn extract(
+    f: Field, img: *u8, thr: i32,
+    cx: *i64, cy: *i64, vbuf: *i64, t: *i64, cert: *i64, work: *i64, fv: *i64
+) -> i32 {
+    let n: i32 = trace_contour(img, thr, cx, cy, 400);
+    if n < 8 { return 0; }
+    return gc_features(f, cx, cy, n, vbuf, t, cert, work, fv);
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 { wr(2, "usage: mnist_genus_classifier <data_dir>\n"); exit(1); }
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+    let p: i64 = 18446744069414584321;
+    let f: Field = field(p);
+    let thr: i32 = 64;
+    let nbits: i32 = 20;
+
+    // ---- load train + test ----
+    wr(2, "Loading data...\n");
+    let train_img: *u8 = alloc(47040016);
+    path_build(&path_buf[0], dir, "train-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open train images\n"); exit(1); }
+    read_bytes(fd, train_img, 47040016);
+    close(fd);
+    let train_lbl: *u8 = alloc(60008);
+    path_build(&path_buf[0], dir, "train-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open train labels\n"); exit(1); }
+    read_bytes(fd, train_lbl, 60008);
+    close(fd);
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open test images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open test labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+
+    // scratch
+    let cap: i32 = 400;
+    let cx: *i64 = alloc(cap);
+    let cy: *i64 = alloc(cap);
+    let vbuf: *i64 = alloc(cap);
+    let t: *i64 = alloc(cap);
+    let cert: *i64 = alloc(cap * 3);
+    let work: *i64 = alloc(cap);
+    let fv: *i64 = alloc(13);
+
+    // ---- build reference table at runtime from train subset ----
+    let n_train: i32 = 4000;
+    var sums: [i64; 130] = 0;     // 10 x 13
+    var counts: [i64; 10] = 0;
+    var absacc: [i64; 13] = 0;    // for inv-scale weights
+    var nfeat: i64 = 0;
+    wr(2, "Building reference table from "); wr_int(2, n_train as i64); wr(2, " train images...\n");
+    var i: i32 = 0;
+    while i < n_train {
+        let img: *u8 = &train_img[16 + i * 784];
+        let m: i32 = extract(f, img, thr, cx, cy, vbuf, t, cert, work, fv);
+        if m == 13 {
+            let lab: i32 = train_lbl[8 + i] as i32;
+            counts[lab] = counts[lab] + 1;
+            nfeat = nfeat + 1;
+            var j: i32 = 0;
+            while j < 13 {
+                sums[lab * 13 + j] = sums[lab * 13 + j] + fv[j];
+                var a: i64 = fv[j];
+                if a < 0 { a = 0 - a; }
+                absacc[j] = absacc[j] + a;
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    let ref_tbl: *i64 = alloc(130);
+    var cls: i32 = 0;
+    while cls < 10 {
+        var j: i32 = 0;
+        while j < 13 {
+            if counts[cls] > 0 { ref_tbl[cls * 13 + j] = sums[cls * 13 + j] / counts[cls]; }
+            else { ref_tbl[cls * 13 + j] = 0; }
+            j = j + 1;
+        }
+        cls = cls + 1;
+    }
+    // inv-scale integer weights: w[j] = 100 / mean|f[j]|  (>=1)
+    let w: *i64 = alloc(13);
+    var j: i32 = 0;
+    while j < 13 {
+        var mean: i64 = 1;
+        if nfeat > 0 { mean = absacc[j] / nfeat; }
+        if mean < 1 { mean = 1; }
+        var wj: i64 = 100 / mean;
+        if wj < 1 { wj = 1; }
+        w[j] = wj;
+        j = j + 1;
+    }
+
+    // ---- classify test set, report accuracy + confusion ----
+    let n_test: i32 = 2000;
+    let dists: *i64 = alloc(10);
+    var confusion: [i64; 100] = 0;   // 10 x 10 (true x predicted)
+    var correct: i32 = 0;
+    var total: i32 = 0;
+    wr(2, "Classifying "); wr_int(2, n_test as i64); wr(2, " test images...\n");
+    i = 0;
+    while i < n_test {
+        let img: *u8 = &test_img[16 + i * 784];
+        let m: i32 = extract(f, img, thr, cx, cy, vbuf, t, cert, work, fv);
+        if m == 13 {
+            let pred: i32 = gc_classify(fv, ref_tbl, w, dists);
+            let lab: i32 = test_lbl[8 + i] as i32;
+            confusion[lab * 10 + pred] = confusion[lab * 10 + pred] + 1;
+            if pred == lab { correct = correct + 1; }
+            total = total + 1;
+        }
+        if (i + 1) % 500 == 0 { wr(2, "  "); wr_int(2, (i + 1) as i64); wr(2, " / "); wr_int(2, n_test as i64); wr(2, "\n"); }
+        i = i + 1;
+    }
+
+    wr(1, "=== MNIST Verifiable Genus Classifier (Phase 2) ===\n");
+    wr(1, "HONEST ACCURACY: "); wr_int(1, correct as i64); wr(1, " / "); wr_int(1, total as i64);
+    wr(1, "  ("); wr_int(1, (correct as i64 * 1000) / (total as i64)); wr(1, " / 1000)\n");
+    wr(1, "the deliverable is the AUDITABLE certificate, not the accuracy.\n\n");
+    wr(1, "confusion matrix (rows=true, cols=predicted):\n     ");
+    var d: i32 = 0;
+    while d < 10 { wr_pad(1, d as i64, 5); d = d + 1; }
+    wr(1, "\n");
+    var tr: i32 = 0;
+    while tr < 10 {
+        wr_pad(1, tr as i64, 3); wr(1, " |");
+        var pc: i32 = 0;
+        while pc < 10 { wr_pad(1, confusion[tr * 10 + pc], 5); pc = pc + 1; }
+        wr(1, "\n");
+        tr = tr + 1;
+    }
+
+    // ---- emit a full ZK argmin certificate for the first test image ----
+    wr(1, "\n--- ZK argmin certificate (test image 0) ---\n");
+    let img0: *u8 = &test_img[16];
+    extract(f, img0, thr, cx, cy, vbuf, t, cert, work, fv);
+    let pred0: i32 = gc_classify(fv, ref_tbl, w, dists);
+    wr(1, "predicted class: "); wr_int(1, pred0 as i64);
+    wr(1, "  true label: "); wr_int(1, test_lbl[8] as i64); wr(1, "\n");
+    let honest: i32 = gc_certify_argmin(p, dists, pred0, nbits);
+    wr(1, "honest argmin certificate verifies: "); wr_int(1, honest as i64); wr(1, " (expect 1)\n");
+    // tampered claim: a different class that is NOT the argmin
+    var bad: i32 = pred0 + 1;
+    if bad > 9 { bad = 0; }
+    let tampered: i32 = gc_certify_argmin(p, dists, bad, nbits);
+    wr(1, "tampered claim ("); wr_int(1, bad as i64);
+    wr(1, ") certificate rejects: "); wr_int(1, tampered as i64); wr(1, " (expect 0)\n");
+
+    free(train_img); free(train_lbl); free(test_img); free(test_lbl);
+    free(cx); free(cy); free(vbuf); free(t); free(cert); free(work);
+    free(fv); free(ref_tbl); free(w); free(dists);
+    return 0;
+}

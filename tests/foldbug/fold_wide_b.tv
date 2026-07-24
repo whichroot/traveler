@@ -1,0 +1,40 @@
+// fold_wide_b.tv — other half of the i512 fold reproducer (#15, Item 2). A
+// SECOND object that also emits the `internal @field_wide_*` runtime, plus main.
+// Both objects independently use field_wide_*, so each emits the full wide
+// runtime; main calls wsub_a (from fold_wide_a.o) and wsub_b and checks both
+// against the exact oracle Fr-1 limbs.
+//
+// Fr-1 LE limbs:
+//   4891460686036598784, 2896914383306846353, 13281191951274694749,
+//   3486998266802970665
+extern "C" fn field_wide_sub(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn wsub_a(out: *i64);
+
+fn eq4_oracle(x: *i64) -> i32 {
+    if x[0] != 4891460686036598784 { return 0; }
+    if x[1] != 2896914383306846353 { return 0; }
+    if x[2] != 13281191951274694749 { return 0; }
+    if x[3] != 3486998266802970665 { return 0; }
+    return 1;
+}
+
+#[export]
+fn wsub_b(out: *i64) {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+    let z: *i64 = alloc(4);
+    wide("0x0", z);
+    let one: *i64 = alloc(4);
+    wide("0x1", one);
+    field_wide_sub(out, z, one, f);
+}
+
+fn main() -> i32 {
+    let ra: *i64 = alloc(4);
+    wsub_a(ra);
+    print(eq4_oracle(ra));   // 1 if fold_wide_a's result is correct Fr-1
+
+    let rb: *i64 = alloc(4);
+    wsub_b(rb);
+    print(eq4_oracle(rb));   // 1 if fold_wide_b's result is correct Fr-1
+    return 0;
+}

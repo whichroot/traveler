@@ -1,0 +1,32 @@
+# OS cruft
+.DS_Store
+
+# Developer notes, archives, and non-shipped artifacts (local only)
+devnotes/
+
+# Build outputs and generated LLVM IR
+# (gitignore has no inline comments — each pattern must stand alone on its line)
+# legacy C-seed binary (pre-relocation)
+src/tvc
+# legacy C-seed binary
+src-legacy/tvc
+# C-free bootstrap build artifacts (pre-relocation)
+bootstrap/out/
+# C-free bootstrap build artifacts
+src/bootstrap/out/
+# generated IR
+*.ll
+# except the committed bootstrap trust root
+!**/tvc_self.boot.ll
+
+# Editor swap files
+*.swp
+
+# Node / LSP tooling
+node_modules/
+tools/tv-lsp/out/
+
+# Python caches
+__pycache__/
+.ruff_cache/
+*.pyc

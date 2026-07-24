@@ -1,0 +1,33 @@
+// pfor_race_prefix_recur.tv — HOLE 4b: prefix recurrence (read at i-1)
+//
+// tw[j] = tw[j-1] * omega — the NTT twiddle-fill pattern from ntt.tv and
+// fri.tv.  The write index is perfectly injective (j, stride 1) so the
+// Phase 1 classifier admits it, but the READ tw[j-1] consumes the cell
+// written by the PREVIOUS iteration: an inherently sequential recurrence.
+// Thread chunk k reads tw[chunk_start - 1] before thread k-1 has written
+// it.  Manifests deterministically at large n:
+//   serial:   omega^(n-1) correct
+//   parallel: 0 (chunk leaders read uninitialized/stale cells)
+//
+// Found during Phase 2 development — the Layer 6 "twiddle precompute"
+// refactoring made the butterflies independent but the table FILL is a
+// recurrence and was being dispatched unsoundly.  Existing NTT tests
+// never caught it because their sizes (8..32) sit under PFOR_THRESHOLD.
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let n: i32 = 4000000;
+    let tw: *F = alloc(n);
+    let omega: F = 31;
+
+    tw[0] = 1;
+    for j in 1..n {
+        tw[j] = tw[j - 1] * omega;
+    }
+
+    print(tw[3999999]);
+    return 0;
+}

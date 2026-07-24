@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// tcp.tv — minimal ergonomic TCP over POSIX sockets via extern "C": listener,
+// loopback client, stream read/write; Result at the membrane. tvc_self ONLY.
+// @internal-design: net
+
+import "../core/result.tv";
+
+extern "C" fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+extern "C" fn bind(fd: i32, addr: *u8, len: u32) -> i32;
+extern "C" fn listen(fd: i32, backlog: i32) -> i32;
+extern "C" fn accept(fd: i32, addr: *u8, len: *u32) -> i32;
+extern "C" fn connect(fd: i32, addr: *u8, len: u32) -> i32;
+extern "C" fn setsockopt(fd: i32, level: i32, opt: i32, val: *u8, len: u32) -> i32;
+extern "C" fn getsockname(fd: i32, addr: *u8, len: *u32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn uname(buf: *u8) -> i32;
+
+enum NetError {
+    OsDetect,
+    SocketFailed,
+    BindFailed,
+    ListenFailed,
+    AcceptFailed,
+    ConnectFailed,
+    SocknameFailed,
+    ReadFailed,
+    WriteFailed,
+}
+
+struct TcpListener {
+    fd: i32,
+}
+
+struct TcpStream {
+    fd: i32,
+}
+
+// 0 = undetected, 1 = darwin, 2 = linux.
+var g_net_os: i32 = 0;
+
+// Detect the OS once via uname(2) sysname: 'D' (68) = Darwin, 'L' (76) =
+// Linux; cached in g_net_os. Buffer oversized for both utsname layouts.
+fn net_os() -> i32 {
+    if g_net_os != 0 { return g_net_os; }
+    let buf: *u8 = alloc(2048);
+    if uname(buf) != 0 {
+        free(buf);
+        return 0;
+    }
+    if buf[0] == 68 { g_net_os = 1; }
+    if buf[0] == 76 { g_net_os = 2; }
+    free(buf);
+    return g_net_os;
+}
+
+// Fill a 16-byte sockaddr_in for the detected OS. Port and address are
+// written big-endian by hand. a.b.c.d is the IPv4 address.
+fn sa_in_fill(sa: *u8, os: i32, port: i32, a: i32, b: i32, c: i32, d: i32) {
+    var i: i32 = 0;
+    while i < 16 { sa[i] = 0; i = i + 1; }
+    if os == 1 {
+        sa[0] = 16;              // sin_len (advisory on macOS)
+        sa[1] = 2;               // sin_family = AF_INET
+    } else {
+        sa[0] = 2;               // sin_family u16 little-endian low byte
+        sa[1] = 0;
+    }
+    sa[2] = ((port >> 8) & 255) as u8;   // sin_port big-endian
+    sa[3] = (port & 255) as u8;
+    sa[4] = a as u8;                      // sin_addr big-endian
+    sa[5] = b as u8;
+    sa[6] = c as u8;
+    sa[7] = d as u8;
+}
+
+// Listen on 127.0.0.1:port (port 0 = kernel-assigned ephemeral; read it
+// back with tcp_port). Backlog 16.
+fn tcp_listen(port: i32) -> Result<TcpListener, NetError> {
+    let os: i32 = net_os();
+    if os == 0 { return Result::Err(NetError::OsDetect); }
+    let fd: i32 = socket(2, 1, 0);       // AF_INET, SOCK_STREAM (both OSes)
+    if fd < 0 { return Result::Err(NetError::SocketFailed); }
+    // SO_REUSEADDR (constants diverge per OS).
+    var lvl: i32 = 65535;                 // macOS SOL_SOCKET
+    var opt: i32 = 4;                     // macOS SO_REUSEADDR
+    if os == 2 { lvl = 1; opt = 2; }      // Linux
+    let one: *u8 = alloc(4);
+    one[0] = 1; one[1] = 0; one[2] = 0; one[3] = 0;
+    setsockopt(fd, lvl, opt, one, 4);
+    free(one);
+    let sa: *u8 = alloc(16);
+    sa_in_fill(sa, os, port, 127, 0, 0, 1);
+    if bind(fd, sa, 16) != 0 {
+        free(sa);
+        close(fd);
+        return Result::Err(NetError::BindFailed);
+    }
+    free(sa);
+    if listen(fd, 16) != 0 {
+        close(fd);
+        return Result::Err(NetError::ListenFailed);
+    }
+    return Result::Ok(TcpListener { fd: fd });
+}
+
+// The bound port (both layouts keep sin_port big-endian at bytes 2..4).
+fn tcp_port(l: TcpListener) -> Result<i32, NetError> {
+    let sa: *u8 = alloc(16);
+    let len: *u32 = alloc(1);
+    len[0] = 16;
+    if getsockname(l.fd, sa, len) != 0 {
+        free(sa);
+        free(len);
+        return Result::Err(NetError::SocknameFailed);
+    }
+    let port: i32 = ((sa[2] as i32) << 8) | (sa[3] as i32);
+    free(sa);
+    free(len);
+    return Result::Ok(port);
+}
+
+fn tcp_accept(l: TcpListener) -> Result<TcpStream, NetError> {
+    let fd: i32 = accept(l.fd, null, null);
+    if fd < 0 { return Result::Err(NetError::AcceptFailed); }
+    return Result::Ok(TcpStream { fd: fd });
+}
+
+// Connect to 127.0.0.1:port.
+fn tcp_connect_local(port: i32) -> Result<TcpStream, NetError> {
+    let os: i32 = net_os();
+    if os == 0 { return Result::Err(NetError::OsDetect); }
+    let fd: i32 = socket(2, 1, 0);
+    if fd < 0 { return Result::Err(NetError::SocketFailed); }
+    let sa: *u8 = alloc(16);
+    sa_in_fill(sa, os, port, 127, 0, 0, 1);
+    if connect(fd, sa, 16) != 0 {
+        free(sa);
+        close(fd);
+        return Result::Err(NetError::ConnectFailed);
+    }
+    free(sa);
+    return Result::Ok(TcpStream { fd: fd });
+}
+
+// Read up to n bytes. Ok(bytes); 0 = orderly peer close.
+fn tcp_read(s: TcpStream, buf: *u8, n: i64) -> Result<i64, NetError> {
+    let got: i64 = read_bytes(s.fd, buf, n);
+    if got < 0 { return Result::Err(NetError::ReadFailed); }
+    return Result::Ok(got);
+}
+
+// Write ALL n bytes (loops over partial writes — sockets may short-write).
+fn tcp_write(s: TcpStream, buf: *u8, n: i64) -> Result<i64, NetError> {
+    var done: i64 = 0;
+    while done < n {
+        let put: i64 = write(s.fd, &buf[done], (n - done) as usize);
+        if put <= 0 { return Result::Err(NetError::WriteFailed); }
+        done = done + put;
+    }
+    return Result::Ok(done);
+}
+
+fn tcp_close(s: TcpStream) -> i32 {
+    return close(s.fd);
+}
+
+fn listener_close(l: TcpListener) -> i32 {
+    return close(l.fd);
+}

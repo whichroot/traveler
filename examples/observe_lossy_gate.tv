@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_lossy_gate.tv — round-trip + CERTIFICATE gate for the v3 lossy layer
+// (reduced-depth per-block B_w; src/lib/observe/wire.tv). Per case prints, one
+// value per line: case_id, parity, mismatches_Q, maxerr, bound_ok.
+// @internal-design: observability (lossy gate)
+//
+//   parity        = bits - 32 - 5*nblocks - cost   MUST be 0 (wire == cost model
+//                   + 32-bit n header + the per-block B_w field).
+//   mismatches_Q  = decode(encode(Q(x))) vs Q(x) on ALL FOUR streams  MUST be 0
+//                   (the codec is lossless on its quantized input — the whole
+//                   claim: it adds zero further loss).
+//   maxerr        = measured max |orig - x_hat|, x_hat = dequant(decoded-offset,
+//                   bw[block]) — the ACTUAL end-to-end error (== x - Q(x)).
+//   bound_ok      = 1 iff every sample satisfies |orig - x_hat| <= 2^s for its
+//                   block's s (the reduced-depth CHECKED bound; stated 2^(s-1),
+//                   2^s at the int16 positive rail — @internal-design: util "lossy probe").
+//
+// Cases: uniform s in {0,2,4,8} (s=0 = the lossless corner, maxerr 0) + a
+// VARYING per-block profile s=[2,8,4] over 3 blocks, exercising the per-block
+// B_w field itself. Build: link gate.o + wire.o (wire.tv imports learn.tv).
+
+extern "C" fn codec_stereo_adaptive_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64;
+extern "C" fn wire_encode_stereo(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, bw: *i32, buf: *u8, out: *i64) -> i64;
+extern "C" fn wire_decode_stereo(buf: *u8, lf: *i32, rf: *i32, mf: *i32, sf: *i32, p_ch: i32, p_side: i32, max_fixed_order: i32, bw_out: *i32) -> i64;
+extern "C" fn wio_quant(x: i32, s: i32) -> i32;
+extern "C" fn wio_dequant(q: i32, s: i32) -> i32;
+
+let P_CH: i32 = 65537;
+let P_SIDE: i32 = 131071;
+
+// deterministic full-range-ish stereo (so quantization actually bites)
+fn fill(l: *i32, r: *i32, n: i32, seed: i64) {
+    var st: i64 = seed;
+    var i: i32 = 0;
+    while i < n {
+        st = (st * 1103515245 + 12345) % 2147483648;
+        let base: i32 = ((st % 20000) - 10000) as i32;
+        l[i] = base;
+        r[i] = base - i / 8 + ((st % 7) as i32);
+        i = i + 1;
+    }
+}
+
+// one lossy round trip + certificate; bw = per-block shift profile (len nblocks)
+fn ltrip(case_id: i64, l: *i32, r: *i32, n: i32, bw: *i32) {
+    let nblocks: i32 = (n + 4095) / 4096;
+
+    // quantize per block, build the Q-DOMAIN offset streams (M/S from Q(l),Q(r))
+    let lf: *i32 = alloc(n);
+    let rf: *i32 = alloc(n);
+    let mf: *i32 = alloc(n);
+    let sf: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        let s: i32 = bw[i / 4096];
+        let ql: i32 = wio_quant(l[i], s);
+        let qr: i32 = wio_quant(r[i], s);
+        lf[i] = ql + 32768;
+        rf[i] = qr + 32768;
+        mf[i] = ((ql + qr) >> 1) + 32768;
+        sf[i] = (ql - qr) + 65535;
+        i = i + 1;
+    }
+
+    let sout: *i64 = alloc(4);
+    let cost: i64 = codec_stereo_adaptive_bits(lf, rf, mf, sf, n, P_CH, P_SIDE,
+        4, 8, 8, 17, sout);
+
+    let buf: *u8 = alloc(n * 6 + 4096);
+    let eout: *i64 = alloc(5);
+    let bits: i64 = wire_encode_stereo(lf, rf, mf, sf, n, P_CH, P_SIDE,
+        4, 8, 8, 17, bw, buf, eout);
+
+    let dl: *i32 = alloc(n);
+    let dr: *i32 = alloc(n);
+    let dm: *i32 = alloc(n);
+    let ds: *i32 = alloc(n);
+    let bwd: *i32 = alloc(nblocks);
+    wire_decode_stereo(buf, dl, dr, dm, ds, P_CH, P_SIDE, 4, bwd);
+
+    var mism: i64 = 0;
+    var maxerr: i32 = 0;
+    var bound_ok: i32 = 1;
+    i = 0;
+    while i < n {
+        if dl[i] != lf[i] { mism = mism + 1; }
+        if dr[i] != rf[i] { mism = mism + 1; }
+        if dm[i] != mf[i] { mism = mism + 1; }
+        if ds[i] != sf[i] { mism = mism + 1; }
+        // certificate: reconstruct x_hat from the decoded L/R streams
+        let s: i32 = bwd[i / 4096];
+        let xl: i32 = wio_dequant(dl[i] - 32768, s);
+        let xr: i32 = wio_dequant(dr[i] - 32768, s);
+        var el: i32 = l[i] - xl;
+        if el < 0 { el = 0 - el; }
+        var er: i32 = r[i] - xr;
+        if er < 0 { er = 0 - er; }
+        if el > maxerr { maxerr = el; }
+        if er > maxerr { maxerr = er; }
+        let bnd: i32 = 1 << s;                // checked bound 2^s (rail caveat)
+        if el > bnd { bound_ok = 0; }
+        if er > bnd { bound_ok = 0; }
+        i = i + 1;
+    }
+
+    print(case_id);
+    print(bits - 32 - 5 * (nblocks as i64) - cost);
+    print(mism);
+    print(maxerr as i64);
+    print(bound_ok as i64);
+
+    free(bwd); free(ds); free(dm); free(dr); free(dl);
+    free(eout); free(buf); free(sout);
+    free(sf); free(mf); free(rf); free(lf);
+}
+
+// uniform-s case over a single-seeded signal
+fn ucase(case_id: i64, n: i32, seed: i64, s: i32) {
+    let l: *i32 = alloc(n);
+    let r: *i32 = alloc(n);
+    fill(l, r, n, seed);
+    let nblocks: i32 = (n + 4095) / 4096;
+    let bw: *i32 = alloc(nblocks);
+    var b: i32 = 0;
+    while b < nblocks { bw[b] = s; b = b + 1; }
+    ltrip(case_id, l, r, n, bw);
+    free(bw); free(r); free(l);
+}
+
+fn main() -> i32 {
+    ucase(1, 2000, 12345, 0);     // lossless corner: maxerr 0
+    ucase(2, 2000, 12345, 2);     // bound 4
+    ucase(3, 2000, 12345, 4);     // bound 16
+    ucase(4, 2000, 12345, 8);     // bound 256
+
+    // case 5: varying per-block depth s=[2,8,4] over 3 blocks (n=9000)
+    let n5: i32 = 9000;
+    let l5: *i32 = alloc(n5);
+    let r5: *i32 = alloc(n5);
+    fill(l5, r5, n5, 777);
+    let bw5: *i32 = alloc(3);
+    bw5[0] = 2; bw5[1] = 8; bw5[2] = 4;
+    ltrip(5, l5, r5, n5, bw5);
+    free(bw5); free(r5); free(l5);
+
+    return 0;
+}

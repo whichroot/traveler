@@ -1,0 +1,13 @@
+// Negative: an ordering comparison on an ExtField. A quadratic extension
+// element is a {iN,iN} aggregate with no natural order — only == and != are
+// defined. </>/<=/>= must be diagnosed (they previously emitted invalid IR:
+// a scalar icmp over the pair). Bug #27(b).
+field F251 = Field<251>;
+extfield E = ExtField<Field<251>, 2>;
+
+fn main() {
+    let a: E = 3;
+    let b: E = 7;
+    let c: i32 = (a < b) as i32;
+    print(c);
+}

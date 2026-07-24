@@ -1,0 +1,389 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// weil_recover_rns.tv — W7: BM-over-RNS — genus-3 zeta recovery over a 4-prime RNS
+// basis (c6 = p^3 ~ 2^93, no word fits): joint-eq0 bm_rns + Garner digit readout.
+// @internal-design: nt (the W7 entry + the carrier-contract seam)
+// Parts: A one-word via-negativa; B joint recovery + certificates; C the seam.
+// @internal-oracle: weil_recover_rns (bit-for-bit).
+
+import "../src/lib/nt/linrec.tv";    // mod_l/modpow_l/inv_l/center/bm_l/hankel_rank
+
+let P: i64 = 2147483647;    // M31 — the curve field
+let NSAMP: i32 = 14;        // s_0..s_13: order 6 locks at 12, +2 slack
+
+// ---- the trace sequence, per channel: s_n = sum_i t_i(n); t_i(0)=2, t_i(1)=a_i,
+// t_i(n) = a_i t_i(n-1) - p t_i(n-2). Ring-level (forward needs no inverses). ----
+fn gen_channel(a1: i64, a2: i64, a3: i64, q: i64, s: *i64, n: i32) {
+    let av: *i64 = alloc(3);
+    av[0] = a1;
+    av[1] = a2;
+    av[2] = a3;
+    var i: i32 = 0;
+    while i < n {
+        s[i] = 0;
+        i = i + 1;
+    }
+    let pp: i64 = mod_l(P, q);
+    var ci: i32 = 0;
+    while ci < 3 {
+        let aa: i64 = mod_l(av[ci], q);
+        var t0: i64 = mod_l(2, q);
+        var t1: i64 = aa;
+        s[0] = mod_l(s[0] + t0, q);
+        s[1] = mod_l(s[1] + t1, q);
+        var j: i32 = 2;
+        while j < n {
+            let t2: i64 = mod_l(aa * t1 - pp * t0, q);
+            t0 = t1;
+            t1 = t2;
+            s[j] = mod_l(s[j] + t1, q);
+            j = j + 1;
+        }
+        ci = ci + 1;
+    }
+    free(av);
+}
+
+// ---- Garner mixed-radix digits: x = d[0] + d[1] q_0 + d[2] q_0 q_1 + ... — every
+// step is single-channel (mod q_c); the ~2^93 integer is never materialized. ----
+fn mixed_radix(a: *i64, q: *i64, k: i32, d: *i64) {
+    var c: i32 = 0;
+    while c < k {
+        var v: i64 = mod_l(a[c], q[c]);
+        var w: i64 = 1;
+        var j: i32 = 0;
+        while j < c {
+            v = mod_l(v - d[j] * w, q[c]);
+            w = mod_l(w * mod_l(q[j], q[c]), q[c]);
+            j = j + 1;
+        }
+        d[c] = mod_l(v * inv_l(w, q[c]), q[c]);
+        c = c + 1;
+    }
+}
+
+// ---- bm_rns: joint BM over an RNS basis — ONE control flow, channel-major, JOINT
+// zero-test; REFUSES (-1, fail = channel/step) on the q_c | d divergence event. ----
+fn bm_rns(s: *i64, n: i32, q: *i64, k: i32, C: *i64, fail: *i64) -> i32 {
+    let w: i32 = n + 1;
+    let B: *i64 = alloc(k * w);
+    let T: *i64 = alloc(k * w);
+    let dd: *i64 = alloc(k);
+    let bb: *i64 = alloc(k);
+    var c: i32 = 0;
+    while c < k {
+        var i: i32 = 0;
+        while i <= n {
+            C[c * w + i] = 0;
+            B[c * w + i] = 0;
+            i = i + 1;
+        }
+        C[c * w] = 1;
+        B[c * w] = 1;
+        bb[c] = 1;
+        c = c + 1;
+    }
+    var lstar: i32 = 0;
+    var m: i32 = 1;
+    var nn: i32 = 0;
+    while nn < n {
+        var zc: i32 = 0;
+        c = 0;
+        while c < k {
+            var d: i64 = mod_l(s[c * n + nn], q[c]);
+            var j: i32 = 1;
+            while j <= lstar {
+                d = mod_l(d + C[c * w + j] * s[c * n + nn - j], q[c]);
+                j = j + 1;
+            }
+            dd[c] = d;
+            if d == 0 { zc = zc + 1; }
+            c = c + 1;
+        }
+        if zc == k {
+            m = m + 1;
+        } else {
+            if zc > 0 {
+                var cb: i32 = 0;
+                while dd[cb] != 0 { cb = cb + 1; }
+                fail[0] = cb as i64;
+                fail[1] = nn as i64;
+                free(B);
+                free(T);
+                free(dd);
+                free(bb);
+                return 0 - 1;
+            }
+            if lstar + lstar <= nn {
+                c = 0;
+                while c < k {
+                    var i2: i32 = 0;
+                    while i2 <= n {
+                        T[c * w + i2] = C[c * w + i2];
+                        i2 = i2 + 1;
+                    }
+                    c = c + 1;
+                }
+                c = 0;
+                while c < k {
+                    let coef: i64 = mod_l(dd[c] * inv_l(bb[c], q[c]), q[c]);
+                    var kk: i32 = 0;
+                    while kk + m <= n {
+                        C[c * w + kk + m] = mod_l(C[c * w + kk + m] - coef * B[c * w + kk], q[c]);
+                        kk = kk + 1;
+                    }
+                    c = c + 1;
+                }
+                lstar = nn + 1 - lstar;
+                c = 0;
+                while c < k {
+                    var i3: i32 = 0;
+                    while i3 <= n {
+                        B[c * w + i3] = T[c * w + i3];
+                        i3 = i3 + 1;
+                    }
+                    bb[c] = dd[c];
+                    c = c + 1;
+                }
+                m = 1;
+            } else {
+                c = 0;
+                while c < k {
+                    let coef: i64 = mod_l(dd[c] * inv_l(bb[c], q[c]), q[c]);
+                    var kk: i32 = 0;
+                    while kk + m <= n {
+                        C[c * w + kk + m] = mod_l(C[c * w + kk + m] - coef * B[c * w + kk], q[c]);
+                        kk = kk + 1;
+                    }
+                    c = c + 1;
+                }
+                m = m + 1;
+            }
+        }
+        nn = nn + 1;
+    }
+    free(B);
+    free(T);
+    free(dd);
+    free(bb);
+    return lstar;
+}
+
+// ---- Part A: one word prime — residues survive, the integer doesn't -------------
+fn part_a(a1: i64, a2: i64, a3: i64) {
+    let la: i64 = 2147483549;
+    let s: *i64 = alloc(NSAMP);
+    gen_channel(a1, a2, a3, la, s, NSAMP);
+    let C: *i64 = alloc(NSAMP + 1);
+    let ord: i32 = bm_l(s, NSAMP, la, C);
+    let c1: i64 = center(C[1], la);
+    let c1true: i64 = 0 - (a1 + a2 + a3);
+    var c1ok: i32 = 0;
+    if c1 == c1true { c1ok = 1; }
+    var c6ok: i32 = 0;
+    if C[6] == modpow_l(P, 3, la) { c6ok = 1; }
+    let c6c: i64 = center(C[6], la);
+    print(ord);            // 6: the order survives one word
+    print(c1 as i32);      // -35801: the trace coefficient reads back
+    print(c1ok);           // 1
+    print(c6ok);           // 1: the RESIDUE of p^3 is correct...
+    print(c6c as i32);     // ...but the centered readout is junk (truth ~2^93)
+    free(s);
+    free(C);
+}
+
+// ---- Part B: the joint recovery over the 4-prime basis --------------------------
+fn part_b(a1: i64, a2: i64, a3: i64) {
+    let k: i32 = 4;
+    let q: *i64 = alloc(4);
+    q[0] = 2147483629;
+    q[1] = 2147483587;
+    q[2] = 2147483579;
+    q[3] = 2147483563;
+    let s: *i64 = alloc(k * NSAMP);
+    var c: i32 = 0;
+    while c < k {
+        gen_channel(a1, a2, a3, q[c], &s[c * NSAMP], NSAMP);
+        c = c + 1;
+    }
+    let w: i32 = NSAMP + 1;
+    let C: *i64 = alloc(k * w);
+    let fail: *i64 = alloc(2);
+    let ord: i32 = bm_rns(s, NSAMP, q, k, C, fail);
+    print(ord);            // 6 (no refusal on this basis: joint gate never mixed)
+    print(ord / 2);        // genus 3
+    c = 0;
+    while c < k {
+        let hr: i32 = hankel_rank(&s[c * NSAMP], NSAMP, q[c]);
+        print(hr);         // 6 per channel: the independent order read agrees
+        c = c + 1;
+    }
+    let c1: i64 = center(C[1], q[0]);
+    print(c1 as i32);      // -35801 (small coefficient: readable in one channel)
+    c = 0;
+    while c < k {
+        var ok: i32 = 0;
+        if C[c * w + 6] == modpow_l(P, 3, q[c]) { ok = 1; }
+        print(ok);         // 1 per channel: c6 = p^3 residue-exact everywhere
+        c = c + 1;
+    }
+    var mism: i32 = 0;
+    c = 0;
+    while c < k {
+        var i: i32 = 6;
+        while i < NSAMP {
+            var acc: i64 = mod_l(s[c * NSAMP + i], q[c]);
+            var j: i32 = 1;
+            while j <= 6 {
+                acc = mod_l(acc + C[c * w + j] * s[c * NSAMP + i - j], q[c]);
+                j = j + 1;
+            }
+            if acc != 0 { mism = mism + 1; }
+            i = i + 1;
+        }
+        c = c + 1;
+    }
+    print(mism);           // 0: the recovered law re-annihilates in every channel
+    let res: *i64 = alloc(k);
+    let dig: *i64 = alloc(k);
+    var j2: i32 = 1;
+    while j2 <= 6 {
+        c = 0;
+        while c < k {
+            res[c] = C[c * w + j2];
+            c = c + 1;
+        }
+        mixed_radix(res, q, k, dig);
+        c = 0;
+        while c < k {
+            print(dig[c] as i32);    // the digit certificate, vs the bigint oracle
+            c = c + 1;
+        }
+        j2 = j2 + 1;
+    }
+    free(q);
+    free(s);
+    free(C);
+    free(fail);
+    free(res);
+    free(dig);
+}
+
+// ---- Part C: the seam — eigenvalue collision poisons a channel -------------------
+fn part_c() {
+    let ns: i32 = 8;
+    let sraw: *i64 = alloc(ns);
+    var pw2: i64 = 1;
+    var pw9: i64 = 1;
+    var i: i32 = 0;
+    while i < ns {
+        sraw[i] = pw2 + pw9;    // s_n = 2^n + 9^n: order 2, C = [1, -11, 18]
+        pw2 = pw2 * 2;
+        pw9 = pw9 * 9;
+        i = i + 1;
+    }
+    let qc: *i64 = alloc(3);
+    qc[0] = 7;                  // 9 == 2 (mod 7): the spectrum degenerates here
+    qc[1] = 11;
+    qc[2] = 13;
+    let sred: *i64 = alloc(3 * ns);
+    var c: i32 = 0;
+    while c < 3 {
+        i = 0;
+        while i < ns {
+            sred[c * ns + i] = mod_l(sraw[i], qc[c]);
+            i = i + 1;
+        }
+        c = c + 1;
+    }
+    // (1) independent per-channel runs: the silent lie
+    let wq: i32 = ns + 1;
+    let Cq: *i64 = alloc(3 * wq);
+    c = 0;
+    while c < 3 {
+        let o: i32 = bm_l(&sred[c * ns], ns, qc[c], &Cq[c * wq]);
+        print(o);              // 1 2 2 — the channels disagree, silently
+        c = c + 1;
+    }
+    let res: *i64 = alloc(3);
+    let dig: *i64 = alloc(3);
+    c = 0;
+    while c < 3 {
+        res[c] = Cq[c * wq + 2];
+        c = c + 1;
+    }
+    mixed_radix(res, qc, 3, dig);
+    let prodc: i64 = 7 * 11 * 13;
+    var naive: i64 = dig[0] + dig[1] * 7 + dig[2] * 77;
+    if naive + naive > prodc { naive = naive - prodc; }
+    print(naive as i32);       // 161: a confidently wrong law (truth: 18)
+    var nok: i32 = 0;
+    if naive == 18 { nok = 1; }
+    print(nok);                // 0
+    // (2) the joint run refuses at the exact step the invariant breaks
+    let Cj: *i64 = alloc(3 * wq);
+    let fail: *i64 = alloc(2);
+    let r: i32 = bm_rns(sred, ns, qc, 3, Cj, fail);
+    print(r);                  // -1: REFUSED
+    print(fail[0] as i32);     // channel 0 (q = 7)
+    print(fail[1] as i32);     // step 1 (the Q-run discrepancy there is 7)
+    // (3) spare basis: must avoid the whole contaminated numerator set
+    //     {2, 7, 49, 539 = 7^2*11} — the poison propagates to later discrepancies.
+    let qs: *i64 = alloc(3);
+    qs[0] = 13;
+    qs[1] = 17;
+    qs[2] = 19;
+    let sred2: *i64 = alloc(3 * ns);
+    c = 0;
+    while c < 3 {
+        i = 0;
+        while i < ns {
+            sred2[c * ns + i] = mod_l(sraw[i], qs[c]);
+            i = i + 1;
+        }
+        c = c + 1;
+    }
+    let C2: *i64 = alloc(3 * wq);
+    let fail2: *i64 = alloc(2);
+    let r2: i32 = bm_rns(sred2, ns, qs, 3, C2, fail2);
+    print(r2);                 // 2: clean recovery
+    let prods: i64 = 13 * 17 * 19;
+    var j2: i32 = 1;
+    while j2 <= 2 {
+        c = 0;
+        while c < 3 {
+            res[c] = C2[c * wq + j2];
+            c = c + 1;
+        }
+        mixed_radix(res, qs, 3, dig);
+        var v: i64 = dig[0] + dig[1] * 13 + dig[2] * 221;
+        if v + v > prods { v = v - prods; }
+        print(v as i32);       // -11 then 18: the true law, centered
+        j2 = j2 + 1;
+    }
+    free(sraw);
+    free(qc);
+    free(sred);
+    free(Cq);
+    free(res);
+    free(dig);
+    free(Cj);
+    free(fail);
+    free(qs);
+    free(sred2);
+    free(C2);
+    free(fail2);
+}
+
+fn main() -> i32 {
+    let a1: i64 = 12345;
+    let a2: i64 = 0 - 54321;
+    let a3: i64 = 77777;
+    // Part A — one word prime: order + residues survive; the integer doesn't
+    part_a(a1, a2, a3);
+    // Part B — joint BM over the 4-prime basis: the genus-3 law, digit-certified
+    part_b(a1, a2, a3);
+    // Part C — the seam: silent divergence, loud refusal, clean spare
+    part_c();
+    return 0;
+}

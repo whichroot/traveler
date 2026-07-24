@@ -1,0 +1,10 @@
+// qmark_not_result.tv — `?` negative gate. The operand must be a
+// Result<T,E>-shaped enum (exactly Ok(T)/Err(E)); a scalar is refused.
+enum FsError { A, }
+enum Result<T, E> { Ok(T), Err(E), }
+fn f() -> Result<i32, FsError> {
+    let x: i32 = 5;
+    let y: i32 = x?;
+    return Result::Ok(y);
+}
+fn main() -> i32 { return 0; }

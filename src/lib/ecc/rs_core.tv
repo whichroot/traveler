@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rs_core.tv — Reed-Solomon ERASURE coding, carrier-free core: encode = eval_at,
+// decode = Lagrange interpolation (any k survivors; tolerates n-k erasures).
+// `GF` is declared by the including carrier header (char 2: sub == add == XOR).
+// @internal-design: ecc
+
+// ---- Encode: evaluate the data polynomial at the first n nonzero points -----
+//
+// data[0..k-1] = coefficients of P(x); evaluate at x = 1..n (distinct nonzero
+// points) by Horner. Non-systematic; decode() recovers either way.
+#[export]
+fn rs_encode(data: *GF, k: i32, code: *GF, n: i32) {
+    var j: i32 = 0;
+    while j < n {
+        let x: GF = (j + 1) as GF;       // evaluation point j+1 (nonzero)
+        // Horner: acc = ((data[k-1]*x + data[k-2])*x + ...)*x + data[0]
+        var acc: GF = 0;
+        var i: i32 = k - 1;
+        while i >= 0 {
+            acc = acc * x + data[i];
+            i = i - 1;
+        }
+        code[j] = acc;
+        j = j + 1;
+    }
+}
+
+// ---- Decode: Lagrange interpolation from any k surviving symbols ------------
+//
+// have_idx/have_val[0..k-1] = k survivor points (x_m = have_idx[m]+1, y_m =
+// have_val[m]); scratch must hold k GF elements (coeff buffer for one L_m).
+//   P(x) = sum_m y_m * L_m(x),  L_m(x) = prod_{t!=m} (x - x_t)/(x_m - x_t)
+#[export]
+fn rs_decode(have_idx: *i32, have_val: *GF, k: i32, out_data: *GF, scratch: *GF) {
+    // Zero the output coefficients.
+    var c: i32 = 0;
+    while c < k { out_data[c] = 0; c = c + 1; }
+
+    var m: i32 = 0;
+    while m < k {
+        let xm: GF = (have_idx[m] + 1) as GF;
+        let ym: GF = have_val[m];
+
+        // Build L_m(x) = prod_{t!=m} (x - x_t) / (x_m - x_t), as coefficients in
+        // scratch[0..k]. Start L_m = [1, 0, 0, ...] (the constant polynomial 1).
+        var s: i32 = 0;
+        while s < k { scratch[s] = 0; s = s + 1; }
+        scratch[0] = 1;
+        var deg: i32 = 0;          // current degree of the partial product
+
+        // denominator = prod_{t!=m} (x_m - x_t)
+        var denom: GF = 1;
+
+        var t: i32 = 0;
+        while t < k {
+            if t != m {
+                let xt: GF = (have_idx[t] + 1) as GF;
+                // multiply partial product by (x - x_t), high->low in place:
+                //   newcoef[i] = scratch[i-1] + scratch[i]*x_t  (-x_t == x_t)
+                var i: i32 = deg + 1;
+                while i >= 1 {
+                    scratch[i] = scratch[i - 1] + scratch[i] * xt;
+                    i = i - 1;
+                }
+                scratch[0] = scratch[0] * xt;
+                deg = deg + 1;
+                // accumulate denominator factor (x_m - x_t) == (x_m + x_t)
+                denom = denom * (xm + xt);
+            }
+            t = t + 1;
+        }
+
+        // scale = y_m / denom, then add scale * L_m into out_data.
+        let scale: GF = ym * (1 / denom);
+        var i2: i32 = 0;
+        while i2 < k {
+            out_data[i2] = out_data[i2] + scratch[i2] * scale;
+            i2 = i2 + 1;
+        }
+        m = m + 1;
+    }
+}

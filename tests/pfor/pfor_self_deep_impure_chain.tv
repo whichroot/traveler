@@ -1,0 +1,33 @@
+// pfor_self_deep_impure_chain.tv — A-4 gate (tvc_self only).
+//
+// A caller-before-callee impure chain four deep: a -> b -> c -> sink, with
+// sink writing through its pointer parameter (a single-cell reduction, impure
+// for pfor — the same hazard as pfor_race_mutating_call, one level removed).
+// The functions are declared caller-first, so the OLD two fixed purity passes
+// left a and b wrongly "pure": pass 1 marks everything optimistically pure and
+// computes sink impure; pass 2 corrects c (sees sink) but processes a and b
+// BEFORE c is fixed. The loop `for i { a(acc, arr[i]) }` would then parallelize
+// a hidden reduction — a race. The iterate-to-fixpoint purity (audit A-4) marks
+// the whole chain impure, so the loop stays serial: expected workers = 0.
+//
+// Sum of 50000 ones = 50000. Asserted against stage1 (tvc_self) in run_pfor.sh;
+// the frozen C seed keeps the two-pass purity, so this is self-compiler only.
+
+field F = Field<2013265921>;
+
+fn a(acc: *F, v: F) { b(acc, v); }
+fn b(acc: *F, v: F) { c(acc, v); }
+fn c(acc: *F, v: F) { sink(acc, v); }
+fn sink(acc: *F, v: F) { acc[0] = acc[0] + v; }
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let arr: *F = alloc(n);
+    let acc: *F = alloc(1);
+    let mut w: i32 = 0;
+    while w < n { arr[w] = 1; w = w + 1; }
+    acc[0] = 0;
+    for i in 0..n { a(acc, arr[i]); }
+    print(acc[0] as i64);
+    return 0;
+}

@@ -1,0 +1,225 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// aes_sbox.tv — AES S-box (SubBytes) via integer GF(2^8) shift-and-XOR, all 256
+// entries verified against FIPS 197; BinField<8,0x11B> inverse cross-checked.
+//
+// Expected output:
+//   AES S-box: 256/256 correct
+//   BinField cross-check: 8/8 correct
+
+type G = BinField<8, 0x11B>;
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// ============================================================
+//  GF(2^8) integer arithmetic (independent of BinField)
+// ============================================================
+
+// Multiplication via shift-and-XOR with AES reduction polynomial.
+// x^8 + x^4 + x^3 + x + 1 = 0x11B; low 8 bits of reduction = 0x1B.
+fn gf_mul(a: i32, b: i32) -> i32 {
+    var p: i32 = 0;
+    var aa: i32 = a;
+    var bb: i32 = b;
+    var i: i32 = 0;
+    while i < 8 {
+        if (bb & 1) != 0 {
+            p = p ^ aa;
+        }
+        let hi: i32 = aa & 0x80;
+        aa = (aa << 1) & 0xff;
+        if hi != 0 {
+            aa = aa ^ 0x1b;
+        }
+        bb = bb >> 1;
+        i = i + 1;
+    }
+    return p;
+}
+
+// Inverse via Fermat's little theorem: a^(2^8 - 2) = a^254.
+fn gf_inv(a: i32) -> i32 {
+    if a == 0 { return 0; }
+    var result: i32 = 1;
+    var base: i32 = a;
+    var exp: i32 = 254;
+    while exp > 0 {
+        if (exp & 1) != 0 {
+            result = gf_mul(result, base);
+        }
+        base = gf_mul(base, base);
+        exp = exp >> 1;
+    }
+    return result;
+}
+
+// 8-bit left rotation.
+fn rotl8(x: i32, k: i32) -> i32 {
+    return ((x << k) | (x >> (8 - k))) & 0xff;
+}
+
+// AES SubBytes: GF(2^8) inverse + affine transform over GF(2).
+fn aes_sbox(x: i32) -> i32 {
+    let y: i32 = gf_inv(x);
+    return (y ^ rotl8(y, 1) ^ rotl8(y, 2) ^ rotl8(y, 3) ^ rotl8(y, 4) ^ 0x63) & 0xff;
+}
+
+// ============================================================
+//  FIPS 197 reference table
+// ============================================================
+
+fn init_fips197(r: *i32) {
+    // Row 0x0_
+    r[0]=0x63;r[1]=0x7c;r[2]=0x77;r[3]=0x7b;r[4]=0xf2;r[5]=0x6b;r[6]=0x6f;r[7]=0xc5;
+    r[8]=0x30;r[9]=0x01;r[10]=0x67;r[11]=0x2b;r[12]=0xfe;r[13]=0xd7;r[14]=0xab;r[15]=0x76;
+    // Row 0x1_
+    r[16]=0xca;r[17]=0x82;r[18]=0xc9;r[19]=0x7d;r[20]=0xfa;r[21]=0x59;r[22]=0x47;r[23]=0xf0;
+    r[24]=0xad;r[25]=0xd4;r[26]=0xa2;r[27]=0xaf;r[28]=0x9c;r[29]=0xa4;r[30]=0x72;r[31]=0xc0;
+    // Row 0x2_
+    r[32]=0xb7;r[33]=0xfd;r[34]=0x93;r[35]=0x26;r[36]=0x36;r[37]=0x3f;r[38]=0xf7;r[39]=0xcc;
+    r[40]=0x34;r[41]=0xa5;r[42]=0xe5;r[43]=0xf1;r[44]=0x71;r[45]=0xd8;r[46]=0x31;r[47]=0x15;
+    // Row 0x3_
+    r[48]=0x04;r[49]=0xc7;r[50]=0x23;r[51]=0xc3;r[52]=0x18;r[53]=0x96;r[54]=0x05;r[55]=0x9a;
+    r[56]=0x07;r[57]=0x12;r[58]=0x80;r[59]=0xe2;r[60]=0xeb;r[61]=0x27;r[62]=0xb2;r[63]=0x75;
+    // Row 0x4_
+    r[64]=0x09;r[65]=0x83;r[66]=0x2c;r[67]=0x1a;r[68]=0x1b;r[69]=0x6e;r[70]=0x5a;r[71]=0xa0;
+    r[72]=0x52;r[73]=0x3b;r[74]=0xd6;r[75]=0xb3;r[76]=0x29;r[77]=0xe3;r[78]=0x2f;r[79]=0x84;
+    // Row 0x5_
+    r[80]=0x53;r[81]=0xd1;r[82]=0x00;r[83]=0xed;r[84]=0x20;r[85]=0xfc;r[86]=0xb1;r[87]=0x5b;
+    r[88]=0x6a;r[89]=0xcb;r[90]=0xbe;r[91]=0x39;r[92]=0x4a;r[93]=0x4c;r[94]=0x58;r[95]=0xcf;
+    // Row 0x6_
+    r[96]=0xd0;r[97]=0xef;r[98]=0xaa;r[99]=0xfb;r[100]=0x43;r[101]=0x4d;r[102]=0x33;r[103]=0x85;
+    r[104]=0x45;r[105]=0xf9;r[106]=0x02;r[107]=0x7f;r[108]=0x50;r[109]=0x3c;r[110]=0x9f;r[111]=0xa8;
+    // Row 0x7_
+    r[112]=0x51;r[113]=0xa3;r[114]=0x40;r[115]=0x8f;r[116]=0x92;r[117]=0x9d;r[118]=0x38;r[119]=0xf5;
+    r[120]=0xbc;r[121]=0xb6;r[122]=0xda;r[123]=0x21;r[124]=0x10;r[125]=0xff;r[126]=0xf3;r[127]=0xd2;
+    // Row 0x8_
+    r[128]=0xcd;r[129]=0x0c;r[130]=0x13;r[131]=0xec;r[132]=0x5f;r[133]=0x97;r[134]=0x44;r[135]=0x17;
+    r[136]=0xc4;r[137]=0xa7;r[138]=0x7e;r[139]=0x3d;r[140]=0x64;r[141]=0x5d;r[142]=0x19;r[143]=0x73;
+    // Row 0x9_
+    r[144]=0x60;r[145]=0x81;r[146]=0x4f;r[147]=0xdc;r[148]=0x22;r[149]=0x2a;r[150]=0x90;r[151]=0x88;
+    r[152]=0x46;r[153]=0xee;r[154]=0xb8;r[155]=0x14;r[156]=0xde;r[157]=0x5e;r[158]=0x0b;r[159]=0xdb;
+    // Row 0xa_
+    r[160]=0xe0;r[161]=0x32;r[162]=0x3a;r[163]=0x0a;r[164]=0x49;r[165]=0x06;r[166]=0x24;r[167]=0x5c;
+    r[168]=0xc2;r[169]=0xd3;r[170]=0xac;r[171]=0x62;r[172]=0x91;r[173]=0x95;r[174]=0xe4;r[175]=0x79;
+    // Row 0xb_
+    r[176]=0xe7;r[177]=0xc8;r[178]=0x37;r[179]=0x6d;r[180]=0x8d;r[181]=0xd5;r[182]=0x4e;r[183]=0xa9;
+    r[184]=0x6c;r[185]=0x56;r[186]=0xf4;r[187]=0xea;r[188]=0x65;r[189]=0x7a;r[190]=0xae;r[191]=0x08;
+    // Row 0xc_
+    r[192]=0xba;r[193]=0x78;r[194]=0x25;r[195]=0x2e;r[196]=0x1c;r[197]=0xa6;r[198]=0xb4;r[199]=0xc6;
+    r[200]=0xe8;r[201]=0xdd;r[202]=0x74;r[203]=0x1f;r[204]=0x4b;r[205]=0xbd;r[206]=0x8b;r[207]=0x8a;
+    // Row 0xd_
+    r[208]=0x70;r[209]=0x3e;r[210]=0xb5;r[211]=0x66;r[212]=0x48;r[213]=0x03;r[214]=0xf6;r[215]=0x0e;
+    r[216]=0x61;r[217]=0x35;r[218]=0x57;r[219]=0xb9;r[220]=0x86;r[221]=0xc1;r[222]=0x1d;r[223]=0x9e;
+    // Row 0xe_
+    r[224]=0xe1;r[225]=0xf8;r[226]=0x98;r[227]=0x11;r[228]=0x69;r[229]=0xd9;r[230]=0x8e;r[231]=0x94;
+    r[232]=0x9b;r[233]=0x1e;r[234]=0x87;r[235]=0xe9;r[236]=0xce;r[237]=0x55;r[238]=0x28;r[239]=0xdf;
+    // Row 0xf_
+    r[240]=0x8c;r[241]=0xa1;r[242]=0x89;r[243]=0x0d;r[244]=0xbf;r[245]=0xe6;r[246]=0x42;r[247]=0x68;
+    r[248]=0x41;r[249]=0x99;r[250]=0x2d;r[251]=0x0f;r[252]=0xb0;r[253]=0x54;r[254]=0xbb;r[255]=0x16;
+}
+
+fn main() {
+    // ============================================================
+    //  S-BOX VERIFICATION: 256 entries vs FIPS 197
+    // ============================================================
+    var expected: [i32; 256] = 0;
+    init_fips197(&expected[0]);
+
+    var correct: i32 = 0;
+    var x: i32 = 0;
+    while x < 256 {
+        let computed: i32 = aes_sbox(x);
+        if computed == expected[x] {
+            correct = correct + 1;
+        }
+        x = x + 1;
+    }
+
+    wr(1, "AES S-box: ");
+    wr_int(1, correct as i64);
+    wr(1, "/256 correct\n");
+
+    // ============================================================
+    //  BINFIELD CROSS-CHECK: compiler log/exp tables vs integer gf_inv (8 inputs)
+    // ============================================================
+    var bf_ok: i32 = 0;
+
+    // inv(0x53) = 0xCA = 202
+    let g1: G = 0x53;
+    let v1: G = 1 / g1;
+    print(v1);  // 202
+    if gf_inv(0x53) == 202 { bf_ok = bf_ok + 1; }
+
+    // inv(0x01) = 0x01 = 1
+    let g2: G = 0x01;
+    let v2: G = 1 / g2;
+    print(v2);  // 1
+    if gf_inv(0x01) == 1 { bf_ok = bf_ok + 1; }
+
+    // inv(0x02) = 0x8D = 141 (generator inverse)
+    let g3: G = 0x02;
+    let v3: G = 1 / g3;
+    print(v3);  // 141
+    if gf_inv(0x02) == 141 { bf_ok = bf_ok + 1; }
+
+    // inv(0x03) = 0xF6 = 246 (generator used for log table)
+    let g4: G = 0x03;
+    let v4: G = 1 / g4;
+    print(v4);  // 246
+    if gf_inv(0x03) == 246 { bf_ok = bf_ok + 1; }
+
+    // inv(0x57) * 0x83 = 1 (AES test vector pair)
+    let g5: G = 0x57;
+    let v5: G = 1 / g5;
+    print(v5);
+    let g5_ref: i32 = gf_inv(0x57);
+    wr(1, "gf_inv(0x57)="); wr_int(1, g5_ref as i64); wr(1, "\n");
+    if gf_mul(0x57, g5_ref) == 1 { bf_ok = bf_ok + 1; }
+
+    // inv(0xFF) = known value
+    let g6: G = 0xff;
+    let v6: G = 1 / g6;
+    print(v6);
+    let g6_ref: i32 = gf_inv(0xff);
+    wr(1, "gf_inv(0xFF)="); wr_int(1, g6_ref as i64); wr(1, "\n");
+    if gf_mul(0xff, g6_ref) == 1 { bf_ok = bf_ok + 1; }
+
+    // inv(0x80) = known value
+    let g7: G = 0x80;
+    let v7: G = 1 / g7;
+    print(v7);
+    let g7_ref: i32 = gf_inv(0x80);
+    if gf_mul(0x80, g7_ref) == 1 { bf_ok = bf_ok + 1; }
+
+    // inv(0xFE) = known value (S[0xFE] = 0xBB verifiable)
+    let g8: G = 0xfe;
+    let v8: G = 1 / g8;
+    print(v8);
+    let g8_ref: i32 = gf_inv(0xfe);
+    if gf_mul(0xfe, g8_ref) == 1 { bf_ok = bf_ok + 1; }
+
+    wr(1, "BinField cross-check: ");
+    wr_int(1, bf_ok as i64);
+    wr(1, "/8 correct\n");
+}

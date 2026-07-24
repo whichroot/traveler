@@ -1,0 +1,54 @@
+// pfor_ok_shortcircuit.tv — POSITIVE CONTROL: short-circuit guard in a
+// value position inside a parallelizable field loop (known-issue #14).
+//
+// The #14 fix lowers `&&` / `||` to a control-flow diamond (branches + an
+// alloca result slot). This fixture proves that such branches appearing
+// INSIDE a parallelizable loop body — in a VALUE position, keeping the body
+// straight-line at statement level — neither defeat auto-parallelization nor
+// break determinism:
+//
+//   - The write is out[i] = ... (stride-1, own cell — provably injective).
+//   - The added value is `(g < 4096 && g >= 0) as F`, a short-circuited bool
+//     over loop-invariant / own quantities, cast to the field element.
+//   - The pfor analysis reasons over the AST (it walks both && operands
+//     structurally regardless of operator), so the index-map / purity proofs
+//     are unchanged. Short-circuit only runs the RHS on a SUBSET of the
+//     effects the analyzer already conservatively modelled, so no soundness
+//     obligation weakens.
+//
+// (Note: a short-circuit inside an `if` STATEMENT would not parallelize, but
+// that is the analyzer's pre-existing "no branching statements in a parallel
+// body" rule, unrelated to #14 — so the guard lives in a value position here.)
+//
+// MUST PARALLELIZE. Expected workers: 1 (one worker function for the one
+// eligible loop). Output deterministic across TRAVELER_THREADS.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let a: *F = alloc(4096);
+    let out: *F = alloc(4096);
+
+    let mut w: i32 = 0;
+    while w < 4096 {
+        a[w] = (w % 7) as F;
+        w = w + 1;
+    }
+
+    // Each iteration writes its OWN cell. The added term is a short-circuited
+    // boolean (always 1 here) cast to F — exercising the #14 diamond inside a
+    // dispatched worker body.
+    for i in 0..4096 {
+        let g: i32 = i;
+        out[i] = a[i] + (g < 4096 && g >= 0) as F;
+    }
+
+    let mut s: F = 0;
+    w = 0;
+    while w < 4096 {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

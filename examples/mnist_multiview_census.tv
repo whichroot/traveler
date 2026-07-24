@@ -1,0 +1,345 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_multiview_census.tv — Level 1 census: multi-angle nseg fingerprints on
+// real MNIST; reports per-class mean signatures + pairwise separation matrix.
+// @internal-design: features (the ladder, Level 1)
+//
+// Five views of the SAME traced contour (all integer, no trig, field-safe):
+//   x(t), y(t), (x+y)(t), (x-y)(t), r(theta).
+// Per view nseg at degree 1 and 2 -> a 10-number signature; per-class MEAN
+// (x100) + pairwise L1 separation matrix (small distance = NOT separated).
+//
+// Field-agreement (Goldilocks/BabyBear/65537) is checked on a sample and reported.
+//
+// Two-file link: regime_fri.o + mnist_multiview_census.o
+// Usage: ./mnist_multiview_census <data_directory>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+fn wr(fd: i32, s: *u8) { let len: usize = strlen(s); write(fd, s, len); }
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+fn wr_pad(fd: i32, n: i64, w: i32) {
+    var tmp: i64 = n; if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = w - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216 + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256 + (buf[off + 3] as i32);
+}
+
+fn is_ink(img: *u8, x: i32, y: i32, thr: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x > 27 { return 0; }
+    if y > 27 { return 0; }
+    if (img[y * 28 + x] as i32) > thr { return 1; }
+    return 0;
+}
+
+fn trace_contour(img: *u8, thr: i32, cx: *i64, cy: *i64, max_len: i32) -> i32 {
+    var dx: [i32; 8] = 0;
+    var dy: [i32; 8] = 0;
+    dx[0]=1;  dy[0]=0;
+    dx[1]=1;  dy[1]=1;
+    dx[2]=0;  dy[2]=1;
+    dx[3]=0-1; dy[3]=1;
+    dx[4]=0-1; dy[4]=0;
+    dx[5]=0-1; dy[5]=0-1;
+    dx[6]=0;  dy[6]=0-1;
+    dx[7]=1;  dy[7]=0-1;
+    var sx: i32 = 0-1;
+    var sy: i32 = 0-1;
+    var yy: i32 = 0;
+    while yy < 28 {
+        var xx: i32 = 0;
+        while xx < 28 {
+            if is_ink(img, xx, yy, thr) == 1 { sx = xx; sy = yy; xx = 28; yy = 28; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    if sx < 0 { return 0; }
+    cx[0] = sx as i64; cy[0] = sy as i64;
+    var clen: i32 = 1;
+    var curx: i32 = sx;
+    var cury: i32 = sy;
+    var b: i32 = 4;
+    var steps: i32 = 0;
+    while steps < max_len {
+        var found: i32 = 0 - 1;
+        var k: i32 = 0;
+        while k < 8 {
+            let dd: i32 = (b + 1 + k) % 8;
+            let nx: i32 = curx + dx[dd];
+            let ny: i32 = cury + dy[dd];
+            if is_ink(img, nx, ny, thr) == 1 { found = dd; k = 8; }
+            k = k + 1;
+        }
+        if found < 0 { return clen; }
+        let nxp: i32 = curx + dx[found];
+        let nyp: i32 = cury + dy[found];
+        if nxp == sx { if nyp == sy { return clen; } }
+        if clen < max_len {
+            cx[clen] = nxp as i64; cy[clen] = nyp as i64; clen = clen + 1;
+        } else { return clen; }
+        curx = nxp; cury = nyp;
+        b = (found + 4) % 8;
+        steps = steps + 1;
+    }
+    return clen;
+}
+
+// integer angular ordering (octant + cross-product, no trig)
+fn octant(dx: i64, dy: i64) -> i32 {
+    if dx > 0 { if dy >= 0 { if dx > dy { return 0; } return 1; } }
+    if dx <= 0 { if dy > 0 { if dy >= (0 - dx) { return 2; } return 3; } }
+    if dx < 0 { if dy <= 0 { if (0 - dx) > (0 - dy) { return 4; } return 5; } }
+    if (0 - dy) > dx { return 6; }
+    return 7;
+}
+fn angle_less(ax: i64, ay: i64, bx: i64, by: i64) -> i32 {
+    let oa: i32 = octant(ax, ay);
+    let ob: i32 = octant(bx, by);
+    if oa != ob { if oa < ob { return 1; } return 0; }
+    let cross: i64 = ax * by - ay * bx;
+    if cross > 0 { return 1; }
+    return 0;
+}
+fn radial_view(cx: *i64, cy: *i64, n: i32, px: *i64, py: *i64, out: *i64) {
+    var sx: i64 = 0;
+    var sy: i64 = 0;
+    var i: i32 = 0;
+    while i < n { sx = sx + cx[i]; sy = sy + cy[i]; i = i + 1; }
+    let mx: i64 = sx / (n as i64);
+    let my: i64 = sy / (n as i64);
+    i = 0;
+    while i < n { px[i] = cx[i] - mx; py[i] = cy[i] - my; i = i + 1; }
+    i = 0;
+    while i < n {
+        var best: i32 = i;
+        var j: i32 = i + 1;
+        while j < n {
+            if angle_less(px[j], py[j], px[best], py[best]) == 1 { best = j; }
+            j = j + 1;
+        }
+        let tx: i64 = px[i]; px[i] = px[best]; px[best] = tx;
+        let ty: i64 = py[i]; py[i] = py[best]; py[best] = ty;
+        i = i + 1;
+    }
+    i = 0;
+    while i < n { out[i] = px[i] * px[i] + py[i] * py[i]; i = i + 1; }
+}
+
+// Build the 10-feature multi-view signature of one image into sig[0..9]:
+//   [x_d1,x_d2, y_d1,y_d2, p_d1,p_d2, m_d1,m_d2, r_d1,r_d2]
+// Returns contour length (0 if no contour).
+fn signature(
+    f: Field, img: *u8, thr: i32,
+    cx: *i64, cy: *i64, vbuf: *i64, px: *i64, py: *i64,
+    cert: *i64, work: *i64, sig: *i32
+) -> i32 {
+    let n: i32 = trace_contour(img, thr, cx, cy, 400);
+    if n < 4 { return 0; }
+    var i: i32 = 0;
+    while i < n { vbuf[i] = cx[i]; i = i + 1; }
+    sig[0] = regime_prove_dyn(f, vbuf, n, 1, cert, work);
+    sig[1] = regime_prove_dyn(f, vbuf, n, 2, cert, work);
+    i = 0;
+    while i < n { vbuf[i] = cy[i]; i = i + 1; }
+    sig[2] = regime_prove_dyn(f, vbuf, n, 1, cert, work);
+    sig[3] = regime_prove_dyn(f, vbuf, n, 2, cert, work);
+    i = 0;
+    while i < n { vbuf[i] = cx[i] + cy[i]; i = i + 1; }
+    sig[4] = regime_prove_dyn(f, vbuf, n, 1, cert, work);
+    sig[5] = regime_prove_dyn(f, vbuf, n, 2, cert, work);
+    i = 0;
+    while i < n { vbuf[i] = cx[i] - cy[i]; i = i + 1; }
+    sig[6] = regime_prove_dyn(f, vbuf, n, 1, cert, work);
+    sig[7] = regime_prove_dyn(f, vbuf, n, 2, cert, work);
+    radial_view(cx, cy, n, px, py, vbuf);
+    sig[8] = regime_prove_dyn(f, vbuf, n, 1, cert, work);
+    sig[9] = regime_prove_dyn(f, vbuf, n, 2, cert, work);
+    return n;
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 { wr(2, "usage: mnist_multiview_census <data_dir>\n"); exit(1); }
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    wr(2, "Loading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+    let n_test: i32 = read_be_i32(test_img, 4);
+
+    var n_proc: i32 = 2000;
+    if n_proc > n_test { n_proc = n_test; }
+    wr(2, "Multi-view signatures on "); wr_int(2, n_proc as i64);
+    wr(2, " images (5 views x nseg d1,d2)...\n");
+
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let small: Field = field(65537);
+    let thr: i32 = 64;
+
+    // per-class accumulators: sum of each of 10 features, plus counts.
+    var counts: [i64; 10] = 0;
+    var sums: [i64; 100] = 0;     // 10 classes x 10 features
+    var field_ok: i32 = 1;
+
+    let cx: *i64 = alloc(400);
+    let cy: *i64 = alloc(400);
+    let vbuf: *i64 = alloc(400);
+    let px: *i64 = alloc(400);
+    let py: *i64 = alloc(400);
+    let cert: *i64 = alloc(1200);
+    let work: *i64 = alloc(400);
+    let sig: *i32 = alloc(10);
+    let sig_b: *i32 = alloc(10);
+    let sig_s: *i32 = alloc(10);
+
+    var i: i32 = 0;
+    while i < n_proc {
+        let label: i32 = test_lbl[8 + i] as i32;
+        let img: *u8 = &test_img[16 + i * 784];
+        let n: i32 = signature(gold, img, thr, cx, cy, vbuf, px, py, cert, work, sig);
+        if n > 0 {
+            counts[label] = counts[label] + 1;
+            var j: i32 = 0;
+            while j < 10 { sums[label * 10 + j] = sums[label * 10 + j] + (sig[j] as i64); j = j + 1; }
+            // field-agreement sample (every 200th image, all 10 features)
+            if (i % 200) == 0 {
+                signature(baby,  img, thr, cx, cy, vbuf, px, py, cert, work, sig_b);
+                signature(small, img, thr, cx, cy, vbuf, px, py, cert, work, sig_s);
+                var k: i32 = 0;
+                while k < 10 {
+                    if sig[k] != sig_b[k] { field_ok = 0; }
+                    if sig[k] != sig_s[k] { field_ok = 0; }
+                    k = k + 1;
+                }
+            }
+        }
+        if (i + 1) % 500 == 0 { wr(2, "  "); wr_int(2, (i + 1) as i64); wr(2, " / "); wr_int(2, n_proc as i64); wr(2, "\n"); }
+        i = i + 1;
+    }
+
+    // mean signature (x100) per class into a flat array
+    let mean: *i64 = alloc(100);
+    var cls: i32 = 0;
+    while cls < 10 {
+        var j: i32 = 0;
+        while j < 10 {
+            if counts[cls] > 0 { mean[cls * 10 + j] = (sums[cls * 10 + j] * 100) / counts[cls]; }
+            else { mean[cls * 10 + j] = 0; }
+            j = j + 1;
+        }
+        cls = cls + 1;
+    }
+
+    // ---- report mean signatures ----
+    wr(1, "=== MNIST Multi-View Signature (mean x100, nseg d1/d2 per view) ===\n");
+    wr(1, "fields: Goldilocks/BabyBear/65537   field-agreement: ");
+    if field_ok == 1 { wr(1, "100%\n"); } else { wr(1, "BROKEN\n"); }
+    wr(1, "cls    n  | x1 x2 | y1 y2 | p1 p2 | m1 m2 | r1 r2  (p=x+y m=x-y r=radial)\n");
+    cls = 0;
+    while cls < 10 {
+        wr(1, "  "); wr_int(1, cls as i64);
+        wr_pad(1, counts[cls], 6); wr(1, " |");
+        var j: i32 = 0;
+        while j < 10 {
+            wr_pad(1, mean[cls * 10 + j], 4);
+            if (j % 2) == 1 { wr(1, " |"); }
+            j = j + 1;
+        }
+        wr(1, "\n");
+        cls = cls + 1;
+    }
+
+    // ---- pairwise separation matrix: L1 distance between class mean signatures ----
+    // Small distance = the multi-view signature does NOT separate the pair (the
+    // negative we are hunting). We print the full 10x10 L1 matrix (x1 units).
+    wr(1, "\nPairwise L1 distance between mean signatures (small = NOT separated):\n");
+    wr(1, "     0   1   2   3   4   5   6   7   8   9\n");
+    var a: i32 = 0;
+    while a < 10 {
+        wr(1, "  "); wr_int(1, a as i64); wr(1, " ");
+        var bdig: i32 = 0;
+        while bdig < 10 {
+            var dist: i64 = 0;
+            var j: i32 = 0;
+            while j < 10 {
+                let d: i64 = mean[a * 10 + j] - mean[bdig * 10 + j];
+                if d < 0 { dist = dist - d; } else { dist = dist + d; }
+                j = j + 1;
+            }
+            wr_pad(1, dist, 4);
+            bdig = bdig + 1;
+        }
+        wr(1, "\n");
+        a = a + 1;
+    }
+
+    // ---- the NEGATIVE: find the closest (least-separated) off-diagonal pair ----
+    var min_dist: i64 = 1000000;
+    var min_a: i32 = 0;
+    var min_b: i32 = 0;
+    a = 0;
+    while a < 10 {
+        var bdig: i32 = a + 1;
+        while bdig < 10 {
+            var dist: i64 = 0;
+            var j: i32 = 0;
+            while j < 10 {
+                let d: i64 = mean[a * 10 + j] - mean[bdig * 10 + j];
+                if d < 0 { dist = dist - d; } else { dist = dist + d; }
+                j = j + 1;
+            }
+            if dist < min_dist { min_dist = dist; min_a = a; min_b = bdig; }
+            bdig = bdig + 1;
+        }
+        a = a + 1;
+    }
+    wr(1, "\nLEAST-SEPARATED PAIR (the Level-1 negative): ");
+    wr_int(1, min_a as i64); wr(1, " vs "); wr_int(1, min_b as i64);
+    wr(1, "  L1="); wr_int(1, min_dist); wr(1, " (x100 units)\n");
+
+    free(test_img); free(test_lbl);
+    free(cx); free(cy); free(vbuf); free(px); free(py); free(cert); free(work);
+    free(sig); free(sig_b); free(sig_s); free(mean);
+    return 0;
+}

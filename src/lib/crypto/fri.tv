@@ -1,0 +1,580 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fri.tv — FRI polynomial commitment (Goldilocks, Layer 1). Evaluations
+// natural-order; conjugate pairs at distance n/2; one Merkle leaf per pair.
+// Linking: ntt.o + poseidon2.o + merkle.o + fri.o.
+// @internal-design: crypto
+
+type Goldilocks = Field<18446744069414584321>;
+
+// ===== EXTERN DECLARATIONS =====
+
+// NTT (from ntt.o)
+extern "C" fn ntt_coset_forward_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32, shift: Goldilocks);
+extern "C" fn ntt_inverse_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32);
+extern "C" fn bit_reverse_swap_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32);
+
+// Poseidon2 (from poseidon2.o)
+extern "C" fn poseidon2_permute_8_Field18446744069414584321(
+    state: *Goldilocks, rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+// Merkle (from merkle.o)
+extern "C" fn merkle_build(
+    leaves: *Goldilocks, n_leaves: i32, tree: *Goldilocks,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+extern "C" fn merkle_open(
+    tree: *Goldilocks, n_leaves: i32, idx: i32, path: *Goldilocks) -> i32;
+extern "C" fn merkle_verify(
+    root: *Goldilocks, leaf: *Goldilocks, idx: i32, n_leaves: i32,
+    path: *Goldilocks, path_len: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+
+// ===== FIAT-SHAMIR TRANSCRIPT (Poseidon2 sponge, rate=4) =====
+
+#[export]
+fn transcript_init(state: *Goldilocks) {
+    for i in 0..8 {
+        state[i] = 0;
+    }
+}
+
+// Absorb n field elements into transcript.
+// absorb_pos: pointer to current position in rate section [0..4).
+#[export]
+fn transcript_absorb(
+    state: *Goldilocks,
+    absorb_pos: *i32,
+    input: *Goldilocks,
+    n: i32,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) {
+    for i in 0..n {
+        let pos: i32 = absorb_pos[0];
+        state[pos] = state[pos] + input[i];
+        absorb_pos[0] = pos + 1;
+        if absorb_pos[0] == 4 {
+            poseidon2_permute_8_Field18446744069414584321(
+                state, rc_init, rc_term, rc_int, diag);
+            absorb_pos[0] = 0;
+        }
+    }
+}
+
+// Squeeze n field elements from transcript.
+#[export]
+fn transcript_squeeze(
+    state: *Goldilocks,
+    absorb_pos: *i32,
+    out: *Goldilocks,
+    n: i32,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) {
+    // If there's pending absorbed data, permute to seal it
+    if absorb_pos[0] != 0 {
+        poseidon2_permute_8_Field18446744069414584321(
+            state, rc_init, rc_term, rc_int, diag);
+        absorb_pos[0] = 0;
+    }
+    var squeeze_pos: i32 = 0;
+    for i in 0..n {
+        if squeeze_pos == 4 {
+            poseidon2_permute_8_Field18446744069414584321(
+                state, rc_init, rc_term, rc_int, diag);
+            squeeze_pos = 0;
+        }
+        out[i] = state[squeeze_pos];
+        squeeze_pos = squeeze_pos + 1;
+    }
+}
+
+// ===== LEAF HASHING (pair of evaluations → 4-element digest) =====
+
+// Hash a conjugate pair (v_left, v_right) into a 4-element Merkle leaf digest.
+// state = [v_left, v_right, 0, 0, 0, 0, 0, 0] → permute → squeeze state[0..4].
+#[export]
+fn fri_hash_pair(
+    v_left: Goldilocks,
+    v_right: Goldilocks,
+    out: *Goldilocks,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) {
+    let state: *Goldilocks = alloc(8);
+    state[0] = v_left;
+    state[1] = v_right;
+    for i in 2..8 {
+        state[i] = 0;
+    }
+    poseidon2_permute_8_Field18446744069414584321(
+        state, rc_init, rc_term, rc_int, diag);
+    for i in 0..4 {
+        out[i] = state[i];
+    }
+    free(state);
+}
+
+// Hash conjugate pairs into leaf digests for Merkle tree.
+// evals: n elements in natural order. Pairs at (i, i+n/2).
+// digests: (n/2) * 4 elements.
+#[export]
+fn fri_hash_layer(
+    evals: *Goldilocks,
+    n: i32,
+    digests: *Goldilocks,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) {
+    let half: i32 = n / 2;
+    for i in 0..half {
+        let out: *Goldilocks = &digests[i * 4];
+        fri_hash_pair(evals[i], evals[i + half], out,
+            rc_init, rc_term, rc_int, diag);
+    }
+}
+
+// ===== FRI FOLD (generic — uses __ntt_root for twiddle factors) =====
+
+// Reverse the low `bits` bits of integer x.
+fn fri_bit_rev(x: i32, bits: i32) -> i32 {
+    var r: i32 = 0;
+    var v: i32 = x;
+    for i in 0..bits {
+        r = (r << 1) | (v & 1);
+        v = v >> 1;
+    }
+    return r;
+}
+
+// Fold n evaluations into n/2, pairing conjugates at distance n/2:
+// folded[i] = (sum + beta*diff*inv_tw[i]) * inv2, inv_tw[i] = 1/(shift*ω^i).
+fn fri_fold_layer<F: Field>(
+    evals: *F,
+    log_n: i32,
+    beta: F,
+    shift: F,
+    folded: *F
+) {
+    let n: i32 = 1 << log_n;
+    let half: i32 = n / 2;
+    let inv2: F = 1 / 2;
+
+    // Precompute inverse twiddle factors: inv_tw[i] = 1 / (shift * ω^i)
+    // Sequential powers — natural order, no bit-reversal.
+    let inv_tw: *F = alloc(half);
+    let inv_shift: F = 1 / shift;
+    let inv_omega: F = __ntt_inv_root(log_n - 1);
+    inv_tw[0] = inv_shift;
+    for i in 1..half {
+        inv_tw[i] = inv_tw[i - 1] * inv_omega;
+    }
+
+    // Fold conjugate pairs at distance n/2
+    for i in 0..half {
+        let sum: F = evals[i] + evals[i + half];
+        let diff: F = evals[i] - evals[i + half];
+        folded[i] = (sum + beta * diff * inv_tw[i]) * inv2;
+    }
+
+    free(inv_tw);
+}
+
+// Twiddle factor for one pair at one round (verifier-side query checks).
+// Returns shift * omega^pair_idx (natural order, no bit-reversal).
+fn fri_twiddle<F: Field>(
+    pair_idx: i32,
+    log_n: i32,
+    shift: F
+) -> F {
+    let omega: F = __ntt_root(log_n - 1);
+
+    // Compute omega^pair_idx by repeated squaring
+    var w: F = 1;
+    var base: F = omega;
+    var exp: i32 = pair_idx;
+    while exp > 0 {
+        if (exp & 1) == 1 {
+            w = w * base;
+        }
+        base = base * base;
+        exp = exp >> 1;
+    }
+
+    return shift * w;
+}
+
+// ===== EXPLICIT INSTANTIATIONS =====
+
+instantiate fri_fold_layer<Field<18446744069414584321>>;
+instantiate fri_twiddle<Field<18446744069414584321>>;
+
+// ===== FRI PROVE =====
+
+// Full FRI prover.
+//
+// Input:
+//   coeffs[0..degree]: polynomial coefficients
+//   degree: polynomial degree (degree+1 coefficients)
+//   log_blowup: 1 (2x) or 2 (4x)
+//   shift: coset generator (must not be in NTT subgroup)
+//   num_queries: number of query positions
+//
+// Output:
+//   roots: n_rounds * 4 elements (Merkle roots per committed layer)
+//   challenges: n_rounds elements (fold challenges from transcript)
+//   final_poly: final polynomial value(s)
+//   query_values: num_queries * n_rounds * 2 elements
+//       [query q, round r] = query_values[(q * n_rounds + r) * 2 .. +2]
+//       contains (v_left, v_right) for the pair at that round
+//   query_paths: num_queries * n_rounds * max_depth * 4 elements
+//       [query q, round r] at offset (q * n_rounds + r) * max_depth * 4
+//   query_indices: num_queries elements
+//
+// Returns: number of committed rounds
+#[export]
+fn fri_prove(
+    coeffs: *Goldilocks,
+    degree: i32,
+    log_blowup: i32,
+    shift: Goldilocks,
+    num_queries: i32,
+    roots: *Goldilocks,
+    challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks,
+    query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) -> i32 {
+    // Compute LDE domain size
+    // log_n = ceil(log2(degree + 1)) + log_blowup
+    var log_n: i32 = 0;
+    var tmp: i32 = degree;
+    while tmp > 0 {
+        log_n = log_n + 1;
+        tmp = tmp >> 1;
+    }
+    log_n = log_n + log_blowup;
+    let n: i32 = 1 << log_n;
+
+    // Maximum total evaluations across all rounds (< 2N)
+    let max_total: i32 = 2 * n;
+
+    // Allocate flat buffer for all evaluation layers
+    // Layer r starts at offset: sum of sizes of layers 0..r-1
+    let all_evals: *Goldilocks = alloc(max_total);
+
+    // Step 1: LDE — pad coefficients and apply coset NTT
+    for i in 0..(degree + 1) {
+        all_evals[i] = coeffs[i];
+    }
+    for i in (degree + 1)..n {
+        all_evals[i] = 0;
+    }
+    ntt_coset_forward_Field18446744069414584321(all_evals, log_n, shift);
+
+    // Initialize transcript
+    let ts: *Goldilocks = alloc(8);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    // Commit and fold loop
+    let max_depth: i32 = log_n;  // upper bound on Merkle depth
+    var cur_off: i32 = 0;     // offset into all_evals for current layer
+    var cur_log: i32 = log_n;  // log2 of current domain size
+    var n_rounds: i32 = 0;
+    var cur_shift: Goldilocks = shift;
+
+    // Max leaves in any round = n/2
+    let digests: *Goldilocks = alloc((n / 2) * 4);
+    // Max tree size = 2 * (n/2) * 4 = n * 4
+    let tree: *Goldilocks = alloc(n * 4);
+
+    while (1 << cur_log) > 1 {
+        let cur_n: i32 = 1 << cur_log;
+        let n_leaves: i32 = cur_n / 2;
+        let cur_evals: *Goldilocks = &all_evals[cur_off];
+
+        // Hash evaluation pairs into leaf digests
+        fri_hash_layer(cur_evals, cur_n, digests,
+            rc_init, rc_term, rc_int, diag);
+
+        // Build Merkle tree and extract root
+        merkle_build(digests, n_leaves, tree,
+            rc_init, rc_term, rc_int, diag);
+        let root: *Goldilocks = &tree[4];
+        for j in 0..4 {
+            roots[n_rounds * 4 + j] = root[j];
+        }
+
+        // Absorb root into transcript
+        transcript_absorb(ts, ts_pos, root, 4,
+            rc_init, rc_term, rc_int, diag);
+
+        // Squeeze fold challenge
+        let challenge: *Goldilocks = alloc(1);
+        transcript_squeeze(ts, ts_pos, challenge, 1,
+            rc_init, rc_term, rc_int, diag);
+        challenges[n_rounds] = challenge[0];
+
+        // Query opening is deferred: indices are squeezed after all commits,
+        // then each round's tree is rebuilt from all_evals (see below).
+
+        // Fold: current layer → next layer
+        if (1 << (cur_log - 1)) > 1 {
+            let next_off: i32 = cur_off + cur_n;
+            let next_evals: *Goldilocks = &all_evals[next_off];
+            fri_fold_layer_Field18446744069414584321(
+                cur_evals, cur_log, challenge[0], cur_shift, next_evals);
+            cur_off = next_off;
+        } else {
+            // Last fold: produce final polynomial value
+            let next: *Goldilocks = alloc(1);
+            fri_fold_layer_Field18446744069414584321(
+                cur_evals, cur_log, challenge[0], cur_shift, next);
+            final_poly[0] = next[0];
+            free(next);
+        }
+
+        free(challenge);
+        cur_shift = cur_shift * cur_shift;  // shift squares each round
+        cur_log = cur_log - 1;
+        n_rounds = n_rounds + 1;
+    }
+
+    // Squeeze query indices from transcript
+    let q_raw: *Goldilocks = alloc(num_queries);
+    transcript_squeeze(ts, ts_pos, q_raw, num_queries,
+        rc_init, rc_term, rc_int, diag);
+    for q in 0..num_queries {
+        // Reduce to [0, N) — take modular remainder as integer
+        // q_raw is a field element; convert to index
+        let idx: i32 = q_raw[q] as i32;
+        let mask: i32 = (1 << log_n) - 1;
+        query_indices[q] = idx & mask;
+    }
+    free(q_raw);
+
+    // Now open queries: for each query, for each committed round,
+    // rebuild the Merkle tree and extract pair + path
+    var rnd_off: i32 = 0;
+    var rnd_log: i32 = log_n;
+    for r in 0..n_rounds {
+        let rnd_n: i32 = 1 << rnd_log;
+        let rnd_leaves: i32 = rnd_n / 2;
+        let rnd_evals: *Goldilocks = &all_evals[rnd_off];
+
+        // Rebuild leaf digests and Merkle tree for this round
+        fri_hash_layer(rnd_evals, rnd_n, digests,
+            rc_init, rc_term, rc_int, diag);
+        merkle_build(digests, rnd_leaves, tree,
+            rc_init, rc_term, rc_int, diag);
+
+        for q in 0..num_queries {
+            let qi: i32 = query_indices[q];
+            // Pair index: qi reduced to current half-domain
+            let rnd_half: i32 = rnd_n / 2;
+            let pair_idx: i32 = qi & (rnd_half - 1);
+
+            // Extract conjugate pair at distance n/2
+            let v_off: i32 = (q * n_rounds + r) * 2;
+            query_values[v_off] = rnd_evals[pair_idx];
+            query_values[v_off + 1] = rnd_evals[pair_idx + rnd_half];
+
+            // Extract Merkle path
+            let path_off: i32 = (q * n_rounds + r) * max_depth * 4;
+            let path_buf: *Goldilocks = &query_paths[path_off];
+            merkle_open(tree, rnd_leaves, pair_idx, path_buf);
+        }
+
+        rnd_off = rnd_off + rnd_n;
+        rnd_log = rnd_log - 1;
+    }
+
+    free(all_evals);
+    free(digests);
+    free(tree);
+    free(ts);
+    free(ts_pos);
+
+    return n_rounds;
+}
+
+// ===== FRI VERIFY =====
+
+// Full FRI verifier: takes the proof data from fri_prove plus the same config
+// parameters. Returns 1 if valid, 0 if invalid.
+#[export]
+fn fri_verify(
+    degree: i32,
+    log_blowup: i32,
+    shift: Goldilocks,
+    num_queries: i32,
+    n_rounds: i32,
+    roots: *Goldilocks,
+    challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks,
+    query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) -> i32 {
+    // Recompute domain size
+    var log_n: i32 = 0;
+    var tmp: i32 = degree;
+    while tmp > 0 {
+        log_n = log_n + 1;
+        tmp = tmp >> 1;
+    }
+    log_n = log_n + log_blowup;
+    let max_depth: i32 = log_n;
+
+    // Reconstruct transcript and verify challenges
+    let ts: *Goldilocks = alloc(8);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let challenge_check: *Goldilocks = alloc(1);
+    for r in 0..n_rounds {
+        let root: *Goldilocks = &roots[r * 4];
+        transcript_absorb(ts, ts_pos, root, 4,
+            rc_init, rc_term, rc_int, diag);
+        transcript_squeeze(ts, ts_pos, challenge_check, 1,
+            rc_init, rc_term, rc_int, diag);
+        if challenge_check[0] != challenges[r] {
+            free(ts); free(ts_pos); free(challenge_check);
+            return 0;
+        }
+    }
+
+    // Reconstruct query indices
+    let q_raw: *Goldilocks = alloc(num_queries);
+    transcript_squeeze(ts, ts_pos, q_raw, num_queries,
+        rc_init, rc_term, rc_int, diag);
+    let mask: i32 = (1 << log_n) - 1;
+    for q in 0..num_queries {
+        let expected_idx: i32 = (q_raw[q] as i32) & mask;
+        if expected_idx != query_indices[q] {
+            free(ts); free(ts_pos); free(challenge_check);
+            free(q_raw);
+            return 0;
+        }
+    }
+    free(q_raw);
+    free(challenge_check);
+    free(ts);
+    free(ts_pos);
+
+    // Verify each query
+    let inv2: Goldilocks = 1 / 2;
+    let leaf_digest: *Goldilocks = alloc(4);
+
+    for q in 0..num_queries {
+        let qi: i32 = query_indices[q];
+        var cur_shift: Goldilocks = shift;
+        var cur_log: i32 = log_n;
+
+        for r in 0..n_rounds {
+            let cur_half: i32 = (1 << cur_log) / 2;
+            let pair_idx: i32 = qi & (cur_half - 1);
+            let v_off: i32 = (q * n_rounds + r) * 2;
+            let v_left: Goldilocks = query_values[v_off];
+            let v_right: Goldilocks = query_values[v_off + 1];
+
+            // 1. Verify Merkle path for this pair
+            // Recompute leaf digest from evaluation pair
+            fri_hash_pair(v_left, v_right, leaf_digest,
+                rc_init, rc_term, rc_int, diag);
+
+            let rnd_n: i32 = 1 << cur_log;
+            let rnd_leaves: i32 = rnd_n / 2;
+            let path_off: i32 = (q * n_rounds + r) * max_depth * 4;
+            let path_buf: *Goldilocks = &query_paths[path_off];
+            let root: *Goldilocks = &roots[r * 4];
+
+            // Compute path length for this round
+            var path_len: i32 = 0;
+            var pl_tmp: i32 = rnd_leaves;
+            while pl_tmp > 1 {
+                path_len = path_len + 1;
+                pl_tmp = pl_tmp / 2;
+            }
+
+            let mk_ok: i32 = merkle_verify(
+                root, leaf_digest, pair_idx, rnd_leaves,
+                path_buf, path_len,
+                rc_init, rc_term, rc_int, diag);
+            if mk_ok != 1 {
+                free(leaf_digest);
+                return 0;
+            }
+
+            // 2. Check fold consistency
+            // Compute the fold: expected = (sum + beta * diff * inv_tw) * inv2
+            let tw: Goldilocks = fri_twiddle_Field18446744069414584321(
+                pair_idx, cur_log, cur_shift);
+            let inv_tw: Goldilocks = 1 / tw;
+            let beta: Goldilocks = challenges[r];
+
+            let sum: Goldilocks = v_left + v_right;
+            let diff: Goldilocks = v_left - v_right;
+            let expected: Goldilocks = (sum + beta * diff * inv_tw) * inv2;
+
+            // Check against next round's value (or final poly)
+            if r < n_rounds - 1 {
+                // Folded value = position pair_idx in the next (half) domain:
+                // pair_idx < next_half → left of the next pair, else right.
+                let next_half: i32 = cur_half / 2;
+                let next_v_off: i32 = (q * n_rounds + (r + 1)) * 2;
+                let actual_left: Goldilocks = query_values[next_v_off];
+                let actual_right: Goldilocks = query_values[next_v_off + 1];
+                if pair_idx < next_half {
+                    if expected != actual_left {
+                        free(leaf_digest);
+                        return 0;
+                    }
+                } else {
+                    if expected != actual_right {
+                        free(leaf_digest);
+                        return 0;
+                    }
+                }
+            } else {
+                // Last round: check against final polynomial
+                if expected != final_poly[0] {
+                    free(leaf_digest);
+                    return 0;
+                }
+            }
+
+            cur_shift = cur_shift * cur_shift;
+            cur_log = cur_log - 1;
+        }
+    }
+
+    free(leaf_digest);
+    return 1;
+}

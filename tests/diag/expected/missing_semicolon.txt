@@ -1,0 +1,3 @@
+expected ';'
+missing_semicolon.tv:3:5
+error generated

@@ -1,0 +1,12 @@
+// Negative test: eval() on Register should produce correct output (not crash)
+field F = Field<97>;
+
+fn main() {
+    let reg: Register<F, 2> = register(10, 4, 2);
+    let v: F = eval(reg, 0);
+    print(v);
+    let v1: F = eval(reg, 1);
+    print(v1);
+    let v2: F = eval(reg, 2);
+    print(v2);
+}

@@ -1,0 +1,7 @@
+// Negative test: reference to undeclared variable
+field F = Field<251>;
+
+fn main() {
+    let a: F = 100;
+    print(b);
+}

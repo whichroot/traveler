@@ -1,0 +1,45 @@
+=====================================================================
+ SYNDROME KEYS over GF(2^13) = BinField<13, 0x201B>
+   T = 6 odd syndromes  ->  key width 78 bits
+   collisions IMPOSSIBLE for <= 12 changed slots (BCH bound)
+   differences DECODABLE   for <= 6 changed slots
+=====================================================================
+
+[1] White castles kingside (O-O).  Ke1->g1, Rh1->f1.
+    key(before) = 1095 2675 1079 6582 2735 6702
+    key(after)  = 1388 1847 996 1308 2098 6999
+    key(A)-key(B) = 299 3396 2003 7338 669 377
+    decoded 4 changed slots:  wRf1 wRh1 wKe1 wKg1   [OK]
+
+[2] Pawn g7 takes rook h8 and promotes to queen (gxh8=Q).
+    key(A)-key(B) = 7808 6910 7879 29 3021 7110
+    decoded 3 changed slots:  wPg7 wQh8 bRh8   [OK]
+
+[3] 1.e4 e5 2.Nf3 Nc6  --  four moves, 8 slots.  (T=6: expect refusal)
+    beyond correction radius (weight > 6)
+    ...but the keys still PROVABLY differ (8 <= 12 = detection radius): differ [OK]
+
+[4] 1.e4 e5 2.Nf3  --  three moves, 6 slots.
+    decoded 6 changed slots:  wPe2 wPe4 wNg1 wNf3 bPe5 bPe7   [OK]
+
+[5] Exhaustive check: no weight-1 or weight-2 difference is invisible.
+    weight 1: 768 patterns, 0 invisible
+    weight 2: 294528 patterns, 0 invisible
+
+[6] Randomized decode round-trip (weight 1..6), 4000 trials each.
+    weight 1: 4000/4000 exact recoveries  [OK]
+    weight 2: 4000/4000 exact recoveries  [OK]
+    weight 3: 4000/4000 exact recoveries  [OK]
+    weight 4: 4000/4000 exact recoveries  [OK]
+    weight 5: 4000/4000 exact recoveries  [OK]
+    weight 6: 4000/4000 exact recoveries  [OK]
+
+[7] Detection (not decode) for weight 7..12, 4000 trials each.
+    weight 7: 4000/4000 detected  [OK]
+    weight 8: 4000/4000 detected  [OK]
+    weight 9: 4000/4000 detected  [OK]
+    weight 10: 4000/4000 detected  [OK]
+    weight 11: 4000/4000 detected  [OK]
+    weight 12: 4000/4000 detected  [OK]
+
+done.

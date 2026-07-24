@@ -1,0 +1,26 @@
+// #43 no-escape fence: `&` of a body-local (workitem-private) var refuses
+// (private-escape), keeping the loop serial — 0 workers. On the CPU the
+// downstream fences already block every RACING use of an escaped address;
+// the refusal exists so the private verdict stays register-mappable on a
+// GPU target (a VGPR has no address). read_cell is pure and writes no
+// arrays — the arg walk's escape check is what must fire, not the callee
+// fences.
+// out[j] = 3j + 1  ->  sum = 3*(4095*4096/2) + 4096 = 25163776.
+fn read_cell(p: *i64) -> i64 {
+    return p[0];
+}
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let out: *i64 = alloc(n * 8);
+    for j in 0..4096 {
+        var acc: i64 = (j * 3) as i64;
+        acc = acc + 1;
+        out[j] = read_cell(&acc);   // &private -> private-escape, serial
+    }
+    var s: i64 = 0;
+    var i: i32 = 0;
+    while i < n { s = s + out[i]; i = i + 1; }
+    print(s);
+    return 0;
+}

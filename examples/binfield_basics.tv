@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// binfield_basics.tv — GF(2^8) arithmetic over BinField<8, 0x11B> (AES polynomial
+// x^8+x^4+x^3+x+1): addition = XOR, mul via log/exp tables. (Claim 12 evidence)
+
+type G = BinField<8, 0x11B>;
+
+fn main() {
+    let a: G = 0x53;
+    let b: G = 0xCA;
+
+    // Addition: XOR
+    // 0x53 ^ 0xCA = 0x99 = 153
+    let c: G = a + b;
+    print(c);  // 153
+
+    // Multiplication: log/exp table lookup
+    // 0x53 * 0xCA = 0x01 in GF(2^8)
+    let d: G = a * b;
+    print(d);  // 1
+
+    // Multiplicative inverse via Fermat: a^(254)
+    // inv(0x53) = 0xCA = 202
+    let e: G = 1 / a;
+    print(e);  // 202
+
+    // Verify: a * inv(a) = 1
+    let f: G = a * e;
+    print(f);  // 1
+
+    // AES spec test vector: 0x57 * 0x83 = 0xC1 = 193
+    let g1: G = 0x57;
+    let g2: G = 0x83;
+    let g3: G = g1 * g2;
+    print(g3);  // 193
+
+    // Characteristic 2 property: a + a = 0 (XOR with itself)
+    let z: G = a + a;
+    print(z);  // 0
+}

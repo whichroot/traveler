@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// extfield_runtime.tv — Bug #27 gate: runtime ExtField construction (a,0),
+// ==/!= on BOTH components, bool-literal-as-value, and operand symmetry (d).
+// @internal-design: nt ("ExtField findings"; known-issues #27)
+//
+// GF(251^2) = {a + b*i : a,b in Z/251Z, i^2 = nr}, nr = 2.
+//
+// Expected output (each ExtField print emits its two limbs on separate lines):
+//   10 0     <- (a) runtime i32 (loop sum) -> Ext via implicit convert
+//   10 0     <- (a) runtime i32 -> Ext via explicit `as` cast
+//   3 7      <- (a) full element built from runtime parts: (3,0)+(7,0)*i
+//   1        <- (b) (10,0) == (10,0)
+//   0        <- (b) (10,0) == (3,7)
+//   1        <- (b) (10,0) != (3,7)
+//   0        <- (b) (3,7) == (3,0): imaginary part differs (limb-1 sensitivity)
+//   1        <- (c) ((3,7)==(3,0)) == false  ->  (0 == false) -> 1
+//   1        <- (c) true as i32
+//   1        <- (d) 10 == r  (literal on the LEFT)  == (10,0)==(10,0)
+//   0        <- (d) 5 == r    (computed, not a stub)
+//   1        <- (d) 300 == f49  ({49,0} == (49,0): reduced mod p on the left)
+//   1        <- (d) (300 == f49) == (f49 == 300)  (symmetry)
+//   15 0     <- (d) 5 + r  (literal-on-left arithmetic, non-ext context)
+
+type F251 = Field<251>;
+type Ext = ExtField<Field<251>, 2>;
+
+fn main() -> i32 {
+    let i: Ext = Ext::IMAG;
+
+    // (a) RUNTIME construction — a value computed at runtime (not a literal)
+    //     converted into the extension -> (a, 0).
+    var k: i32 = 0;
+    var sum: i32 = 0;
+    while k < 5 {
+        sum = sum + k;              // sum ends at 10 (runtime)
+        k = k + 1;
+    }
+    let r: Ext = sum;               // implicit convert: i32 -> Ext (10, 0)
+    print(r);
+    let r2: Ext = sum as Ext;       // explicit cast: i32 -> Ext (10, 0)
+    print(r2);
+
+    // Build a full element (a + b*i) from runtime parts.
+    let base: i32 = 3;
+    let imagc: i32 = 7;
+    let a_full: Ext = (base as Ext) + (imagc as Ext) * i;   // (3, 7)
+    print(a_full);
+
+    // (b) EQUALITY on aggregates (ExtField operand on the left).
+    let b_lit: Ext = 10;            // (10, 0) via the literal path
+    let eq1: i32 = (r == b_lit) as i32;
+    print(eq1);                     // 1
+    let eq2: i32 = (r == a_full) as i32;
+    print(eq2);                     // 0
+    let ne1: i32 = (r != a_full) as i32;
+    print(ne1);                     // 1
+    // limb-1 sensitivity: (3,7) vs (3,0) — the scalar-icmp bug read only limb 0
+    // and would (wrongly) call these equal.
+    let three: Ext = 3;
+    let eq3: i32 = (a_full == three) as i32;
+    print(eq3);                     // 0
+
+    // (c) BOOL LITERAL as a value.
+    let neq_via_false: i32 = ((a_full == three) == false) as i32;
+    print(neq_via_false);           // 1
+    let t: i32 = true as i32;
+    print(t);                       // 1
+
+    // (d) OPERAND SYMMETRY: a literal lifts to the reduced (v,0) pair on
+    //     EITHER side, so `k == x` == `x == k` (was LHS-driven typing).
+    let sym_left: i32 = (10 == r) as i32;      // literal on the LEFT
+    print(sym_left);                // 1   (10,0) == (10,0)
+    let sym_ne: i32 = (5 == r) as i32;         // computed, not a stub
+    print(sym_ne);                  // 0   (5,0) != (10,0)
+    // Reduction mod p happens on the left too: 300 % 251 = 49.
+    let f49: Ext = 300;             // (49,0)
+    let red_left: i32 = (300 == f49) as i32;
+    print(red_left);                // 1   {49,0} == (49,0)
+    let red_sym: i32 = ((300 == f49) == (f49 == 300)) as i32;
+    print(red_sym);                 // 1   `300 == f49` <=> `f49 == 300`
+    // Literal-on-left ARITHMETIC in a non-ext context (print passes i32 ctx).
+    print(5 + r);                   // 15 0   (5,0)+(10,0)
+
+    return 0;
+}

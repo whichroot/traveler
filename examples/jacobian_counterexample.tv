@@ -1,0 +1,421 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// jacobian_counterexample.tv — machine interrogation of the Alpoge map (July 2026),
+// the first counterexample to the Jacobian Conjecture:
+//
+//   F1 = (1+xy)^3 z + y^2 (1+xy)(4+3xy)
+//   F2 = y + 3x(1+xy)^2 z + 3xy^2(4+3xy)
+//   F3 = 2x - 3x^2 y - x^3 z
+//
+// det JF = -2 identically, yet (0,0,-1/4), (1,-3/2,13/2), (-1,3/2,13/2) all map
+// to (-1/4,0,0): an etale, non-proper, generically 3-to-1 polynomial self-map
+// of affine 3-space. Oracle (exact arithmetic, all constants cross-checked):
+// examples/jacobian_oracle.py.
+//
+// Four checks, in the spirit of the mobius_* effective-constants suite:
+//
+// [A] THEOREM-GRADE det JF = -2 over Z. The 9 partials are hand-derived below
+//     (independently re-derived from the symbolic oracle, match verified).
+//     Each entry of JF has individual degree <= 4 per variable, so det JF has
+//     individual degree <= 12 < 13 <= p: exhaustive evaluation over all of
+//     F_p^3 proves det JF = -2 in F_p[x,y,z] for each p in {13,31,61,101,127}.
+//     The integer coefficients of the (uncancelled) det expansion are bounded
+//     by B = perm(1-norm matrix) = 19286 (oracle [1]); the prime product
+//     315326141 > 2B, so by CRT the identity holds over Z. This program's
+//     five zeros below CONSTITUTE the proof.
+// [B] The triple collision: all three rational points map to (-1/4,0,0),
+//     checked in all five prime fields (15 successes = 5 primes x 3 points).
+// [C] Monodromy tomography: full fiber histogram of F over F_p^3, p in
+//     {31,101}. For an etale degree-3 cover with full S_3 monodromy,
+//     Chebotarev predicts target frequencies (fixed points of a uniform
+//     random S_3 element): 0 preimages ~ 1/3, 1 ~ 1/2, 2 ~ 0, 3 ~ 1/6.
+//     Oracle ground truth: p=31: [9630,15346,0,4815], p=101:
+//     [340100,520151,0,170050]. The empty k=2 class is the etale signature
+//     (no partial degenerations: discriminant never splits off a single root).
+// [D] The full circle to linrec: the pointwise inverse of F does not exist,
+//     but the AGGREGATED fiber-count stream N_n = #F^{-1}(a)(F_{3^n}) is a
+//     linear-recurrence stream (Dwork rationality at its most concrete:
+//     N_n = # Frobenius-fixed points among the <= 3 geometric fiber points).
+//     We count N_1..N_6 by brute force in hand-rolled F_{3^n} (moduli from
+//     oracle [5]) and hand the stream to carrier-generic Berlekamp-Massey
+//     bm<F> over F_65537 (src/lib/nt/linrec.tv):
+//       target (2,0,0) = (-1/4,0,0) mod 3  (the triple point; all three
+//         fiber points are F_3-rational): N = 3,3,3,3,3,3 -> L=1, C = 1 - x.
+//       target (1,1,1) (generic): N = 1,3,1,3,1,3 (one rational point plus a
+//         conjugate quadratic pair) -> L=2, C = 1 - x^2.
+//     Local inversion is impossible; the zeta-style aggregate is rational
+//     with connection polynomial of degree <= 3. Finite spectral order is a
+//     property of aggregation.
+// [E] The Jelonek punchline: eliminating z (via F3) and y (Res_y) yields an
+//     x-eliminant of degree 3 in x whose leading coefficient factors as
+//       w3 * (w2^2 - w2^3 w3 - 16 w1 + 18 w1 w2 w3 - 27 w1^2 w3^2)
+//     (oracle [2]) — the non-properness (Jelonek) hypersurface candidate.
+//     Evaluated mod 101: at the triple point (-1/4,0,0) it VANISHES (the
+//     collision lives over the non-properness locus — injectivity dies at
+//     infinity, exactly where a simply-connected target says it must);
+//     at the generic target (1,1,1) it is -25 = 76 mod 101.
+//
+// Expected output (41 lines): tests/expected/jacobian_counterexample.txt.
+// (Note on [E]: Field<101> print renders the balanced residue, so the generic
+// target prints -25, i.e. 76 mod 101; the algebra is the same.)
+
+import "../src/lib/nt/linrec.tv";   // bm<F> (carrier-generic Berlekamp-Massey), center
+
+type F13  = Field<13>;
+type F31  = Field<31>;
+type F61  = Field<61>;
+type F101 = Field<101>;
+type F127 = Field<127>;
+type FB   = Field<65537>;           // BM carrier
+
+// ---- the map ------------------------------------------------------------
+
+fn apply_map<F: Field>(x: F, y: F, z: F, out: *F) -> i32 {
+    let u: F = (1 as F) + x * y;
+    let w: F = (4 as F) + (3 as F) * (x * y);
+    out[0] = u * u * u * z + y * y * u * w;
+    out[1] = y + (3 as F) * x * u * u * z + (3 as F) * x * y * y * w;
+    out[2] = (2 as F) * x - (3 as F) * x * x * y - x * x * x * z;
+    return 0;
+}
+
+// ---- [A] det JF = -2, exhaustive over F_p^3 -----------------------------
+// Hand-derived Jacobian entries (u = 1+xy, w = 4+3xy):
+//   J11 = 3u^2 yz + y^3 w + 3y^3 u        J12 = 3u^2 xz + 2yuw + y^2 xw + 3y^2 ux
+//   J13 = u^3                             J21 = 3u^2 z + 6xuyz + 3y^2 w + 9xy^3
+//   J22 = 1 + 6x^2 uz + 6xyw + 9x^2 y^2   J23 = 3xu^2
+//   J31 = 2 - 6xy - 3x^2 z                J32 = -3x^2        J33 = -x^3
+
+fn detj_fail<F: Field>(dummy: F, p: i32) -> i64 {
+    let th: F = 3 as F;
+    let tw: F = 2 as F;
+    let sx: F = 6 as F;
+    let nn: F = 9 as F;
+    let m2: F = (0 as F) - (2 as F);
+    var bad: i64 = 0;
+    var xi: i32 = 0;
+    while xi < p {
+        var yi: i32 = 0;
+        while yi < p {
+            var zi: i32 = 0;
+            while zi < p {
+                let x: F = xi as F;
+                let y: F = yi as F;
+                let z: F = zi as F;
+                let u: F = (1 as F) + x * y;
+                let w: F = (4 as F) + th * x * y;
+                let j11: F = th * u * u * y * z + y * y * y * w + th * y * y * y * u;
+                let j12: F = th * u * u * x * z + tw * y * u * w + y * y * x * w + th * y * y * u * x;
+                let j13: F = u * u * u;
+                let j21: F = th * u * u * z + sx * x * u * y * z + th * y * y * w + nn * x * y * y * y;
+                let j22: F = (1 as F) + sx * x * x * u * z + sx * x * y * w + nn * x * x * y * y;
+                let j23: F = th * x * u * u;
+                let j31: F = tw - sx * x * y - th * x * x * z;
+                let j32: F = (0 as F) - th * x * x;
+                let j33: F = (0 as F) - x * x * x;
+                let det: F = j11 * (j22 * j33 - j23 * j32)
+                           - j12 * (j21 * j33 - j23 * j31)
+                           + j13 * (j21 * j32 - j22 * j31);
+                if det != m2 { bad = bad + 1; }
+                zi = zi + 1;
+            }
+            yi = yi + 1;
+        }
+        xi = xi + 1;
+    }
+    return bad;
+}
+
+// ---- [B] the triple collision ------------------------------------------
+// points (0,0,-1/4), (1,-3/2,13/2), (-1,3/2,13/2) -> (-1/4,0,0); returns #ok (3)
+
+fn triple_ok<F: Field>(dummy: F) -> i32 {
+    let half3: F = (0 as F) - (3 as F) / (2 as F);      // -3/2
+    let t13h: F = (13 as F) / (2 as F);                 // 13/2
+    let m14: F = (0 as F) - (1 as F) / (4 as F);        // -1/4
+    let out: *F = alloc(3);
+    var ok: i32 = 0;
+    var i: i32 = 0;
+    while i < 3 {
+        var px: F = 0 as F;
+        var py: F = 0 as F;
+        var pz: F = m14;
+        if i == 1 { px = 1 as F; py = half3; pz = t13h; }
+        if i == 2 { px = (0 as F) - (1 as F); py = (0 as F) - half3; pz = t13h; }
+        let r: i32 = apply_map(px, py, pz, out);
+        if out[0] == m14 {
+            if out[1] == (0 as F) {
+                if out[2] == (0 as F) { ok = ok + 1; }
+            }
+        }
+        i = i + 1;
+    }
+    free(out);
+    return ok;
+}
+
+// ---- [C] fiber histogram over F_p^3 ------------------------------------
+// hist[k] = #targets with exactly k preimages, k = 0..7 (hist sized 8)
+
+fn fiber_hist<F: Field>(dummy: F, p: i32, hist: *i64) -> i32 {
+    let pp3: i32 = p * p * p;
+    let cnt: *i32 = alloc(pp3);
+    var i: i32 = 0;
+    while i < pp3 { cnt[i] = 0; i = i + 1; }
+    let out: *F = alloc(3);
+    var xi: i32 = 0;
+    while xi < p {
+        var yi: i32 = 0;
+        while yi < p {
+            var zi: i32 = 0;
+            while zi < p {
+                let r: i32 = apply_map(xi as F, yi as F, zi as F, out);
+                let i1: i32 = (out[0] as i64) as i32;
+                let i2: i32 = (out[1] as i64) as i32;
+                let i3: i32 = (out[2] as i64) as i32;
+                let idx: i32 = (i1 * p + i2) * p + i3;
+                cnt[idx] = cnt[idx] + 1;
+                zi = zi + 1;
+            }
+            yi = yi + 1;
+        }
+        xi = xi + 1;
+    }
+    i = 0;
+    while i < 8 { hist[i] = 0; i = i + 1; }
+    i = 0;
+    while i < pp3 {
+        var k: i32 = cnt[i];
+        if k > 7 { k = 7; }
+        hist[k] = hist[k] + 1;
+        i = i + 1;
+    }
+    free(cnt);
+    free(out);
+    return 0;
+}
+
+// ---- [D] F_{3^n} arithmetic (int-encoded polys, moduli from oracle) -----
+
+fn f3_add(a: i32, b: i32, n: i32) -> i32 {
+    var res: i32 = 0;
+    var pw: i32 = 1;
+    var ta: i32 = a;
+    var tb: i32 = b;
+    var i: i32 = 0;
+    while i < n {
+        res = res + ((ta % 3 + tb % 3) % 3) * pw;
+        ta = ta / 3;
+        tb = tb / 3;
+        pw = pw * 3;
+        i = i + 1;
+    }
+    return res;
+}
+
+fn f3_neg(a: i32, n: i32) -> i32 {
+    var res: i32 = 0;
+    var pw: i32 = 1;
+    var ta: i32 = a;
+    var i: i32 = 0;
+    while i < n {
+        res = res + ((3 - ta % 3) % 3) * pw;
+        ta = ta / 3;
+        pw = pw * 3;
+        i = i + 1;
+    }
+    return res;
+}
+
+fn f3_mul(a: i32, b: i32, n: i32, md: *i32) -> i32 {
+    var da: [i32; 6] = 0;
+    var db: [i32; 6] = 0;
+    var pr: [i32; 11] = 0;
+    var t: i32 = a;
+    var i: i32 = 0;
+    while i < n { da[i] = t % 3; t = t / 3; i = i + 1; }
+    t = b;
+    i = 0;
+    while i < n { db[i] = t % 3; t = t / 3; i = i + 1; }
+    i = 0;
+    while i < n {
+        if da[i] != 0 {
+            var j: i32 = 0;
+            while j < n {
+                pr[i + j] = (pr[i + j] + da[i] * db[j]) % 3;
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    // reduce by monic modulus md[0..n] (md[n] = 1)
+    var k: i32 = 2 * n - 2;
+    while k >= n {
+        let c: i32 = pr[k];
+        if c != 0 {
+            var j2: i32 = 0;
+            while j2 <= n {
+                pr[k - n + j2] = (pr[k - n + j2] + 9 - c * md[j2]) % 3;
+                j2 = j2 + 1;
+            }
+        }
+        k = k - 1;
+    }
+    var res: i32 = 0;
+    var pw: i32 = 1;
+    i = 0;
+    while i < n { res = res + pr[i] * pw; pw = pw * 3; i = i + 1; }
+    return res;
+}
+
+fn f3_pow(a: i32, e: i32, n: i32, md: *i32) -> i32 {
+    var r: i32 = 1;
+    var b: i32 = a;
+    var ee: i32 = e;
+    while ee > 0 {
+        if ee % 2 == 1 { r = f3_mul(r, b, n, md); }
+        b = f3_mul(b, b, n, md);
+        ee = ee / 2;
+    }
+    return r;
+}
+
+// N = #F^{-1}((w1,w2,w3))(F_{3^n}). x=0 branch: F(0,y,z) = (z+4y^2, y, 0),
+// contributing exactly one point iff w3 = 0. For x != 0, z is determined by
+// F3: z = (2x - 3x^2 y - w3)/x^3, then F1, F2 are checked. Constants embed
+// mod 3: 2 -> 2, 3 -> 0, 4 -> 1 (full-fidelity formulas kept, 0-mults incl.)
+
+fn count_fiber(n: i32, q: i32, md: *i32, w1: i32, w2: i32, w3: i32) -> i32 {
+    var cnt: i32 = 0;
+    if w3 == 0 { cnt = 1; }
+    var x: i32 = 1;
+    while x < q {
+        let x2: i32 = f3_mul(x, x, n, md);
+        let x3: i32 = f3_mul(x2, x, n, md);
+        let ix3: i32 = f3_pow(x3, q - 2, n, md);
+        var y: i32 = 0;
+        while y < q {
+            let xy: i32 = f3_mul(x, y, n, md);
+            let u: i32 = f3_add(1, xy, n);
+            let w: i32 = f3_add(1, f3_mul(0, xy, n, md), n);           // 4+3xy
+            let t1: i32 = f3_mul(2, x, n, md);                          // 2x
+            let t2: i32 = f3_mul(0, f3_mul(x2, y, n, md), n, md);       // 3x^2 y
+            let znum: i32 = f3_add(f3_add(t1, f3_neg(t2, n), n), f3_neg(w3, n), n);
+            let z: i32 = f3_mul(znum, ix3, n, md);
+            let u2: i32 = f3_mul(u, u, n, md);
+            let u3: i32 = f3_mul(u2, u, n, md);
+            let y2: i32 = f3_mul(y, y, n, md);
+            let f1: i32 = f3_add(f3_mul(u3, z, n, md), f3_mul(f3_mul(y2, u, n, md), w, n, md), n);
+            if f1 == w1 {
+                let f2a: i32 = f3_mul(0, f3_mul(f3_mul(x, u2, n, md), z, n, md), n, md);
+                let f2b: i32 = f3_mul(0, f3_mul(f3_mul(x, y2, n, md), w, n, md), n, md);
+                let f2: i32 = f3_add(y, f3_add(f2a, f2b, n), n);
+                if f2 == w2 { cnt = cnt + 1; }
+            }
+            y = y + 1;
+        }
+        x = x + 1;
+    }
+    return cnt;
+}
+
+// stream N_1..N_6 for one target into s, run bm<FB>, print N's, L, centered C
+fn zeta_bm(w1: i32, w2: i32, w3: i32,
+           md1: *i32, md2: *i32, md3: *i32, md4: *i32, md5: *i32, md6: *i32) -> i32 {
+    let s: *FB = alloc(6);
+    s[0] = count_fiber(1, 3, md1, w1 % 3, w2 % 3, w3 % 3) as FB;
+    s[1] = count_fiber(2, 9, md2, w1, w2, w3) as FB;
+    s[2] = count_fiber(3, 27, md3, w1, w2, w3) as FB;
+    s[3] = count_fiber(4, 81, md4, w1, w2, w3) as FB;
+    s[4] = count_fiber(5, 243, md5, w1, w2, w3) as FB;
+    s[5] = count_fiber(6, 729, md6, w1, w2, w3) as FB;
+    var i: i32 = 0;
+    while i < 6 { print(s[i]); i = i + 1; }
+    let cpoly: *FB = alloc(7);
+    let L: i32 = bm(s, 6, cpoly, 65535);
+    print(L);
+    var ci: i32 = 0;
+    while ci <= L { print(center(cpoly[ci] as i64, 65537)); ci = ci + 1; }
+    free(s);
+    free(cpoly);
+    return 0;
+}
+
+// ---- [E] Jelonek leading coefficient ------------------------------------
+// lead(w) = w3 * (w2^2 - w2^3 w3 - 16 w1 + 18 w1 w2 w3 - 27 w1^2 w3^2)
+
+fn jelonek<F: Field>(w1: F, w2: F, w3: F) -> F {
+    let inner: F = w2 * w2 - w2 * w2 * w2 * w3 - (16 as F) * w1
+                 + (18 as F) * w1 * w2 * w3 - (27 as F) * w1 * w1 * w3 * w3;
+    return w3 * inner;
+}
+
+fn main() {
+    let d13: F13 = 0;
+    let d31: F31 = 0;
+    let d61: F61 = 0;
+    let d101: F101 = 0;
+    let d127: F127 = 0;
+
+    // [A] five zeros = det JF = -2 over Z (CRT-complete prime set)
+    print(detj_fail(d13, 13));
+    print(detj_fail(d31, 31));
+    print(detj_fail(d61, 61));
+    print(detj_fail(d101, 101));
+    print(detj_fail(d127, 127));
+
+    // [B] triple collision in all five fields: 3 each
+    print(triple_ok(d13));
+    print(triple_ok(d31));
+    print(triple_ok(d61));
+    print(triple_ok(d101));
+    print(triple_ok(d127));
+
+    // [C] fiber histograms: k=0..3 counts + checksum flag
+    let hist: *i64 = alloc(8);
+    let r31: i32 = fiber_hist(d31, 31, hist);
+    var s31: i64 = 0;
+    var k: i32 = 0;
+    while k < 8 { s31 = s31 + (k as i64) * hist[k]; k = k + 1; }
+    print(hist[0]);
+    print(hist[1]);
+    print(hist[2]);
+    print(hist[3]);
+    if s31 == 29791 { print(1); } else { print(0); }
+
+    let r101: i32 = fiber_hist(d101, 101, hist);
+    var s101: i64 = 0;
+    k = 0;
+    while k < 8 { s101 = s101 + (k as i64) * hist[k]; k = k + 1; }
+    print(hist[0]);
+    print(hist[1]);
+    print(hist[2]);
+    print(hist[3]);
+    if s101 == 1030301 { print(1); } else { print(0); }
+    free(hist);
+
+    // [D] zeta/BM full circle over F_{3^n}
+    let md1: *i32 = alloc(2);
+    md1[0] = 0; md1[1] = 1;
+    let md2: *i32 = alloc(3);
+    md2[0] = 1; md2[1] = 0; md2[2] = 1;
+    let md3: *i32 = alloc(4);
+    md3[0] = 1; md3[1] = 0; md3[2] = 2; md3[3] = 1;
+    let md4: *i32 = alloc(5);
+    md4[0] = 1; md4[1] = 0; md4[2] = 1; md4[3] = 1; md4[4] = 1;
+    let md5: *i32 = alloc(6);
+    md5[0] = 1; md5[1] = 0; md5[2] = 0; md5[3] = 0; md5[4] = 2; md5[5] = 1;
+    let md6: *i32 = alloc(7);
+    md6[0] = 1; md6[1] = 0; md6[2] = 0; md6[3] = 0; md6[4] = 1; md6[5] = 1; md6[6] = 1;
+
+    // triple point mod 3: N=3,3,3,3,3,3 -> L=1, C=[1,-1]
+    let rA: i32 = zeta_bm(2, 0, 0, md1, md2, md3, md4, md5, md6);
+    // generic (1,1,1): N=1,3,1,3,1,3 -> L=2, C=[1,0,-1]
+    let rB: i32 = zeta_bm(1, 1, 1, md1, md2, md3, md4, md5, md6);
+    free(md1); free(md2); free(md3); free(md4); free(md5); free(md6);
+
+    // [E] Jelonek: triple point ON the non-properness locus (0); generic 76
+    let m14: F101 = (0 as F101) - (1 as F101) / (4 as F101);
+    print(jelonek(m14, 0 as F101, 0 as F101));
+    print(jelonek(1 as F101, 1 as F101, 1 as F101));
+}

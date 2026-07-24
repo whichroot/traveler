@@ -1,0 +1,8 @@
+// N2 (Rubicon): a closure cannot be stored in a struct field (escape).
+struct Box { f: i32 }
+fn main() {
+    let c: i32 = 5;
+    let g = |x: i32| x + c;
+    let b: Box = Box { f: g };
+    print(1);
+}

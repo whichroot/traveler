@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// net_loopback.tv — net/ TCP wrap layer, single-process loopback (Tier 0):
+// ephemeral-port listen, connect-to-self over 127.0.0.1, echo through `?`.
+// tvc_self ONLY (imports net/). Design: @internal-design: net.
+//
+// Expected output:
+//   1     listener up, ephemeral port read back
+//   2     server received 2 bytes
+//   104   'h'
+//   105   'i'
+//   2     client received the 2-byte echo
+//   105   echo payload intact
+//   700   the ? pipeline completed
+
+import "../src/lib/net/tcp.tv";
+
+fn run() -> Result<i64, NetError> {
+    let l: TcpListener = tcp_listen(0)?;
+    let port: i32 = tcp_port(l)?;
+    if port > 0 { print(1); }
+    let c: TcpStream = tcp_connect_local(port)?;
+    let msg: *u8 = alloc(8);
+    msg[0] = 104;
+    msg[1] = 105;
+    tcp_write(c, msg, 2)?;
+    let srv: TcpStream = tcp_accept(l)?;
+    let buf: *u8 = alloc(8);
+    let got: i64 = tcp_read(srv, buf, 8)?;
+    print(got);
+    print(buf[0] as i32);
+    print(buf[1] as i32);
+    tcp_write(srv, buf, got)?;
+    let buf2: *u8 = alloc(8);
+    let got2: i64 = tcp_read(c, buf2, 8)?;
+    print(got2);
+    print(buf2[1] as i32);
+    tcp_close(c);
+    tcp_close(srv);
+    listener_close(l);
+    free(msg);
+    free(buf);
+    free(buf2);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

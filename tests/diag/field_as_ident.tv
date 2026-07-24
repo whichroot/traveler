@@ -1,0 +1,12 @@
+// Negative (#49): `field` is a RESERVED keyword — the dyn-field constructor
+// `field(p)` — not an identifier. Using it as a variable name (natural in a CSV
+// parser; the Wanderer customer's exact case) must be a CLEAN, BOUNDED
+// diagnostic, NOT a hang. The parser used to enter the `field(` argument loop
+// with no `(` and spin forever (that loop advanced only when it stored an arg).
+// This fixture pins the diagnostic AND, via the diag harness timeout, the
+// never-hangs property. See @internal-note: known-issues #49.
+fn main() -> i32 {
+    var field: i32 = 0;
+    field = field + 1;
+    return field;
+}

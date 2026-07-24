@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// nt_radical.tv — known-answer gate for pf_radical + pf_no_simple_root
+// (src/lib/nt/polyfield.tv) over F_2 / F_3 (the p-th-root branch) and F_97
+// (the generic path). tvc_self-only (import).
+// @internal-design: nt
+
+import "../src/lib/nt/polyfield.tv";
+
+type F2 = Field<2>;
+type F3 = Field<3>;
+type P97 = Field<97>;
+
+fn main() {
+    // ---- F_97 (generic, char large: g' != 0 always here) ----
+    // rad((x+1)^2) = x+1.  (x+1)^2 = x^2 + 2x + 1
+    let a2: *P97 = alloc(3); a2[0]=1; a2[1]=2; a2[2]=1;
+    let r0: *P97 = alloc(3);
+    let l0: i32 = pf_radical(a2, 3, 97, r0, 95);
+    print(l0); print(r0[0] as i32); print(r0[1] as i32);          // 2 | 1 1
+
+    // rad(x*(x+1)^2) = x*(x+1) = x^2 + x.  x(x+1)^2 = x^3+2x^2+x
+    let a3: *P97 = alloc(4); a3[0]=0; a3[1]=1; a3[2]=2; a3[3]=1;
+    let r1: *P97 = alloc(4);
+    let l1: i32 = pf_radical(a3, 4, 97, r1, 95);
+    print(l1); print(r1[0] as i32); print(r1[1] as i32); print(r1[2] as i32);  // 3 | 0 1 1
+
+    // squarefree stays itself (monic): x^2 + 3x + 2 = (x+1)(x+2)
+    let sf: *P97 = alloc(3); sf[0]=2; sf[1]=3; sf[2]=1;
+    let r2: *P97 = alloc(3);
+    let l2: i32 = pf_radical(sf, 3, 97, r2, 95);
+    print(l2); print(r2[0] as i32); print(r2[1] as i32); print(r2[2] as i32);  // 3 | 2 3 1
+
+    // ---- F_2 (char 2: the p-th-root branch) ----
+    // rad(x^6 + 1) = x^3 + 1.  x^6+1 = (x^3+1)^2 over F_2, and (x^6+1)' = 0.
+    let g6: *F2 = alloc(7);
+    var i: i32 = 0; while i < 7 { g6[i] = 0; i = i + 1; }
+    g6[0] = 1; g6[6] = 1;
+    let r3: *F2 = alloc(7);
+    let l3: i32 = pf_radical(g6, 7, 2, r3, 0);
+    print(l3); print(r3[0] as i32); print(r3[1] as i32); print(r3[2] as i32); print(r3[3] as i32);  // 4 | 1 0 0 1
+
+    // rad(x^2) = x.  x^2 -> deriv 2x = 0 over F_2 -> p-th root -> x
+    let g2: *F2 = alloc(3); g2[0]=0; g2[1]=0; g2[2]=1;
+    let r4: *F2 = alloc(3);
+    let l4: i32 = pf_radical(g2, 3, 2, r4, 0);
+    print(l4); print(r4[0] as i32); print(r4[1] as i32);          // 2 | 0 1
+
+    // ---- F_3 (char 3: the p-th-root branch on a cube) ----
+    // rad((x+1)^3) = x+1.  (x+1)^3 = x^3 + 3x^2 + 3x + 1 = x^3 + 1 over F_3; deriv 0.
+    let g3: *F3 = alloc(4); g3[0]=1; g3[1]=0; g3[2]=0; g3[3]=1;
+    let r5: *F3 = alloc(4);
+    let l5: i32 = pf_radical(g3, 4, 3, r5, 1);
+    print(l5); print(r5[0] as i32); print(r5[1] as i32);          // 2 | 1 1
+
+    // ---- pf_no_simple_root ----
+    // (x+1)^2 : every root double -> 1
+    print(pf_no_simple_root(a2, 3, 97, 95));                      // 1
+    // x(x+1)^2 : root x=0 is simple -> 0
+    print(pf_no_simple_root(a3, 4, 97, 95));                      // 0
+    // x^6+1 = (x^3+1)^2 over F_2 : root set doubled -> 1
+    print(pf_no_simple_root(g6, 7, 2, 0));                        // 1
+    // squarefree (x+1)(x+2) : all simple -> 0
+    print(pf_no_simple_root(sf, 3, 97, 95));                     // 0
+}

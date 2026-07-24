@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_wav_zk_test.tv — ZK regime composition driver, AUDIO domain: the
+// honest place where the PL assumption FAILS (trivial nseg = n/2 = 8; sound).
+// Shared engine: src/lib/regime/regime_zk.tv (run_zk_domain).
+// @internal-design: regime (regime_zk; honest failure mode)
+//
+// Data: 16-sample slice, left channel of "Lena Raine - Rubedo" (44.1 kHz,
+// 16-bit PCM) at the 65% mark, rebased to min=0:
+//   [2397 2430 2450 2450 2444 2427 2374 2251 2057 1800 1490 1164 835 531 254 0]
+//
+// Expected output:  8 1 0 0 0   (nseg=8 = n/2, the trivial maximum; sound)
+
+extern "C" fn run_zk_domain(p: i64, data: *i64, n: i32, n_leaves: i32, out: *i64);
+
+fn main() -> i32 {
+    // Runtime-selected prime: Goldilocks (NTT-friendly, k=32).
+    let p: i64 = 18446744069414584321;
+
+    let n: i32 = 16;
+    let n_leaves: i32 = 16;
+    let data: *i64 = alloc(n);
+    // Rubedo, left channel, @0.65, 16 samples, rebased to min 0:
+    data[0] = 2397;  data[1] = 2430;  data[2] = 2450;  data[3] = 2450;
+    data[4] = 2444;  data[5] = 2427;  data[6] = 2374;  data[7] = 2251;
+    data[8] = 2057;  data[9] = 1800;  data[10] = 1490; data[11] = 1164;
+    data[12] = 835;  data[13] = 531;  data[14] = 254;  data[15] = 0;
+
+    let out: *i64 = alloc(5);
+    run_zk_domain(p, data, n, n_leaves, out);
+    for i in 0..5 { print(out[i] as i32); }
+
+    free(data);
+    free(out);
+    return 0;
+}

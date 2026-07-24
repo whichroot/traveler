@@ -1,0 +1,696 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wire.tv — Phase 3 of the observe-learn audio codec: the real bitstream.
+// Encoder writes the choices the cost model made (argmin surfaces from
+// learn.tv); decoder replays them from the wire — scorers never run on decode.
+// @internal-design: util (Phase 3 + wire v2/v3, the lossy layer)
+//
+// WIRE FORMAT v3 (v2 + per-block lossy depth B_w; p/coef params are caller
+// contract, fixed_hdr_bits must be 8 and coef_bits 17 — the layouts below
+// ARE those constants):
+//   stream:  n (32 bits), then dyadic BLOCKS of nominal 4096 samples.
+//   block:   B_w (5 bits: the reduced-depth shift s for this block's samples,
+//            0 = lossless corner), then a pre-order split tree. The codec body
+//            is v2 verbatim — it runs on the Q-DOMAIN streams the caller
+//            pre-quantized (wio_quant); B_w only tells the decoder the shift to
+//            reconstruct x_hat = q<<s.
+//   node:    every node of nominal size > 256
+//            carries 1 bit ('0' leaf / '1' split; unsplittable tail nodes
+//            still carry their '0'); nominal-256 nodes are forced leaves
+//            with no bit. Node spans are nominal-dyadic clamped at n.
+//   leaf:    pair tag (2: 0 LR, 1 MS, 2 LS, 3 RS), then the two coded
+//            channels in pair order, each:
+//     mode (1: 0 fixed, 1 LPC)
+//     fixed: order(3) kfirst(5)                                   = hdr 8
+//     LPC:   order_tag(2: 0..3 -> order 1,2,4,8) kfirst(5)
+//            mean(17)                                             = hdr 24
+//            coeffs: order x 17 (offset-binary c + 65536)
+//     both:  partition r prefix ('0' | '10' | '11'), extra ks (r=1: one,
+//            r=2: three, 5 bits each; quarter/half boundaries = the len/4
+//            formula), then Rice residuals (q zeros, '1', k remainder bits,
+//            MSB-first). Fixed arm codes the field-centered zigzag of the
+//            Δ^order plane (virtual zero history); LPC arm the signed zigzag
+//            of the exact integer prediction residual.
+//
+// Decoder state per stream (l, r, mid, side): the materialized sample array
+// (LPC history + pair reconstruction) + the rolling diff-plane prevs. ALL FOUR
+// streams are materialized every window, so later windows' history is complete
+// regardless of which pair was coded.
+
+import "learn.tv";
+
+// ===== BIT I/O (MSB-first within each byte) =====
+
+fn wio_wbit(buf: *u8, pos: *i64, b: i32) {
+    // NB index is i32 (compiler boundary #20): byte index <= n*6 fits easily
+    let byte_i: i32 = (pos[0] >> 3) as i32;
+    let bit: i32 = 7 - ((pos[0] & 7) as i32);
+    var v: i32 = buf[byte_i] as i32;
+    let mask: i32 = 1 << bit;
+    if b != 0 { v = v | mask; }
+    else {
+        let inv: i32 = 255 - mask;
+        v = v & inv;
+    }
+    buf[byte_i] = v as u8;
+    pos[0] = pos[0] + 1;
+}
+
+fn wio_wbits(buf: *u8, pos: *i64, v: i64, nb: i32) {
+    var i: i32 = nb - 1;
+    while i >= 0 {
+        wio_wbit(buf, pos, ((v >> i) & 1) as i32);
+        i = i - 1;
+    }
+}
+
+fn wio_wunary(buf: *u8, pos: *i64, q: i64) {
+    var i: i64 = 0;
+    while i < q { wio_wbit(buf, pos, 0); i = i + 1; }
+    wio_wbit(buf, pos, 1);
+}
+
+fn wio_rbit(buf: *u8, pos: *i64) -> i32 {
+    let byte_i: i32 = (pos[0] >> 3) as i32;
+    let bit: i32 = 7 - ((pos[0] & 7) as i32);
+    pos[0] = pos[0] + 1;
+    return ((buf[byte_i] as i32) >> bit) & 1;
+}
+
+fn wio_rbits(buf: *u8, pos: *i64, nb: i32) -> i64 {
+    var v: i64 = 0;
+    var i: i32 = 0;
+    while i < nb {
+        v = (v << 1) | (wio_rbit(buf, pos) as i64);
+        i = i + 1;
+    }
+    return v;
+}
+
+fn wio_runary(buf: *u8, pos: *i64) -> i64 {
+    var q: i64 = 0;
+    while wio_rbit(buf, pos) == 0 { q = q + 1; }
+    return q;
+}
+
+fn wio_wrice(buf: *u8, pos: *i64, v: i64, k: i32) {
+    wio_wunary(buf, pos, v >> k);
+    wio_wbits(buf, pos, v & (((1 as i64) << k) - 1), k);
+}
+
+fn wio_rrice(buf: *u8, pos: *i64, k: i32) -> i64 {
+    let q: i64 = wio_runary(buf, pos);
+    return (q << k) | wio_rbits(buf, pos, k);
+}
+
+// ===== SHARED HELPERS (mirror learn.tv's accounting exactly) =====
+
+// signed -> zigzag (the LPC arm's residual code)
+fn wio_zz_enc(c: i64) -> i64 {
+    if c >= 0 { return c * 2; }
+    return (0 - c) * 2 - 1;
+}
+
+fn wio_zz_dec(v: i64) -> i64 {
+    if v % 2 == 0 { return v / 2; }
+    return 0 - (v + 1) / 2;
+}
+
+// Rice k for relative position i_rel in a len-sample window under partition sel
+// (r, k0..k3). THE decoder formula (len/4) — the only implementation, both sides.
+fn wio_part_k(i_rel: i32, len: i32, r: i64, k0: i64, k1: i64, k2: i64, k3: i64) -> i32 {
+    if r == 0 { return k0 as i32; }
+    if r == 1 {
+        if i_rel < len / 2 { return k0 as i32; }
+        return k1 as i32;
+    }
+    if i_rel < len / 4 { return k0 as i32; }
+    if i_rel < len / 2 { return k1 as i32; }
+    if i_rel < (3 * len) / 4 { return k2 as i32; }
+    return k3 as i32;
+}
+
+fn wio_wparts(buf: *u8, pos: *i64, r: i64, k1: i64, k2: i64, k3: i64) {
+    if r == 0 { wio_wbit(buf, pos, 0); return; }
+    wio_wbit(buf, pos, 1);
+    if r == 1 {
+        wio_wbit(buf, pos, 0);
+        wio_wbits(buf, pos, k1, 5);
+        return;
+    }
+    wio_wbit(buf, pos, 1);
+    wio_wbits(buf, pos, k1, 5);
+    wio_wbits(buf, pos, k2, 5);
+    wio_wbits(buf, pos, k3, 5);
+}
+
+// field add/sub on [0,p) representatives (decoder-side forward summation)
+fn wio_fadd(a: i32, b: i32, p: i32) -> i32 {
+    var s: i32 = a + b;
+    if s >= p { s = s - p; }
+    return s;
+}
+
+// ===== LOSSY QUANTIZER (Fork A, reduced-depth) =====
+//
+// Bit-exact to the probe oracle @internal-oracle: lossy_quant `reduced`:
+//   q = clip( round(x/2^s), -32768>>s .. 32767>>s )   (round half toward +inf)
+//   reconstruction  x_hat = q << s
+// Per-sample error bound 2^s; s==0 is the lossless corner (Q = identity).
+// NB Traveler i32 >> is arithmetic (sign-extending), so negative x rounds
+// like the oracle.
+#[export]
+fn wio_quant(x: i32, s: i32) -> i32 {
+    if s == 0 { return x; }
+    let half: i32 = 1 << (s - 1);
+    var q: i32 = (x + half) >> s;
+    let lo: i32 = (0 - 32768) >> s;
+    let hi: i32 = 32767 >> s;
+    if q < lo { q = lo; }
+    if q > hi { q = hi; }
+    return q;
+}
+
+#[export]
+fn wio_dequant(q: i32, s: i32) -> i32 {
+    return q << s;
+}
+
+// ===== CHANNEL WRITER — one coded channel, one window =====
+
+// Fixed arm: selF = (order, r, k0..k3); residuals from the stream's global
+// diff planes (d_arr, the same array the scorer saw).
+fn wio_write_fixed(buf: *u8, pos: *i64, d_arr: *i32, n: i32, p: i32,
+    w0: i32, w1: i32, selF: *i64) {
+    let ord: i32 = selF[0] as i32;
+    let len: i32 = w1 - w0;
+    wio_wbits(buf, pos, selF[0], 3);      // order tag
+    wio_wbits(buf, pos, selF[2], 5);      // first k (hdr = 8 with the tag)
+    wio_wparts(buf, pos, selF[1], selF[3], selF[4], selF[5]);
+    let base: i32 = ord * n;
+    var i: i32 = w0;
+    while i < w1 {
+        let zz: i32 = lrn_zz(d_arr[base + i], p);
+        let k: i32 = wio_part_k(i - w0, len, selF[1], selF[2], selF[3], selF[4], selF[5]);
+        wio_wrice(buf, pos, zz as i64, k);
+        i = i + 1;
+    }
+}
+
+// LPC arm: selL = (order, mean, r, k0..k3, coeffs[0..order)); residuals
+// recomputed from the TRANSMITTED coeffs (the emitter's exact loop).
+fn wio_write_lpc(buf: *u8, pos: *i64, s: *i32, w0: i32, w1: i32, selL: *i64) {
+    let QS: i32 = 15;
+    let order: i32 = selL[0] as i32;
+    let m: i32 = selL[1] as i32;
+    let len: i32 = w1 - w0;
+    var otag: i64 = 0;
+    if order == 2 { otag = 1; }
+    if order == 4 { otag = 2; }
+    if order == 8 { otag = 3; }
+    wio_wbits(buf, pos, otag, 2);
+    wio_wbits(buf, pos, selL[3], 5);
+    wio_wbits(buf, pos, selL[1], 17);               // hdr = 24 (v2 shave)
+    var j: i32 = 0;
+    while j < order {
+        wio_wbits(buf, pos, selL[7 + j] + 65536, 17);
+        j = j + 1;
+    }
+    wio_wparts(buf, pos, selL[2], selL[4], selL[5], selL[6]);
+    var i: i32 = w0;
+    while i < w1 {
+        var pr: i64 = 0;
+        j = 0;
+        while j < order {
+            let idx: i32 = i - 1 - j;
+            if idx >= 0 { pr = pr + selL[7 + j] * ((s[idx] - m) as i64); }
+            j = j + 1;
+        }
+        pr = pr >> QS;
+        let res: i64 = ((s[i] - m) as i64) - pr;
+        let k: i32 = wio_part_k(i - w0, len, selL[2], selL[3], selL[4], selL[5], selL[6]);
+        wio_wrice(buf, pos, wio_zz_enc(res), k);
+        i = i + 1;
+    }
+}
+
+// ===== CHANNEL READER — one coded channel, one window =====
+
+// Advance one stream's rolling diff-plane prevs by ONE sample x — the decoder's
+// incremental mirror of lrn_diff_planes' virtual-zero recurrence.
+fn wio_step_planes(x: i32, prevs: *i32, p: i32, max_order: i32, v: *i32) {
+    v[0] = x;
+    var oj: i32 = 1;
+    while oj <= max_order {
+        v[oj] = lrn_fsub(v[oj - 1], prevs[oj - 1], p);
+        oj = oj + 1;
+    }
+    oj = 0;
+    while oj <= max_order { prevs[oj] = v[oj]; oj = oj + 1; }
+}
+
+fn wio_advance_planes(s: *i32, prevs: *i32, p: i32, w0: i32, w1: i32,
+    max_order: i32, v: *i32) {
+    var i: i32 = w0;
+    while i < w1 {
+        wio_step_planes(s[i], prevs, p, max_order, v);
+        i = i + 1;
+    }
+}
+
+// Reads one coded channel into s[w0..w1). prevs = the stream's rolling
+// diff-plane values, advanced INLINE per sample (the LPC arm must keep them
+// current for future fixed windows). The caller advances only DERIVED streams.
+fn wio_read_channel(buf: *u8, pos: *i64, s: *i32, prevs: *i32, p: i32,
+    w0: i32, w1: i32, max_fixed_order: i32,
+    qa: *i64, vtmp: *i32) {
+    let QS: i32 = 15;
+    let len: i32 = w1 - w0;
+    let mode: i32 = wio_rbit(buf, pos);
+
+    if mode == 0 {
+        // fixed arm: forward-sum the Δ^order plane down to samples
+        let ord: i32 = wio_rbits(buf, pos, 3) as i32;
+        let k0: i64 = wio_rbits(buf, pos, 5);
+        var r: i64 = 0;
+        var k1: i64 = 0;
+        var k2: i64 = 0;
+        var k3: i64 = 0;
+        if wio_rbit(buf, pos) != 0 {
+            if wio_rbit(buf, pos) == 0 {
+                r = 1;
+                k1 = wio_rbits(buf, pos, 5);
+            } else {
+                r = 2;
+                k1 = wio_rbits(buf, pos, 5);
+                k2 = wio_rbits(buf, pos, 5);
+                k3 = wio_rbits(buf, pos, 5);
+            }
+        }
+        var i: i32 = w0;
+        while i < w1 {
+            let k: i32 = wio_part_k(i - w0, len, r, k0, k1, k2, k3);
+            let zz: i64 = wio_rrice(buf, pos, k);
+            let c: i64 = wio_zz_dec(zz);
+            var vf: i32 = c as i32;
+            if vf < 0 { vf = vf + p; }
+            // forward summation: plane ord value + prevs chain -> sample
+            var oj: i32 = ord - 1;
+            while oj >= 0 {
+                vf = wio_fadd(vf, prevs[oj], p);
+                oj = oj - 1;
+            }
+            s[i] = vf;
+            wio_step_planes(vf, prevs, p, max_fixed_order, vtmp);
+            i = i + 1;
+        }
+        return;
+    }
+
+    // LPC arm
+    let otag: i32 = wio_rbits(buf, pos, 2) as i32;
+    var order: i32 = 1;
+    if otag == 1 { order = 2; }
+    if otag == 2 { order = 4; }
+    if otag == 3 { order = 8; }
+    let k0: i64 = wio_rbits(buf, pos, 5);
+    let m: i32 = wio_rbits(buf, pos, 17) as i32;
+    var j: i32 = 0;
+    while j < order {
+        qa[j] = wio_rbits(buf, pos, 17) - 65536;
+        j = j + 1;
+    }
+    var r: i64 = 0;
+    var k1: i64 = 0;
+    var k2: i64 = 0;
+    var k3: i64 = 0;
+    if wio_rbit(buf, pos) != 0 {
+        if wio_rbit(buf, pos) == 0 {
+            r = 1;
+            k1 = wio_rbits(buf, pos, 5);
+        } else {
+            r = 2;
+            k1 = wio_rbits(buf, pos, 5);
+            k2 = wio_rbits(buf, pos, 5);
+            k3 = wio_rbits(buf, pos, 5);
+        }
+    }
+    var i: i32 = w0;
+    while i < w1 {
+        let k: i32 = wio_part_k(i - w0, len, r, k0, k1, k2, k3);
+        let zz: i64 = wio_rrice(buf, pos, k);
+        let res: i64 = wio_zz_dec(zz);
+        var pr: i64 = 0;
+        j = 0;
+        while j < order {
+            let idx: i32 = i - 1 - j;
+            if idx >= 0 { pr = pr + qa[j] * ((s[idx] - m) as i64); }
+            j = j + 1;
+        }
+        pr = pr >> QS;
+        let xv: i32 = (res + pr + (m as i64)) as i32;
+        s[i] = xv;
+        wio_step_planes(xv, prevs, p, max_fixed_order, vtmp);
+        i = i + 1;
+    }
+}
+
+// ===== ENCODE — dyadic blocks (cost recursion, then chosen-tree write) =====
+
+// Write one LEAF window: re-run the shared stereo scorer (deterministic —
+// same argmin the cost pass saw), then pair tag + the two coded channels.
+fn wio_write_leaf(buf: *u8, pos: *i64,
+    lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    dl: *i32, dr: *i32, dm: *i32, ds: *i32,
+    n: i32, p_ch: i32, p_side: i32, w0: i32, w1: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    r: *i64, a: *i64, tmp: *i64, qa: *i64, xw: *i64,
+    gk: *i64, psel: *i64,
+    sfL: *i64, slL: *i64, sfR: *i64, slR: *i64,
+    sfM: *i64, slM: *i64, sfS: *i64, slS: *i64,
+    modes: *i64, tago: *i64, out: *i64) {
+    lrn_stereo_window_best(lf, rf, mf, sf, dl, dr, dm, ds,
+        n, p_ch, p_side, w0, w1,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, psel,
+        sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+        modes, tago);
+    let tag: i32 = tago[0] as i32;
+    out[tag] = out[tag] + 1;
+    wio_wbits(buf, pos, tago[0], 2);
+    if tag == 0 {
+        wio_wbit(buf, pos, modes[0] as i32);
+        if modes[0] == 0 { wio_write_fixed(buf, pos, dl, n, p_ch, w0, w1, sfL); }
+        else { wio_write_lpc(buf, pos, lf, w0, w1, slL); }
+        wio_wbit(buf, pos, modes[1] as i32);
+        if modes[1] == 0 { wio_write_fixed(buf, pos, dr, n, p_ch, w0, w1, sfR); }
+        else { wio_write_lpc(buf, pos, rf, w0, w1, slR); }
+    }
+    if tag == 1 {
+        wio_wbit(buf, pos, modes[2] as i32);
+        if modes[2] == 0 { wio_write_fixed(buf, pos, dm, n, p_ch, w0, w1, sfM); }
+        else { wio_write_lpc(buf, pos, mf, w0, w1, slM); }
+        wio_wbit(buf, pos, modes[3] as i32);
+        if modes[3] == 0 { wio_write_fixed(buf, pos, ds, n, p_side, w0, w1, sfS); }
+        else { wio_write_lpc(buf, pos, sf, w0, w1, slS); }
+    }
+    if tag == 2 {
+        wio_wbit(buf, pos, modes[0] as i32);
+        if modes[0] == 0 { wio_write_fixed(buf, pos, dl, n, p_ch, w0, w1, sfL); }
+        else { wio_write_lpc(buf, pos, lf, w0, w1, slL); }
+        wio_wbit(buf, pos, modes[3] as i32);
+        if modes[3] == 0 { wio_write_fixed(buf, pos, ds, n, p_side, w0, w1, sfS); }
+        else { wio_write_lpc(buf, pos, sf, w0, w1, slS); }
+    }
+    if tag == 3 {
+        wio_wbit(buf, pos, modes[1] as i32);
+        if modes[1] == 0 { wio_write_fixed(buf, pos, dr, n, p_ch, w0, w1, sfR); }
+        else { wio_write_lpc(buf, pos, rf, w0, w1, slR); }
+        wio_wbit(buf, pos, modes[3] as i32);
+        if modes[3] == 0 { wio_write_fixed(buf, pos, ds, n, p_side, w0, w1, sfS); }
+        else { wio_write_lpc(buf, pos, sf, w0, w1, slS); }
+    }
+}
+
+// Walk the CHOSEN tree: nodes > 256 emit their split bit; leaves emit the
+// window. Mirrors lrn_dyadic_cost's structure (unsplittable tails emit '0').
+fn wio_write_tree(buf: *u8, pos: *i64,
+    lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    dl: *i32, dr: *i32, dm: *i32, ds: *i32,
+    n: i32, p_ch: i32, p_side: i32, w0: i32, size: i32,
+    node: i32, split: *i64,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    r: *i64, a: *i64, tmp: *i64, qa: *i64, xw: *i64,
+    gk: *i64, psel: *i64,
+    sfL: *i64, slL: *i64, sfR: *i64, slR: *i64,
+    sfM: *i64, slM: *i64, sfS: *i64, slS: *i64,
+    modes: *i64, tago: *i64, out: *i64) {
+    var w1: i32 = w0 + size;
+    if w1 > n { w1 = n; }
+    if size <= 256 {
+        wio_write_leaf(buf, pos, lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, w0, w1,
+            max_fixed_order, fixed_hdr_bits, max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+            modes, tago, out);
+        return;
+    }
+    let sp: i32 = split[node] as i32;
+    wio_wbit(buf, pos, sp);
+    if sp == 0 {
+        wio_write_leaf(buf, pos, lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, w0, w1,
+            max_fixed_order, fixed_hdr_bits, max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+            modes, tago, out);
+        return;
+    }
+    let half: i32 = size / 2;
+    wio_write_tree(buf, pos, lf, rf, mf, sf, dl, dr, dm, ds,
+        n, p_ch, p_side, w0, half, 2 * node + 1, split,
+        max_fixed_order, fixed_hdr_bits, max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, psel,
+        sfL, slL, sfR, slR, sfM, slM, sfS, slS, modes, tago, out);
+    if w0 + half < n {                        // empty right child: nothing
+        wio_write_tree(buf, pos, lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, w0 + half, half, 2 * node + 2, split,
+            max_fixed_order, fixed_hdr_bits, max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS, modes, tago, out);
+    }
+}
+
+// Returns total wire bits (incl. the 32-bit n header). out[0..3] = pair counts
+// (per LEAF), out[4] = the cost-model total (B_w bits NOT included — the gate's
+// parity subtracts 5*nblocks). LOSSY: `bw` = per-block depth profile (one shift
+// per nominal-4096 block, length ceil(n/4096)); callers pre-quantize the streams
+// by bw[blk] (wio_quant) and pass the Q-streams; the encoder writes bw[blk]
+// (5 bits) at each block head. bw all-zero = the lossless corner.
+#[export]
+fn wire_encode_stereo(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32,
+    p_ch: i32, p_side: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    bw: *i32, buf: *u8, out: *i64) -> i64 {
+    let norders: i32 = max_fixed_order + 1;
+    let dl: *i32 = alloc(norders * n);
+    let dr: *i32 = alloc(norders * n);
+    let dm: *i32 = alloc(norders * n);
+    let ds: *i32 = alloc(norders * n);
+    lrn_diff_planes(lf, n, p_ch, dl, max_fixed_order);
+    lrn_diff_planes(rf, n, p_ch, dr, max_fixed_order);
+    lrn_diff_planes(mf, n, p_ch, dm, max_fixed_order);
+    lrn_diff_planes(sf, n, p_side, ds, max_fixed_order);
+
+    let r: *i64 = alloc(max_lpc_order + 1);
+    let a: *i64 = alloc(max_lpc_order);
+    let tmp: *i64 = alloc(max_lpc_order);
+    let qa: *i64 = alloc(max_lpc_order);
+    let xw: *i64 = alloc(4096);
+    let gk: *i64 = alloc(4 * 17);
+    let psel: *i64 = alloc(5);
+    let sfL: *i64 = alloc(6);   let slL: *i64 = alloc(7 + max_lpc_order);
+    let sfR: *i64 = alloc(6);   let slR: *i64 = alloc(7 + max_lpc_order);
+    let sfM: *i64 = alloc(6);   let slM: *i64 = alloc(7 + max_lpc_order);
+    let sfS: *i64 = alloc(6);   let slS: *i64 = alloc(7 + max_lpc_order);
+    let modes: *i64 = alloc(4);
+    let tago: *i64 = alloc(1);
+    let split: *i64 = alloc(31);
+    let pos: *i64 = alloc(1);
+
+    pos[0] = 0;
+    wio_wbits(buf, pos, n as i64, 32);
+    out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0;
+    var cost_total: i64 = 0;
+
+    var b0: i32 = 0;
+    while b0 < n {
+        var z: i32 = 0;
+        while z < 31 { split[z] = 0; z = z + 1; }
+        cost_total = cost_total
+        + lrn_dyadic_cost(lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, b0, 4096, 0, split,
+            max_fixed_order, fixed_hdr_bits,
+            max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+            modes, tago);
+        // B_w: write this block's depth shift (5 bits) BEFORE its split tree
+        // (not counted in cost_total; the block grid is the quantization grid).
+        wio_wbits(buf, pos, bw[b0 / 4096] as i64, 5);
+        wio_write_tree(buf, pos, lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, b0, 4096, 0, split,
+            max_fixed_order, fixed_hdr_bits,
+            max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+            modes, tago, out);
+        b0 = b0 + 4096;
+    }
+    out[4] = cost_total;
+
+    let bits: i64 = pos[0];
+    free(pos); free(split); free(tago); free(modes);
+    free(slS); free(sfS); free(slM); free(sfM);
+    free(slR); free(sfR); free(slL); free(sfL);
+    free(psel); free(gk); free(xw); free(qa); free(tmp); free(a); free(r);
+    free(ds); free(dm); free(dr); free(dl);
+    return bits;
+}
+
+// ===== DECODE — no scorers, choices replayed from the wire =====
+
+// Decode one LEAF window [w0,w1): pair tag, two coded channels (inline
+// plane advance), pair reconstruction, derived-stream plane advance.
+fn wio_decode_leaf(buf: *u8, pos: *i64,
+    lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    pvL: *i32, pvR: *i32, pvM: *i32, pvS: *i32,
+    p_ch: i32, p_side: i32, w0: i32, w1: i32,
+    max_fixed_order: i32, qa: *i64, vtmp: *i32) {
+    let tag: i32 = wio_rbits(buf, pos, 2) as i32;
+
+    if tag == 0 {
+        wio_read_channel(buf, pos, lf, pvL, p_ch, w0, w1, max_fixed_order, qa, vtmp);
+        wio_read_channel(buf, pos, rf, pvR, p_ch, w0, w1, max_fixed_order, qa, vtmp);
+    }
+    if tag == 1 {
+        wio_read_channel(buf, pos, mf, pvM, p_ch, w0, w1, max_fixed_order, qa, vtmp);
+        wio_read_channel(buf, pos, sf, pvS, p_side, w0, w1, max_fixed_order, qa, vtmp);
+    }
+    if tag == 2 {
+        wio_read_channel(buf, pos, lf, pvL, p_ch, w0, w1, max_fixed_order, qa, vtmp);
+        wio_read_channel(buf, pos, sf, pvS, p_side, w0, w1, max_fixed_order, qa, vtmp);
+    }
+    if tag == 3 {
+        wio_read_channel(buf, pos, rf, pvR, p_ch, w0, w1, max_fixed_order, qa, vtmp);
+        wio_read_channel(buf, pos, sf, pvS, p_side, w0, w1, max_fixed_order, qa, vtmp);
+    }
+
+    // reconstruct the derived streams (signed domain, then re-offset).
+    // MS: l = m + ((side + (side&1)) >> 1), r = l-side; LS: r = l-side;
+    // RS: l = r+side; LR: m = (l+r)>>1, side = l-r.
+    var i: i32 = w0;
+    while i < w1 {
+        if tag == 0 {
+            let ls: i32 = lf[i] - 32768;
+            let rs: i32 = rf[i] - 32768;
+            mf[i] = ((ls + rs) >> 1) + 32768;
+            sf[i] = (ls - rs) + 65535;
+        }
+        if tag == 1 {
+            let ms: i32 = mf[i] - 32768;
+            let ss: i32 = sf[i] - 65535;
+            let ls: i32 = ms + ((ss + (ss & 1)) >> 1);
+            lf[i] = ls + 32768;
+            rf[i] = (ls - ss) + 32768;
+        }
+        if tag == 2 {
+            let ls: i32 = lf[i] - 32768;
+            let ss: i32 = sf[i] - 65535;
+            let rs: i32 = ls - ss;
+            rf[i] = rs + 32768;
+            mf[i] = ((ls + rs) >> 1) + 32768;
+        }
+        if tag == 3 {
+            let rs: i32 = rf[i] - 32768;
+            let ss: i32 = sf[i] - 65535;
+            let ls: i32 = rs + ss;
+            lf[i] = ls + 32768;
+            mf[i] = ((ls + rs) >> 1) + 32768;
+        }
+        i = i + 1;
+    }
+
+    // advance the two DERIVED streams' rolling planes (the coded pair
+    // advanced inline)
+    if tag == 0 {
+        wio_advance_planes(mf, pvM, p_ch, w0, w1, max_fixed_order, vtmp);
+        wio_advance_planes(sf, pvS, p_side, w0, w1, max_fixed_order, vtmp);
+    }
+    if tag == 1 {
+        wio_advance_planes(lf, pvL, p_ch, w0, w1, max_fixed_order, vtmp);
+        wio_advance_planes(rf, pvR, p_ch, w0, w1, max_fixed_order, vtmp);
+    }
+    if tag == 2 {
+        wio_advance_planes(rf, pvR, p_ch, w0, w1, max_fixed_order, vtmp);
+        wio_advance_planes(mf, pvM, p_ch, w0, w1, max_fixed_order, vtmp);
+    }
+    if tag == 3 {
+        wio_advance_planes(lf, pvL, p_ch, w0, w1, max_fixed_order, vtmp);
+        wio_advance_planes(mf, pvM, p_ch, w0, w1, max_fixed_order, vtmp);
+    }
+}
+
+// Replay the dyadic tree: nodes > 256 read their split bit; leaves decode.
+fn wio_decode_tree(buf: *u8, pos: *i64,
+    lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    pvL: *i32, pvR: *i32, pvM: *i32, pvS: *i32,
+    n: i32, p_ch: i32, p_side: i32, w0: i32, size: i32,
+    max_fixed_order: i32, qa: *i64, vtmp: *i32) {
+    var w1: i32 = w0 + size;
+    if w1 > n { w1 = n; }
+    if size <= 256 {
+        wio_decode_leaf(buf, pos, lf, rf, mf, sf, pvL, pvR, pvM, pvS,
+            p_ch, p_side, w0, w1, max_fixed_order, qa, vtmp);
+        return;
+    }
+    if wio_rbit(buf, pos) == 0 {
+        wio_decode_leaf(buf, pos, lf, rf, mf, sf, pvL, pvR, pvM, pvS,
+            p_ch, p_side, w0, w1, max_fixed_order, qa, vtmp);
+        return;
+    }
+    let half: i32 = size / 2;
+    wio_decode_tree(buf, pos, lf, rf, mf, sf, pvL, pvR, pvM, pvS,
+        n, p_ch, p_side, w0, half, max_fixed_order, qa, vtmp);
+    if w0 + half < n {                        // empty right child: nothing
+        wio_decode_tree(buf, pos, lf, rf, mf, sf, pvL, pvR, pvM, pvS,
+            n, p_ch, p_side, w0 + half, half, max_fixed_order, qa, vtmp);
+    }
+}
+
+// Fills lf/rf/mf/sf (each cap >= the encoded n) with the Q-DOMAIN streams;
+// fills bw_out with the per-block depth shifts read from the wire. The caller
+// dequantizes: x_hat = wio_dequant(stream_i - offset, bw_out[block]).
+// Returns the decoded n.
+#[export]
+fn wire_decode_stereo(buf: *u8, lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    p_ch: i32, p_side: i32,
+    max_fixed_order: i32, bw_out: *i32) -> i64 {
+    let pos: *i64 = alloc(1);
+    pos[0] = 0;
+    let n: i32 = wio_rbits(buf, pos, 32) as i32;
+
+    let norders: i32 = max_fixed_order + 1;
+    // rolling diff-plane prevs per stream (virtual zero history)
+    let pvL: *i32 = alloc(norders);
+    let pvR: *i32 = alloc(norders);
+    let pvM: *i32 = alloc(norders);
+    let pvS: *i32 = alloc(norders);
+    let vtmp: *i32 = alloc(norders);
+    var z: i32 = 0;
+    while z < norders {
+        pvL[z] = 0; pvR[z] = 0; pvM[z] = 0; pvS[z] = 0;
+        z = z + 1;
+    }
+    let qa: *i64 = alloc(8);
+
+    var b0: i32 = 0;
+    while b0 < n {
+        // B_w: read this block's depth shift (mirrors the encoder head write).
+        bw_out[b0 / 4096] = wio_rbits(buf, pos, 5) as i32;
+        wio_decode_tree(buf, pos, lf, rf, mf, sf, pvL, pvR, pvM, pvS,
+            n, p_ch, p_side, b0, 4096, max_fixed_order, qa, vtmp);
+        b0 = b0 + 4096;
+    }
+
+    let nn: i64 = n as i64;
+    free(qa); free(vtmp);
+    free(pvS); free(pvM); free(pvR); free(pvL);
+    free(pos);
+    return nn;
+}

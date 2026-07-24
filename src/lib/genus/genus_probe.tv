@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_probe.tv — the genus signature (Phase A.3a): measures (d*, nseg@d*) =
+// (onset degree, canonical regime count at d*). Reuses regime_prove<dyn>.
+// @internal-design: genus
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+// Maximal segment length produced by canonical degree-`deg` segmentation
+// (drives the onset test: real degree-`deg` structure iff maxseg > deg+1).
+fn rp_maxseg(f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32 {
+    let nseg: i32 = regime_prove_dyn(f, data, n, deg, cert, work);
+    var mx: i32 = 0;
+    for k in 0..nseg {
+        let len: i32 = cert[k * 3 + 1] as i32;
+        if len > mx { mx = len; }
+    }
+    return mx;
+}
+
+// Onset degree d*: the minimal degree in 0..=d_max at which structure appears
+// (maxseg > d+1). Returns d_max+1 as the sentinel for "no onset <= d_max".
+#[export]
+fn genus_onset(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64
+) -> i32 {
+    for d in 0..(d_max + 1) {
+        let mx: i32 = rp_maxseg(f, data, n, d, cert, work);
+        if mx > d + 1 { return d; }
+    }
+    return d_max + 1;   // sentinel: no finite onset within the measured bound
+}
+
+// Full genus signature into out[0..1]:
+//   out[0] = d*           (or d_max+1 sentinel = "no onset <= d_max")
+//   out[1] = nseg@d*      (regime count at d*, or 0 if no onset)
+// Caller owns cert (n*3) and work (n). Pure measurement; no proof yet.
+#[export]
+fn genus_signature(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64
+) {
+    let dstar: i32 = genus_onset(f, data, n, d_max, cert, work);
+    out[0] = dstar as i64;
+    if dstar <= d_max {
+        let nseg: i32 = regime_prove_dyn(f, data, n, dstar, cert, work);
+        out[1] = nseg as i64;
+    } else {
+        out[1] = 0;
+    }
+}

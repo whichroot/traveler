@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// edge_cases.tv — three field-edge problems from the MNIST benchmark: symmetric
+// x^2 activation, pixels 251-255 outside Z/251Z, and in-field gradient flow.
+// @internal-design: examples (edge_cases).
+
+type F = Field<251>;
+
+// --- EDGE CASE 1: Activation functions ---
+// x^2 mod p fails because f(x) = f(p-x). Alternative A: x^3 — asymmetric,
+// bijective (gcd(3, p-1) = 1), degree 3, gradient 3x^2 computable in-field.
+fn cube_activate(x: F) -> F {
+    return x * x * x;
+}
+
+// ALTERNATIVE B: field-native ReLU — {0..125} "positive", {126..250}
+// "negative", split at the field's half-order.
+fn field_relu(x: F) -> F {
+    if x <= 125 {
+        return x;
+    } else {
+        return F::ZERO;
+    }
+}
+
+// ALTERNATIVE C: power permutation — x^k is a permutation whenever
+// gcd(k, p-1) = 1 (compiler-verified at compile time).
+fn pow_activate(x: F) -> F {
+    return x ** 7;
+}
+
+// --- EDGE CASE 2: Pixel projection ---
+// MNIST pixels are u8 (0-255); Field<251> holds 0-250. Strategy A: modular
+// projection (251->0 ... 255->4) — 5 collisions out of 256, lossy but simple.
+fn load_pixel_mod(raw: F) -> F {
+    return raw;
+}
+
+// --- EDGE CASE 3: Gradient flow ---
+// Cube activation: f'(x) = 3x^2, chain rule dL/dx = dL/df * 3x^2, lr = inv(N)
+// exactly (inv(100) mod 251 = 123), update w = w - lr * grad — all mod p.
+
+fn main() {
+    // Demonstrate cube activation preserves information
+    let x1: F = 1;
+    let x2: F = 250;  // this is -1 in Z/251Z
+
+    let a1: F = cube_activate(x1);   // 1^3 = 1
+    let a2: F = cube_activate(x2);   // 250^3 mod 251 = (-1)^3 = -1 = 250
+
+    print(a1);  // 1
+    print(a2);  // 250 (distinct! unlike x^2 where both give 1)
+
+    // Demonstrate field_relu
+    let pos: F = 50;
+    let neg: F = 200;   // 200 > 125, treated as "negative"
+    print(field_relu(pos));  // 50
+    print(field_relu(neg));  // 0
+
+    // Demonstrate power permutation
+    let v: F = 10;
+    let pv: F = pow_activate(v);  // 10^7 mod 251
+    print(pv);
+
+    // Verify: x^3 is asymmetric
+    // x=1: 1^3 = 1
+    // x=250 (-1): 250^3 mod 251 = 250 (-1)
+    // x=2: 2^3 = 8
+    // x=249 (-2): 249^3 mod 251 = 243 = 251-8 = -8 mod 251
+    let test1: F = cube_activate(2);
+    let test2: F = cube_activate(249);
+    print(test1);  // 8
+    print(test2);  // 243 (= 251 - 8 = -8 mod 251)
+}

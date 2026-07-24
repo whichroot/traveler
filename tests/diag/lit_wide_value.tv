@@ -1,0 +1,8 @@
+// #56: a value literal whose text exceeds u64 wrapped silently at lex
+// (18446744073709551616 = 2^64 became 0). Refused in any <=64-bit context;
+// the wide contexts (i128/u128/i256/u256 annotations) read the carried text.
+fn main() -> i32 {
+    var n: u64 = 18446744073709551616;
+    print(n as i64);
+    return 0;
+}

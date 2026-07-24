@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// import_mathlib.tv — small library imported by import_test.tv (Model A source
+// inclusion; the generic monomorphizes in-unit).
+// @internal-design: util
+
+fn ml_add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn ml_square(x: i32) -> i32 {
+    return x * x;
+}
+
+// Generic identity-scale: returns x added to itself n times (n>=0).
+fn ml_scale<T>(x: T, n: i32) -> T {
+    var acc: T = x;
+    var i: i32 = 1;
+    while i < n {
+        acc = acc + x;
+        i = i + 1;
+    }
+    return acc;
+}

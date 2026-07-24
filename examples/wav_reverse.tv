@@ -1,0 +1,355 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wav_reverse.tv — Analyze + reverse a 16-bit PCM WAV, pure Traveler
+//
+// Reads a WAV file, performs:
+//   1. Forward-difference polynomial analysis (orders 1-4)
+//   2. Regime detection (finds structural boundaries in the audio)
+//   3. Reverses the audio (both channels, frame-level swap)
+//   4. Writes the reversed WAV to a new file
+//
+// Usage: wav_reverse <input.wav> <output.wav>
+//
+// Build:
+//   tvc wav_reverse.tv -o /tmp/wr.ll
+//   llc -O2 -filetype=obj /tmp/wr.ll -o /tmp/wr.o
+//   clang /tmp/wr.o -o /tmp/wav_reverse
+
+type F = Field<65521>;
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        wr(fd, "-");
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    let d: i32 = (n % 10) as i32 + 48;
+    var buf: [u8; 2] = 0;
+    buf[0] = d as u8;
+    write(fd, &buf[0], 1);
+}
+
+// Write a little-endian u16 to a buffer
+fn put_u16(buf: *u8, off: i32, val: i32) {
+    buf[off] = (val & 255) as u8;
+    buf[off + 1] = ((val >> 8) & 255) as u8;
+}
+
+// Write a little-endian u32 to a buffer
+fn put_u32(buf: *u8, off: i32, val: i32) {
+    buf[off] = (val & 255) as u8;
+    buf[off + 1] = ((val >> 8) & 255) as u8;
+    buf[off + 2] = ((val >> 16) & 255) as u8;
+    buf[off + 3] = ((val >> 24) & 255) as u8;
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 3 {
+        wr(2, "usage: wav_reverse <input.wav> <output.wav>\n");
+        exit(1);
+    }
+
+    let in_path: *u8 = argv[1];
+    let out_path: *u8 = argv[2];
+
+    // ── Read input WAV ──────────────────────────────────────
+    let fd: i32 = open(in_path, 0, 0);
+    if fd < 0 {
+        wr(2, "error: cannot open input\n");
+        exit(1);
+    }
+    let buf: *u8 = alloc(67108864);  // 64 MB max
+    let file_size: i64 = read_bytes(fd, buf, 67108864);
+    close(fd);
+
+    // Parse WAV header
+    let num_channels: i32 = buf[22] as i32 + (buf[23] as i32) * 256;
+    let sample_rate: i32 = buf[24] as i32 + (buf[25] as i32) * 256
+    + (buf[26] as i32) * 65536 + (buf[27] as i32) * 16777216;
+    let bits: i32 = buf[34] as i32 + (buf[35] as i32) * 256;
+
+    wr(2, "Input: ");
+    wr_int(2, num_channels as i64);
+    wr(2, "ch ");
+    wr_int(2, sample_rate as i64);
+    wr(2, "Hz ");
+    wr_int(2, bits as i64);
+    wr(2, "bit  ");
+    wr_int(2, file_size);
+    wr(2, " bytes\n");
+
+    if bits != 16 {
+        wr(2, "error: only 16-bit PCM supported\n");
+        exit(1);
+    }
+
+    // Scan for the 'data' chunk (don't assume offset 44 — afconvert
+    // adds FLLR padding chunks before the audio data)
+    var data_offset: i32 = 12;  // skip RIFF header
+    var data_size: i32 = 0;
+    while data_offset < (file_size as i32) - 8 {
+        // Read chunk tag (4 bytes) and size (4 bytes LE)
+        let tag0: i32 = buf[data_offset] as i32;
+        let tag1: i32 = buf[data_offset + 1] as i32;
+        let tag2: i32 = buf[data_offset + 2] as i32;
+        let tag3: i32 = buf[data_offset + 3] as i32;
+        let chunk_size: i32 = buf[data_offset + 4] as i32
+        + (buf[data_offset + 5] as i32) * 256
+        + (buf[data_offset + 6] as i32) * 65536
+        + (buf[data_offset + 7] as i32) * 16777216;
+
+        // 'd'=100 'a'=97 't'=116 'a'=97
+        if tag0 == 100 && tag1 == 97 && tag2 == 116 && tag3 == 97 {
+            data_offset = data_offset + 8;  // skip chunk header
+            data_size = chunk_size;
+            break;
+        }
+        data_offset = data_offset + 8 + chunk_size;
+    }
+
+    if data_size == 0 {
+        wr(2, "error: no 'data' chunk found\n");
+        exit(1);
+    }
+
+    wr(2, "Data chunk at offset ");
+    wr_int(2, data_offset as i64);
+    wr(2, ", size ");
+    wr_int(2, data_size as i64);
+    wr(2, "\n");
+
+    let num_samples: i32 = data_size / 2;
+    let num_frames: i32 = num_samples / num_channels;
+
+    wr(2, "Frames: ");
+    wr_int(2, num_frames as i64);
+    wr(2, "  Duration: ");
+    wr_int(2, (num_frames / sample_rate) as i64);
+    wr(2, "s\n");
+
+    // Deinterleave left channel for analysis
+    let samples: *i32 = alloc(num_frames);
+    var i: i32 = 0;
+    while i < num_frames {
+        let byte_off: i32 = data_offset + i * num_channels * 2;
+        let lo: i32 = buf[byte_off] as i32;
+        let hi: i32 = buf[byte_off + 1] as i32;
+        var val: i32 = lo + hi * 256;
+        if val >= 32768 { val = val - 65536; }
+        samples[i] = val;
+        i = i + 1;
+    }
+
+    // ── Analysis: Forward differences ───────────────────────
+    wr(2, "\n=== Forward Difference Analysis ===\n");
+    let blksize: i32 = 4096;
+    let nblocks: i32 = num_frames / blksize;
+    let work: *i32 = alloc(blksize);
+
+    var order: i32 = 1;
+    while order <= 4 {
+        var total_maxd: i64 = 0;
+        var blocks_under_128: i32 = 0;
+        var blocks_under_256: i32 = 0;
+
+        var blk: i32 = 0;
+        while blk < nblocks {
+            let base: i32 = blk * blksize;
+            var j: i32 = 0;
+            while j < blksize {
+                work[j] = samples[base + j];
+                j = j + 1;
+            }
+            var sz: i32 = blksize;
+            var lev: i32 = 0;
+            while lev < order {
+                var k: i32 = 0;
+                while k < sz - 1 {
+                    work[k] = work[k + 1] - work[k];
+                    k = k + 1;
+                }
+                sz = sz - 1;
+                lev = lev + 1;
+            }
+            var maxd: i32 = 0;
+            j = 0;
+            while j < sz {
+                var v: i32 = work[j];
+                if v < 0 { v = 0 - v; }
+                if v > maxd { maxd = v; }
+                j = j + 1;
+            }
+            total_maxd = total_maxd + maxd as i64;
+            if maxd < 128 { blocks_under_128 = blocks_under_128 + 1; }
+            if maxd < 256 { blocks_under_256 = blocks_under_256 + 1; }
+            blk = blk + 1;
+        }
+
+        let avg_maxd: i64 = total_maxd / nblocks as i64;
+        wr(2, "  Order ");
+        wr_int(2, order as i64);
+        wr(2, ": avg_max=");
+        wr_int(2, avg_maxd);
+        wr(2, "  fit_7bit=");
+        wr_int(2, blocks_under_128 as i64);
+        wr(2, "/");
+        wr_int(2, nblocks as i64);
+        wr(2, " (");
+        wr_int(2, (blocks_under_128 as i64) * 100 / (nblocks as i64));
+        wr(2, "%)  fit_8bit=");
+        wr_int(2, blocks_under_256 as i64);
+        wr(2, " (");
+        wr_int(2, (blocks_under_256 as i64) * 100 / (nblocks as i64));
+        wr(2, "%)\n");
+
+        order = order + 1;
+    }
+
+    // ── Regime detection ────────────────────────────────────
+    // Structural boundaries = 2nd-order forward-difference energy changing
+    // significantly between adjacent blocks (musical reading: @internal-design: codec).
+    wr(2, "\n=== Regime Detection (structural boundaries) ===\n");
+
+    // Compute per-block energy at order 2
+    let energies: *i32 = alloc(nblocks);
+    var blk: i32 = 0;
+    while blk < nblocks {
+        let base: i32 = blk * blksize;
+        var j: i32 = 0;
+        while j < blksize {
+            work[j] = samples[base + j];
+            j = j + 1;
+        }
+        // Apply 2nd order differences
+        var sz: i32 = blksize;
+        var lev: i32 = 0;
+        while lev < 2 {
+            var k: i32 = 0;
+            while k < sz - 1 {
+                work[k] = work[k + 1] - work[k];
+                k = k + 1;
+            }
+            sz = sz - 1;
+            lev = lev + 1;
+        }
+        // RMS-like energy: sum of |diff| / count
+        var sum: i64 = 0;
+        j = 0;
+        while j < sz {
+            var v: i32 = work[j];
+            if v < 0 { v = 0 - v; }
+            sum = sum + v as i64;
+            j = j + 1;
+        }
+        energies[blk] = (sum / sz as i64) as i32;
+        blk = blk + 1;
+    }
+
+    // Detect boundaries: where energy ratio between adjacent blocks > 2x
+    var regime_count: i32 = 0;
+    blk = 1;
+    while blk < nblocks {
+        let prev: i32 = energies[blk - 1];
+        let curr: i32 = energies[blk];
+
+        // Significant change: ratio > 2 or < 0.5
+        var boundary: i32 = 0;
+        if prev > 0 && curr > prev * 2 { boundary = 1; }
+        if curr > 0 && prev > curr * 2 { boundary = 1; }
+
+        if boundary == 1 {
+            let time_ms: i64 = (blk as i64) * (blksize as i64) * 1000 / (sample_rate as i64);
+            let time_s: i64 = time_ms / 1000;
+            let time_frac: i64 = (time_ms % 1000) / 100;
+            wr(2, "  Boundary at block ");
+            wr_int(2, blk as i64);
+            wr(2, " (");
+            wr_int(2, time_s);
+            wr(2, ".");
+            wr_int(2, time_frac);
+            wr(2, "s)  energy: ");
+            wr_int(2, prev as i64);
+            wr(2, " -> ");
+            wr_int(2, curr as i64);
+            wr(2, "\n");
+            regime_count = regime_count + 1;
+        }
+        blk = blk + 1;
+    }
+
+    wr(2, "  Total boundaries: ");
+    wr_int(2, regime_count as i64);
+    wr(2, "\n");
+
+    // ── Reverse ─────────────────────────────────────────────
+    wr(2, "\n=== Reversing audio ===\n");
+
+    // Reverse in-place in the raw PCM buffer.
+    // Each frame is num_channels * 2 bytes (4 bytes for stereo 16-bit).
+    // Swap frame[i] with frame[num_frames-1-i].
+    let frame_bytes: i32 = num_channels * 2;
+    var fi: i32 = 0;
+    let half: i32 = num_frames / 2;
+
+    while fi < half {
+        let off_a: i32 = data_offset + fi * frame_bytes;
+        let off_b: i32 = data_offset + (num_frames - 1 - fi) * frame_bytes;
+
+        // Swap all bytes of the frame
+        var b: i32 = 0;
+        while b < frame_bytes {
+            let tmp: u8 = buf[off_a + b];
+            buf[off_a + b] = buf[off_b + b];
+            buf[off_b + b] = tmp;
+            b = b + 1;
+        }
+        fi = fi + 1;
+    }
+
+    wr(2, "  Reversed ");
+    wr_int(2, num_frames as i64);
+    wr(2, " frames (");
+    wr_int(2, half as i64);
+    wr(2, " swaps)\n");
+
+    // ── Write output WAV ────────────────────────────────────
+    // Header is unchanged (same format, same size) — just write the whole buffer
+    // macOS: O_WRONLY=1, O_CREAT=512, O_TRUNC=1024 → 1537
+    // Linux: O_WRONLY=1, O_CREAT=64,  O_TRUNC=512  → 577
+    let ofd: i32 = open(out_path, 1537, 420);  // O_WRONLY|O_CREAT|O_TRUNC (macOS), 0644
+    if ofd < 0 {
+        wr(2, "error: cannot create output file\n");
+        exit(1);
+    }
+
+    let written: i64 = write(ofd, buf, file_size as usize);
+    close(ofd);
+
+    wr(2, "  Wrote ");
+    wr_int(2, written);
+    wr(2, " bytes -> ");
+    // Print output path
+    wr(2, out_path);
+    wr(2, "\n");
+
+    wr(2, "\nDone.\n");
+
+    free(energies);
+    free(work);
+    free(samples);
+    free(buf);
+}

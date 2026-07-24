@@ -1,0 +1,10 @@
+// Negative: BinField<K, P> with P reducible over GF(2). The axiom gate is
+// Rabin's irreducibility test (the BinField analogue of Field<p>'s
+// Miller-Rabin): x^16 + x^2 + 1 = (x^8 + x + 1)^2 is a square, so GF(2)[x]/P
+// is not a field — refused at registration, not silently mishandled.
+binfield G = BinField<16, 0x10005>;
+
+fn main() {
+    let x: G = 5;
+    print(x);
+}

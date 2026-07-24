@@ -1,0 +1,18 @@
+// #54: a [zk] loop bound past i32 would silently truncate the unroll count —
+// the circuit size is a genuine axiom, so it refuses.
+type F = Field<65521>;
+
+#[zk]
+fn wide_loop(x: F) -> F {
+    var acc: F = x;
+    for i in 0..2147483648 {
+        acc = acc * x;
+    }
+    return acc;
+}
+
+fn main() -> i32 {
+    let r: F = wide_loop(3);
+    print(r as i64);
+    return 0;
+}

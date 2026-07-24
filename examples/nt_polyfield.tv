@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// nt_polyfield.tv — known-answer gate for src/lib/nt/polyfield.tv: mul/divmod/gcd/
+// deriv/eval/x^e-mod-g/companion/charpoly over Field<97> AND BinField<8,0x11B>.
+// @internal-design: nt
+
+import "../src/lib/nt/polyfield.tv";     // transitively imports linalg.tv
+
+type P = Field<97>;
+type G = BinField<8, 0x11B>;
+
+fn main() {
+    let Q2: i64 = 95;        // |Field<97>| - 2
+
+    // g = x^2 + 3x + 2  (= (x+1)(x+2))
+    let g: *P = alloc(3);
+    g[0] = 2; g[1] = 3; g[2] = 1;
+
+    print(pf_deg(g, 3));                       // 2
+
+    // mul: (x+1)(x+2) = x^2 + 3x + 2
+    let f1: *P = alloc(2); f1[0] = 1; f1[1] = 1;   // x+1
+    let f2: *P = alloc(2); f2[0] = 2; f2[1] = 1;   // x+2
+    let mout: *P = alloc(3);
+    pf_mul(f1, 2, f2, 2, mout);
+    print(mout[0] as i32); print(mout[1] as i32); print(mout[2] as i32);   // 2 3 1
+
+    // divmod: (x^2+3x+2) / (x+1) = (x+2), remainder 0
+    let q: *P = alloc(3); let r: *P = alloc(3);
+    pf_divmod(g, 3, f1, 2, q, r, Q2);
+    print(q[0] as i32); print(q[1] as i32);    // 2 1
+    print(pf_deg(r, 3));                        // -1 (zero remainder)
+
+    // gcd(x^2 - 1, x^2 + 3x + 2) = x + 1 (monic)
+    let h: *P = alloc(3); h[0] = 96; h[1] = 0; h[2] = 1;   // x^2 - 1
+    let gc: *P = alloc(3);
+    let gl: i32 = pf_gcd(h, 3, g, 3, gc, Q2);
+    print(gl);                                 // 2
+    print(gc[0] as i32); print(gc[1] as i32);  // 1 1
+
+    // derivative of x^2 + 3x + 2 = 2x + 3
+    let dv: *P = alloc(2);
+    pf_deriv(g, 3, dv);
+    print(dv[0] as i32); print(dv[1] as i32);  // 3 2
+
+    // eval (x^2+3x+2) at x = 5 -> 42
+    print(pf_eval(g, 3, 5) as i32);            // 42
+
+    // x^2 mod g  ==  -(3x + 2)  =  94x + 95
+    let pm: *P = alloc(2);
+    pf_powmod_x(2, g, 3, pm, Q2);
+    print(pm[0] as i32); print(pm[1] as i32);  // 95 94
+
+    // charpoly(companion(g)) == g   (the reusable-form identity)
+    let M2: *P = alloc(4);
+    pf_companion(g, 3, M2);
+    let cp2: *P = alloc(3);
+    pf_charpoly(M2, 2, cp2, Q2);
+    print(cp2[0] as i32); print(cp2[1] as i32); print(cp2[2] as i32);   // 2 3 1
+
+    // charpoly of a cubic companion: g3 = x^3 + 2x^2 + 3x + 4
+    let g3: *P = alloc(4); g3[0] = 4; g3[1] = 3; g3[2] = 2; g3[3] = 1;
+    let M3: *P = alloc(9);
+    pf_companion(g3, 4, M3);
+    let cp3: *P = alloc(4);
+    pf_charpoly(M3, 3, cp3, Q2);
+    print(cp3[0] as i32); print(cp3[1] as i32); print(cp3[2] as i32); print(cp3[3] as i32);   // 4 3 2 1
+
+    // ---- BinField<8>: char-2 grounding ----
+    let Q2G: i64 = 254;      // |BinField<8>| - 2
+
+    // (x+1)^2 = x^2 + 1 over char 2 (middle coeff 1+1 = 0)
+    let b1: *G = alloc(2); b1[0] = 1; b1[1] = 1;
+    let bm: *G = alloc(3);
+    pf_mul(b1, 2, b1, 2, bm);
+    print(bm[0] as i32); print(bm[1] as i32); print(bm[2] as i32);   // 1 0 1
+
+    // charpoly(companion(gb)) == gb, gb = x^2 + x + 1 over GF(256)
+    let gb: *G = alloc(3); gb[0] = 1; gb[1] = 1; gb[2] = 1;
+    let MB: *G = alloc(4);
+    pf_companion(gb, 3, MB);
+    let cpb: *G = alloc(3);
+    pf_charpoly(MB, 2, cpb, Q2G);
+    print(cpb[0] as i32); print(cpb[1] as i32); print(cpb[2] as i32);   // 1 1 1
+}

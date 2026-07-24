@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_extremal.tv — Mobius W-B P5: the extremal-horizon witnesses F(L) — the
+// horizon of 1_{n == a mod d} is one less than its first non-squarefree term.
+// @internal-design: nt; @internal-note: plan-mobius-inclusion.
+//
+//   1_{n==0 mod 1}  dies at 4  = 2^2      -> F=3     (= F(1))
+//   1_{n==1 mod 2}  dies at 9  = 3^2      -> F=8     (= F(2))
+//   1_{n==3 mod 4}  dies at 27 = 3^3      -> F=26    (= F(4)=F(5))
+//   1_{n==5 mod 6}  dies at 125= 5^3      -> F=124   (= F(6)=F(7))
+//   1_{n==11 mod 12} dies at 275=5^2*11   -> F=274   (= F(12)=F(13))
+//
+// Output rows: d, a, horizon F, death point (= horizon+1). Standalone (no import).
+
+fn squarefree(n: i32) -> i32 {
+    var d: i32 = 2;
+    while d * d <= n {
+        if (n % (d * d)) == 0 { return 0; }
+        d = d + 1;
+    }
+    return 1;
+}
+
+// horizon of 1_{n == a mod d}: first non-squarefree n in the progression, minus 1.
+fn horizon(d: i32, a: i32) {
+    var n: i32 = a;
+    if n == 0 { n = d; }                 // n=0 excluded; start at the first positive
+    while squarefree(n) == 1 { n = n + d; }
+    print(d); print(a); print(n - 1); print(n);
+}
+
+#[export]
+fn main() -> i32 {
+    horizon(1, 0);      // 1 0 3 4
+    horizon(2, 1);      // 2 1 8 9
+    horizon(4, 3);      // 4 3 26 27
+    horizon(6, 5);      // 6 5 124 125
+    horizon(12, 11);    // 12 11 274 275
+    return 0;
+}

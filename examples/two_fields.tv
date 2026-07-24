@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// Two-field test: Field<65537> (signal) + Field<4294967291> (recursion)
+// Verifies multi-field arithmetic emission and cross-field type safety.
+
+type F = Field<65537>;
+type G = Field<4294967291>;
+
+fn main() -> i32 {
+    // Field F arithmetic (32-bit elem, 64-bit wide)
+    let a: F = 60000;
+    let b: F = 60000;
+    let c: F = a + b;
+    print(c);           // 60000 + 60000 = 120000 mod 65537 = 54463
+
+    // Field G arithmetic (32-bit elem, 64-bit wide)
+    let x: G = 3000000000;
+    let y: G = 2000000000;
+    let z: G = x + y;
+    print(z);           // 5000000000 mod 4294967291 = 705032709
+
+    // Verify mul in both fields
+    let e: F = 100;
+    let f: F = 200;
+    let g: F = e * f;
+    print(g);           // 20000 mod 65537 = 20000
+
+    let h: G = 100;
+    let i: G = 200;
+    let j: G = h * i;
+    print(j);           // 20000 mod 4294967291 = 20000
+
+    // Verify inv in Field F
+    let k: F = 100;
+    let l: F = k ** 65535;
+    let m: F = k * l;
+    print(m);           // 100 * inv(100) = 1
+
+    return 0;
+}

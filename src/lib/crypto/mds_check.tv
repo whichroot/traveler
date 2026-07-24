@@ -1,0 +1,460 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mds_check.tv — Poseidon2 internal-diagonal MDS validity over a runtime prime,
+// plus a generator that finds a valid diagonal for ANY prime (B-MDS).
+// @internal-design: crypto
+
+// ===== POLYNOMIAL RING over GF(p) (ascending coeffs, explicit lengths; caller owns buffers) =====
+
+// Strip trailing-zero (high-degree) coeffs; returns the reduced length (>=1).
+fn poly_len<F: Field>(a: *F, len: i32) -> i32 {
+    var l: i32 = len;
+    while l > 1 {
+        if a[l - 1] != 0 { return l; }
+        l = l - 1;
+    }
+    return l;
+}
+
+// out = a * b (schoolbook). a has la coeffs, b has lb; out must hold la+lb-1.
+// Returns the (stripped) length of out.
+fn poly_mul<F: Field>(a: *F, la: i32, b: *F, lb: i32, out: *F) -> i32 {
+    let n: i32 = la + lb - 1;
+    let zero: F = 0;
+    for i in 0..n { out[i] = zero; }
+    for i in 0..la {
+        let ai: F = a[i];
+        if ai != 0 {
+            for j in 0..lb {
+                out[i + j] = out[i + j] + ai * b[j];
+            }
+        }
+    }
+    return poly_len(out, n);
+}
+
+// f := f - g  (in place on f, length lf; g length lg, lg <= lf assumed by
+// caller via padding). Returns stripped length.
+fn poly_sub_into<F: Field>(f: *F, lf: i32, g: *F, lg: i32) -> i32 {
+    for i in 0..lg {
+        f[i] = f[i] - g[i];
+    }
+    return poly_len(f, lf);
+}
+
+// r := f mod g (schoolbook long division; r and f distinct, r holds lf coeffs,
+// reduced in place in r). Returns the stripped remainder length.
+fn poly_mod<F: Field>(f: *F, lf: i32, g: *F, lg: i32, r: *F) -> i32 {
+    // copy f into r
+    for i in 0..lf { r[i] = f[i]; }
+    var lr: i32 = poly_len(r, lf);
+    let glen: i32 = poly_len(g, lg);
+    if glen <= 1 {
+        // divisor is a nonzero constant -> remainder 0
+        r[0] = 0 as F;
+        return 1;
+    }
+    let inv_lc: F = 1 / g[glen - 1];
+    while lr >= glen {
+        let co: F = r[lr - 1] * inv_lc;
+        let sh: i32 = lr - glen;
+        if co != 0 {
+            for i in 0..glen {
+                r[sh + i] = r[sh + i] - co * g[i];
+            }
+        }
+        // top coeff now zero; shrink
+        r[lr - 1] = 0 as F;
+        lr = poly_len(r, lr);
+        // guard: if degree didn't drop (shouldn't happen), break
+        if lr < 1 { lr = 1; }
+        if r[lr - 1] == 0 {
+            if lr <= 1 { return poly_len(r, lr); }
+        }
+    }
+    return poly_len(r, lr);
+}
+
+// out := gcd(a, b) by Euclid ((a,b) -> (b, a mod b) until b == 0), monic-free
+// (only the degree is needed). Uses scratch t0/t1/scratch; returns out length.
+fn poly_gcd<F: Field>(
+    a: *F, la: i32, b: *F, lb: i32,
+    out: *F, t0: *F, t1: *F, scratch: *F
+) -> i32 {
+    // t0 := a, t1 := b
+    for i in 0..la { t0[i] = a[i]; }
+    var l0: i32 = poly_len(t0, la);
+    for i in 0..lb { t1[i] = b[i]; }
+    var l1: i32 = poly_len(t1, lb);
+    // loop while t1 != 0
+    var guard: i32 = 0;
+    while guard < 64 {
+        guard = guard + 1;
+        // if t1 is zero polynomial, gcd is t0
+        if l1 == 1 {
+            if t1[0] == 0 {
+                for i in 0..l0 { out[i] = t0[i]; }
+                return l0;
+            }
+        }
+        // rem := t0 mod t1
+        let lrem: i32 = poly_mod(t0, l0, t1, l1, scratch);
+        // t0 := t1, t1 := rem
+        for i in 0..l1 { t0[i] = t1[i]; }
+        l0 = l1;
+        for i in 0..lrem { t1[i] = scratch[i]; }
+        l1 = lrem;
+    }
+    for i in 0..l0 { out[i] = t0[i]; }
+    return l0;
+}
+
+// ===== MATRICES over GF(p) (row-major t*t) =====
+
+fn mat_mul<F: Field>(a: *F, b: *F, out: *F, t: i32) {
+    let zero: F = 0;
+    for i in 0..t {
+        for j in 0..t {
+            out[i * t + j] = zero;
+        }
+    }
+    for i in 0..t {
+        for k in 0..t {
+            let aik: F = a[i * t + k];
+            if aik != 0 {
+                for j in 0..t {
+                    out[i * t + j] = out[i * t + j] + aik * b[k * t + j];
+                }
+            }
+        }
+    }
+}
+
+fn mat_trace<F: Field>(a: *F, t: i32) -> F {
+    var s: F = a[0];
+    for i in 1..t {
+        s = s + a[i * t + i];
+    }
+    return s;
+}
+
+// Characteristic polynomial of `m` (t*t) via Faddeev-LeVerrier: ascending monic
+// coeffs into cp[0..t] (t+1 values, cp[t]=1). Scratch ckk/tmp each t*t.
+fn char_poly<F: Field>(m: *F, t: i32, cp: *F, ckk: *F, tmp: *F) {
+    // cp[t] = 1; cp[t-1] = -trace(M)
+    cp[t] = 1 as F;
+    let tr0: F = mat_trace(m, t);
+    cp[t - 1] = 0 as F - tr0;
+    // C_1 = M
+    for i in 0..(t * t) { ckk[i] = m[i]; }
+    // for k = 2..t: C_k = M*(C_{k-1} + c_{t-k+1} I); c_{t-k} = -inv(k)*tr(C_k)
+    var k: i32 = 2;
+    while k <= t {
+        // tmp = C_{k-1} + c_{t-k+1} * I
+        let cadd: F = cp[t - k + 1];
+        for i in 0..(t * t) { tmp[i] = ckk[i]; }
+        for i in 0..t {
+            tmp[i * t + i] = tmp[i * t + i] + cadd;
+        }
+        // ckk = M * tmp
+        mat_mul(m, tmp, ckk, t);
+        // c_{t-k} = -(inv(k) * trace(ckk))
+        let trk: F = mat_trace(ckk, t);
+        let invk: F = 1 / (k as F);
+        cp[t - k] = 0 as F - invk * trk;
+        k = k + 1;
+    }
+}
+
+// ===== IRREDUCIBILITY over GF(p) (Frobenius / Ben-Or) =====
+
+// out := base^p mod f (one Frobenius step) via square-and-multiply. base length
+// lb, f monic length lf; pp = the prime, passed explicitly as i64 (see note).
+fn poly_powp_mod<F: Field>(
+    pp: i64, base: *F, lb: i32, fpoly: *F, lf: i32,
+    out: *F, acc: *F, sq: *F, prod: *F, rem: *F
+) -> i32 {
+    // The exponent (the prime p) can exceed 2^63: the square-and-multiply loop
+    // MUST treat it as UNSIGNED u64 — see @internal-design: crypto.
+    let p: u64 = pp as u64;
+    // acc := 1
+    acc[0] = 1 as F;
+    var lacc: i32 = 1;
+    // sq := base mod f
+    let lsq0: i32 = poly_mod(base, lb, fpoly, lf, sq);
+    var lsq: i32 = lsq0;
+    var e: u64 = p;
+    while e > 0 {
+        if (e & 1) == 1 {
+            // acc := (acc * sq) mod f
+            let lp: i32 = poly_mul(acc, lacc, sq, lsq, prod);
+            let lr: i32 = poly_mod(prod, lp, fpoly, lf, rem);
+            for i in 0..lr { acc[i] = rem[i]; }
+            lacc = lr;
+        }
+        e = e >> 1;
+        if e > 0 {
+            // sq := (sq * sq) mod f
+            let lp2: i32 = poly_mul(sq, lsq, sq, lsq, prod);
+            let lr2: i32 = poly_mod(prod, lp2, fpoly, lf, rem);
+            for i in 0..lr2 { sq[i] = rem[i]; }
+            lsq = lr2;
+        }
+    }
+    for i in 0..lacc { out[i] = acc[i]; }
+    return lacc;
+}
+
+// Ben-Or: f (monic, lf = n+1) irreducible of degree n over GF(p) iff
+// x^(p^n) == x (mod f) and gcd(x^(p^(n/2)) - x, f) == 1 (q=2 only; see note).
+// Returns 1 if irreducible, 0 otherwise. Allocates its own scratch (n <= 16).
+fn poly_is_irreducible<F: Field>(pp: i64, fpoly: *F, lf: i32) -> i32 {
+    let n: i32 = lf - 1;
+    if n <= 0 { return 0; }
+    if n == 1 { return 1; }
+    let half: i32 = n / 2;
+
+    // scratch (each up to 2n coeffs to be safe)
+    let cur: *F = alloc(40);     // current xpi[i]
+    let nxt: *F = alloc(40);
+    let acc: *F = alloc(40);
+    let sq: *F = alloc(40);
+    let prod: *F = alloc(40);
+    let rem: *F = alloc(40);
+    let snap_half: *F = alloc(40);
+    let xpoly: *F = alloc(2);    // the polynomial x = [0, 1]
+
+    xpoly[0] = 0 as F; xpoly[1] = 1 as F;
+
+    // cur := xpi[0] = x
+    cur[0] = 0 as F; cur[1] = 1 as F;
+    var lcur: i32 = 2;
+    var lhalf: i32 = 0;
+
+    var i: i32 = 1;
+    while i <= n {
+        // nxt := cur^p mod f   (Frobenius step)
+        let lnxt: i32 = poly_powp_mod(pp, cur, lcur, fpoly, lf, nxt, acc, sq, prod, rem);
+        for k in 0..lnxt { cur[k] = nxt[k]; }
+        lcur = lnxt;
+        if i == half {
+            for k in 0..lcur { snap_half[k] = cur[k]; }
+            lhalf = lcur;
+        }
+        i = i + 1;
+    }
+
+    // (1) check xpi[n] == x  i.e. (cur - x) == 0
+    var result: i32 = 1;
+    let diffn: *F = alloc(40);
+    for k in 0..lcur { diffn[k] = cur[k]; }
+    // subtract x
+    diffn[1] = diffn[1] - (1 as F);
+    let lon: i32 = poly_len(diffn, lcur);
+    var nzero: i32 = 1;     // is (cur - x) the zero polynomial?
+    if lon > 1 { nzero = 0; }
+    if lon == 1 { if diffn[0] != 0 { nzero = 0; } }
+    if nzero == 0 { result = 0; }
+
+    // (2) gcd(xpi[half] - x, f) constant
+    if result == 1 {
+        let diffh: *F = alloc(40);
+        for k in 0..lhalf { diffh[k] = snap_half[k]; }
+        diffh[1] = diffh[1] - (1 as F);
+        let loh: i32 = poly_len(diffh, lhalf);
+        // gcd(diffh, f)
+        let g: *F = alloc(40); let t0: *F = alloc(40); let t1: *F = alloc(40); let scr: *F = alloc(40);
+        let lg: i32 = poly_gcd(diffh, loh, fpoly, lf, g, t0, t1, scr);
+        let lgs: i32 = poly_len(g, lg);
+        if lgs > 1 { result = 0; }
+        free(diffh); free(g); free(t0); free(t1); free(scr);
+    }
+
+    free(cur); free(nxt); free(acc); free(sq); free(prod); free(rem);
+    free(snap_half); free(xpoly); free(diffn);
+    return result;
+}
+
+instantiate poly_len<dyn>;
+instantiate poly_mul<dyn>;
+instantiate poly_sub_into<dyn>;
+instantiate poly_mod<dyn>;
+instantiate poly_gcd<dyn>;
+instantiate mat_mul<dyn>;
+instantiate mat_trace<dyn>;
+instantiate char_poly<dyn>;
+// ===== THE MDS CHECK (the invariant-subspace condition) =====
+
+// Build M_I (t*t row-major) from the diagonal v: M[i][i]=v[i], M[i][j]=1.
+fn mds_build_matrix<F: Field>(v: *F, t: i32, m: *F) {
+    for i in 0..t {
+        for j in 0..t {
+            if i == j { m[i * t + j] = v[i]; }
+            else { m[i * t + j] = 1 as F; }
+        }
+    }
+}
+
+// Validate a diagonal v (length t) over the runtime prime pp: char-poly of M_I^i
+// irreducible of degree t for i = 1..2t. 1 = MDS-valid, else 0. Own scratch.
+fn mds_check_diag<F: Field>(pp: i64, v: *F, t: i32) -> i32 {
+    let m: *F = alloc(t * t);
+    let mp: *F = alloc(t * t);      // M^i
+    let nextp: *F = alloc(t * t);
+    let cp: *F = alloc(t + 1);
+    let ckk: *F = alloc(t * t);
+    let tmp: *F = alloc(t * t);
+    mds_build_matrix(v, t, m);
+    // mp := M^1
+    for i in 0..(t * t) { mp[i] = m[i]; }
+    var valid: i32 = 1;
+    var i: i32 = 1;
+    let twot: i32 = t + t;
+    while i <= twot {
+        if valid == 1 {
+            char_poly(mp, t, cp, ckk, tmp);
+            if poly_is_irreducible(pp, cp, t + 1) == 0 {
+                valid = 0;
+            }
+        }
+        // mp := M * mp  (advance to next power) — only if more iterations remain
+        if i < twot {
+            mat_mul(m, mp, nextp, t);
+            for k in 0..(t * t) { mp[k] = nextp[k]; }
+        }
+        i = i + 1;
+    }
+    free(m); free(mp); free(nextp); free(cp); free(ckk); free(tmp);
+    return valid;
+}
+
+// ===== THE GENERATOR (find a valid diagonal for ANY prime) =====
+
+// Grain-sample candidate diagonals (the same rejection-sampled draw as the round
+// constants, via grain_lfsr.tv) until one passes mds_check_diag. See the note.
+
+extern "C" fn grain_random_field_elem(f: Field, state: *i64, n: i32) -> i64;
+extern "C" fn grain_init(state: *i64, n: i32, t: i32, rf: i32, rp: i32);
+
+// Generate a valid diagonal into out[0..t) using Grain state `gstate` (80 i64,
+// already initialised + advanced past the constant draws). Returns the number
+// of candidate diagonals tried (>=1). pp/n describe the prime; f is the carrier.
+#[export]
+fn mds_generate_diag(f: Field, pp: i64, n: i32, t: i32,
+    gstate: *i64, out: *i64) -> i32 {
+    var tries: i32 = 0;
+    var found: i32 = 0;
+    while found == 0 {
+        tries = tries + 1;
+        // draw t rejection-sampled candidates
+        for i in 0..t {
+            out[i] = grain_random_field_elem(f, gstate, n);
+        }
+        if mds_check_diag_dyn(f, pp, out, t) == 1 {
+            found = 1;
+        }
+        // safety bound: the sieve density guarantees convergence; cap to avoid
+        // a runaway if a caller passes a degenerate prime.
+        if tries >= 100000 { found = 1; }
+    }
+    return tries;
+}
+
+instantiate poly_powp_mod<dyn>;
+instantiate poly_is_irreducible<dyn>;
+instantiate mds_build_matrix<dyn>;
+instantiate mds_check_diag<dyn>;
+
+// ===== THE LIVE-PATH SELECTOR (validate-then-generate, name-blind) =====
+
+// The permutation consumes the BASE diagonal (state[i]*base[i] + sum); the MDS
+// check validates the MATRIX diagonal v[i] = base[i] + 1 (all-ones off-diagonal).
+
+// Canonical base diagonal (width 8), derived IN FIELD over the runtime prime.
+fn mds_canonical_base8<F: Field>(out: *F) {
+    let zero: F = 0;
+    let one: F = 1;
+    let two: F = 2;
+    let three: F = 3;
+    let four: F = 4;
+    let half: F = one / two;       // inv(2) over the runtime prime
+    out[0] = zero - two;           // -2
+    out[1] = one;                  //  1
+    out[2] = two;                  //  2
+    out[3] = half;                 //  1/2
+    out[4] = three;                //  3
+    out[5] = zero - half;          // -1/2
+    out[6] = zero - three;         // -3
+    out[7] = zero - four;          // -4
+}
+
+// base -> matrix: v[i] = base[i] + 1 (the all-ones diagonal contribution).
+fn mds_base_to_matrix<F: Field>(base: *F, v: *F, t: i32) {
+    let one: F = 1;
+    for i in 0..t {
+        v[i] = base[i] + one;
+    }
+}
+
+// matrix -> base: base[i] = v[i] - 1 (invert the all-ones contribution).
+fn mds_matrix_to_base<F: Field>(v: *F, base: *F, t: i32) {
+    let one: F = 1;
+    for i in 0..t {
+        base[i] = v[i] - one;
+    }
+}
+
+instantiate mds_canonical_base8<dyn>;
+instantiate mds_base_to_matrix<dyn>;
+instantiate mds_matrix_to_base<dyn>;
+
+// Select an MDS-valid BASE diagonal for the live permutation over prime pp,
+// into out[0..t). Returns 0 (canonical tuple valid, used verbatim) or the number
+// of grain-sampled candidates tried (>0). n = bit_length(p); t = width (8 here).
+#[export]
+fn poseidon2_diag_checked(f: Field, pp: i64, n: i32, t: i32, out: *i64) -> i32 {
+    // 1. canonical base over this prime
+    mds_canonical_base8_dyn(f, out);
+    // 2. base -> matrix form for the check
+    let v: *i64 = alloc(t);
+    mds_base_to_matrix_dyn(f, out, v, t);
+    // 3. let the algebra decide
+    if mds_check_diag_dyn(f, pp, v, t) == 1 {
+        free(v);
+        return 0;   // canonical tuple is MDS over pp (no name was consulted)
+    }
+    // 4. repair: grain-sample a fresh MDS-valid matrix diagonal
+    let gstate: *i64 = alloc(80);
+    grain_init(gstate, n, t, 8, 22);
+    let n_consts: i32 = 8 * t + 22;          // rf*t external + rp internal
+    for i in 0..n_consts {
+        grain_random_field_elem(f, gstate, n);
+    }
+    let vg: *i64 = alloc(t);
+    let tries: i32 = mds_generate_diag(f, pp, n, t, gstate, vg);
+    // 5. matrix -> base for the permutation
+    mds_matrix_to_base_dyn(f, vg, out, t);
+    free(v); free(gstate); free(vg);
+    return tries;
+}
+
+// Width-generic diagonal generator over prime pp: straight to grain-sample-and-
+// validate (no canonical tuple at t != 8). Writes the BASE diagonal into
+// out[0..t); returns candidates tried (>=1). rf = R_F, rp = R_P (22 for
+// Goldilocks t=8, 13 for BabyBear t=16); stream advanced past rf*t + rp draws.
+#[export]
+fn poseidon2_diag_generate_w(f: Field, pp: i64, n: i32, t: i32,
+    rf: i32, rp: i32, out: *i64) -> i32 {
+    let gstate: *i64 = alloc(80);
+    grain_init(gstate, n, t, rf, rp);
+    let n_consts: i32 = rf * t + rp;
+    for i in 0..n_consts {
+        grain_random_field_elem(f, gstate, n);
+    }
+    let vg: *i64 = alloc(t);
+    let tries: i32 = mds_generate_diag(f, pp, n, t, gstate, vg);
+    // matrix -> base for the permutation
+    mds_matrix_to_base_dyn(f, vg, out, t);
+    free(gstate); free(vg);
+    return tries;
+}

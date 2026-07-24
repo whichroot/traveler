@@ -1,0 +1,301 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_turning_census.tv — Level 3 census: signed turning profiles on real
+// MNIST; targets the Level-2 negative (3-vs-5) and reports the new bottleneck.
+// @internal-design: features (the ladder, Level 3)
+//
+// Instrument H (turning): per-vertex integer turn (sign of cross product, no
+// trig); signed PROFILE = half-asymmetry + 4 quartile signed sums; field-reduced
+// turning total (signed_reduce). Instrument P (persistence): nseg(d) spectrum d=0..4.
+//
+// Field-agreement (Goldilocks vs BabyBear) checked on a sample.
+//
+// Three-file link: regime_fri.o + turning.o + mnist_turning_census.o
+// Usage: ./mnist_turning_census <data_directory>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn signed_reduce(data: *i64, n: i32, f: Field) -> i64;
+
+fn wr(fd: i32, s: *u8) { let len: usize = strlen(s); write(fd, s, len); }
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+fn wr_pad(fd: i32, n: i64, w: i32) {
+    var tmp: i64 = n; if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = w - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216 + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256 + (buf[off + 3] as i32);
+}
+
+fn is_ink(img: *u8, x: i32, y: i32, thr: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x > 27 { return 0; }
+    if y > 27 { return 0; }
+    if (img[y * 28 + x] as i32) > thr { return 1; }
+    return 0;
+}
+fn trace_contour(img: *u8, thr: i32, cx: *i64, cy: *i64, max_len: i32) -> i32 {
+    var dx: [i32; 8] = 0;
+    var dy: [i32; 8] = 0;
+    dx[0]=1;  dy[0]=0;
+    dx[1]=1;  dy[1]=1;
+    dx[2]=0;  dy[2]=1;
+    dx[3]=0-1; dy[3]=1;
+    dx[4]=0-1; dy[4]=0;
+    dx[5]=0-1; dy[5]=0-1;
+    dx[6]=0;  dy[6]=0-1;
+    dx[7]=1;  dy[7]=0-1;
+    var sx: i32 = 0-1;
+    var sy: i32 = 0-1;
+    var yy: i32 = 0;
+    while yy < 28 {
+        var xx: i32 = 0;
+        while xx < 28 {
+            if is_ink(img, xx, yy, thr) == 1 { sx = xx; sy = yy; xx = 28; yy = 28; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    if sx < 0 { return 0; }
+    cx[0] = sx as i64; cy[0] = sy as i64;
+    var clen: i32 = 1;
+    var curx: i32 = sx;
+    var cury: i32 = sy;
+    var b: i32 = 4;
+    var steps: i32 = 0;
+    while steps < max_len {
+        var found: i32 = 0 - 1;
+        var k: i32 = 0;
+        while k < 8 {
+            let dd: i32 = (b + 1 + k) % 8;
+            let nx: i32 = curx + dx[dd];
+            let ny: i32 = cury + dy[dd];
+            if is_ink(img, nx, ny, thr) == 1 { found = dd; k = 8; }
+            k = k + 1;
+        }
+        if found < 0 { return clen; }
+        let nxp: i32 = curx + dx[found];
+        let nyp: i32 = cury + dy[found];
+        if nxp == sx { if nyp == sy { return clen; } }
+        if clen < max_len {
+            cx[clen] = nxp as i64; cy[clen] = nyp as i64; clen = clen + 1;
+        } else { return clen; }
+        curx = nxp; cury = nyp;
+        b = (found + 4) % 8;
+        steps = steps + 1;
+    }
+    return clen;
+}
+
+fn sign_i64(v: i64) -> i64 {
+    if v > 0 { return 1; }
+    if v < 0 { return 0 - 1; }
+    return 0;
+}
+fn turn_seq(cx: *i64, cy: *i64, n: i32, t: *i64) {
+    var i: i32 = 0;
+    while i < n {
+        let pi: i32 = (i + n - 1) % n;
+        let ni: i32 = (i + 1) % n;
+        let ax: i64 = cx[i] - cx[pi];
+        let ay: i64 = cy[i] - cy[pi];
+        let bx: i64 = cx[ni] - cx[i];
+        let by: i64 = cy[ni] - cy[i];
+        let cross: i64 = ax * by - ay * bx;
+        t[i] = sign_i64(cross);
+        i = i + 1;
+    }
+}
+fn ssum(t: *i64, a: i32, b: i32) -> i64 {
+    var s: i64 = 0;
+    var i: i32 = a;
+    while i < b { s = s + t[i]; i = i + 1; }
+    return s;
+}
+
+// 6 turning features into sig: [asym, q1,q2,q3,q4, winding]. Returns narcs/len.
+fn signature(
+    f: Field, img: *u8, thr: i32,
+    cx: *i64, cy: *i64, t: *i64, cert: *i64, work: *i64, sig: *i64
+) -> i32 {
+    let n: i32 = trace_contour(img, thr, cx, cy, 400);
+    if n < 8 { return 0; }
+    turn_seq(cx, cy, n, t);
+    let h: i32 = n / 2;
+    sig[0] = ssum(t, 0, h) - ssum(t, h, n);   // asym
+    let q: i32 = n / 4;
+    sig[1] = ssum(t, 0, q);
+    sig[2] = ssum(t, q, 2 * q);
+    sig[3] = ssum(t, 2 * q, 3 * q);
+    sig[4] = ssum(t, 3 * q, n);
+    sig[5] = signed_reduce(t, n, f);           // field-reduced winding
+    return n;
+}
+
+fn l1_dist(mean: *i64, a: i32, b: i32) -> i64 {
+    var dist: i64 = 0;
+    var j: i32 = 0;
+    while j < 6 {
+        let d: i64 = mean[a * 6 + j] - mean[b * 6 + j];
+        if d < 0 { dist = dist - d; } else { dist = dist + d; }
+        j = j + 1;
+    }
+    return dist;
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 { wr(2, "usage: mnist_turning_census <data_dir>\n"); exit(1); }
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    wr(2, "Loading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+
+    var n_proc: i32 = 2000;
+    let n_test: i32 = read_be_i32(test_img, 4);
+    if n_proc > n_test { n_proc = n_test; }
+    wr(2, "Holonomy signed-profile signatures on "); wr_int(2, n_proc as i64);
+    wr(2, " images...\n");
+
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let thr: i32 = 64;
+
+    var counts: [i64; 10] = 0;
+    var sums: [i64; 60] = 0;     // 10 classes x 6 features (signed)
+    var field_ok: i32 = 1;
+
+    let cap: i32 = 400;
+    let cx: *i64 = alloc(cap);
+    let cy: *i64 = alloc(cap);
+    let t: *i64 = alloc(cap);
+    let cert: *i64 = alloc(cap * 3);
+    let work: *i64 = alloc(cap);
+    let sig: *i64 = alloc(6);
+    let sig_b: *i64 = alloc(6);
+
+    var i: i32 = 0;
+    while i < n_proc {
+        let label: i32 = test_lbl[8 + i] as i32;
+        let img: *u8 = &test_img[16 + i * 784];
+        let m: i32 = signature(gold, img, thr, cx, cy, t, cert, work, sig);
+        if m > 0 {
+            counts[label] = counts[label] + 1;
+            var j: i32 = 0;
+            while j < 6 { sums[label * 6 + j] = sums[label * 6 + j] + sig[j]; j = j + 1; }
+            if (i % 200) == 0 {
+                signature(baby, img, thr, cx, cy, t, cert, work, sig_b);
+                var k: i32 = 0;
+                while k < 6 { if sig[k] != sig_b[k] { field_ok = 0; } k = k + 1; }
+            }
+        }
+        if (i + 1) % 500 == 0 { wr(2, "  "); wr_int(2, (i + 1) as i64); wr(2, " / "); wr_int(2, n_proc as i64); wr(2, "\n"); }
+        i = i + 1;
+    }
+
+    // mean signature (x100) per class (signed)
+    let mean: *i64 = alloc(60);
+    var cls: i32 = 0;
+    while cls < 10 {
+        var j: i32 = 0;
+        while j < 6 {
+            if counts[cls] > 0 { mean[cls * 6 + j] = (sums[cls * 6 + j] * 100) / counts[cls]; }
+            else { mean[cls * 6 + j] = 0; }
+            j = j + 1;
+        }
+        cls = cls + 1;
+    }
+
+    // ---- report ----
+    wr(1, "=== MNIST Level-3 Holonomy Signature (signed profile, mean x100) ===\n");
+    wr(1, "fields: Goldilocks/BabyBear   field-agreement: ");
+    if field_ok == 1 { wr(1, "OK\n"); } else { wr(1, "BROKEN\n"); }
+    wr(1, "cls    n  | asym  | q1   q2   q3   q4  | wind\n");
+    cls = 0;
+    while cls < 10 {
+        wr(1, "  "); wr_int(1, cls as i64);
+        wr_pad(1, counts[cls], 6); wr(1, " |");
+        wr_pad(1, mean[cls * 6 + 0], 6); wr(1, " |");
+        wr_pad(1, mean[cls * 6 + 1], 5); wr_pad(1, mean[cls * 6 + 2], 5);
+        wr_pad(1, mean[cls * 6 + 3], 5); wr_pad(1, mean[cls * 6 + 4], 5); wr(1, " |");
+        wr_pad(1, mean[cls * 6 + 5], 5);
+        wr(1, "\n");
+        cls = cls + 1;
+    }
+
+    // ---- the verdict: did Level 3 crack the Level-2 negative (3 vs 5)? ----
+    wr(1, "\n--- the Level-2 NEGATIVE (3 vs 5) under Level-3 turning ---\n");
+    wr(1, "digit 3 vs 5: turning L1="); wr_int(1, l1_dist(mean, 3, 5)); wr(1, " (x100)\n");
+    // 3's nearest neighbor now
+    var m3: i64 = 1000000000;
+    var m3b: i32 = 0;
+    var x: i32 = 0;
+    while x < 10 {
+        if x != 3 {
+            let dd: i64 = l1_dist(mean, 3, x);
+            if dd < m3 { m3 = dd; m3b = x; }
+        }
+        x = x + 1;
+    }
+    wr(1, "digit 3 nearest neighbor: "); wr_int(1, m3b as i64); wr(1, " (L1="); wr_int(1, m3); wr(1, ")\n");
+
+    // ---- the NEW negative: least-separated pair under holonomy ----
+    var min_dist: i64 = 1000000000;
+    var min_a: i32 = 0;
+    var min_b: i32 = 0;
+    var a: i32 = 0;
+    while a < 10 {
+        var bdig: i32 = a + 1;
+        while bdig < 10 {
+            let dist: i64 = l1_dist(mean, a, bdig);
+            if dist < min_dist { min_dist = dist; min_a = a; min_b = bdig; }
+            bdig = bdig + 1;
+        }
+        a = a + 1;
+    }
+    wr(1, "\nLEAST-SEPARATED PAIR (turning, the Level-3 negative): ");
+    wr_int(1, min_a as i64); wr(1, " vs "); wr_int(1, min_b as i64);
+    wr(1, "  L1="); wr_int(1, min_dist); wr(1, " (x100)\n");
+    wr(1, "the honest ceiling: the residual pair turning cannot separate.\n");
+
+    free(test_img); free(test_lbl);
+    free(cx); free(cy); free(t); free(cert); free(work); free(sig); free(sig_b); free(mean);
+    return 0;
+}

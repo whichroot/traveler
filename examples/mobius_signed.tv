@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_signed.tv — Mobius W-B P4: the signed (q=2) exhaustive over F_3 — impose
+// a_{4n}=0 + a_{2n}=-a_n directly, verify four properties on all 182 solutions.
+// @internal-design: nt; @internal-note: plan-mobius-inclusion B3.
+
+import "../src/lib/nt/linalg.tv";     // la_nullspace
+import "../src/lib/nt/linrec.tv";     // bm
+
+type F3 = Field<3>;
+
+// minpoly(a) in F_3[x^2]?  a has complexity <= L; bm on 2L+2 terms -> conn poly
+// Cm (deg Lm); m[e]=Cm[Lm-e]; every nonzero exponent of m must be even.
+fn coset_even(a: *F3, nterms: i32) -> i32 {
+    let C: *F3 = alloc(nterms + 1);
+    let Lm: i32 = bm(a, nterms, C, 1);            // |F_3| - 2 = 1
+    var ok: i32 = 1;
+    var i: i32 = 0;
+    while i <= Lm {
+        if C[i] != (0 as F3) {                     // C[i] != 0
+            let e: i32 = Lm - i;
+            if (e % 2) != 0 { ok = 0; }
+        }
+        i = i + 1;
+    }
+    free(C);
+    return ok;
+}
+
+fn main() {
+    let NGEN: i32 = 16 * 7 + 8;
+    let WIN: i32 = 8 * 7;                          // impose relations for indices < WIN
+    var instances: i32 = 0;
+    var sign_viol: i32 = 0;
+    var vanish_viol: i32 = 0;
+    var coset_viol: i32 = 0;
+    var dzero: i32 = 0;
+
+    var L: i32 = 1;
+    while L <= 7 {
+        let B: *F3 = alloc(NGEN * L);
+        let a: *F3 = alloc(NGEN);
+        let D: *F3 = alloc(NGEN / 2);            // decimation D_n = a_{2n} + a_n
+        // rows: a_{4n}=0 for 4n<WIN ; a_{2m}+a_m=0 for m odd, 2m<WIN
+        let maxrows: i32 = WIN;                    // generous upper bound
+        let M: *F3 = alloc(maxrows * L);
+        let ns: *F3 = alloc(L * L);
+
+        // enumerate connection polys: c_0=1, c_L in {1,2}, c_1..c_{L-1} in F_3
+        var cLv: i32 = 1;
+        while cLv <= 2 {
+            let inner: i32 = ipow3(L - 1);
+            var mask: i32 = 0;
+            while mask < inner {
+                // build B[n][j]
+                var n: i32 = 0;
+                while n < NGEN {
+                    var j: i32 = 0;
+                    while j < L { B[n * L + j] = 0 as F3; j = j + 1; }
+                    if n < L {
+                        B[n * L + n] = 1 as F3;
+                    } else {
+                        // a_n = -(sum_{i=1}^L c_i a_{n-i})
+                        var i: i32 = 1;
+                        while i <= L {
+                            let ci: i32 = coeff3(mask, i, L, cLv);
+                            if ci != 0 {
+                                let cf: F3 = ci as F3;
+                                var jj: i32 = 0;
+                                while jj < L {
+                                    B[n * L + jj] = B[n * L + jj] - cf * B[(n - i) * L + jj];
+                                    jj = jj + 1;
+                                }
+                            }
+                            i = i + 1;
+                        }
+                    }
+                    n = n + 1;
+                }
+
+                // build constraint rows
+                var row: i32 = 0;
+                // square-vanishing a_{4n}=0
+                var vn: i32 = 0;
+                while 4 * vn < WIN {
+                    let idx: i32 = 4 * vn;
+                    var c: i32 = 0;
+                    while c < L { M[row * L + c] = B[idx * L + c]; c = c + 1; }
+                    row = row + 1;
+                    vn = vn + 1;
+                }
+                // sign a_{2m}+a_m=0, m odd
+                var m: i32 = 1;
+                while 2 * m < WIN {
+                    var c2: i32 = 0;
+                    while c2 < L { M[row * L + c2] = B[(2 * m) * L + c2] + B[m * L + c2]; c2 = c2 + 1; }
+                    row = row + 1;
+                    m = m + 2;
+                }
+
+                let dim: i32 = la_nullspace(M, row, L, 1, ns);
+                // enumerate 3^dim - 1 nonzero vectors
+                let combos: i32 = ipow3(dim);
+                var combo: i32 = 1;
+                while combo < combos {
+                    // v[j] = sum_jb digit(combo,jb) * ns[jb][j]  (F_3)
+                    var n2: i32 = 0;
+                    while n2 < NGEN {
+                        var acc: F3 = 0 as F3;
+                        var jb: i32 = 0;
+                        while jb < dim {
+                            let dg: i32 = (combo / ipow3(jb)) % 3;
+                            if dg != 0 {
+                                let df: F3 = dg as F3;
+                                var jc: i32 = 0;
+                                while jc < L {
+                                    acc = acc + df * (ns[jb * L + jc] * B[n2 * L + jc]);
+                                    jc = jc + 1;
+                                }
+                            }
+                            jb = jb + 1;
+                        }
+                        a[n2] = acc;
+                        n2 = n2 + 1;
+                    }
+                    instances = instances + 1;
+                    // (1) sign relation for all odd m, 2m<NGEN
+                    var sv: i32 = 0;
+                    var mm: i32 = 1;
+                    while 2 * mm < NGEN {
+                        if a[2 * mm] + a[mm] != (0 as F3) { sv = 1; }
+                        mm = mm + 2;
+                    }
+                    if sv == 1 { sign_viol = sign_viol + 1; }
+                    // (2) square-vanishing for all n, 4n<NGEN
+                    var vv: i32 = 0;
+                    var nn: i32 = 0;
+                    while 4 * nn < NGEN {
+                        if a[4 * nn] != (0 as F3) { vv = 1; }
+                        nn = nn + 1;
+                    }
+                    if vv == 1 { vanish_viol = vanish_viol + 1; }
+                    // (3) coset structure of the DECIMATION D_n = a_{2n}+a_n:
+                    //     minpoly(D) in F_3[x^2] (full U_2-coset support).
+                    var dm: i32 = 0;
+                    while dm < NGEN / 2 { D[dm] = a[2 * dm] + a[dm]; dm = dm + 1; }
+                    if coset_even(D, 4 * L + 4) == 0 { coset_viol = coset_viol + 1; }
+                    // (4) D != 0 : a nontrivial (equivalent, given Z+S)
+                    var anz: i32 = 0;
+                    var t: i32 = 0;
+                    while t < NGEN { if a[t] != (0 as F3) { anz = 1; } t = t + 1; }
+                    if anz == 0 { dzero = dzero + 1; }
+                    combo = combo + 1;
+                }
+
+                mask = mask + 1;
+            }
+            cLv = cLv + 1;
+        }
+        free(B); free(a); free(D); free(M); free(ns);
+        L = L + 1;
+    }
+
+    print(instances);      // reference 182 (or 2x, up-to-scalar)
+    print(instances / 2);  // up-to-scalar
+    print(sign_viol);      // 0
+    print(vanish_viol);    // 0
+    print(coset_viol);     // 0
+    print(dzero);          // 0
+}
+
+// 3^e
+fn ipow3(e: i32) -> i32 {
+    var r: i32 = 1;
+    var i: i32 = 0;
+    while i < e { r = r * 3; i = i + 1; }
+    return r;
+}
+
+// connection-poly coefficient c_i for i in [1,L]: c_L = cLv; c_1..c_{L-1} are the
+// base-3 digits of mask (digit i-1). (c_0 = 1 handled by the recurrence.)
+fn coeff3(mask: i32, i: i32, L: i32, cLv: i32) -> i32 {
+    if i == L { return cLv; }
+    return (mask / ipow3(i - 1)) % 3;
+}

@@ -1,0 +1,55 @@
+// pfor_race_key_collision.tv — HOLE 8: term serialization key collision
+//
+// The affine-term serializer emits binary nodes as "(" lhs "b"<opnum> rhs ")"
+// with NO delimiter between the op number and the rhs.  With OP_SUB=1 and
+// OP_BITAND=16:
+//
+//   c * (a - 63)   serializes to   (cb2(ab163))     [b1 + "63"]
+//   c * (a & 3)    serializes to   (cb2(ab163))     [b16 + "3"]
+//
+// Same key, different values (a=64, c=1: term1 = 1, term2 = 0).
+//
+// Term keys drive affine_eq, which drives own-cell read matching: the
+// read out[i + c*(a&3)] (= out[i]) falsely matches the write form
+// out[i + c*(a-63)] (= out[i+1]) as "own cell", so the loop is admitted
+// for parallel dispatch.  But the loop is a PREFIX SUM:
+//
+//   out[i+1] = out[i] + inp[i]
+//
+// inherently sequential.  Parallel chunk leaders read cells the previous
+// chunk hasn't written: serial out[n] = n, parallel out[n] << n.
+//
+// The collision only requires identifiers containing digits — ordinary
+// vibecoded variable names, no adversarial construction needed.
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.  Expected output: 50000.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let inp: *F = alloc(n);
+    let out: *F = alloc(n + 1);
+    let a: i32 = 64;
+    let c: i32 = 1;
+
+    let mut w: i32 = 0;
+    while w < n {
+        inp[w] = 1;
+        w = w + 1;
+    }
+    w = 0;
+    while w < n + 1 {
+        out[w] = 0;
+        w = w + 1;
+    }
+
+    // RACE: write index i + c*(a-63) = i+1, read index i + c*(a&3) = i.
+    // Colliding term keys make the read look like an own-cell access.
+    for i in 0..n {
+        out[i + c * (a - 63)] = out[i + c * (a & 3)] + inp[i];
+    }
+
+    print(out[n]);
+    return 0;
+}

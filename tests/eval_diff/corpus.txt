@@ -1,0 +1,109 @@
+# eval_diff corpus — programs the E1 evaluator COVERS, asserted equal to the
+# compiled binary (stdout byte-exact + exit status) by run.sh. A refusal on
+# any entry is a coverage REGRESSION (the corpus is curated to covered
+# programs; uncovered programs refuse and are not listed here).
+#
+# Feature spread, one line each:
+examples/field_basics.tv        # the seed: field + - * /, inverse, print
+examples/two_fields.tv          # two prime fields side by side
+examples/short_circuit.tv       # && / || lazy RHS semantics
+examples/bitwise_ops.tv         # int ops: & | ^ << >> masks/widths
+examples/assign_widen.tv        # implicit conversion semantics
+examples/compare_let.tv         # comparisons + bindings
+examples/pointer_index.tv       # ptr memory: alloc/index/store
+examples/alloc_ptr_table.tv     # **i64 multi-level pointers (the #19 shape)
+examples/extern_fn.tv           # host-extern whitelist (write/puts/...)
+examples/builtin_shadow.tv      # builtin-vs-user-fn precedence
+examples/syntax_var.tv          # var == let mut equivalence twin
+examples/syntax_shadow.tv       # shadowing (the slot model)
+examples/syntax_print.tv        # print de-reserved as identifier
+examples/str_compare.tv         # string literals + user fns
+examples/pfor_purity_test.tv    # pfor third oracle: eval-serial == compiled
+examples/algebraic_loops.tv     # field loops (dispatch-eligible)
+examples/weil_zeta_line.tv      # real workload: zeta over the line
+examples/mobius_extremal.tv     # real workload: number theory search
+examples/wideint_selftest.tv    # u64 limb library (no wide types)
+# ---- E2a: address-of + argv-main + stdio-buffering law ----
+examples/addr_scalar.tv         # &scalar/&global cells; print-vs-write interleave
+examples/barrett_test.tv        # 64-bit prime mul + the stdio law (the E2a finding)
+examples/wanderer_field_gates.tv # Wanderer gates: literal-coercion + cast-reduce eval==compile
+examples/bool_branch.tv         # #34: stored-bool if/while cond + -> bool predicate (eval==compile)
+examples/weil_recover_rns.tv    # nt capstone: BM-over-RNS, &arr[i] throughout
+examples/file_reader.tv | examples/field_basics.tv   # argv-main + read_bytes + &buf[i]
+# ---- E2b: structs (pointer-backed aggregates, LLVM-datalayout offsets) ----
+examples/struct_basics.tv       # literals, member access/assign, alias-let
+examples/pointer_basics.tv      # *Struct heap, p.member, member-assign
+examples/string_test.tv         # Str collection (non-generic struct + realloc)
+examples/mini_lexer.tv          # struct token stream end-to-end
+examples/const_generic.tv       # const-generic arrays + member writes
+examples/syntax_compound.tv     # += family on members/indexes
+examples/segment_test.tv        # segment structs (regime shapes, no Register)
+examples/observe_onset.tv       # observe O0 workload over structs
+examples/generic_struct.tv      # generic struct INSTANCES (concrete fns)
+examples/trait_impl.tv          # explicit trait-mangled method calls
+examples/tvc_lexer.tv | examples/field_basics.tv     # the self-hosting lexer, token-for-token
+# ---- E2c: enums + match + the ? operator (unwind channel) ----
+examples/enum_basics.tv         # tagged unions: construct + match + payloads
+examples/int_match.tv           # integer switch semantics (masked keys)
+examples/match_nested_scalar.tv # the #31 twin: nested match, scalar payloads
+examples/enum_match_nested.tv   # the #31 gate: aggregate payloads > 8 bytes
+examples/edge_cases.tv          # mixed enum/int match edges
+examples/generic_enum.tv        # Option<T>/instances via resolve_enum_type
+examples/result_basics.tv       # Result construct + match consumption
+examples/qmark_basics.tv        # ? in let/arg/chain positions, Err propagation
+examples/fs_basics.tv           # the one-?-pipeline flagship (fopen membrane)
+# ---- E2d: generics + traits + operator overloading ----
+examples/generic_multi.tv       # multi-param <A,B> inference + monos
+examples/generic_kernel.tv      # generic forward_sum kernel over Field<p>
+examples/poly_core_generic_test.tv  # the four-operation kernel, carrier-generic
+examples/generic_export.tv      # instantiate-explicit monos
+examples/vec_test.tv            # Vec<T> incl. Vec<Pt> aggregate elem stores
+examples/import_vec_test.tv     # collections through the import system
+examples/hashmap_test.tv        # HashMap<K,V> (&k byte hashing, casts)
+examples/trait_dispatch.tv      # type-directed method resolution (pt.area())
+examples/operator_overload.tv   # + - * == desugar to Add/Sub/Mul/Eq impls
+examples/import_test.tv         # Model-A import merge under eval
+examples/nt_radical.tv          # nt polyfield consumer (pf_radical)
+# ---- E2e: closures (statically-identified, env prepended as arg 0) ----
+examples/closure_basics.tv      # literal/capture/HOF-through-generic/block body
+examples/closure_eval.tv        # capture kinds: field/u8/u16/bool/closure/GLOBAL
+# ---- E2f: dyn fields (field() carrier, alg=-2 ops, carrier-at-arg-0) ----
+examples/dynfield_eval.tv       # the matrix: 3 primes, cast/let reduce, signed, cmp
+examples/dyn_nested_test.tv     # nested dyn->dyn implicit carrier + carrier members
+examples/dyn_mul_boundary_test.tv # narrow-urem vs wide-Barrett boundary corners
+examples/dyn_ntt_test.tv        # __ntt_root blob loads (the @__ntt_init mirror)
+examples/dyn_fri_test.tv        # flagship: NTT/Poseidon2/Merkle/FRI over field(p)
+# ---- E2g: binary fields (XOR add, carryless mul, Fermat inv 2^K-2) ----
+examples/binfield_basics.tv     # legacy GF(2^8, 0x11B): the byte-frozen path
+examples/binfield_newton.tv     # Newton forms over GF(2^8)
+examples/binfield_wide_basics.tv # generic K=6/16/60: cast masks, Frobenius, i64 pow
+examples/aes_sbox.tv            # gf256 inverse over the whole byte range
+examples/nt_bm_carriers.tv      # carrier-generic BM: Field<p> AND BinField<8>
+examples/mobius_local.tv        # the W-B exhibit: BinField<6>/<20> theorem values
+# ---- E2h: the four-operations surface (Poly/Register/regime + NTT roots) ----
+examples/register_basics.tv     # register() + advance(): the forward-sum machine
+examples/regime_basics.tv       # regime boundary via register/prediction residuals
+examples/repr_tracking.tv       # Newton/standard auto-conversion (guards the #35 fix)
+examples/repr_tracking_65521.tv # same over a 16-bit field (elem-width coverage)
+examples/method_basics.tv       # reg.advance() method desugar (&reg peel)
+examples/dyn_register_test.tv   # fat dyn registers: explicit carrier + regime over field(p)
+examples/ntt_test.tv            # baked __ntt_root tables (g_ntt_* reads)
+examples/ntt_roots_test.tv      # root-chain identities over the baked tables
+tests/pfor/pfor_ok_private_var.tv # #43 workitem-private mutable: eval (serial) == compiled (dispatched)
+examples/global_const_init.tv  # #52: const-resolved global initializers (ident/neg/fold)
+tests/pfor/pfor_global_capture.tv # #53: global-array/scalar pfor captures: eval (serial) == compiled (dispatched)
+examples/perfect_square.tv      # nt/sqrt.tv gate: isqrt + Tonelli-Shanks, three-witness (also Python oracle)
+examples/nn_kit_gate.tv
+examples/for_i64_bounds.tv     # #54: bound width adoption — i64/usize/u32 bounds, eval (serial) == compiled (i64-ABI dispatched)
+examples/i64min_print.tv       # #55: exact-2^63 literal + INT64_MIN print (writer negate-overflow fix)
+# ---- E2i: wide ints (i128/i256 boxes) + field_wide (multi-limb carrier) ----
+examples/wide_i128_add.tv       # i128/u128: add/sub/mul/shift-across-64/cmp/bitwise
+examples/wide_i256_add.tv       # i256/u256: the 256-bit lane (shift past 128)
+examples/wide_literal.tv        # >2^64 literals: hex==dec, 2^64, max-u128, BN254 Fr words
+examples/wide_print.tv          # full-width decimal print (the double-dabble mirror)
+examples/wide_field_test.tv     # field_wide ABI: BN254 Fr add/sub/mul/inv/div round-trips
+examples/wide_ntt_test.tv       # NTT over the wide carrier
+examples/wide_merkle_test.tv    # Merkle over the wide carrier
+examples/wide_poseidon2_test.tv # Poseidon2 over the wide carrier
+examples/wide_fri_test.tv       # FRI over the wide carrier
+examples/mobius_cutoff.tv       # the Remark-3.4 machine check: native i128/i256 endpoints

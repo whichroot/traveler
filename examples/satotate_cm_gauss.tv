@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// satotate_cm_gauss.tv — Sato-Tate, the VIA-NEGATIVA edge: y^2 = x^3 + x has CM
+// by Z[i], so a_p/sqrt(p) follows the CM measure, NOT the semicircle.
+// @internal-design: examples (satotate_cm_gauss).
+//
+// THE EXACT CERTIFICATE: a_p == 0  <=>  p ≡ 3 (mod 4). `mismatch` counts good
+// primes where (a_p==0) disagrees with (p%4==3) and MUST print 0.
+//
+// Curve: y^2 = x^3 + x; disc = -16*(4*1^3 + 27*0^2) = -64, so the ONLY bad prime
+// is 2. We observe good (odd) primes p in [3, 3000).
+//
+// Output, in order:
+//   M, nm2, nm4, nm6, n_neg, n_zero, n_pos, n_cong, mismatch, hmag[0..7].
+// Contrast with satotate_horizontal (non-CM): there n_zero ~ 0 and the even
+// moments approach the Catalan numbers (1e6, 2e6, 5e6); here n_zero ~ M/2,
+// nm2 still ~ 1e6 (the shared normalization), but nm4 ~ 3e6 and nm6 ~ 10e6.
+// @internal-oracle: satotate_cm_gauss (bit-for-bit).
+
+fn is_prime(n: i32) -> i32 {
+    if n < 2 { return 0; }
+    var d: i32 = 2;
+    while d * d <= n {
+        if n % d == 0 { return 0; }
+        d = d + 1;
+    }
+    return 1;
+}
+
+fn build_qr(p: i32, sq: *i32) {
+    var i: i32 = 0;
+    while i < p { sq[i] = 0; i = i + 1; }
+    var y: i32 = 0;
+    while y < p { sq[(y * y) % p] = 1; y = y + 1; }
+}
+
+// a_p for the fixed CM curve y^2 = x^3 + x:  a_p = -sum_x chi(x^3 + x).
+fn ap_curve(p: i32, sq: *i32) -> i32 {
+    var s: i32 = 0;
+    var x: i32 = 0;
+    while x < p {
+        let x3: i32 = (((x * x) % p) * x) % p;
+        let fx: i32 = (((x3 + x) % p) + p) % p;
+        if fx != 0 {
+            if sq[fx] == 1 { s = s + 1; }
+            else { s = s - 1; }
+        }
+        x = x + 1;
+    }
+    return -s;
+}
+
+fn rnd_div(num: i64, den: i64) -> i64 {
+    return (num + den / 2) / den;
+}
+
+fn main() -> i32 {
+    let nlimit: i32 = 3000;
+    let nb: i32 = 8;
+    let s: i64 = 1000000;                 // declared leaves-field scale
+
+    let hmag: *i32 = alloc(nb);
+    var i: i32 = 0;
+    while i < nb { hmag[i] = 0; i = i + 1; }
+
+    var M: i64 = 0;
+    var sc1: i64 = 0;
+    var sc2: i64 = 0;
+    var sc3: i64 = 0;
+    var n_neg: i64 = 0;
+    var n_zero: i64 = 0;               // supersingular count (a_p == 0)
+    var n_pos: i64 = 0;
+    var n_cong: i64 = 0;               // count of primes with p % 4 == 3
+    var mismatch: i64 = 0;             // (a_p==0) != (p%4==3); MUST stay 0
+
+    var p: i32 = 3;                    // only bad prime is 2 (disc = -64)
+    while p < nlimit {
+        var good: i32 = 0;
+        if is_prime(p) == 1 { good = 1; }
+        if good == 1 {
+            let sq: *i32 = alloc(p);
+            build_qr(p, sq);
+            let ap: i32 = ap_curve(p, sq);
+            free(sq);
+
+            M = M + 1;
+            if ap < 0 { n_neg = n_neg + 1; }
+            if ap == 0 { n_zero = n_zero + 1; }
+            if ap > 0 { n_pos = n_pos + 1; }
+
+            // Supersingular congruence certificate (CM by Z[i]):
+            // a_p == 0  <=>  p ≡ 3 (mod 4). Exact, in-field, i64-checkable.
+            var is_ss: i32 = 0;
+            if ap == 0 { is_ss = 1; }
+            var is_cong: i32 = 0;
+            if p % 4 == 3 { is_cong = 1; }
+            if is_cong == 1 { n_cong = n_cong + 1; }
+            if is_ss != is_cong { mismatch = mismatch + 1; }
+
+            let pl: i64 = p as i64;
+            let a2: i64 = (ap as i64) * (ap as i64);
+            let bin: i64 = ((nb as i64) * a2) / (4 * pl);    // floor, in [0, nb-1]
+            hmag[bin as i32] = hmag[bin as i32] + 1;
+
+            let a4: i64 = a2 * a2;
+            let a6: i64 = a4 * a2;
+            let p2: i64 = pl * pl;
+            let p3: i64 = p2 * pl;
+            sc1 = sc1 + rnd_div(s * a2, pl);
+            sc2 = sc2 + rnd_div(s * a4, p2);
+            sc3 = sc3 + rnd_div(s * a6, p3);
+        }
+        p = p + 1;
+    }
+
+    let nm2: i64 = rnd_div(sc1, M);
+    let nm4: i64 = rnd_div(sc2, M);
+    let nm6: i64 = rnd_div(sc3, M);
+
+    print(M);
+    print(nm2); print(nm4); print(nm6);
+    print(n_neg); print(n_zero); print(n_pos);
+    print(n_cong); print(mismatch);
+    var k: i32 = 0;
+    while k < nb { print(hmag[k]); k = k + 1; }
+
+    free(hmag);
+    return 0;
+}

@@ -1,0 +1,517 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// piecewise_segment_a.tv — codec split module imported by piecewise_codec.tv:
+// continuation encoding + the DP-optimal and greedy segmenters.
+// @internal-design: codec
+
+// ===== Continuation encoding (Spec Section 11) =====
+
+// Does the register state predict the next n samples exactly? Returns count of
+// consecutive matches (0=none, n=full). Lossless: exact field equality.
+// reg = degree+1 entries from end of previous segment; n = max to check.
+fn check_continuation(reg: *i32, degree: i32, samples: *i32, n: i32,
+    f: Field) -> i32 {
+    // Work with a copy of the register so we don't corrupt the caller's state
+    let treg: *i32 = alloc(degree + 1);
+    var k: i32 = 0;
+    while k <= degree {
+        treg[k] = reg[k];
+        k = k + 1;
+    }
+
+    var matched: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        // Forward summation step: add top-down
+        k = 0;
+        while k < degree {
+            treg[k] = field_add(treg[k], treg[k + 1], f);
+            k = k + 1;
+        }
+        // Check exact match
+        if treg[0] != samples[i] {
+            free(treg);
+            return matched;
+        }
+        matched = matched + 1;
+        i = i + 1;
+    }
+
+    free(treg);
+    return matched;
+}
+
+// Advance register state by n forward-summation steps.
+// Modifies reg in place.
+fn advance_register(reg: *i32, degree: i32, n: i32,
+    f: Field) {
+    var i: i32 = 0;
+    while i < n {
+        var k: i32 = 0;
+        while k < degree {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// Build register state from a segment's headers and residuals: reg[0..degree]
+// ends as the state at segment END (ready for the next continuation check).
+fn build_register_state(headers: *i32, degree: i32,
+    residuals: *i32, n_res: i32,
+    seg_length: i32, reg: *i32,
+    f: Field) {
+    // Initialize register: headers + first residual
+    var k: i32 = 0;
+    while k < degree {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    if n_res > 0 {
+        reg[degree] = residuals[0];
+    } else {
+        reg[degree] = 0;
+    }
+
+    // Advance through the segment via forward summation
+    // (we need to reach the state at position seg_length)
+    var i: i32 = 1;
+    while i < seg_length {
+        k = 0;
+        while k < degree {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        // Feed next residual into deepest level
+        if i < n_res {
+            reg[degree] = residuals[i];
+        }
+        i = i + 1;
+    }
+}
+
+// Cost of a continuation block in bits: type(1) + length(2) = 3 bytes = 24 bits
+let CONT_COST_BITS: i64 = 24;
+
+// ===== DP-optimal segmenter =====
+
+// Globally optimal piecewise partition via DP. dp[j]=min bits for samples[0..j),
+// bt[j]=last-segment start, bo[j]=best order. Incremental forward differences
+// make each (i,j) extension O(MAX_ORDER); total O(n*MAX_SEGMENT*MAX_ORDER).
+// Returns number of segments. See @internal-design: codec.
+#[export]
+fn pc_segment_dp(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    // DP arrays
+    let dp: *i64 = alloc(n + 1);     // dp[j] = min cost for samples[0..j)
+    let bt: *i32 = alloc(n + 1);     // bt[j] = segment start index
+    let bo: *i32 = alloc(n + 1);     // bo[j] = best order
+
+    dp[0] = 0;
+    var j: i32 = 1;
+    while j <= n {
+        dp[j] = 9223372036854775807;
+        bt[j] = 0;
+        bo[j] = 1;
+        j = j + 1;
+    }
+
+    // Incremental registers per difference level:
+    // prev[k] = last value at level k (for extending)
+    // sum_abs[k] = running sum of |centered(diff_k)| (for Rice cost)
+    // count[k] = number of values at level k
+    let prev: *i32 = alloc(MAX_ORDER + 1);
+    let sum_abs: *i64 = alloc(MAX_ORDER + 1);
+    let count: *i32 = alloc(MAX_ORDER + 1);
+
+    // Forward pass: iterate by starting position i, extend outward
+    var i: i32 = 0;
+    while i < n {
+        // Initialize incremental state for starting position i
+        var k: i32 = 0;
+        while k <= MAX_ORDER {
+            prev[k] = 0;
+            sum_abs[k] = 0;
+            count[k] = 0;
+            k = k + 1;
+        }
+        prev[0] = samples[i];
+
+        // Extend from j = i+1 to min(i+MAX_SEGMENT, n)
+        var j_end: i32 = i + MAX_SEGMENT;
+        if j_end > n { j_end = n; }
+
+        j = i + 1;
+        while j <= j_end {
+            // Incremental forward difference: add sample[j-1] at each level
+            // new[0] = samples[j-1]  (already available)
+            // new[k] = field_sub(new[k-1], prev[k-1], f)
+            var new_val: i32 = samples[j - 1];
+
+            k = 1;
+            while k <= MAX_ORDER {
+                let diff: i32 = field_sub(new_val, prev[k - 1], f);
+                prev[k - 1] = new_val;  // update prev BEFORE overwriting new_val
+                new_val = diff;
+
+                // Update running statistics for this level
+                let c: i32 = center(diff, f);
+                var abs_c: i32 = c;
+                if abs_c < 0 { abs_c = 0 - abs_c; }
+                sum_abs[k] = sum_abs[k] + abs_c as i64;
+                count[k] = count[k] + 1;
+
+                k = k + 1;
+            }
+            // Update prev for last level processed
+            prev[MAX_ORDER] = new_val;
+
+            let seg_len: i32 = j - i;
+
+            // Only consider segments >= MIN_SEGMENT
+            if seg_len >= MIN_SEGMENT {
+                // Estimate cost for each order using running statistics
+                var order: i32 = 1;
+                while order <= MAX_ORDER {
+                    if count[order] < 1 {
+                        order = order + 1;
+                        continue;
+                    }
+
+                    // Rice cost estimate: mean |centered| -> optimal k
+                    let mean_abs: i64 = sum_abs[order] / count[order] as i64;
+                    var est_k: i32 = 0;
+                    var m: i64 = mean_abs;
+                    while m > 1 {
+                        m = m >> 1;
+                        est_k = est_k + 1;
+                    }
+
+                    // Estimated total bits = header + Rice coding
+                    // Rice bits per sample ≈ 1 + k + mean_abs / 2^k
+                    var rice_per: i64 = 1 + est_k as i64;
+                    if est_k < 20 {
+                        rice_per = rice_per + mean_abs / (1 << est_k) as i64;
+                    }
+                    let header_bits: i64 = (SEGMENT_OVERHEAD_BYTES + order * 4) as i64 * 8;
+                    let est_cost: i64 = header_bits + rice_per * count[order] as i64;
+
+                    let total: i64 = dp[i] + est_cost;
+                    if total < dp[j] {
+                        dp[j] = total;
+                        bt[j] = i;
+                        bo[j] = order;
+                    }
+                    order = order + 1;
+                }
+
+                // Also try literal
+                let lit_cost: i64 = dp[i] + literal_cost(seg_len, f);
+                if lit_cost < dp[j] {
+                    dp[j] = lit_cost;
+                    bt[j] = i;
+                    bo[j] = 0 - 1;
+                }
+            }
+
+            j = j + 1;
+        }
+        // Update prev[0] for the loop invariant (not strictly needed since we reinit)
+        i = i + 1;
+    }
+
+    // Handle tail
+    if dp[n] == 9223372036854775807 {
+        var last: i32 = n;
+        while last > 0 {
+            if dp[last] < 9223372036854775807 { break; }
+            last = last - 1;
+        }
+        if last < n {
+            dp[n] = dp[last] + literal_cost(n - last, f);
+            bt[n] = last;
+            bo[n] = 0 - 1;
+        }
+    }
+
+    free(count);
+    free(sum_abs);
+    free(prev);
+
+    // Backtrack: collect segment boundaries in reverse
+    let seg_starts: *i32 = alloc(n);
+    let seg_orders: *i32 = alloc(n);
+    var n_segs: i32 = 0;
+    var pos: i32 = n;
+    while pos > 0 {
+        seg_starts[n_segs] = bt[pos];
+        seg_orders[n_segs] = bo[pos];
+        n_segs = n_segs + 1;
+        pos = bt[pos];
+    }
+
+    // Reverse to get forward order
+    var lo: i32 = 0;
+    var hi: i32 = n_segs - 1;
+    while lo < hi {
+        let tmp_s: i32 = seg_starts[lo];
+        let tmp_o: i32 = seg_orders[lo];
+        seg_starts[lo] = seg_starts[hi];
+        seg_orders[lo] = seg_orders[hi];
+        seg_starts[hi] = tmp_s;
+        seg_orders[hi] = tmp_o;
+        lo = lo + 1;
+        hi = hi - 1;
+    }
+
+    // Build segments and compute residuals
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+    let tmp_res: *i32 = alloc(MAX_SEGMENT);
+    var res_offset: i32 = 0;
+    var seg_idx: i32 = 0;
+
+    while seg_idx < n_segs {
+        if seg_idx >= max_segments { break; }
+
+        let start: i32 = seg_starts[seg_idx];
+        var end: i32 = n;
+        if seg_idx < n_segs - 1 { end = seg_starts[seg_idx + 1]; }
+        let length: i32 = end - start;
+        let order: i32 = seg_orders[seg_idx];
+
+        segments[seg_idx].start = start;
+        segments[seg_idx].length = length;
+        segments[seg_idx].order = order;
+
+        if order >= 1 {
+            // Compute forward diff for this segment
+            let n_res: i32 = pc_forward_diff(&samples[start], length, order, headers, tmp_res, f);
+            segments[seg_idx].n_headers = order;
+            var k: i32 = 0;
+            while k < order {
+                seg_set_header(&segments[seg_idx], k, headers[k]);
+                k = k + 1;
+            }
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = n_res;
+
+            // Copy residuals to output buffer
+            var r: i32 = 0;
+            while r < n_res {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = tmp_res[r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + n_res;
+
+            let cost: i64 = segment_cost(&samples[start], length, order, f);
+            segments[seg_idx].encoded_bits = cost;
+        } else {
+            // Literal segment: store raw samples as residuals
+            segments[seg_idx].n_headers = 0;
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = length;
+
+            var r: i32 = 0;
+            while r < length {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = samples[start + r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + length;
+            segments[seg_idx].encoded_bits = literal_cost(length, f);
+        }
+
+        seg_idx = seg_idx + 1;
+    }
+
+    free(tmp_res);
+    free(headers);
+    free(seg_orders);
+    free(seg_starts);
+    free(bo);
+    free(bt);
+    free(dp);
+
+    return n_segs;
+}
+
+// ===== Greedy segmenter (fast path) =====
+
+#[export]
+fn pc_segment_greedy(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+    let tmp_res: *i32 = alloc(MAX_SEGMENT);
+    var cursor: i32 = 0;
+    var seg_idx: i32 = 0;
+    var res_offset: i32 = 0;
+
+    // Continuation state (Spec Section 11)
+    let cont_reg: *i32 = alloc(MAX_ORDER + 1);
+    var cont_degree: i32 = 0;
+    var cont_active: i32 = 0;  // 0 = inactive, 1 = active
+
+    while cursor < n {
+        if seg_idx >= max_segments { break; }
+
+        let remaining: i32 = n - cursor;
+        if remaining < MIN_SEGMENT {
+            // Tail: store as literal
+            segments[seg_idx].start = cursor;
+            segments[seg_idx].length = remaining;
+            segments[seg_idx].order = 0 - 1;
+            segments[seg_idx].n_headers = 0;
+            segments[seg_idx].is_cont = 0;
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = remaining;
+            var r: i32 = 0;
+            while r < remaining {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = samples[cursor + r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + remaining;
+            segments[seg_idx].encoded_bits = literal_cost(remaining, f);
+            cont_active = 0;
+            seg_idx = seg_idx + 1;
+            break;
+        }
+
+        // --- Continuation check (before full segmentation search) ---
+        if cont_active == 1 {
+            // How many samples does the current register state predict?
+            var cont_len: i32 = remaining;
+            if cont_len > MAX_SEGMENT { cont_len = MAX_SEGMENT; }
+            let matched: i32 = check_continuation(cont_reg, cont_degree,
+                &samples[cursor], cont_len, f);
+            if matched >= MIN_SEGMENT {
+                // Continuation match! Emit a CONT segment.
+                segments[seg_idx].start = cursor;
+                segments[seg_idx].length = matched;
+                segments[seg_idx].order = cont_degree;
+                segments[seg_idx].n_headers = 0;
+                segments[seg_idx].is_cont = 1;
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = 0;
+                segments[seg_idx].encoded_bits = CONT_COST_BITS;
+
+                // Advance the register state
+                advance_register(cont_reg, cont_degree, matched, f);
+
+                cursor = cursor + matched;
+                seg_idx = seg_idx + 1;
+                continue;
+            }
+        }
+
+        // --- Normal segmentation (doubling search) ---
+        var best_bps: i64 = 9223372036854775807;
+        var best_len: i32 = MIN_SEGMENT;
+        var best_order: i32 = 1;
+
+        var length: i32 = MIN_SEGMENT;
+        while length <= remaining {
+            if length > MAX_SEGMENT { length = MAX_SEGMENT; }
+            var actual_len: i32 = length;
+            if cursor + length > n { actual_len = n - cursor; }
+
+            // Try each order
+            var order: i32 = 1;
+            while order <= MAX_ORDER {
+                if actual_len < order + 1 {
+                    order = order + 1;
+                    continue;
+                }
+                let cost: i64 = segment_cost(&samples[cursor], actual_len, order, f);
+                // bits per sample (scaled by 1000 to avoid float)
+                let bps: i64 = cost * 1000 / actual_len as i64;
+                if bps < best_bps {
+                    best_bps = bps;
+                    best_len = actual_len;
+                    best_order = order;
+                }
+                order = order + 1;
+            }
+
+            // Also try literal
+            let lit_bps: i64 = literal_cost(actual_len, f) * 1000 / actual_len as i64;
+            if lit_bps < best_bps {
+                best_bps = lit_bps;
+                best_len = actual_len;
+                best_order = 0 - 1;
+            }
+
+            if length >= MAX_SEGMENT { break; }
+            if length >= remaining { break; }
+            length = length * 2;
+        }
+
+        // Record the best segment
+        segments[seg_idx].start = cursor;
+        segments[seg_idx].length = best_len;
+        segments[seg_idx].order = best_order;
+        segments[seg_idx].is_cont = 0;
+
+        if best_order >= 1 {
+            let n_res: i32 = pc_forward_diff(&samples[cursor], best_len, best_order, headers, tmp_res, f);
+            segments[seg_idx].n_headers = best_order;
+            var k: i32 = 0;
+            while k < best_order {
+                seg_set_header(&segments[seg_idx], k, headers[k]);
+                k = k + 1;
+            }
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = n_res;
+
+            var r: i32 = 0;
+            while r < n_res {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = tmp_res[r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + n_res;
+            segments[seg_idx].encoded_bits = segment_cost(&samples[cursor], best_len, best_order, f);
+
+            // Save register state for continuation (Spec Section 11.4)
+            build_register_state(headers, best_order, tmp_res, n_res, best_len, cont_reg, f);
+            cont_degree = best_order;
+            cont_active = 1;
+        } else {
+            // Literal segment: deactivate continuation stream
+            segments[seg_idx].n_headers = 0;
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = best_len;
+            var r: i32 = 0;
+            while r < best_len {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = samples[cursor + r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + best_len;
+            segments[seg_idx].encoded_bits = literal_cost(best_len, f);
+            cont_active = 0;
+        }
+
+        cursor = cursor + best_len;
+        seg_idx = seg_idx + 1;
+    }
+
+    free(cont_reg);
+    free(tmp_res);
+    free(headers);
+    return seg_idx;
+}
+

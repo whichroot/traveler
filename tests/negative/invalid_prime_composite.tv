@@ -1,0 +1,7 @@
+// Negative test: Field<4> is composite, not prime
+field F = Field<4>;
+
+fn main() {
+    let a: F = 1;
+    print(a);
+}

@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// turning.tv — Level 3 of the verifiable-classifier ladder: the signed TURNING
+// NUMBER (rotation index) of a contour, field-reduced. signed_reduce returns the
+// BALANCED representative in [-(p-1)/2, (p-1)/2]; carrier travels by value.
+// @internal-design: features
+
+// Generic field add, instantiated <dyn> -> fadd_g_dyn(f, a, b). The reduction is
+// the compiler's branchless dyn field add, not a hand-rolled %.
+fn fadd_g<F: Field>(a: F, b: F) -> F { return a + b; }
+instantiate fadd_g<dyn>;
+
+// Map a signed value into the field [0, p): negatives become v + p.
+#[export]
+fn to_field(v: i64, f: Field) -> i64 {
+    if v < 0 { return v + f.p; }
+    return v;
+}
+
+// Balanced representative of a field residue: if r > p/2 then r - p.
+#[export]
+fn balanced(r: i64, f: Field) -> i64 {
+    let half: i64 = f.p / 2;
+    if r > half { return r - f.p; }
+    return r;
+}
+
+// Field-reduce a SIGNED integer turning total into the carrier f, returning the
+// BALANCED representative. |sum| <= n fits every prime, so the balanced value
+// equals the integer sum exactly (field-invariant across primes).
+#[export]
+fn signed_reduce(data: *i64, n: i32, f: Field) -> i64 {
+    var sum: i64 = 0;
+    for i in 0..n {
+        sum = sum + data[i];
+    }
+    // Wide prime (f.p reads negative as i64, e.g. Goldilocks): the total fits
+    // any prime exactly, so the balanced residue IS the integer sum.
+    if f.p <= 0 { return sum; }
+    // Narrow prime: route through the dyn field add (genuinely the field's
+    // fold), then balance.
+    let canon: i64 = to_field(sum, f);
+    let red: i64 = fadd_g_dyn(f, 0, canon);
+    return balanced(red, f);
+}
+
+// Field-reduced turning number: signed_reduce over the per-vertex turning array.
+// (Thin alias making the intent explicit at the call site.)
+#[export]
+fn turning_number(turns: *i64, n: i32, f: Field) -> i64 {
+    return signed_reduce(turns, n, f);
+}

@@ -1,0 +1,23 @@
+// --pfor-report fixture: an element-independent i64 own-cell map. The pfor
+// analysis proves independence (stride-1 injective write, own-cell reads, pure
+// body); pre-U1 the dispatch gate refused it anyway because the captured
+// arrays are i64, not a field type — verdict `not-field`, the type-proxy.
+// Stage D (U1, the has_field gate lift) LANDED: this shape now DISPATCHES —
+// kept as the U1 positive control (a `not-field` verdict here, or lost
+// dispatch, is a gate regression).
+fn scale(out: *i64, a: *i64, n: i32) {
+    for i in 0..n {
+        out[i] = a[i] * 3;
+    }
+}
+
+fn main() {
+    let n: i32 = 8;
+    let a: *i64 = alloc(n * 8);
+    let o: *i64 = alloc(n * 8);
+    for i in 0..n {
+        a[i] = i as i64;
+    }
+    scale(o, a, n);
+    print(o[7]);
+}

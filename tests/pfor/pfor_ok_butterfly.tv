@@ -1,0 +1,48 @@
+// pfor_ok_butterfly.tv — POSITIVE CONTROL: NTT butterfly write pattern
+//
+// Two affine writes to the same array: data[j] and data[j + half], with
+// loop j in 0..half.  Footprints [0, half) and [half, 2*half) are
+// disjoint because the offset delta (half) equals the loop trip count.
+// This is the exact write pattern of ntt_forward/ntt_inverse (ntt.tv) —
+// Layer 6's worker coverage depends on it staying parallel.
+//
+// Disjointness proof obligation: case (c) — delta term == loop end term,
+// loop start is literal 0.
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let half: i32 = 4096;
+    let data: *F = alloc(half * 2);
+    let tw: *F = alloc(half);
+
+    let mut w: i32 = 0;
+    while w < half * 2 {
+        data[w] = (w % 251 + 1) as F;
+        w = w + 1;
+    }
+    w = 0;
+    while w < half {
+        tw[w] = (w % 5 + 1) as F;
+        w = w + 1;
+    }
+
+    // SAFE: writes data[j] and data[j+half] — disjoint footprints
+    for j in 0..half {
+        let u: F = data[j];
+        let v: F = tw[j] * data[j + half];
+        data[j] = u + v;
+        data[j + half] = u - v;
+    }
+
+    let mut s: F = 0;
+    w = 0;
+    while w < half * 2 {
+        s = s + data[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

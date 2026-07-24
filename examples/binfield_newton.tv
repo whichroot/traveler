@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// binfield_newton.tv — Newton forward differences over GF(2^8) (Claim 12 evidence):
+// the kernel's forward sum/diff with subtraction = XOR (characteristic 2).
+// @internal-design: core
+
+type G = BinField<8, 0x11B>;
+
+// Forward summation of a degree-2 Newton polynomial over GF(2^8) at consecutive
+// points; register update reg[k] = reg[k] XOR reg[k+1] (addition = XOR, char 2).
+fn forward_sum(c0: G, c1: G, c2: G, n: i32) -> G {
+    var r0: G = c0;
+    var r1: G = c1;
+    var r2: G = c2;
+
+    for i in 1..n {
+        r0 = r0 + r1;   // XOR
+        r1 = r1 + r2;   // XOR
+    }
+    return r0;
+}
+
+fn main() {
+    // Newton coefficients for a degree-2 polynomial over GF(2^8):
+    // N = [0x10, 0x03, 0x01]
+    //
+    // Forward summation (XOR-based):
+    //   f(0) = 0x10 = 16
+    //   f(1) = 0x10 ^ 0x03 = 0x13 = 19
+    //   f(2) = 0x13 ^ (0x03 ^ 0x01) = 0x13 ^ 0x02 = 0x11 = 17
+    //   f(3) = 0x11 ^ (0x02 ^ 0x01) = 0x11 ^ 0x03 = 0x12 = 18
+    //   f(4) = 0x12 ^ (0x03 ^ 0x01) = 0x12 ^ 0x02 = 0x10 = 16
+    //   f(5) = 0x10 ^ (0x02 ^ 0x01) = 0x10 ^ 0x03 = 0x13 = 19
+    //
+    // Note: over GF(2^8) the sequence is periodic with period 4
+    // because XOR-based forward differences cycle.
+
+    let val0: G = forward_sum(0x10, 0x03, 0x01, 1);
+    print(val0);  // 16 = f(0)
+
+    let val1: G = forward_sum(0x10, 0x03, 0x01, 2);
+    print(val1);  // 19 = f(1)
+
+    let val2: G = forward_sum(0x10, 0x03, 0x01, 3);
+    print(val2);  // 17 = f(2)
+
+    let val3: G = forward_sum(0x10, 0x03, 0x01, 4);
+    print(val3);  // 18 = f(3)
+
+    // Round-trip: recover Newton coefficients from f(0), f(1), f(2)
+    // by computing forward differences (which is also XOR):
+    //
+    //   Delta^0 = f(0) = 0x10
+    //   Delta^1 = f(1) XOR f(0) = 0x13 ^ 0x10 = 0x03
+    //   Delta^2 = (f(2) XOR f(1)) XOR (f(1) XOR f(0))
+    //           = 0x02 XOR 0x03 = 0x01
+    //
+    // Recovered: N = [0x10, 0x03, 0x01] — matches original coefficients.
+
+    let f0: G = 0x10;
+    let f1: G = 0x13;
+    let f2: G = 0x11;
+
+    // Newton coefficient recovery (analyze)
+    let n0: G = f0;                       // Delta^0 f(0) = f(0)
+    let d10: G = f1 + f0;                 // Delta^1 f(0) = f(1) XOR f(0) = 0x03
+    let d11: G = f2 + f1;                 // Delta^1 f(1) = f(2) XOR f(1) = 0x02
+    let n2: G = d11 + d10;               // Delta^2 f(0) = 0x02 XOR 0x03 = 0x01
+
+    print(n0);   // 16 = 0x10 (recovered N[0])
+    print(d10);  // 3  = 0x03 (recovered N[1])
+    print(n2);   // 1  = 0x01 (recovered N[2])
+}

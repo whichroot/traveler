@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// short_circuit.tv — && / || evaluate left-to-right and SHORT-CIRCUIT
+// (regression fixture for known-issue #14: control-flow-diamond lowering).
+// @internal-design: examples (short_circuit, #14).
+//
+// Expected output: 1 2 0 1 1 7 8
+
+var g_calls: i32 = 0;
+
+// Side-effecting RHS probe: increments a global and returns 1.
+fn bump() -> i32 {
+    g_calls = g_calls + 1;
+    return 1;
+}
+
+fn main() {
+    // 1) && null-guard: RHS deref must be SKIPPED when p is null.
+    let p: *i32 = null;
+    if p != null && p[0] == 5 {
+        print(99);           // unreachable: would be a null deref
+    } else {
+        print(1);            // 1
+    }
+
+    // 2) || null-guard: LHS true short-circuits, RHS deref SKIPPED.
+    if p == null || p[0] == 5 {
+        print(2);            // 2
+    } else {
+        print(98);
+    }
+
+    // 3) && false LHS: side-effecting RHS must NOT run.
+    if 1 == 0 && bump() == 1 {
+        print(97);
+    }
+    print(g_calls);          // 0
+
+    // 4) && true LHS: RHS runs exactly once.
+    if 1 == 1 && bump() == 1 {
+        print(g_calls);      // 1
+    }
+
+    // 5) || true LHS: RHS must NOT run (g_calls stays 1).
+    if 1 == 1 || bump() == 1 {
+        print(g_calls);      // 1
+    }
+
+    // 6) Nested / chained: left-to-right, each guard protects the next.
+    //    a is valid (len 3); read a[i] only when 0 <= i < 3.
+    let a: *i32 = alloc(3);
+    a[0] = 7;
+    a[1] = 8;
+    a[2] = 9;
+    let i: i32 = 1;
+    if i >= 0 && i < 3 && a[i] == 8 {
+        print(a[0]);         // 7
+        print(a[i]);         // 8
+    }
+    free(a);
+}

@@ -1,0 +1,389 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// synkey.tv — SYNDROME KEYS: a Zobrist hash you can invert — chess position keys
+// as BCH syndromes over GF(2^13); no collision <= 2T slots, diffs decode to moves.
+// @internal-design: ecc (syndrome keys); bm<F>: @internal-design: nt
+
+import "../src/lib/nt/linrec.tv";       // fpow<F>, bm<F: Field>
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+
+// GF(2^13), x^13 + x^4 + x^3 + x + 1. 2^13 - 1 = 8191 is a Mersenne prime,
+// so EVERY element except 1 is primitive: ord(alpha) = 8191 > 768 slots.
+binfield G = BinField<13, 0x201B>;
+
+let QM2: i64 = 8190;          // |F| - 2, the Fermat inverse exponent
+let ORD: i64 = 8191;          // |F*|
+let NSLOT: i32 = 768;         // 12 pieces * 64 squares
+let T: i32 = 6;               // odd syndromes S_1..S_11
+                              //   key width  = 6 * 13 = 78 bits
+                              //   decode     <= 6 changed slots
+                              //   detect     <= 12 changed slots
+
+// alpha = x, the class of the indeterminate
+let ALPHA: i32 = 2;
+
+// g_pk[k * 768 + j] = alpha^((2k+1) * j)
+var g_pk: *G = null;
+
+// ---------------- io ----------------
+
+fn str_len(s: *u8) -> i32 { var i: i32 = 0; while s[i] != 0 { i = i + 1; } return i; }
+fn wr(s: *u8) { write(1, s, str_len(s) as usize); }
+fn wr_ch(c: i32) { var d: [u8; 1] = 0; d[0] = c as u8; write(1, &d[0], 1); }
+fn wr_int(n: i64) {
+    if n < 0 { wr("-"); wr_int(0 - n); return; }
+    if n >= 10 { wr_int(n / 10); }
+    wr_ch((n % 10) as i32 + 48);
+}
+
+// ---------------- slot naming ----------------
+
+fn wr_piece(p: i32) {
+    // 0..5 = white P N B R Q K, 6..11 = black
+    let k: i32 = p % 6;
+    if p < 6 { wr("w"); } else { wr("b"); }
+    if k == 0 { wr("P"); } else if k == 1 { wr("N"); }
+    else if k == 2 { wr("B"); } else if k == 3 { wr("R"); }
+    else if k == 4 { wr("Q"); } else { wr("K"); }
+}
+
+fn wr_slot(j: i32) {
+    let p: i32 = j / 64;
+    let sq: i32 = j % 64;
+    wr_piece(p);
+    wr_ch(97 + sq % 8);        // file a-h
+    wr_ch(49 + sq / 8);        // rank 1-8
+}
+
+// ---------------- key construction ----------------
+
+fn init_pk() {
+    g_pk = alloc(T * NSLOT);
+    var k: i32 = 0;
+    while k < T {
+        let e: i64 = (2 * k + 1) as i64;      // odd syndrome index
+        var j: i32 = 0;
+        while j < NSLOT {
+            g_pk[k * NSLOT + j] = fpow(ALPHA as G, (e * (j as i64)) % ORD);
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+}
+
+fn key_zero(key: *G) { var k: i32 = 0; while k < T { key[k] = 0 as G; k = k + 1; } }
+
+// XOR the slot in or out — self-inverse, exactly like Zobrist.
+fn key_toggle(key: *G, j: i32) {
+    var k: i32 = 0;
+    while k < T {
+        key[k] = key[k] + g_pk[k * NSLOT + j];    // field add == XOR
+        k = k + 1;
+    }
+}
+
+fn key_toggle_ps(key: *G, piece: i32, sq: i32) { key_toggle(key, piece * 64 + sq); }
+
+fn key_diff(a: *G, b: *G, out: *G) {
+    var k: i32 = 0;
+    while k < T { out[k] = a[k] + b[k]; k = k + 1; }   // char 2: sub == add
+    var k2: i32 = 0;
+}
+
+fn key_is_zero(key: *G) -> i32 {
+    var k: i32 = 0;
+    while k < T { if key[k] != (0 as G) { return 0; } k = k + 1; }
+    return 1;
+}
+
+fn wr_key(key: *G) {
+    var k: i32 = 0;
+    while k < T {
+        if k > 0 { wr(" "); }
+        wr_int(key[k] as i64);
+        k = k + 1;
+    }
+}
+
+// ---------------- decode: syndromes -> which slots changed ----------------
+
+// Build the full syndrome run S_1..S_2T from the T odd syndromes.
+// Binary BCH identity: S_{2i} = (S_i)^2  (Frobenius: squaring is linear in char 2).
+fn expand_syndromes(odd: *G, s: *G) {
+    var k: i32 = 1;
+    while k <= 2 * T {
+        if k % 2 == 1 {
+            s[k - 1] = odd[(k - 1) / 2];
+        } else {
+            let h: G = s[k / 2 - 1];
+            s[k - 1] = h * h;
+        }
+        k = k + 1;
+    }
+}
+
+// Evaluate C(x) = C[0] + C[1] x + ... + C[L] x^L
+fn poly_eval(C: *G, L: i32, x: G) -> G {
+    var acc: G = 0 as G;
+    var xp: G = 1 as G;
+    var i: i32 = 0;
+    while i <= L {
+        acc = acc + C[i] * xp;
+        xp = xp * x;
+        i = i + 1;
+    }
+    return acc;
+}
+
+// Full decode: diff = T odd syndromes of the difference; writes changed slot
+// indices into out[], returns the count (or -1 beyond the correction radius T).
+fn decode_diff(diff: *G, out: *i32) -> i32 {
+    if key_is_zero(diff) == 1 { return 0; }
+
+    let s: *G = alloc(2 * T);
+    expand_syndromes(diff, s);
+
+    let C: *G = alloc(2 * T + 1);
+    let L: i32 = bm(s, 2 * T, C, QM2);      // <- stdlib generic BM, monomorphized on G
+
+    if L > T { free(s); free(C); return 0 - 1; }
+
+    // Chien search: slot j changed  <=>  C(alpha^-j) = 0
+    var found: i32 = 0;
+    var j: i32 = 0;
+    while j < NSLOT {
+        let x: G = fpow(ALPHA as G, (ORD - j as i64) % ORD);
+        if poly_eval(C, L, x) == (0 as G) {
+            if found < T { out[found] = j; }
+            found = found + 1;
+        }
+        j = j + 1;
+    }
+    free(s); free(C);
+    if found != L { return 0 - 1; }          // locator did not split: uncorrectable
+    return found;
+}
+
+fn report_decode(diff: *G, expect: i32) {
+    let out: *i32 = alloc(T + 1);
+    let n: i32 = decode_diff(diff, out);
+    if n < 0 {
+        wr("    beyond correction radius (weight > ");
+        wr_int(T as i64);
+        wr(")\n");
+        free(out);
+        return;
+    }
+    wr("    decoded ");
+    wr_int(n as i64);
+    wr(" changed slots:  ");
+    var i: i32 = 0;
+    while i < n {
+        wr_slot(out[i]);
+        wr(" ");
+        i = i + 1;
+    }
+    if n == expect { wr("  [OK]"); } else { wr("  [MISMATCH]"); }
+    wr("\n");
+    free(out);
+}
+
+// ---------------- rng ----------------
+
+var g_rng: i64 = 0x2545F4914F6CDD1D;
+fn rnd() -> i64 {
+    var x: i64 = g_rng;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 7);
+    x = x ^ (x << 17);
+    g_rng = x;
+    if x < 0 { return 0 - x; }
+    return x;
+}
+fn rnd_slot() -> i32 { return (rnd() % (NSLOT as i64)) as i32; }
+
+// ---------------- piece constants ----------------
+
+let WP: i32 = 0; let WN: i32 = 1; let WB: i32 = 2;
+let WR: i32 = 3; let WQ: i32 = 4; let WK: i32 = 5;
+let BP: i32 = 6; let BN: i32 = 7; let BB: i32 = 8;
+let BR: i32 = 9; let BQ: i32 = 10; let BK: i32 = 11;
+
+// squares: a1=0 .. h1=7, a2=8 ... h8=63
+let E1: i32 = 4;  let G1: i32 = 6;  let F1: i32 = 5;  let H1: i32 = 7;
+let E2: i32 = 12; let E4: i32 = 28; let E5: i32 = 36; let E7: i32 = 52;
+let G1N: i32 = 6; let F3: i32 = 21; let B8: i32 = 57; let C6: i32 = 42;
+let G7: i32 = 54; let H8: i32 = 63;
+
+fn main() {
+    init_pk();
+
+    wr("=====================================================================\n");
+    wr(" SYNDROME KEYS over GF(2^13) = BinField<13, 0x201B>\n");
+    wr("   T = "); wr_int(T as i64); wr(" odd syndromes  ->  key width ");
+    wr_int((T * 13) as i64); wr(" bits\n");
+    wr("   collisions IMPOSSIBLE for <= "); wr_int((2 * T) as i64);
+    wr(" changed slots (BCH bound)\n");
+    wr("   differences DECODABLE   for <= "); wr_int(T as i64); wr(" changed slots\n");
+    wr("=====================================================================\n\n");
+
+    let ka: *G = alloc(T);
+    let kb: *G = alloc(T);
+    let kd: *G = alloc(T);
+
+    // ---- 1. castling: 4 slots change --------------------------------------
+    wr("[1] White castles kingside (O-O).  Ke1->g1, Rh1->f1.\n");
+    key_zero(ka);
+    key_toggle_ps(ka, WK, E1);
+    key_toggle_ps(ka, WR, H1);
+    wr("    key(before) = "); wr_key(ka); wr("\n");
+    key_zero(kb);
+    key_toggle_ps(kb, WK, G1);
+    key_toggle_ps(kb, WR, F1);
+    wr("    key(after)  = "); wr_key(kb); wr("\n");
+    key_diff(ka, kb, kd);
+    wr("    key(A)-key(B) = "); wr_key(kd); wr("\n");
+    report_decode(kd, 4);
+    wr("\n");
+
+    // ---- 2. capture-promotion: 3 slots change ------------------------------
+    wr("[2] Pawn g7 takes rook h8 and promotes to queen (gxh8=Q).\n");
+    key_zero(ka);
+    key_toggle_ps(ka, WP, G7);
+    key_toggle_ps(ka, BR, H8);
+    key_zero(kb);
+    key_toggle_ps(kb, WQ, H8);
+    key_diff(ka, kb, kd);
+    wr("    key(A)-key(B) = "); wr_key(kd); wr("\n");
+    report_decode(kd, 3);
+    wr("\n");
+
+    // ---- 3. an opening line: 3 moves = 6 slots ------------------------------
+    wr("[3] 1.e4 e5 2.Nf3 Nc6  --  four moves, 8 slots.  (T=6: expect refusal)\n");
+    key_zero(ka);
+    key_toggle_ps(ka, WP, E2); key_toggle_ps(ka, BP, E7);
+    key_toggle_ps(ka, WN, G1N); key_toggle_ps(ka, BN, B8);
+    key_zero(kb);
+    key_toggle_ps(kb, WP, E4); key_toggle_ps(kb, BP, E5);
+    key_toggle_ps(kb, WN, F3); key_toggle_ps(kb, BN, C6);
+    key_diff(ka, kb, kd);
+    report_decode(kd, 8);
+    wr("    ...but the keys still PROVABLY differ (8 <= 12 = detection radius): ");
+    if key_is_zero(kd) == 0 { wr("differ [OK]\n"); } else { wr("COLLIDED [IMPOSSIBLE]\n"); }
+    wr("\n");
+
+    // ---- 4. three moves = 6 slots, decodes ----------------------------------
+    wr("[4] 1.e4 e5 2.Nf3  --  three moves, 6 slots.\n");
+    key_zero(ka);
+    key_toggle_ps(ka, WP, E2); key_toggle_ps(ka, BP, E7); key_toggle_ps(ka, WN, G1N);
+    key_zero(kb);
+    key_toggle_ps(kb, WP, E4); key_toggle_ps(kb, BP, E5); key_toggle_ps(kb, WN, F3);
+    key_diff(ka, kb, kd);
+    report_decode(kd, 6);
+    wr("\n");
+
+    // ---- 5. exhaustive: every weight-1 and weight-2 difference -------------
+    wr("[5] Exhaustive check: no weight-1 or weight-2 difference is invisible.\n");
+    var bad: i64 = 0;
+    var a: i32 = 0;
+    while a < NSLOT {
+        key_zero(kd);
+        key_toggle(kd, a);
+        if key_is_zero(kd) == 1 { bad = bad + 1; }
+        a = a + 1;
+    }
+    wr("    weight 1: "); wr_int(NSLOT as i64); wr(" patterns, ");
+    wr_int(bad); wr(" invisible\n");
+
+    bad = 0;
+    var cnt: i64 = 0;
+    a = 0;
+    while a < NSLOT {
+        var b: i32 = a + 1;
+        while b < NSLOT {
+            key_zero(kd);
+            key_toggle(kd, a);
+            key_toggle(kd, b);
+            if key_is_zero(kd) == 1 { bad = bad + 1; }
+            cnt = cnt + 1;
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    wr("    weight 2: "); wr_int(cnt); wr(" patterns, ");
+    wr_int(bad); wr(" invisible\n\n");
+
+    // ---- 6. randomized round-trip: decode recovers the exact slot set -------
+    wr("[6] Randomized decode round-trip (weight 1..6), 4000 trials each.\n");
+    var w: i32 = 1;
+    while w <= T {
+        var ok: i32 = 0;
+        var trial: i32 = 0;
+        let slots: *i32 = alloc(16);
+        let out: *i32 = alloc(T + 1);
+        while trial < 4000 {
+            // draw w distinct slots
+            key_zero(kd);
+            var got: i32 = 0;
+            while got < w {
+                let s: i32 = rnd_slot();
+                var dup: i32 = 0;
+                var q: i32 = 0;
+                while q < got { if slots[q] == s { dup = 1; } q = q + 1; }
+                if dup == 0 { slots[got] = s; key_toggle(kd, s); got = got + 1; }
+            }
+            let n: i32 = decode_diff(kd, out);
+            if n == w {
+                // verify every recovered slot was actually toggled
+                var all: i32 = 1;
+                var i: i32 = 0;
+                while i < n {
+                    var hit: i32 = 0;
+                    var q2: i32 = 0;
+                    while q2 < w { if slots[q2] == out[i] { hit = 1; } q2 = q2 + 1; }
+                    if hit == 0 { all = 0; }
+                    i = i + 1;
+                }
+                if all == 1 { ok = ok + 1; }
+            }
+            trial = trial + 1;
+        }
+        free(slots); free(out);
+        wr("    weight "); wr_int(w as i64); wr(": ");
+        wr_int(ok as i64); wr("/4000 exact recoveries");
+        if ok == 4000 { wr("  [OK]\n"); } else { wr("  [FAIL]\n"); }
+        w = w + 1;
+    }
+    wr("\n");
+
+    // ---- 7. detection beyond the decode radius, up to 2T --------------------
+    wr("[7] Detection (not decode) for weight 7..12, 4000 trials each.\n");
+    w = T + 1;
+    while w <= 2 * T {
+        var seen: i32 = 0;
+        var trial2: i32 = 0;
+        let slots2: *i32 = alloc(32);
+        while trial2 < 4000 {
+            key_zero(kd);
+            var got2: i32 = 0;
+            while got2 < w {
+                let s2: i32 = rnd_slot();
+                var dup2: i32 = 0;
+                var q3: i32 = 0;
+                while q3 < got2 { if slots2[q3] == s2 { dup2 = 1; } q3 = q3 + 1; }
+                if dup2 == 0 { slots2[got2] = s2; key_toggle(kd, s2); got2 = got2 + 1; }
+            }
+            if key_is_zero(kd) == 0 { seen = seen + 1; }
+            trial2 = trial2 + 1;
+        }
+        free(slots2);
+        wr("    weight "); wr_int(w as i64); wr(": ");
+        wr_int(seen as i64); wr("/4000 detected");
+        if seen == 4000 { wr("  [OK]\n"); } else { wr("  [FAIL]\n"); }
+        w = w + 1;
+    }
+
+    wr("\ndone.\n");
+    free(ka); free(kb); free(kd);
+}

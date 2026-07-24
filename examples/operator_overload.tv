@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// operator_overload.tv — operator overloading via traits (B2b Slice 4): `a OP b`
+// on a user struct desugars to Add/Sub/Mul/Eq methods — static, no vtable.
+// tvc_self ONLY. Prose: @internal-design: examples (operator_overload).
+//
+// Expected output:
+//   11     (a + b).x      Add__Vec2__add
+//   22     (a + b).y
+//   9      (b - a).x      Sub__Vec2__sub  (10-1)
+//   18     (b - a).y                       (20-2)
+//   10     (a * b).x      Mul__Vec2__mul  (1*10)
+//   40     (a * b).y                       (2*20)
+//   1      c == d         Eq__Vec2__eq    (equal)
+//   0      a == b                          (not equal)
+
+struct Vec2 { x: i32, y: i32 }
+
+trait Add { fn add(self, other: Vec2) -> Vec2; }
+trait Sub { fn sub(self, other: Vec2) -> Vec2; }
+trait Mul { fn mul(self, other: Vec2) -> Vec2; }
+trait Eq  { fn eq(self, other: Vec2) -> i32; }
+
+impl Add for Vec2 {
+    fn add(self, other: Vec2) -> Vec2 {
+        return Vec2 { x: self.x + other.x, y: self.y + other.y };
+    }
+}
+impl Sub for Vec2 {
+    fn sub(self, other: Vec2) -> Vec2 {
+        return Vec2 { x: self.x - other.x, y: self.y - other.y };
+    }
+}
+impl Mul for Vec2 {
+    fn mul(self, other: Vec2) -> Vec2 {
+        return Vec2 { x: self.x * other.x, y: self.y * other.y };
+    }
+}
+impl Eq for Vec2 {
+    fn eq(self, other: Vec2) -> i32 {
+        if self.x == other.x {
+            if self.y == other.y { return 1; }
+        }
+        return 0;
+    }
+}
+
+fn main() -> i32 {
+    let a: Vec2 = Vec2 { x: 1, y: 2 };
+    let b: Vec2 = Vec2 { x: 10, y: 20 };
+
+    let sum: Vec2 = a + b;
+    print(sum.x);   // 11
+    print(sum.y);   // 22
+
+    let diff: Vec2 = b - a;
+    print(diff.x);  // 9
+    print(diff.y);  // 18
+
+    let prod: Vec2 = a * b;
+    print(prod.x);  // 10
+    print(prod.y);  // 40
+
+    let c: Vec2 = Vec2 { x: 11, y: 22 };
+    let d: Vec2 = Vec2 { x: 11, y: 22 };
+    print(c == d);  // 1
+    print(a == b);  // 0
+    return 0;
+}

@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_alias_test.tv — Phase D.2 driver: Newton-degree aliasing on two
+// parabolas (d*_Z = 2): CRT detect/resolve + safe-prime bounds.
+// @internal-design: genus (Aliasing Theorem + Certification)
+//
+// Corpus: ALIASED 2nd diff = 251 (251 unsafe, bound 5031);
+//         HONEST  2nd diff = 3   (all primes agree, bound 71).
+//
+// Expected output:
+//   1            d*[251] on aliased parabola (FALSE: a line)
+//   2            d*[65537] on aliased parabola (TRUE: a parabola)
+//   -1           crt2 detects the alias (soundness)
+//   2            crt3 resolves to the integer truth (completeness)
+//   5031         safe-prime bound for the aliased data (251 < 5031 -> unsafe)
+//   2            d*[251] on honest parabola (no alias)
+//   2            crt2 certifies the honest parabola
+//   71           safe-prime bound for the honest data (251 > 71 -> safe)
+//
+// Link: regime_fri.o + genus_probe.o + genus_alias.o + genus_alias_test.o
+
+extern "C" fn genus_onset(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn genus_safe_prime_bound(data: *i64, n: i32, d_max: i32, work: *i64) -> i64;
+extern "C" fn genus_certify_crt2(
+    p1: i64, p2: i64, data: *i64, n: i32, d_max: i32,
+    cert: *i64, work: *i64, red: *i64) -> i32;
+extern "C" fn genus_certify_crt3(
+    p1: i64, p2: i64, p3: i64, data: *i64, n: i32, d_max: i32,
+    cert: *i64, work: *i64, red: *i64) -> i32;
+
+// Fill an integer parabola with y[0]=10, first step 5, constant 2nd difference C.
+fn fill_parabola(data: *i64, n: i32, C: i64) {
+    data[0] = 10;
+    var fd: i64 = 5;
+    for i in 1..n {
+        data[i] = data[i - 1] + fd;
+        fd = fd + C;
+    }
+}
+
+// "What Field<p> sees": Newton degree of the data REDUCED mod p (the field only
+// knows residues; aliasing is a witnessing difference vanishing mod p).
+fn onset_field(p: i64, data: *i64, n: i32, d_max: i32,
+    cert: *i64, work: *i64, red: *i64) -> i32 {
+    let f: Field = field(p);
+    for i in 0..n {
+        let r: i64 = data[i] % p;
+        if r < 0 { red[i] = r + p; } else { red[i] = r; }
+    }
+    return genus_onset(f, red, n, d_max, cert, work);
+}
+
+fn main() -> i32 {
+    let n: i32 = 12;
+    let d_max: i32 = 6;
+    let GOLD: i64 = 18446744069414584321;
+    let P251: i64 = 251;
+    let P257: i64 = 257;
+    let P65537: i64 = 65537;
+
+    let data: *i64 = alloc(n);
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let red: *i64 = alloc(n);
+
+    // ---- ALIASED parabola: 2nd difference = 251 ----
+    fill_parabola(data, n, 251);
+    print(onset_field(P251, data, n, d_max, cert, work, red));    // 1 (false line)
+    print(onset_field(P65537, data, n, d_max, cert, work, red));  // 2 (true parabola)
+    print(genus_certify_crt2(P251, P65537, data, n, d_max, cert, work, red));        // -1 detect
+    print(genus_certify_crt3(P251, P257, P65537, data, n, d_max, cert, work, red));  // 2 resolve
+    print(genus_safe_prime_bound(data, n, d_max, work) as i32);                      // 5031
+
+    // ---- HONEST parabola: 2nd difference = 3 ----
+    fill_parabola(data, n, 3);
+    print(onset_field(P251, data, n, d_max, cert, work, red));    // 2 (no alias)
+    print(genus_certify_crt2(P251, P65537, data, n, d_max, cert, work, red));        // 2 certified
+    print(genus_safe_prime_bound(data, n, d_max, work) as i32);                      // 71
+
+    free(data); free(cert); free(work); free(red);
+    return 0;
+}

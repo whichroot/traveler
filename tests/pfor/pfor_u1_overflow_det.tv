@@ -1,0 +1,39 @@
+// pfor_u1_overflow_det.tv — U1 (Stage D) overflow-determinism gate.
+// Traveler i64 codegen emits plain add/mul (NO nsw/nuw flags): overflow is
+// DEFINED two's-complement wrap, so an overflowing iteration computes the
+// same value serial or parallel — wrap cannot threaten dispatch soundness.
+// This map overflows i64 on nearly every element (|a[i]|*K >> 2^63) and must
+// produce BIT-IDENTICAL output at every thread count.
+//
+// MUST PARALLELIZE. Expected workers: 1 (stage1).
+// The harness asserts T=1 == T=32 == baseline, plus the THREADS sweep
+// (garbage/0/-1/7/1000).
+fn main() -> i32 {
+    let n: i32 = 8192;
+    let a: *i64 = alloc(n);
+    let out: *i64 = alloc(n);
+    let k: i64 = 2862933555777941757;   // LCG multiplier: forces wrap
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = (w as i64) * 2654435761 + 12345;
+        w = w + 1;
+    }
+
+    // Wraps on nearly every element; wrap is per-element and defined.
+    for i in 0..n {
+        out[i] = a[i] * k + (a[i] * a[i]) * 3037000493 + (i as i64);
+    }
+
+    // XOR-fold (order-insensitive) + spot cells.
+    let mut x: i64 = 0;
+    w = 0;
+    while w < n {
+        x = x ^ out[w];
+        w = w + 1;
+    }
+    print(x);
+    print(out[0]);
+    print(out[8191]);
+    return 0;
+}

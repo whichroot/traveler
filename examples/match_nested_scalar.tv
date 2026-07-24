@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// match_nested_scalar.tv — nested match on the seed-shared surface (#31 twin):
+// dual-parity, scalar payloads only; aggregate cases live in enum_match_nested.tv.
+// @internal-design: examples (enum_match_nested, #31).
+//
+// Expected output:
+//   70    nested integer match inside the FIRST (non-last) arm
+//   7     binding still live after the nested match
+//   18    nested enum match inside an enum match arm
+enum Code {
+    Lo(i32),
+    Hi(i32),
+}
+
+fn main() -> i32 {
+    let c: Code = Code::Lo(7);
+    match c {
+        Code::Lo(v) => {
+            match v {
+                7 => { print(70); }
+                _ => { print(0 - 1); }
+            }
+            print(v);
+        }
+        Code::Hi(v) => { print(0 - 2); }
+    }
+
+    let d: Code = Code::Hi(9);
+    match d {
+        Code::Lo(v) => { print(0 - 3); }
+        Code::Hi(v) => {
+            match d {
+                Code::Lo(w) => { print(0 - 4); }
+                Code::Hi(w) => { print(w + v); }
+            }
+        }
+    }
+    return 0;
+}

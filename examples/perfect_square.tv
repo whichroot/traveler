@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// perfect_square.tv — 1048576 = 1024^2 = 32^4 = 2^20: squares as both
+// citizens, the nt/sqrt.tv gate. Three movements:
+//   1. Integer side: isqrt certificate (re-mul witness), bracketing refusal
+//      for 1048577, the 4th-power tower (isqrt of isqrt is exact).
+//   2. The membrane echo: a ring hom preserves squares, so 2^20 is a square
+//      in EVERY F_p — sqrt_mod succeeds across {7,11,17,101,65521}, each root
+//      re-mul-verified and equal to min(+-1024 mod p). Contrast: squareness
+//      of 2 (p == +-1 mod 8 only) and of -1 (p == 1 mod 4 only) is
+//      p-DEPENDENT — the refusal cases exercised. p=65521 (S=4) and
+//      sqrt(-1 mod 13) (t = -1) drive the deep Tonelli-Shanks loop.
+//   3. The curve cross-gate over p=101, y^2 = x^3 + x + 1: CONSTRUCT every
+//      affine point by lifting each x via sqrt_mod, count them (+infinity),
+//      assert equal to count_fp's character-sum count — construction ==
+//      counting, two independent routes to N_1. Hasse checked BOTH ways:
+//      a^2 <= 4p (the shipped squaring idiom) and |a| <= isqrt64(4p) (the
+//      new primitive) must agree.
+// @internal-oracle: perfect_square
+// @internal-design: nt (squares section)
+import "../src/lib/nt/sqrt.tv";
+import "../src/lib/nt/curve.tv";
+
+// One prime of movement 2: print the root of 2^20 mod p, return the
+// certificate verdict (root exists, re-mul checks, equals min(+-1024 mod p)).
+fn hom_check(p: i64) -> i64 {
+    let a: i64 = 1048576 % p;
+    let root: i64 = sqrt_mod(a, p);
+    print(root);
+    if root < 0 { return 0; }
+    if root * root % p != a { return 0; }
+    var e: i64 = 1024 % p;
+    if p - e < e { e = p - e; }
+    if root != e { return 0; }
+    return 1;
+}
+
+// Movement 3: build #E(F_p) point by point — y = 0 where f(x) = 0, two lifted
+// roots where f(x) is a QR, none otherwise, plus the point at infinity.
+// Returns -1 if any lifted root fails its re-mul check.
+fn construct_count(p: i64) -> i64 {
+    var total: i64 = 1;
+    var x: i64 = 0;
+    while x < p {
+        let fx: i64 = ((x * x % p) * x + x + 1) % p;
+        if fx == 0 { total = total + 1; }
+        else {
+            if sq_legendre(fx, p) == 1 {
+                let y: i64 = sqrt_mod(fx, p);
+                if y * y % p != fx { return 0 - 1; }
+                total = total + 2;
+            }
+        }
+        x = x + 1;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    // ----- movement 1: integer side -----
+    let n: i64 = 1048576;
+    let r: i64 = isqrt64(n);
+    print(r);                        // 1024
+    print(r * r);                    // 1048576 — the witness re-mul
+    print(is_square64(n));           // 1
+    print(is_square64(n + 1));       // 0
+    let r2: i64 = isqrt64(n + 1);
+    print(r2);                       // 1024    — bracket lo: r2*r2 < n+1
+    print((r2 + 1) * (r2 + 1));      // 1050625 — bracket hi: n+1 < (r2+1)^2
+    print(isqrt64(r));               // 32 — the 4th root (1048576 = 32^4)
+    print(is_square64(r));           // 1  — the tower: sqrt is itself square
+
+    // ----- movement 2: hom preserves squares -----
+    var allok: i64 = 1;
+    allok = allok * hom_check(7);      // 2    (+-2 mod 7,  1024 == 2 mod 7)
+    allok = allok * hom_check(11);     // 1    (2^10 == 1 mod 11, Fermat)
+    allok = allok * hom_check(17);     // 4    (1024 == 4 mod 17)
+    allok = allok * hom_check(101);    // 14   (1024 == 14 mod 101)
+    allok = allok * hom_check(65521);  // 1024 (2^20 == 240; S = 4 deep loop)
+    print(allok);                    // 1 — every certificate held
+    // p-dependent squareness: 2 and -1
+    print(sqrt_mod(2, 17));          // 6  — 2 is a QR (17 == 1 mod 8)
+    print(sqrt_mod(2, 11));          // -1 — refused   (11 == 3 mod 8)
+    print(sqrt_mod(12, 13));         // 5  — sqrt(-1), p == 1 mod 4; t = -1
+    print(sqrt_mod(10, 11));         // -1 — sqrt(-1) refused, p == 3 mod 4
+
+    // ----- movement 3: construction == counting, p = 101 -----
+    let built: i64 = construct_count(101);
+    let counted: i64 = count_fp(101, 1, 1) as i64;
+    print(built);
+    print(counted);
+    var same: i64 = 0;
+    if built == counted { same = 1; }
+    print(same);                     // 1 — two routes, one N_1
+    // Hasse both ways: squared (the shipped idiom) and via the new isqrt
+    let a_tr: i64 = 101 + 1 - counted;
+    var h1: i64 = 0;
+    if a_tr * a_tr <= 404 { h1 = 1; }
+    print(h1);                       // 1 — a^2 <= 4p
+    let hb: i64 = isqrt64(404);
+    print(hb);                       // 20 — floor(2 sqrt p)
+    var aabs: i64 = a_tr;
+    if aabs < 0 { aabs = 0 - aabs; }
+    var h2: i64 = 0;
+    if aabs <= hb { h2 = 1; }
+    print(h2);                       // 1 — |a| <= isqrt(4p); the bounds agree
+    return 0;
+}

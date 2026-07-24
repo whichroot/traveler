@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_ntt_test.tv — WNTT gate: an NTT over BN254 Fr (2-adicity 28) — the same
+// DIT Cooley-Tukey structure as the dyn NTT, elements as 4-limb i256 buffers.
+// @internal-design: examples (wide crypto gates).
+//
+// omega and n_inv are wide constants from @internal-oracle: wide_ntt
+// (BN254 generator g=5); the inverse uses omega^(p-2) and scales by n_inv.
+//
+// Tests:
+//   1. round-trip: inverse(forward([1..8])) == [1..8]                 -> 1
+//   2. poly mul (1+2x)(3+4x) = 3 + 10x + 8x^2 via pointwise NTT       -> 1
+//
+// Expected output: 1 1
+//
+// Link: wide_ntt_test.o only (field_wide_* emitted into every module).
+
+extern "C" fn field_wide_add(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_sub(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_mul(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_pow(dst: *i64, base: *i64, exp: *i64, f: *i64);
+
+fn cp4(dst: *i64, src: *i64) {
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+}
+fn eq4(x: *i64, y: *i64) -> i32 {
+    if x[0] != y[0] { return 0; }
+    if x[1] != y[1] { return 0; }
+    if x[2] != y[2] { return 0; }
+    if x[3] != y[3] { return 0; }
+    return 1;
+}
+fn set_small(buf: *i64, v: i64) {
+    buf[0] = v; buf[1] = 0; buf[2] = 0; buf[3] = 0;
+}
+// element i of a flat n*4 limb buffer
+fn elem(a: *i64, i: i32) -> *i64 {
+    return &a[i * 4];
+}
+
+// in-place bit-reversal permutation of n elements (n a power of 2)
+fn bit_reverse(a: *i64, n: i32) {
+    let tmp: *i64 = alloc(4);
+    var i: i32 = 1;
+    var j: i32 = 0;
+    while i < n {
+        var bit: i32 = n / 2;
+        while (j & bit) != 0 {
+            j = j ^ bit;
+            bit = bit / 2;
+        }
+        j = j | bit;
+        if i < j {
+            cp4(tmp, elem(a, i));
+            cp4(elem(a, i), elem(a, j));
+            cp4(elem(a, j), tmp);
+        }
+        i = i + 1;
+    }
+    free(tmp);
+}
+
+// DIT NTT over a flat n*4 buffer. omega = primitive n-th root (or its inverse).
+fn wide_ntt(a: *i64, n: i32, omega: *i64, f: *i64) {
+    bit_reverse(a, n);
+
+    let wlen: *i64 = alloc(4);
+    let wj: *i64 = alloc(4);
+    let texp: *i64 = alloc(4);
+    let u: *i64 = alloc(4);
+    let v: *i64 = alloc(4);
+
+    var length: i32 = 2;
+    while length <= n {
+        // wlen = omega^(n / length)
+        set_small(texp, (n / length) as i64);
+        field_wide_pow(wlen, omega, texp, f);
+        var i: i32 = 0;
+        while i < n {
+            set_small(wj, 1);
+            var j: i32 = 0;
+            let half: i32 = length / 2;
+            while j < half {
+                // u = a[i+j]; v = a[i+j+half] * wj
+                cp4(u, elem(a, i + j));
+                field_wide_mul(v, elem(a, i + j + half), wj, f);
+                field_wide_add(elem(a, i + j), u, v, f);
+                field_wide_sub(elem(a, i + j + half), u, v, f);
+                field_wide_mul(wj, wj, wlen, f);
+                j = j + 1;
+            }
+            i = i + length;
+        }
+        length = length * 2;
+    }
+    free(wlen); free(wj); free(texp); free(u); free(v);
+}
+
+// inverse NTT: transform with omega^(p-2), then scale by n_inv.
+fn wide_intt(a: *i64, n: i32, omega: *i64, n_inv: *i64, f: *i64) {
+    // omega_inv = omega^(p-2) — use the supplied n_inv-style approach: caller
+    // passes the forward omega; we compute its inverse via Fermat exponent.
+    // p-2 as a 4-limb constant (BN254 prime minus 2).
+    let pm2: *i64 = alloc(4);
+    // p = 0x30644e72...f0000001, p-2 = ...effffffff
+    pm2[0] = 4891460686036598783;   // low limb of (p-2)
+    pm2[1] = 2896914383306846353;
+    pm2[2] = 13281191951274694749;
+    pm2[3] = 3486998266802970665;
+    let omega_inv: *i64 = alloc(4);
+    field_wide_pow(omega_inv, omega, pm2, f);
+    wide_ntt(a, n, omega_inv, f);
+    // scale by n_inv
+    var i: i32 = 0;
+    while i < n {
+        field_wide_mul(elem(a, i), elem(a, i), n_inv, f);
+        i = i + 1;
+    }
+    free(pm2); free(omega_inv);
+}
+
+fn main() -> i32 {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+    // omega8 and n_inv from the oracle
+    let omega: *i64 = alloc(4);
+    omega[0]=10704402425919135360; omega[1]=5936434144913852938;
+    omega[2]=17049394741569908534; omega[3]=3112970176132370210;
+    let n_inv: *i64 = alloc(4);
+    n_inv[0]=1974185091068329985; n_inv[1]=9452329113034572415;
+    n_inv[2]=9315199948151663953; n_inv[3]=3051123483452599332;
+
+    // ---- test 1: round-trip on [1..8] ----
+    let a: *i64 = alloc(8 * 4);
+    var i: i32 = 0;
+    while i < 8 {
+        set_small(elem(a, i), (i + 1) as i64);
+        i = i + 1;
+    }
+    wide_ntt(a, 8, omega, f);
+    wide_intt(a, 8, omega, n_inv, f);
+    var rt_ok: i32 = 1;
+    let chk: *i64 = alloc(4);
+    i = 0;
+    while i < 8 {
+        set_small(chk, (i + 1) as i64);
+        if eq4(elem(a, i), chk) == 0 { rt_ok = 0; }
+        i = i + 1;
+    }
+    print(rt_ok);
+
+    // ---- test 2: poly mul (1+2x)(3+4x) = 3 + 10x + 8x^2 ----
+    let pa: *i64 = alloc(8 * 4);
+    let pb: *i64 = alloc(8 * 4);
+    i = 0;
+    while i < 8 { set_small(elem(pa, i), 0); set_small(elem(pb, i), 0); i = i + 1; }
+    set_small(elem(pa, 0), 1); set_small(elem(pa, 1), 2);
+    set_small(elem(pb, 0), 3); set_small(elem(pb, 1), 4);
+    wide_ntt(pa, 8, omega, f);
+    wide_ntt(pb, 8, omega, f);
+    let pc: *i64 = alloc(8 * 4);
+    i = 0;
+    while i < 8 {
+        field_wide_mul(elem(pc, i), elem(pa, i), elem(pb, i), f);
+        i = i + 1;
+    }
+    wide_intt(pc, 8, omega, n_inv, f);
+    var pm_ok: i32 = 1;
+    let c0: *i64 = alloc(4); set_small(c0, 3);
+    let c1: *i64 = alloc(4); set_small(c1, 10);
+    let c2: *i64 = alloc(4); set_small(c2, 8);
+    let c3: *i64 = alloc(4); set_small(c3, 0);
+    if eq4(elem(pc, 0), c0) == 0 { pm_ok = 0; }
+    if eq4(elem(pc, 1), c1) == 0 { pm_ok = 0; }
+    if eq4(elem(pc, 2), c2) == 0 { pm_ok = 0; }
+    if eq4(elem(pc, 3), c3) == 0 { pm_ok = 0; }
+    print(pm_ok);
+
+    return 0;
+}

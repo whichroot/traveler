@@ -1,0 +1,93 @@
+// pfor_parity_bigliteral.tv — A2: cross-compiler literal-width parity
+//
+// tvc.c stores affine literals as int64_t; tvc_self.tv originally used
+// i32 with 'int_val as i32' truncation.  Truncation is SOUND (a key
+// collision requires true deltas >= 2^32, which can only make truly
+// disjoint footprints look overlapping — lost parallelism, never a
+// race) but it breaks dual-compiler parity:
+//
+//   out[i + 4294967297] vs out[i], trip 4096:
+//     tvc.c:    delta = 2^32+1 >= 4096  -> dispatch
+//     tvc_self: delta = trunc(2^32+1) = 1 < 4096 -> reject  (DIVERGED)
+//
+// The big-literal loop lives in a dead branch: pfor analysis runs at
+// codegen regardless of reachability, the worker is emitted but never
+// called, so no runtime access at offset 2^32.
+//
+// Loop layout (expected workers: 3, identical in BOTH compilers):
+//   1. live safe loop                          -> worker
+//   2. dead-branch big-literal disjoint loop   -> worker (the probe)
+//   3. live boundary loop, delta == trip       -> worker (case (a) edge)
+//   4. live overlap loop, delta == trip-1      -> NO worker (negative ctl)
+//
+// Expected output: 32768 12288 12286
+
+field F = Field<2013265921>;
+
+let mut g_never: i32 = 0;
+
+fn cube(x: F) -> F {
+    return x * x * x;
+}
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *F = alloc(n);
+    let out: *F = alloc(2 * n);
+
+    let mut w: i32 = 0;
+    while w < n { a[w] = 2; w = w + 1; }
+    w = 0;
+    while w < 2 * n { out[w] = 0; w = w + 1; }
+
+    // Loop 1: live safe loop (anchor — must parallelize everywhere)
+    for i in 0..4096 {
+        out[i] = cube(a[i]);
+    }
+    let mut s0: F = 0;
+    w = 0;
+    while w < n { s0 = s0 + out[w]; w = w + 1; }
+    print(s0);
+
+    // Loop 2: THE PROBE.  Dead branch, two writes with literal delta
+    // 2^32+1.  True footprints disjoint by case (a): 4294967297 >= 4096.
+    // Both compilers must reach the same verdict (dispatch).
+    if g_never == 1 {
+        for i in 0..4096 {
+            out[i + 4294967297] = a[i];
+            out[i] = a[i] + a[i];
+        }
+    }
+
+    // Loop 3: literal delta == trip count exactly (boundary of >=).
+    // Disjoint: [0,4096) vs [4096,8192).  Must parallelize.
+    let outb: *F = alloc(2 * n);
+    w = 0;
+    while w < 2 * n { outb[w] = 0; w = w + 1; }
+    let one: F = 1;
+    let two: F = 2;
+    for i in 0..4096 {
+        outb[i] = one;
+        outb[i + 4096] = two;
+    }
+    let mut s1: F = 0;
+    w = 0;
+    while w < 2 * n { s1 = s1 + outb[w]; w = w + 1; }
+    print(s1);
+
+    // Loop 4: negative control — delta == trip-1, footprints overlap
+    // at cell 4095.  Must stay sequential in BOTH compilers.
+    let outc: *F = alloc(2 * n);
+    w = 0;
+    while w < 2 * n { outc[w] = 0; w = w + 1; }
+    for i in 0..4096 {
+        outc[i] = one;
+        outc[i + 4095] = two;
+    }
+    let mut s2: F = 0;
+    w = 0;
+    while w < 2 * n { s2 = s2 + outc[w]; w = w + 1; }
+    print(s2);
+
+    return 0;
+}

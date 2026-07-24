@@ -1,0 +1,551 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// piecewise_core.tv — codec core module: field carrier + constants, forward
+// diff/sum, header optimization, predictive protocol, Rice coding, segment cost,
+// the Segment struct. Spec §3.4, §10.1, §11.
+// @internal-design: codec
+
+type F = Field<65537>;
+
+// ===== Constants =====
+
+let P: i32 = 65537;
+let HALF_P: i32 = 32768;    // P / 2
+let MAX_ORDER: i32 = 6;
+let MIN_SEGMENT: i32 = 16;
+let MAX_SEGMENT: i32 = 4096;
+let MAX_PART_ORDER: i32 = 4; // Rice partition orders 0..4
+
+// ===== Field arithmetic =====
+// Runtime Field carrier; add/sub via @field_dyn_{add,sub}. Prime is
+// data-selected at runtime, not baked. See @internal-design: codec.
+
+fn fadd_g<F: Field>(a: F, b: F) -> F { return a + b; }
+fn fsub_g<F: Field>(a: F, b: F) -> F { return a - b; }
+instantiate fadd_g<dyn>;   // fadd_g_dyn(f, a, b)
+instantiate fsub_g<dyn>;   // fsub_g_dyn(f, a, b)
+
+// (a + b) mod p via the compiler's branchless field add.
+fn field_add(a: i64, b: i64, f: Field) -> i64 { return fadd_g_dyn(f, a, b); }
+// (a - b) mod p via the compiler's branchless field sub.
+fn field_sub(a: i64, b: i64, f: Field) -> i64 { return fsub_g_dyn(f, a, b); }
+
+// Center a field difference for Rice coding: if diff > p/2, treat as
+// negative (diff - p).  Balanced representation around zero.
+fn center(diff: i64, f: Field) -> i64 {
+    let half: i64 = f.p / 2;
+    if diff > half { return diff - f.p; }
+    return diff;
+}
+
+// Uncenter: map a signed balanced value back to a field element [0, p).
+fn uncenter(val: i64, f: Field) -> i64 {
+    if val < 0 { return val + f.p; }
+    return val;
+}
+
+// ===== Forward differences over Z/PZ =====
+
+// Compute forward differences of given order on field elements.
+// Returns number of residuals (= n - order).
+// headers[0..order-1] = first element at each difference level
+// residuals[0..n-order-1] = the order-th differences
+#[export]
+fn pc_forward_diff(samples: *i32, n: i32, order: i32,
+    headers: *i32, residuals: *i32,
+    f: Field) -> i32 {
+    // Work buffer: copy samples, then iteratively difference
+    let work: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        work[i] = samples[i];
+        i = i + 1;
+    }
+
+    var sz: i32 = n;
+    var lev: i32 = 0;
+    while lev < order {
+        headers[lev] = work[0];
+        var j: i32 = 0;
+        while j < sz - 1 {
+            work[j] = field_sub(work[j + 1], work[j], f);
+            j = j + 1;
+        }
+        sz = sz - 1;
+        lev = lev + 1;
+    }
+
+    // Copy residuals out
+    i = 0;
+    while i < sz {
+        residuals[i] = work[i];
+        i = i + 1;
+    }
+
+    free(work);
+    return sz;
+}
+
+// Reconstruct signal from headers + residuals via forward summation.
+// Register has order+1 entries. Top-down summation.
+#[export]
+fn pc_forward_sum(headers: *i32, order: i32,
+    residuals: *i32, n_res: i32,
+    out: *i32, n: i32,
+    f: Field) {
+    // Register: order+1 entries
+    let reg: *i32 = alloc(order + 1);
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    if n_res > 0 {
+        reg[order] = residuals[0];
+    }
+
+    out[0] = reg[0];
+
+    var i: i32 = 1;
+    while i < n {
+        // Forward sum: top-down
+        k = 0;
+        while k < order {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        out[i] = reg[0];
+        // Feed next residual
+        if i < n_res {
+            reg[order] = residuals[i];
+        }
+        i = i + 1;
+    }
+
+    free(reg);
+}
+
+// Compute residuals using GIVEN headers (not derived from data): advance the
+// register through the signal, collecting the residual at each step.
+// Returns the number of residuals (= n: every sample is predicted + self-corrected).
+fn pc_forward_diff_with_headers(samples: *i32, n: i32,
+    order: i32, headers: *i32,
+    residuals: *i32,
+    f: Field) -> i32 {
+    let reg: *i32 = alloc(order + 1);
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    reg[order] = 0;
+
+    var n_res: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        // Advance register
+        k = 0;
+        while k < order {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        // Residual: what the register didn't predict
+        let residual: i32 = field_sub(samples[i], reg[0], f);
+        residuals[n_res] = residual;
+        n_res = n_res + 1;
+        // Self-correct
+        reg[order] = residual;
+        i = i + 1;
+    }
+
+    free(reg);
+    return n_res;
+}
+
+// ===== Header optimization =====
+// Coordinate descent, deepest header first: finds headers minimizing residual
+// energy over the whole segment (may differ from the Newton headers at t=0).
+// Rationale ("vortex circulation" framing): @internal-design: codec.
+
+// Evaluate the residual cost of a given set of headers on a segment.
+// Returns sum of |centered residuals| (cheap proxy for rice_partitioned_bits).
+// Pure function — no allocation, operates on caller-provided register.
+fn header_residual_cost(samples: *i32, n: i32,
+    headers: *i32, order: i32,
+    f: Field) -> i64 {
+    let reg: *i32 = alloc(order + 1);
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    reg[order] = 0;
+
+    var cost: i64 = 0;
+    var i: i32 = 0;
+    while i < n {
+        // Advance register
+        k = 0;
+        while k < order {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        // Residual
+        let residual: i32 = field_sub(samples[i], reg[0], f);
+        let c: i32 = center(residual, f);
+        var abs_c: i32 = c;
+        if abs_c < 0 { abs_c = 0 - abs_c; }
+        cost = cost + abs_c as i64;
+        // Self-correct
+        reg[order] = residual;
+        i = i + 1;
+    }
+    free(reg);
+    return cost;
+}
+
+// Optimize headers via coordinate descent, deepest-first. In-place; returns
+// cost improvement (positive = better). Perturbations ±{1,3,10,30,50}, one pass,
+// order×10 trials.
+fn optimize_headers(samples: *i32, n: i32,
+    headers: *i32, order: i32,
+    f: Field) -> i64 {
+    let base_cost: i64 = header_residual_cost(samples, n, headers, order, f);
+    var best_cost: i64 = base_cost;
+
+    // Deepest header first (most global effect)
+    var h: i32 = order - 1;
+    while h >= 0 {
+        let original: i32 = headers[h];
+        var best_val: i32 = original;
+
+        // Try perturbations: ±{1, 3, 10, 30, 50}
+        var di: i32 = 0;
+        while di < 5 {
+            var delta: i32 = 1;
+            if di == 1 { delta = 3; }
+            if di == 2 { delta = 10; }
+            if di == 3 { delta = 30; }
+            if di == 4 { delta = 50; }
+
+            // Try +delta
+            headers[h] = (original + delta) % P;
+            let cost_plus: i64 = header_residual_cost(samples, n, headers, order, f);
+            if cost_plus < best_cost {
+                best_cost = cost_plus;
+                best_val = headers[h];
+            }
+
+            // Try -delta
+            headers[h] = (original - delta + P) % P;
+            let cost_minus: i64 = header_residual_cost(samples, n, headers, order, f);
+            if cost_minus < best_cost {
+                best_cost = cost_minus;
+                best_val = headers[h];
+            }
+
+            headers[h] = original;  // restore for next delta
+            di = di + 1;
+        }
+
+        headers[h] = best_val;  // commit best perturbation for this header
+        h = h - 1;
+    }
+
+    return base_cost - best_cost;
+}
+
+// ===== Predictive protocol (BT_PREDICTIVE) =====
+// Optimized headers + per-step self-correction. Emits n residuals (not n-d),
+// smaller because headers are tuned for the whole segment. Cost-gated vs
+// Newton. See @internal-design: codec.
+
+// Encode samples using the predictive protocol with optimized headers.
+// Returns n (number of residuals = number of samples).
+fn predictive_diff(samples: *i32, n: i32, order: i32,
+    headers: *i32, residuals: *i32,
+    f: Field) -> i32 {
+    // Start with Newton headers from forward_diff on the first (order+1) samples
+    let init_n: i32 = order + 1;
+    if init_n > n { return 0; }
+    let tmp_h: *i32 = alloc(order + 1);
+    let tmp_r: *i32 = alloc(n);
+    pc_forward_diff(samples, init_n, order, tmp_h, tmp_r, f);
+    var k: i32 = 0;
+    while k < order {
+        headers[k] = tmp_h[k];
+        k = k + 1;
+    }
+    free(tmp_r);
+    free(tmp_h);
+
+    // Optimize headers for the whole segment
+    optimize_headers(samples, n, headers, order, f);
+
+    // Produce n residuals using forward_diff_with_headers
+    let n_res: i32 = pc_forward_diff_with_headers(samples, n, order, headers, residuals, f);
+    return n_res;
+}
+
+// Decode samples using the predictive protocol.
+// headers[0..order-1] are the optimized register state.
+// residuals[0..n-1] are the per-step corrections.
+fn predictive_sum(headers: *i32, order: i32,
+    residuals: *i32, n: i32,
+    out: *i32,
+    f: Field) {
+    let reg: *i32 = alloc(order + 1);
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    reg[order] = 0;
+
+    var i: i32 = 0;
+    while i < n {
+        // Advance register (same as encoder)
+        k = 0;
+        while k < order {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        // Reconstruct: predicted + residual
+        out[i] = field_add(reg[0], residuals[i], f);
+        // Self-correct (same as encoder)
+        reg[order] = residuals[i];
+        i = i + 1;
+    }
+    free(reg);
+}
+
+// Build register state at end of a predictive segment (for CONT blocks).
+fn build_register_state_predictive(headers: *i32, order: i32,
+    residuals: *i32, n: i32,
+    reg: *i32,
+    f: Field) {
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    reg[order] = 0;
+
+    var i: i32 = 0;
+    while i < n {
+        k = 0;
+        while k < order {
+            reg[k] = field_add(reg[k], reg[k + 1], f);
+            k = k + 1;
+        }
+        reg[order] = residuals[i];
+        i = i + 1;
+    }
+}
+
+// Cost of encoding a segment with the predictive protocol.
+fn predictive_cost(samples: *i32, n: i32, order: i32,
+    f: Field) -> i64 {
+    if n < order + 1 { return 9223372036854775807; }
+
+    let headers: *i32 = alloc(order + 1);
+    let residuals: *i32 = alloc(n);
+
+    let n_res: i32 = predictive_diff(samples, n, order, headers, residuals, f);
+    let header_bits: i64 = (SEGMENT_OVERHEAD_BYTES + order * 4) as i64 * 8;
+    let rice: i64 = rice_partitioned_bits(residuals, n_res, MAX_PART_ORDER, f);
+    let total: i64 = header_bits + rice;
+
+    free(residuals);
+    free(headers);
+    return total;
+}
+
+// ===== Rice coding =====
+
+// Zigzag encode: map signed to unsigned (0,-1,1,-2,2,... -> 0,1,2,3,4,...)
+fn zigzag(v: i32) -> i32 {
+    if v >= 0 {
+        return v * 2;
+    }
+    return (0 - v) * 2 - 1;
+}
+
+// Bits to Rice-encode one unsigned value with parameter k
+fn rice_bits_one(u: i32, k: i32) -> i32 {
+    let q: i32 = u >> k;
+    return q + 1 + k;
+}
+
+// Total bits to Rice-encode centered field differences
+fn rice_bits(residuals: *i32, n: i32, k: i32,
+    f: Field) -> i64 {
+    var total: i64 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let centered: i32 = center(residuals[i], f);
+        let u: i32 = zigzag(centered);
+        total = total + rice_bits_one(u, k) as i64;
+        i = i + 1;
+    }
+    return total;
+}
+
+// Optimal Rice parameter for a block of residuals
+fn optimal_rice_k(residuals: *i32, n: i32,
+    f: Field) -> i32 {
+    if n == 0 { return 0; }
+
+    // Compute mean |centered value| for initial estimate
+    var sum_abs: i64 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let c: i32 = center(residuals[i], f);
+        if c < 0 {
+            sum_abs = sum_abs + (0 - c) as i64;
+        } else {
+            sum_abs = sum_abs + c as i64;
+        }
+        i = i + 1;
+    }
+    let mean_abs: i64 = sum_abs / n as i64;
+
+    // Estimate k from mean
+    var k_center: i32 = 0;
+    var m: i64 = mean_abs;
+    while m > 1 {
+        m = m >> 1;
+        k_center = k_center + 1;
+    }
+
+    // Search around estimate
+    var lo: i32 = 0;
+    if k_center > 2 { lo = k_center - 2; }
+    var hi: i32 = 20;
+    if k_center + 4 < 20 { hi = k_center + 4; }
+    var best_k: i32 = 0;
+    var best_bits: i64 = 9223372036854775807;  // i64 max
+
+    var k: i32 = lo;
+    while k < hi {
+        let bits: i64 = rice_bits(residuals, n, k, f);
+        if bits < best_bits {
+            best_bits = bits;
+            best_k = k;
+        }
+        k = k + 1;
+    }
+    return best_k;
+}
+
+// Rice-partitioned bit count: divide residuals into 2^porder partitions,
+// each with its own Rice k. Returns total bits including 4 bits per
+// partition for the k parameter.
+fn rice_partitioned_bits(residuals: *i32, n: i32, max_porder: i32,
+    f: Field) -> i64 {
+    if n == 0 { return 0; }
+
+    var best_bits: i64 = 9223372036854775807;
+
+    var porder: i32 = 0;
+    while porder <= max_porder {
+        let n_parts: i32 = 1 << porder;
+        let part_size: i32 = n / n_parts;
+
+        if part_size < 1 {
+            porder = porder + 1;
+            continue;
+        }
+        if n_parts > n {
+            porder = porder + 1;
+            continue;
+        }
+
+        var total: i64 = n_parts as i64 * 4;  // 4 bits per partition for k
+        var part: i32 = 0;
+        while part < n_parts {
+            let start: i32 = part * part_size;
+            var end: i32 = n;
+            if part < n_parts - 1 { end = (part + 1) * part_size; }
+            let pn: i32 = end - start;
+
+            // Find optimal k for this partition
+            let k: i32 = optimal_rice_k(&residuals[start], pn, f);
+            total = total + rice_bits(&residuals[start], pn, k, f);
+
+            part = part + 1;
+        }
+
+        if total < best_bits {
+            best_bits = total;
+        }
+        porder = porder + 1;
+    }
+    return best_bits;
+}
+
+// ===== Segment cost estimation =====
+
+// Header overhead per segment in bits:
+// type(1) + length(2) + order(1) + partition_order(1) = 5 bytes
+// + headers: order * 4 bytes (i32 each)
+let SEGMENT_OVERHEAD_BYTES: i32 = 5;
+
+fn segment_cost(samples: *i32, n: i32, order: i32,
+    f: Field) -> i64 {
+    if n < order + 1 { return 9223372036854775807; }
+
+    let headers: *i32 = alloc(order + 1);
+    let residuals: *i32 = alloc(n);
+
+    let n_res: i32 = pc_forward_diff(samples, n, order, headers, residuals, f);
+    let header_bits: i64 = (SEGMENT_OVERHEAD_BYTES + order * 4) as i64 * 8;
+    let rice: i64 = rice_partitioned_bits(residuals, n_res, MAX_PART_ORDER, f);
+    let total: i64 = header_bits + rice;
+
+    free(residuals);
+    free(headers);
+    return total;
+}
+
+// Literal cost in bits (parameterized by data byte width)
+fn literal_cost(n: i32, f: Field) -> i64 {
+    // type(1) + length(2) + raw samples (n * data_bytes)
+    return (3 + n * f.data_bytes) as i64 * 8;
+}
+
+// ===== Segment result structure =====
+
+struct Segment {
+    start: i32,
+    length: i32,
+    order: i32,
+    n_headers: i32,
+    h0: i32, h1: i32, h2: i32, h3: i32, h4: i32, h5: i32, h6: i32,
+    res_offset: i32,
+    res_count: i32,
+    encoded_bits: i64,
+    is_cont: i32,      // 1 = continuation of previous segment's polynomial
+    is_predictive: i32, // 1 = predictive protocol (n residuals, optimized headers)
+}
+
+fn seg_set_header(seg: *Segment, idx: i32, val: i32) {
+    if idx == 0 { seg.h0 = val; }
+    if idx == 1 { seg.h1 = val; }
+    if idx == 2 { seg.h2 = val; }
+    if idx == 3 { seg.h3 = val; }
+    if idx == 4 { seg.h4 = val; }
+    if idx == 5 { seg.h5 = val; }
+    if idx == 6 { seg.h6 = val; }
+}
+
+fn seg_get_header(seg: *Segment, idx: i32) -> i32 {
+    if idx == 0 { return seg.h0; }
+    if idx == 1 { return seg.h1; }
+    if idx == 2 { return seg.h2; }
+    if idx == 3 { return seg.h3; }
+    if idx == 4 { return seg.h4; }
+    if idx == 5 { return seg.h5; }
+    return seg.h6;
+}
+

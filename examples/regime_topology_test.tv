@@ -1,0 +1,297 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_topology_test.tv — empirical verification of the Boundary Invariance
+// Theorem (spec 17.3.1): boundary positions are field-invariant for |r| < p/2.
+// @internal-design: regime (theorem structure); failure-mode
+// demonstrators: regime_invariance_test.tv.
+//
+// Links with poly_core.tv (two-file link).
+//
+// Test groups:
+//   1. Simply connected: pure degree-2 polynomial, zero boundaries
+//   2. Single boundary: spliced polynomials, one break at index 10
+//   3. Periodic: repeated polynomial, seam boundary at index 10
+//   4. Degree profile: B(d) sequence [2,3,11] for degree-3 signal
+//   5. Multi-boundary: three-segment splice, breaks at [7,14]
+//
+// Each group tested across primes {251, 65521, 65537}.
+//
+// Expected output: 15 tests, 15 passed
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// Import kernel functions (linked from poly_core.o)
+extern "C" fn forward_sum(coeffs: *i32, order: i32, out: *i32, n: i32, p: i32, reg: *i32);
+extern "C" fn regime_detect(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32;
+
+fn main() {
+    var tests: i32 = 0;
+    var passed: i32 = 0;
+
+    var primes: [i32; 3] = 0;
+    primes[0] = 251;
+    primes[1] = 65521;
+    primes[2] = 65537;
+
+    // Shared buffers
+    var reg: [i32; 4] = 0;
+    var gen_reg: [i32; 4] = 0;
+
+    // ============================================================
+    //  GROUP 1: Simply Connected
+    //
+    //  Pure degree-2 polynomial [10, 3, 1] at 20 consecutive points.
+    //  Values: 10, 13, 17, 22, ..., 238 (all < 251).
+    //  One polynomial chart covers the entire signal.
+    //  regime_detect at order=2, threshold=0 should return n=20.
+    // ============================================================
+
+    var sc_coeffs: [i32; 3] = 0;
+    sc_coeffs[0] = 10;
+    sc_coeffs[1] = 3;
+    sc_coeffs[2] = 1;
+    var sc_data: [i32; 20] = 0;
+    forward_sum(&sc_coeffs[0], 2, &sc_data[0], 20, 0, &gen_reg[0]);
+
+    var pi: i32 = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let b: i32 = regime_detect(&sc_data[0], 20, 2, 0, p, &reg[0]);
+        tests = tests + 1;
+        wr(1, "topo_simply_connected p=");
+        wr_int(1, p as i64);
+        wr(1, " b=");
+        wr_int(1, b as i64);
+        if b == 20 {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 2: Single Boundary
+    //
+    //  Segment A: [10, 3, 1] for 10 points (10, 13, ..., 73)
+    //  Segment B: [50, 2, 1] for 10 points (50, 52, ..., 104)
+    //  Boundary at index 10: predicted=85, actual=50, |residual|=35.
+    // ============================================================
+
+    var sb_data: [i32; 20] = 0;
+    var seg_a: [i32; 3] = 0;
+    seg_a[0] = 10;
+    seg_a[1] = 3;
+    seg_a[2] = 1;
+    forward_sum(&seg_a[0], 2, &sb_data[0], 10, 0, &gen_reg[0]);
+
+    var seg_b: [i32; 3] = 0;
+    seg_b[0] = 50;
+    seg_b[1] = 2;
+    seg_b[2] = 1;
+    forward_sum(&seg_b[0], 2, &sb_data[10], 10, 0, &gen_reg[0]);
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let b: i32 = regime_detect(&sb_data[0], 20, 2, 0, p, &reg[0]);
+        tests = tests + 1;
+        wr(1, "topo_single_break p=");
+        wr_int(1, p as i64);
+        wr(1, " b=");
+        wr_int(1, b as i64);
+        if b == 10 {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 3: Periodic Signal
+    //
+    //  [10, 3, 1] evaluated at 10 points, repeated twice.
+    //  Values: 10, 13, ..., 73, 10, 13, ..., 73
+    //  Seam at index 10: predicted=85, actual=10, |residual|=75.
+    // ============================================================
+
+    var per_data: [i32; 20] = 0;
+    forward_sum(&seg_a[0], 2, &per_data[0], 10, 0, &gen_reg[0]);
+    forward_sum(&seg_a[0], 2, &per_data[10], 10, 0, &gen_reg[0]);
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let b: i32 = regime_detect(&per_data[0], 20, 2, 0, p, &reg[0]);
+        tests = tests + 1;
+        wr(1, "topo_periodic p=");
+        wr_int(1, p as i64);
+        wr(1, " b=");
+        wr_int(1, b as i64);
+        if b == 10 {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 4: Degree Profile
+    //
+    //  Degree-3 polynomial [5, 3, 2, 1] at 11 points.
+    //  Values: 5, 8, 13, 21, 33, 50, 73, 103, 141, 188, 245
+    //  All < 251.
+    //
+    //  The degree profile B(d) = first boundary position at order d:
+    //    order 1: boundary at 2 (linear breaks after init window)
+    //    order 2: boundary at 3 (quadratic breaks at 3rd post-init)
+    //    order 3: boundary at 11 (cubic covers all data)
+    //
+    //  This sequence is the topological signature of the polynomial
+    //  degree. It should be identical across all fields.
+    // ============================================================
+
+    var dp_coeffs: [i32; 4] = 0;
+    dp_coeffs[0] = 5;
+    dp_coeffs[1] = 3;
+    dp_coeffs[2] = 2;
+    dp_coeffs[3] = 1;
+    var dp_data: [i32; 11] = 0;
+    forward_sum(&dp_coeffs[0], 3, &dp_data[0], 11, 0, &gen_reg[0]);
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+
+        // Order 1
+        let b1: i32 = regime_detect(&dp_data[0], 11, 1, 0, p, &reg[0]);
+        // Order 2
+        let b2: i32 = regime_detect(&dp_data[0], 11, 2, 0, p, &reg[0]);
+        // Order 3
+        let b3: i32 = regime_detect(&dp_data[0], 11, 3, 0, p, &reg[0]);
+
+        tests = tests + 1;
+        wr(1, "topo_degree_profile p=");
+        wr_int(1, p as i64);
+        wr(1, " [");
+        wr_int(1, b1 as i64);
+        wr(1, ",");
+        wr_int(1, b2 as i64);
+        wr(1, ",");
+        wr_int(1, b3 as i64);
+        wr(1, "]");
+        if b1 == 2 {
+            if b2 == 3 {
+                if b3 == 11 {
+                    wr(1, ": PASS\n");
+                    passed = passed + 1;
+                } else {
+                    wr(1, ": FAIL\n");
+                }
+            } else {
+                wr(1, ": FAIL\n");
+            }
+        } else {
+            wr(1, ": FAIL\n");
+        }
+
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 5: Multi-Boundary
+    //
+    //  Three segments spliced into 20 points:
+    //    Segment A: [10, 3, 1] for 7 pts (10, 13, 17, 22, 28, 35, 43)
+    //    Segment B: [50, 2, 1] for 7 pts (50, 52, 55, 59, 64, 70, 77)
+    //    Segment C: [100, 1, 0] for 6 pts (100, 101, 102, 103, 104, 105)
+    //
+    //  First regime_detect on full data: boundary at 7.
+    //  Second regime_detect on data[7..19]: boundary at 7 (relative),
+    //    i.e. absolute position 14.
+    // ============================================================
+
+    var mb_data: [i32; 20] = 0;
+    var mb_a: [i32; 3] = 0;
+    mb_a[0] = 10;
+    mb_a[1] = 3;
+    mb_a[2] = 1;
+    forward_sum(&mb_a[0], 2, &mb_data[0], 7, 0, &gen_reg[0]);
+
+    var mb_b: [i32; 3] = 0;
+    mb_b[0] = 50;
+    mb_b[1] = 2;
+    mb_b[2] = 1;
+    forward_sum(&mb_b[0], 2, &mb_data[7], 7, 0, &gen_reg[0]);
+
+    var mb_c: [i32; 3] = 0;
+    mb_c[0] = 100;
+    mb_c[1] = 1;
+    mb_c[2] = 0;
+    forward_sum(&mb_c[0], 2, &mb_data[14], 6, 0, &gen_reg[0]);
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+
+        // First boundary
+        let b1: i32 = regime_detect(&mb_data[0], 20, 2, 0, p, &reg[0]);
+        // Second boundary (scan from first boundary)
+        let b2_rel: i32 = regime_detect(&mb_data[7], 13, 2, 0, p, &reg[0]);
+        let b2: i32 = 7 + b2_rel;
+
+        tests = tests + 1;
+        wr(1, "topo_multi_break p=");
+        wr_int(1, p as i64);
+        wr(1, " [");
+        wr_int(1, b1 as i64);
+        wr(1, ",");
+        wr_int(1, b2 as i64);
+        wr(1, "]");
+        if b1 == 7 {
+            if b2 == 14 {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+        } else {
+            wr(1, ": FAIL\n");
+        }
+
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  Summary
+    // ============================================================
+    wr_int(1, tests as i64);
+    wr(1, " tests, ");
+    wr_int(1, passed as i64);
+    wr(1, " passed\n");
+}

@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_loop_test.tv — Test #[zk] for-loop unrolling
+//
+// Same computation as forward_sum_check but using a for loop.
+// Newton coefficients [10, 3, 1] → f(0..3) = [10, 13, 17, 22] → sum = 62
+//
+// Expected output: 62 1
+//   62 = native forward_sum_loop(10, 3, 1)
+//   1  = ZK proof valid
+//
+// Tests: for-loop unrolling in circuit builder + witness emitter
+
+type Goldilocks = Field<18446744069414584321>;
+
+#[export zk]
+fn forward_sum_loop(c0: Goldilocks, c1: Goldilocks, c2: Goldilocks) -> Goldilocks {
+    var r0: Goldilocks = c0;
+    var r1: Goldilocks = c1;
+    var r2: Goldilocks = c2;
+    var sum: Goldilocks = 0;
+
+    for i in 0..4 {
+        sum = sum + r0;
+        r0 = r0 + r1;
+        r1 = r1 + r2;
+    }
+
+    return sum;
+}

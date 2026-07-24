@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_satotate.tv — O0 retrofit gate: satotate_vertical's in-field readouts
+// rebuilt through trace.tv (Trace + agg_moments/agg_histogram), bit-identical.
+// @internal-design: observability (Sato-Tate exhibit; trace.tv)
+//
+// @internal-oracle: satotate_vertical (shared — the output
+// tuple is identical to satotate_vertical's, so tests/expected/observe_satotate.txt
+// == tests/expected/satotate_vertical.txt).
+import "../src/lib/observe/trace.tv";
+
+fn isqrt(n: i64) -> i64 {
+    if n < 0 { return 0; }
+    var r: i64 = 0;
+    while (r + 1) * (r + 1) <= n { r = r + 1; }
+    return r;
+}
+
+fn build_qr(p: i32, sq: *i32) {
+    var i: i32 = 0;
+    while i < p { sq[i] = 0; i = i + 1; }
+    var y: i32 = 0;
+    while y < p { sq[(y * y) % p] = 1; y = y + 1; }
+}
+
+fn chi(t: i32, sq: *i32, p: i32) -> i32 {
+    let tt: i32 = ((t % p) + p) % p;
+    if tt == 0 { return 0; }
+    if sq[tt] == 1 { return 1; }
+    return -1;
+}
+
+fn ap_of(a: i32, b: i32, sq: *i32, p: i32) -> i32 {
+    var s: i32 = 0;
+    var x: i32 = 0;
+    while x < p {
+        let x3: i32 = (((x * x) % p) * x) % p;
+        let axb: i32 = (((a * x) % p) + b) % p;
+        let fx: i32 = (((x3 + axb) % p) + p) % p;
+        s = s + chi(fx, sq, p);
+        x = x + 1;
+    }
+    return -s;
+}
+
+fn rnd_div(num: i64, den: i64) -> i64 {
+    return (num + den / 2) / den;
+}
+
+// Observe a_p over ALL nonsingular curves mod p; the exact aggregate + the membrane.
+fn run_prime(p: i32) {
+    let sq: *i32 = alloc(p);
+    build_qr(p, sq);
+
+    let B: i32 = isqrt(4 * (p as i64)) as i32;       // floor(2 sqrt p)
+    let nbins: i32 = 2 * B + 1;
+
+    // The observable, retained into a caller-owned Trace (in-field x retain).
+    let cap: i32 = p * p;                            // upper bound on nonsingular curves
+    let tbuf: *i32 = alloc(cap);
+    let t: *Trace = alloc(1);
+    trace_init(t, tbuf, cap, 1);
+    let rec: *i32 = alloc(1);
+
+    var a: i32 = 0;
+    var count: i32 = 0;
+    while a < p {
+        var b: i32 = 0;
+        while b < p {
+            let a3: i32 = (((a * a) % p) * a) % p;
+            let disc: i32 = (((4 * a3) % p) + ((27 * ((b * b) % p)) % p)) % p;
+            if disc != 0 {                           // skip singular curves
+                rec[0] = ap_of(a, b, sq, p);
+                trace_at(t, count, rec);             // indexed store into the sink
+                count = count + 1;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+
+    let N: i64 = trace_len(t) as i64;
+
+    // In-field REDUCE via the library: exact integer moments (M_odd = 0, the
+    // certificate) + the a_p histogram (bin = a_p + B).
+    let mom: *i64 = alloc(6);
+    agg_moments(t, 6, mom);
+    let hist: *i32 = alloc(nbins);
+    agg_histogram(t, 0 - B, nbins, hist);
+
+    // LEAVES-FIELD, in plain sight: the one declared-scale division (S = 1e6).
+    let pl: i64 = p as i64;
+    let p2: i64 = pl * pl;
+    let p3: i64 = p2 * pl;
+    let s: i64 = 1000000;
+    let nm2: i64 = rnd_div(s * mom[1], N * pl);      // -> S*C1 = 1000000
+    let nm4: i64 = rnd_div(s * mom[3], N * p2);      // -> S*C2 = 2000000
+    let nm6: i64 = rnd_div(s * mom[5], N * p3);      // -> S*C3 = 5000000
+
+    print(p);
+    print(N);
+    print(mom[0]); print(mom[1]); print(mom[2]); print(mom[3]); print(mom[4]); print(mom[5]);
+    print(nm2); print(nm4); print(nm6);
+    print(B);
+    var k: i32 = 0;
+    while k < nbins { print(hist[k]); k = k + 1; }
+
+    free(hist);
+    free(mom);
+    free(rec);
+    free(t);
+    free(tbuf);
+    free(sq);
+}
+
+fn main() -> i32 {
+    run_prime(11);
+    run_prime(31);
+    run_prime(101);
+    return 0;
+}

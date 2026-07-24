@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// nn/linear.tv — exact fixed-point dense layer (matmul + bias + requantize).
+// Ported from gpt-2-research/tv/linear.tv; mirrors field/fixed_point.py:linear_fp.
+//   y[t,j] = requant( sum_k x[t,k]*W[k,j] + b[j]*S )   (scale S)
+// x:[T,K] W:[K,N] (row-major, HF Conv1D [in,out]) b:[N] y:[T,N], all i64 @ S=2^16.
+// Accumulator < 63 bits => valid field residues (linear_fp). linear_fp_F takes F
+// as a param: the honest i64 baseline that WRAPS past 63 bits, where the RNS path
+// (src/lib/rns/) carries each channel mod a 31-bit prime and CRT-reconstructs.
+// Indices i32 (GEP sexts); values/accumulators i64. Design: @internal-design: nn.
+
+fn linear_fp(x: *i64, w: *i64, b: *i64, y: *i64, T: i32, K: i32, N: i32) {
+    let F: i64 = 16;
+    let S: i64 = 65536;
+    let half: i64 = 1 << (F - 1);
+    var t: i32 = 0;
+    while t < T {
+        let xrow: i32 = t * K;
+        let yrow: i32 = t * N;
+        var j: i32 = 0;
+        while j < N {
+            var acc: i64 = b[j] * S;           // bias lifted S -> S^2
+            var k: i32 = 0;
+            while k < K {
+                acc = acc + x[xrow + k] * w[k * N + j];
+                k = k + 1;
+            }
+            y[yrow + j] = (acc + half) >> F;    // requantize S^2 -> S
+            j = j + 1;
+        }
+        t = t + 1;
+    }
+}
+
+// same layer, fractional-bit scale F passed in (the RNS-path scale). At high F a
+// single dot's exact accumulator exceeds 63 bits and this i64 acc silently WRAPS.
+fn linear_fp_F(x: *i64, w: *i64, b: *i64, y: *i64, T: i32, K: i32, N: i32, F: i64) {
+    let S: i64 = 1 << F;
+    let half: i64 = 1 << (F - 1);
+    var t: i32 = 0;
+    while t < T {
+        let xrow: i32 = t * K;
+        let yrow: i32 = t * N;
+        var j: i32 = 0;
+        while j < N {
+            var acc: i64 = b[j] * S;
+            var k: i32 = 0;
+            while k < K {
+                acc = acc + x[xrow + k] * w[k * N + j];
+                k = k + 1;
+            }
+            y[yrow + j] = (acc + half) >> F;
+            j = j + 1;
+        }
+        t = t + 1;
+    }
+}

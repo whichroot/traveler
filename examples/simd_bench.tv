@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// simd_bench.tv — SIMD vectorization benchmark: 1M field ops in tight loops
+// measuring the effect of alwaysinline + opt -O2 auto-vectorization.
+//
+// Three benchmarks:
+//   1. Array add: out[i] = a[i] + b[i] (mod p)
+//   2. Array mul: out[i] = a[i] * b[i] (mod p)
+//   3. Forward sum: evaluate degree-3 poly at 1M consecutive points
+//
+// Output: checksum values (for correctness verification)
+
+type F = Field<251>;
+
+fn main() -> i32 {
+    let n: i32 = 1000000;
+    let a: *F = alloc(n);
+    let b: *F = alloc(n);
+    let out: *F = alloc(n);
+
+    // Initialize
+    for i in 0..n {
+        a[i] = (i * 7 + 3) as F;
+        b[i] = (i * 13 + 5) as F;
+    }
+
+    // Benchmark 1: array add
+    for i in 0..n {
+        out[i] = a[i] + b[i];
+    }
+    // Checksum: sum of first 8 elements
+    var cs1: F = 0;
+    for i in 0..8 { cs1 = cs1 + out[i]; }
+    print(cs1);
+
+    // Benchmark 2: array mul
+    for i in 0..n {
+        out[i] = a[i] * b[i];
+    }
+    var cs2: F = 0;
+    for i in 0..8 { cs2 = cs2 + out[i]; }
+    print(cs2);
+
+    // Benchmark 3: forward sum (degree 3, 1M points)
+    let r0: F = 10;
+    let r1: F = 3;
+    let r2: F = 1;
+    let r3: F = 2;
+    var s0: F = r0;
+    var s1: F = r1;
+    var s2: F = r2;
+    var s3: F = r3;
+    for i in 0..n {
+        out[i] = s0;
+        s0 = s0 + s1;
+        s1 = s1 + s2;
+        s2 = s2 + s3;
+    }
+    var cs3: F = 0;
+    for i in 0..8 { cs3 = cs3 + out[i]; }
+    print(cs3);
+
+    return 0;
+}

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// #56 positive gate: text-wide literals (>u64) reach the wide branch through
+// EVERY legal spelling — let-annotation (u128/i256) and the `as`-cast form
+// (the #28 cast-context rule completed: >=64-bit targets qualify, and a
+// text-wide literal with a WRAPPED int_val takes a wide target's context).
+// The <=64-bit contexts refuse these literals (tests/diag/lit_wide_*).
+// tvc_self-only: wide integer surface types are the self-hosted compiler's.
+
+fn main() -> i32 {
+    // let-annotation: the wide branch reads the carried source text
+    let a: u128 = 18446744073709551616;                 // 2^64
+    print(a);
+    let b: i256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    print(b);                                            // BN254 Fr modulus
+    // the cast spelling (completed by #56; previously fell to an i32 context)
+    let c: u128 = 18446744073709551620 as u128;          // 2^64 + 4
+    print(c);
+    // boundary sanity: a shift-built value matches the literal route
+    let d: u128 = (12345 as u128) << (64 as u128);
+    print(d);
+    return 0;
+}

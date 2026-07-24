@@ -1,0 +1,9 @@
+field F1 = Field<251>;
+field F2 = Field<65521>;
+
+fn main() {
+    let a: F1 = 10;
+    let b: F2 = 20;
+    let c: F1 = a + b;
+    return;
+}

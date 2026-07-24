@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// lab_experiment.tv — the self-improving lab's experiment-container ENTRYPOINT,
+// end to end in Traveler, TELOS-aware:
+//   read request.json (which carries a `telos` — the WHY) -> run bounded,
+//   self-CERTIFYING work toward that telos -> emit the tmp-output contract
+//   (output.jsonl events + atomic heartbeat.json + final.json) into a run dir,
+//   with final.json echoing the telos so the RESULT carries its own purpose.
+// tvc_self ONLY. design: @internal-note: plan-self-improving-lab (Phase 2)
+//
+// Args (container): argv[1] = request.json path, argv[2] = output dir. With no
+// args (the gate), it self-seeds a default request and writes under
+// /tmp/traveler_lab_exp — so standalone output is deterministic and unchanged.
+//
+// The "work" is a stand-in: a bounded Gauss sum S = Σ_{k<N} k checked against the
+// closed form N(N-1)/2 — a computation that ships its own CERTIFICATE (the
+// telos test). The container validates the LOOP, not the science (spec non-goal).
+//
+// Expected output (standalone / gate):
+//   6     events in output.jsonl (started + 4 measurements + completed)
+//   1     heartbeat.json present (last atomic write)
+//   1     final.json present
+//   1     certificate: the loop sum matched the closed form (telos met)
+//   11    outcome: hypothesis SUPPORTED (spec exit-code 11)
+//   700   the ? pipeline completed
+
+import "../src/lib/fs/fs.tv";
+import "../src/lib/json/json.tv";            // writer
+import "../src/lib/json/json_parse.tv";      // reader
+
+// "<dir>/<name>", NUL-terminated for use as a C-string path.
+fn path_join(dir: *u8, name: *u8) -> Str {
+    var s: Str = str_new();
+    var i: i32 = 0;
+    while dir[i] != 0 { str_push(&s, dir[i]); i = i + 1; }
+    str_push(&s, 47);                        // '/'
+    i = 0;
+    while name[i] != 0 { str_push(&s, name[i]); i = i + 1; }
+    str_push(&s, 0);                         // NUL
+    return s;
+}
+
+// A JSON string value copied out as an owned, NUL-terminated C string (empty if
+// the node is missing / not a string). Local: lab_experiment is its only consumer.
+fn json_cstr(d: *Json, n: i32) -> Str {
+    var s: Str = json_str_copy(d, n);
+    str_push(&s, 0);
+    return s;
+}
+
+fn emit_event(out: *u8, run_id: *u8, seq: i64, kind: *u8, msg: *u8) -> Result<i64, FsError> {
+    var s: Str = str_new();
+    json_obj_open(&s);
+    json_field_str(&s, "run_id", run_id); json_comma(&s);
+    json_field_int(&s, "sequence", seq);  json_comma(&s);
+    json_field_str(&s, "kind", kind);     json_comma(&s);
+    json_field_str(&s, "message", msg);
+    json_obj_close(&s);
+    str_push(&s, 10);
+    let r: i64 = fs_append_string(out, &s)?;
+    str_free(&s);
+    return Result::Ok(r);
+}
+
+fn beat(hb: *u8, hbt: *u8, seq: i64, phase: *u8, progress: i64) -> Result<i64, FsError> {
+    var s: Str = str_new();
+    json_obj_open(&s);
+    json_field_int(&s, "sequence", seq);   json_comma(&s);
+    json_field_str(&s, "phase", phase);    json_comma(&s);
+    json_field_int(&s, "progress", progress);
+    json_obj_close(&s);
+    let r: i64 = fs_write_atomic(hb, hbt, &s)?;
+    str_free(&s);
+    return Result::Ok(r);
+}
+
+fn count_nl(s: *Str) -> i32 {
+    var n: i32 = 0;
+    var i: i32 = 0;
+    while i < str_len(s) {
+        if str_byte(s, i) == 10 { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn run(reqp: *u8, outdir: *u8, seed: i32) -> Result<i64, FsError> {
+    // Output dir (idempotent) + the contract paths under it.
+    match fs_mkdir(outdir) { Result::Ok(v) => {} Result::Err(e) => {} }
+    var outp: Str  = path_join(outdir, "output.jsonl");
+    var hbp: Str   = path_join(outdir, "heartbeat.json");
+    var hbtp: Str  = path_join(outdir, "heartbeat.json.tmp");
+    var finp: Str  = path_join(outdir, "final.json");
+    let out: *u8 = outp.data;
+    let hb: *u8  = hbp.data;
+    let hbt: *u8 = hbtp.data;
+    let fin: *u8 = finp.data;
+
+    // Standalone: self-seed a request carrying a telos. A container mounts one.
+    if seed == 1 {
+        var rq: Str = str_new();
+        json_obj_open(&rq);
+        json_field_str(&rq, "run_id", "run-000041");                          json_comma(&rq);
+        json_field_str(&rq, "telos", "confirm the Gauss identity holds for N"); json_comma(&rq);
+        json_field_str(&rq, "hypothesis", "sum_{k<N} k == N(N-1)/2");          json_comma(&rq);
+        json_field_int(&rq, "iterations", 100);                               json_comma(&rq);
+        json_field_int(&rq, "stride", 25);
+        json_obj_close(&rq);
+        fs_write_string(reqp, &rq)?;
+        str_free(&rq);
+    }
+
+    // Read + parse the request, then do the whole run INSIDE the Ok arm — so the
+    // telos/run_id owned copies are `var` INITIALIZERS (never struct-var
+    // reassignments, which tvc_self mis-codegens today; see known-issues #51).
+    let text: Str = fs_read_to_string(reqp)?;
+    match json_parse(text.data, text.len) {
+        Result::Ok(doc) => {
+            var d: Json = doc;
+            let root: i32 = json_root(&d);
+            let iterations: i64 = json_as_int(&d, json_get(&d, root, "iterations"));
+            var stride: i64 = 1;
+            let st: i64 = json_as_int(&d, json_get(&d, root, "stride"));
+            if st > 0 { stride = st; }
+            var rid: Str = json_cstr(&d, json_get(&d, root, "run_id"));    // the WHO
+            var telos: Str = json_cstr(&d, json_get(&d, root, "telos"));   // the WHY
+            let run_id: *u8 = rid.data;
+
+            // Fresh output.jsonl + a `started` event.
+            var empty: Str = str_new();
+            fs_write_string(out, &empty)?;
+            str_free(&empty);
+            var seq: i64 = 0;
+            emit_event(out, run_id, seq, "started", "experiment begins")?;
+            seq = seq + 1;
+
+            // Bounded work toward the telos: Gauss sum with progress emission.
+            var sum: i64 = 0;
+            var i: i64 = 0;
+            while i < iterations {
+                sum = sum + i;
+                i = i + 1;
+                if i % stride == 0 {
+                    beat(hb, hbt, seq, "compute", i)?;
+                    emit_event(out, run_id, seq, "measurement", "progress")?;
+                    seq = seq + 1;
+                }
+            }
+
+            // The certificate IS the telos test: S == N(N-1)/2.
+            let expected: i64 = iterations * (iterations - 1) / 2;
+            var certificate: i64 = 0;
+            if sum == expected { certificate = 1; }
+
+            emit_event(out, run_id, seq, "completed", "done")?;
+            seq = seq + 1;
+
+            // final.json — the result carries its own telos + the certificate.
+            var f: Str = str_new();
+            json_obj_open(&f);
+            json_field_str(&f, "run_id", run_id);      json_comma(&f);
+            json_field_str(&f, "telos", telos.data);   json_comma(&f);
+            json_field_str(&f, "status", "completed"); json_comma(&f);
+            if certificate == 1 {
+                json_field_str(&f, "outcome", "supported");
+            } else {
+                json_field_str(&f, "outcome", "falsified");
+            }
+            json_comma(&f);
+            json_key(&f, "measurements");
+            json_obj_open(&f);
+            json_field_int(&f, "iterations", iterations); json_comma(&f);
+            json_field_int(&f, "sum", sum);               json_comma(&f);
+            json_field_int(&f, "expected", expected);     json_comma(&f);
+            json_field_int(&f, "certificate", certificate);
+            json_obj_close(&f);
+            json_obj_close(&f);
+            fs_write_string(fin, &f)?;
+            str_free(&f);
+
+            // Verdicts (the gate); a container maps `outcome` to the exit code.
+            let back: Str = fs_read_to_string(out)?;
+            print(count_nl(&back));           // 6
+            print(fs_exists(hb));             // 1
+            print(fs_exists(fin));            // 1
+            print(certificate as i32);        // 1
+            var outcome: i64 = 10;            // falsified
+            if certificate == 1 { outcome = 11; }   // supported
+            print(outcome as i32);            // 11
+            str_free(&back);
+
+            str_free(&rid); str_free(&telos);
+            json_free(&d);
+        }
+        Result::Err(e) => {
+            print(0 - 2);                     // malformed request
+        }
+    }
+    str_free(&text);
+    str_free(&outp); str_free(&hbp); str_free(&hbtp); str_free(&finp);
+    return Result::Ok(0);
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    var reqp: *u8 = "/tmp/traveler_lab_exp/request.json";
+    var outdir: *u8 = "/tmp/traveler_lab_exp";
+    var seed: i32 = 1;                       // standalone: self-seed the request
+    if argc >= 2 { reqp = argv[1]; seed = 0; }   // container: use the mounted request
+    if argc >= 3 { outdir = argv[2]; }
+    match run(reqp, outdir, seed) {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

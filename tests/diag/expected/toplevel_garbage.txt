@@ -1,0 +1,3 @@
+expected a top-level declaration
+found identifier 'xyzzy_garbage'
+toplevel_garbage.tv:3:1

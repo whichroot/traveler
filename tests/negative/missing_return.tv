@@ -1,0 +1,11 @@
+// Negative test: non-void function missing return
+field F = Field<251>;
+
+fn add(a: F, b: F) -> F {
+    let c: F = a + b;
+}
+
+fn main() {
+    let r: F = add(10, 20);
+    print(r);
+}

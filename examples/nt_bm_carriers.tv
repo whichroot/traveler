@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// nt_bm_carriers.tv — smoke gate for carrier-generic bm<F> (src/lib/nt/linrec.tv):
+// one source recovers known recurrences over BOTH Field<65537> and BinField<8,0x11B>.
+// @internal-design: nt
+// Oracle: nt_bm_carriers_oracle.py (bit-for-bit).
+
+import "../src/lib/nt/linrec.tv";   // bm<F> (carrier-generic), center
+
+type Fp = Field<65537>;
+type GF = BinField<8, 0x11B>;
+
+let PM2: i64 = 65535;   // |Fp| - 2 = p - 2   (Fermat exponent, prime carrier)
+let GM2: i64 = 254;     // |GF| - 2 = 256 - 2 (Fermat exponent, GF(2^8))
+
+fn main() -> i32 {
+    // --- prime carrier: Fibonacci, order 2, C = [1,-1,-1] ---
+    let fib: *Fp = alloc(8);
+    fib[0] = 1 as Fp; fib[1] = 1 as Fp; fib[2] = 2 as Fp; fib[3] = 3 as Fp;
+    fib[4] = 5 as Fp; fib[5] = 8 as Fp; fib[6] = 13 as Fp; fib[7] = 21 as Fp;
+    let cf: *Fp = alloc(9);
+    let of: i32 = bm(fib, 8, cf, PM2);
+    print(of);                                    // 2
+    print(center(cf[1] as i64, 65537) as i32);    // -1
+    print(center(cf[2] as i64, 65537) as i32);    // -1
+    free(fib);
+    free(cf);
+
+    // --- prime carrier: eigenvalues {1,2,3}, order 3, C = [1,-6,11,-6] ---
+    let tri: *Fp = alloc(6);
+    tri[0] = 3 as Fp; tri[1] = 6 as Fp; tri[2] = 14 as Fp;
+    tri[3] = 36 as Fp; tri[4] = 98 as Fp; tri[5] = 276 as Fp;
+    let ct: *Fp = alloc(7);
+    let ot: i32 = bm(tri, 6, ct, PM2);
+    print(ot);                                    // 3
+    print(center(ct[1] as i64, 65537) as i32);    // -6
+    print(center(ct[2] as i64, 65537) as i32);    // 11
+    print(center(ct[3] as i64, 65537) as i32);    // -6
+    free(tri);
+    free(ct);
+
+    // --- binary carrier GF(2^8): order-2 LFSR s[j] = 3*s[j-1] + 5*s[j-2] ---
+    let a: GF = 3 as GF;
+    let b: GF = 5 as GF;
+    let gs: *GF = alloc(8);
+    gs[0] = 1 as GF;
+    gs[1] = 2 as GF;
+    var i: i32 = 2;
+    while i < 8 {
+        gs[i] = a * gs[i - 1] + b * gs[i - 2];    // + is XOR, * is GF(2^8) mul
+        i = i + 1;
+    }
+    let cg: *GF = alloc(9);
+    let og: i32 = bm(gs, 8, cg, GM2);
+    print(og);                                    // 2
+    print(cg[1] as i32);                          // 3  (recovered C1)
+    print(cg[2] as i32);                          // 5  (recovered C2)
+
+    // eq0 certificate: the recovered law annihilates the sequence in-field.
+    var mismatch: i32 = 0;
+    var j: i32 = og;
+    while j < 8 {
+        var acc: GF = 0 as GF;
+        var k: i32 = 0;
+        while k <= og {
+            acc = acc + cg[k] * gs[j - k];
+            k = k + 1;
+        }
+        if acc != (0 as GF) { mismatch = mismatch + 1; }
+        j = j + 1;
+    }
+    print(mismatch);                              // 0
+    free(gs);
+    free(cg);
+
+    return 0;
+}

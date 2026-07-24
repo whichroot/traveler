@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// merkle.tv — binary Merkle tree over Poseidon2 compression (Goldilocks, Layer 1).
+// 1-based heap layout; build / open / verify. Linking: poseidon2.o + merkle.o.
+// @internal-design: crypto
+
+type Goldilocks = Field<18446744069414584321>;
+
+// Import Poseidon2 2-to-1 compression from poseidon2.o
+extern "C" fn poseidon2_compress_Field18446744069414584321(
+    left: *Goldilocks, right: *Goldilocks, out: *Goldilocks,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+);
+
+// ===== BUILD =====
+
+// Build Merkle tree from leaf digests (bottom-up).
+// leaves: n_leaves * 4 elements (each leaf = 4-element digest)
+// tree: 2 * n_leaves * 4 elements (node 0 unused, nodes 1..2*n_leaves-1)
+#[export]
+fn merkle_build(
+    leaves: *Goldilocks,
+    n_leaves: i32,
+    tree: *Goldilocks,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) {
+    // Copy leaves into tree positions [n_leaves .. 2*n_leaves)
+    for i in 0..n_leaves {
+        let src: i32 = i * 4;
+        let dst: i32 = (n_leaves + i) * 4;
+        for j in 0..4 {
+            tree[dst + j] = leaves[src + j];
+        }
+    }
+
+    // Build bottom-up: compress children into parents
+    var k: i32 = n_leaves - 1;
+    while k >= 1 {
+        let left: *Goldilocks = &tree[(2 * k) * 4];
+        let right: *Goldilocks = &tree[(2 * k + 1) * 4];
+        let out: *Goldilocks = &tree[k * 4];
+        poseidon2_compress_Field18446744069414584321(
+            left, right, out, rc_init, rc_term, rc_int, diag
+        );
+        k = k - 1;
+    }
+}
+
+// ===== OPEN (extract authentication path) =====
+
+// Extract authentication path for leaf at index idx (0-based).
+// path: must hold log2(n_leaves) * 4 elements.
+// Returns path length (= log2(n_leaves)).
+#[export]
+fn merkle_open(
+    tree: *Goldilocks,
+    n_leaves: i32,
+    idx: i32,
+    path: *Goldilocks
+) -> i32 {
+    var pos: i32 = n_leaves + idx;
+    var depth: i32 = 0;
+    while pos > 1 {
+        // Sibling = flip last bit of position
+        let sibling: i32 = pos ^ 1;
+        let src: i32 = sibling * 4;
+        let dst: i32 = depth * 4;
+        for j in 0..4 {
+            path[dst + j] = tree[src + j];
+        }
+        pos = pos / 2;
+        depth = depth + 1;
+    }
+    return depth;
+}
+
+// ===== VERIFY =====
+
+// Verify leaf + authentication path against root.
+// root: 4 elements (expected root digest)
+// leaf: 4 elements (leaf digest to verify)
+// idx: leaf index (0-based)
+// n_leaves: number of leaves (power of 2)
+// path: path_len * 4 elements (sibling digests, bottom to top)
+// Returns 1 if valid, 0 if invalid.
+#[export]
+fn merkle_verify(
+    root: *Goldilocks,
+    leaf: *Goldilocks,
+    idx: i32,
+    n_leaves: i32,
+    path: *Goldilocks,
+    path_len: i32,
+    rc_init: *Goldilocks,
+    rc_term: *Goldilocks,
+    rc_int: *Goldilocks,
+    diag: *Goldilocks
+) -> i32 {
+    let current: *Goldilocks = alloc(4);
+    let tmp: *Goldilocks = alloc(4);
+    for j in 0..4 {
+        current[j] = leaf[j];
+    }
+
+    var pos: i32 = n_leaves + idx;
+    for d in 0..path_len {
+        let sib: *Goldilocks = &path[d * 4];
+        if (pos & 1) == 0 {
+            // current is left child
+            poseidon2_compress_Field18446744069414584321(
+                current, sib, tmp, rc_init, rc_term, rc_int, diag
+            );
+        } else {
+            // current is right child
+            poseidon2_compress_Field18446744069414584321(
+                sib, current, tmp, rc_init, rc_term, rc_int, diag
+            );
+        }
+        for j in 0..4 {
+            current[j] = tmp[j];
+        }
+        pos = pos / 2;
+    }
+
+    // Compare with root
+    var ok: i32 = 1;
+    for j in 0..4 {
+        if current[j] != root[j] {
+            ok = 0;
+        }
+    }
+    free(current);
+    free(tmp);
+    return ok;
+}

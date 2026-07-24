@@ -1,0 +1,34 @@
+topo_solid row=0 col=0 p=251: PASS
+topo_solid row=0 col=0 p=65521: PASS
+topo_solid row=0 col=0 p=65537: PASS
+topo_annulus row=12 col=12 p=251: PASS
+topo_annulus row=12 col=12 p=65521: PASS
+topo_annulus row=12 col=12 p=65537: PASS
+topo_checker row=80 col=80 p=251: PASS
+topo_checker row=80 col=80 p=65521: PASS
+topo_checker row=80 col=80 p=65537: PASS
+persist t=0 total=24 p=251: PASS
+persist t=0 total=24 p=65521: PASS
+persist t=0 total=24 p=65537: PASS
+persist t=10 total=24 p=251: PASS
+persist t=10 total=24 p=65521: PASS
+persist t=10 total=24 p=65537: PASS
+persist t=30 total=18 p=251: PASS
+persist t=30 total=18 p=65521: PASS
+persist t=30 total=18 p=65537: PASS
+persist t=70 total=0 p=251: PASS
+persist t=70 total=0 p=65521: PASS
+persist t=70 total=0 p=65537: PASS
+persist_disk t=0 total=0 p=251: PASS
+persist_disk t=0 total=0 p=65521: PASS
+persist_disk t=0 total=0 p=65537: PASS
+noise n=0 t=10 total=24 p=251: PASS
+noise n=0 t=10 total=24 p=65521: PASS
+noise n=0 t=10 total=24 p=65537: PASS
+noise n=5 t=10 total=66 p=251: PASS
+noise n=5 t=10 total=66 p=65521: PASS
+noise n=5 t=10 total=66 p=65537: PASS
+noise n=10 t=10 total=131 p=251: PASS
+noise n=10 t=10 total=131 p=65521: PASS
+noise n=10 t=10 total=131 p=65537: PASS
+33 tests, 33 passed

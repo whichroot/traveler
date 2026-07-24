@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// syntax_compound.tv — the compound-assignment family: `x op= e` is a PARSE-
+// desugar to `x = x op e` (byte-identical IR); all ten ops, three lvalue forms.
+// @internal-design: examples (syntax twins).
+//
+// Expected output:
+//   23
+//   30
+//   42
+
+struct Acc { v: i32 }
+
+fn main() -> i32 {
+    // All ten compound operators on an integer scalar.
+    var x: i32 = 100;
+    x += 5;     // 105
+    x -= 3;     // 102
+    x *= 2;     // 204
+    x /= 4;     // 51
+    x %= 7;     // 2
+    x <<= 4;    // 32
+    x >>= 1;    // 16
+    x |= 3;     // 19
+    x &= 30;    // 18
+    x ^= 5;     // 23
+    print(x);   // 23
+
+    // Compound over an array element (the index is re-evaluated — defined).
+    var a: [i32; 4] = 0;
+    a[2] += 10;
+    a[2] *= 3;
+    print(a[2]); // 30
+
+    // Compound over a struct field.
+    var acc: Acc = Acc { v: 8 };
+    acc.v += 34;
+    print(acc.v); // 42
+    return 0;
+}

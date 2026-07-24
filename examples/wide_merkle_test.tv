@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_merkle_test.tv — WMerkle gate: a binary Merkle tree over BN254 Fr built
+// on the wide Poseidon2 permutation — compress(l,r) = permute([l,r,0])[0].
+// @internal-design: examples (wide crypto gates).
+//
+// Cross-checked against @internal-oracle: wide_poseidon2 (merkle mode):
+// 4-leaf tree [11,22,33,44], root + intermediate compressions.
+//
+// Tests:
+//   1. root matches the oracle                                          -> 1
+//   2. Merkle opening of leaf 0 verifies (recompute root from leaf+path)-> 1
+//   3. tampered leaf is rejected (recomputed root != committed root)    -> 1
+//
+// Expected output: 1 1 1
+//
+// Link: wide_merkle_test.o only (field_wide_* emitted into every module).
+
+extern "C" fn field_wide_add(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_mul(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_pow(dst: *i64, base: *i64, exp: *i64, f: *i64);
+
+fn cp4(dst: *i64, src: *i64) {
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+}
+fn eq4(x: *i64, y: *i64) -> i32 {
+    if x[0] != y[0] { return 0; }
+    if x[1] != y[1] { return 0; }
+    if x[2] != y[2] { return 0; }
+    if x[3] != y[3] { return 0; }
+    return 1;
+}
+fn set_small(buf: *i64, v: i64) {
+    buf[0] = v; buf[1] = 0; buf[2] = 0; buf[3] = 0;
+}
+
+fn ext_linear(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+fn int_linear(s0: *i64, s1: *i64, s2: *i64, d0: *i64, d1: *i64, d2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_mul(s0, s0, d0, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_mul(s1, s1, d1, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_mul(s2, s2, d2, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+fn cube_seed(dst: *i64, seed: i64, e3: *i64, f: *i64) {
+    let sb: *i64 = alloc(4);
+    set_small(sb, seed);
+    field_wide_pow(dst, sb, e3, f);
+    free(sb);
+}
+
+// The BN254 Poseidon2 permutation (t=3, alpha=5, R_F=8, R_P=56) on lanes
+// s0,s1,s2 in place. Identical to wide_poseidon2_test.
+fn wp2_permute(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let e3: *i64 = alloc(4); set_small(e3, 3);
+    let e5: *i64 = alloc(4); set_small(e5, 5);
+    let d0: *i64 = alloc(4); set_small(d0, 2);
+    let d1: *i64 = alloc(4); set_small(d1, 3);
+    let d2: *i64 = alloc(4); set_small(d2, 4);
+    let tmp: *i64 = alloc(4);
+    let rc: *i64 = alloc(4);
+
+    ext_linear(s0, s1, s2, f);
+    var r: i32 = 0;
+    while r < 4 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        field_wide_pow(tmp, s1, e5, f); cp4(s1, tmp);
+        field_wide_pow(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+    var pr: i32 = 0;
+    while pr < 56 {
+        cube_seed(rc, (1000 + pr) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        int_linear(s0, s1, s2, d0, d1, d2, f);
+        pr = pr + 1;
+    }
+    r = 4;
+    while r < 8 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        field_wide_pow(tmp, s1, e5, f); cp4(s1, tmp);
+        field_wide_pow(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+    free(e3); free(e5); free(d0); free(d1); free(d2); free(tmp); free(rc);
+}
+
+// 2-to-1 compression: out = permute([left, right, 0])[0].
+fn wp2_compress(out: *i64, left: *i64, right: *i64, f: *i64) {
+    let s0: *i64 = alloc(4);
+    let s1: *i64 = alloc(4);
+    let s2: *i64 = alloc(4);
+    cp4(s0, left); cp4(s1, right); set_small(s2, 0);
+    wp2_permute(s0, s1, s2, f);
+    cp4(out, s0);
+    free(s0); free(s1); free(s2);
+}
+
+fn main() -> i32 {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+    // 4 leaves [11, 22, 33, 44]
+    let l0: *i64 = alloc(4); set_small(l0, 11);
+    let l1: *i64 = alloc(4); set_small(l1, 22);
+    let l2: *i64 = alloc(4); set_small(l2, 33);
+    let l3: *i64 = alloc(4); set_small(l3, 44);
+
+    // build tree
+    let c01: *i64 = alloc(4);
+    let c23: *i64 = alloc(4);
+    wp2_compress(c01, l0, l1, f);
+    wp2_compress(c23, l2, l3, f);
+    let root: *i64 = alloc(4);
+    wp2_compress(root, c01, c23, f);
+
+    // 1. root matches oracle
+    let exp_root: *i64 = alloc(4);
+    exp_root[0]=12934534490238534853; exp_root[1]=10042996896400306175;
+    exp_root[2]=18335773015392231646; exp_root[3]=607877247712942378;
+    print(eq4(root, exp_root));
+
+    // 2. Merkle opening of leaf 0: path = [l1 (sibling), c23 (uncle)].
+    //    recompute: compress(compress(l0, l1), c23) == root
+    let r_a: *i64 = alloc(4);
+    let r_b: *i64 = alloc(4);
+    wp2_compress(r_a, l0, l1, f);
+    wp2_compress(r_b, r_a, c23, f);
+    print(eq4(r_b, root));
+
+    // 3. tampered leaf 0 -> recomputed root differs
+    let bad: *i64 = alloc(4); set_small(bad, 99);
+    wp2_compress(r_a, bad, l1, f);
+    wp2_compress(r_b, r_a, c23, f);
+    var rejected: i32 = 1;
+    if eq4(r_b, root) == 1 { rejected = 0; }
+    print(rejected);
+
+    return 0;
+}

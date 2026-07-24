@@ -1,0 +1,4 @@
+wrong number of arguments to 'takes6'
+expected 6
+found 5
+arity_underflow.tv:9

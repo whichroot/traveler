@@ -1,0 +1,325 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// polyfield.tv — carrier-generic univariate poly algebra over a field F: mul/divmod/
+// gcd/deriv/eval/powmod/companion/charpoly/radical on flat *F (a[i] = coeff of x^i).
+// @internal-design: nt
+
+import "linalg.tv";     // la_fpow, la_det, la_solve
+
+// Actual degree (highest nonzero coefficient index), or -1 for the zero poly.
+fn pf_deg<F: Field>(a: *F, n: i32) -> i32 {
+    var i: i32 = n - 1;
+    while i >= 0 {
+        if a[i] == (0 as F) { i = i - 1; }
+        else { return i; }
+    }
+    return 0 - 1;
+}
+
+// out = a * b. out length must be >= na + nb - 1 (caller-owned). Zeroes out.
+fn pf_mul<F: Field>(a: *F, na: i32, b: *F, nb: i32, out: *F) {
+    let no: i32 = na + nb - 1;
+    var k: i32 = 0;
+    while k < no { out[k] = 0 as F; k = k + 1; }
+    var i: i32 = 0;
+    while i < na {
+        if a[i] == (0 as F) { i = i + 1; }
+        else {
+            var j: i32 = 0;
+            while j < nb {
+                out[i + j] = out[i + j] + a[i] * b[j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+    }
+}
+
+// Long division a = q*b + r with deg r < deg b. q and r are caller-owned, each
+// sized >= na; both are fully written (r starts as a copy of a). qm2 = |F|-2.
+fn pf_divmod<F: Field>(a: *F, na: i32, b: *F, nb: i32, q: *F, r: *F, qm2: i64) {
+    var i: i32 = 0;
+    while i < na { r[i] = a[i]; q[i] = 0 as F; i = i + 1; }
+    let db: i32 = pf_deg(b, nb);
+    if db < 0 { return; }                       // divisor is zero: leave r = a
+    let binv: F = la_fpow(b[db], qm2);
+    let da: i32 = pf_deg(a, na);
+    var k: i32 = da;
+    while k >= db {
+        let coef: F = r[k] * binv;
+        q[k - db] = coef;
+        var j: i32 = 0;
+        while j <= db {
+            r[k - db + j] = r[k - db + j] - coef * b[j];
+            j = j + 1;
+        }
+        k = k - 1;
+    }
+}
+
+// Monic gcd(a,b). Writes the monic gcd to out (caller-owned, sized >= max(na,nb));
+// returns its length (degree+1), or 0 for gcd 0 (both inputs zero). qm2 = |F|-2.
+fn pf_gcd<F: Field>(a: *F, na: i32, b: *F, nb: i32, out: *F, qm2: i64) -> i32 {
+    var cap: i32 = na;
+    if nb > cap { cap = nb; }
+    let A: *F = alloc(cap);
+    let B: *F = alloc(cap);
+    let q: *F = alloc(cap);
+    let r: *F = alloc(cap);
+    var i: i32 = 0;
+    while i < cap {
+        if i < na { A[i] = a[i]; } else { A[i] = 0 as F; }
+        if i < nb { B[i] = b[i]; } else { B[i] = 0 as F; }
+        i = i + 1;
+    }
+    // Euclid: (A,B) -> (B, A mod B) until B == 0.
+    var guard: i32 = 0;
+    while pf_deg(B, cap) >= 0 && guard < 100000 {
+        pf_divmod(A, cap, B, cap, q, r, qm2);
+        var k: i32 = 0;
+        while k < cap { A[k] = B[k]; B[k] = r[k]; k = k + 1; }
+        guard = guard + 1;
+    }
+    let dA: i32 = pf_deg(A, cap);
+    var outlen: i32 = 0;
+    if dA < 0 {
+        out[0] = 0 as F;
+        outlen = 0;
+    } else {
+        let ai: F = la_fpow(A[dA], qm2);
+        var k2: i32 = 0;
+        while k2 <= dA { out[k2] = A[k2] * ai; k2 = k2 + 1; }
+        outlen = dA + 1;
+    }
+    free(A);
+    free(B);
+    free(q);
+    free(r);
+    return outlen;
+}
+
+// Formal derivative. out length must be >= n-1 (caller-owned). out[i]=(i+1)*a[i+1].
+fn pf_deriv<F: Field>(a: *F, n: i32, out: *F) {
+    var i: i32 = 0;
+    while i < n - 1 {
+        out[i] = ((i + 1) as F) * a[i + 1];
+        i = i + 1;
+    }
+}
+
+// Horner evaluation a(x).
+fn pf_eval<F: Field>(a: *F, n: i32, x: F) -> F {
+    var acc: F = 0 as F;
+    var i: i32 = n - 1;
+    while i >= 0 {
+        acc = acc * x + a[i];
+        i = i - 1;
+    }
+    return acc;
+}
+
+// out = (a*b) mod g, all reduced to length d = deg g. Caller sizes out >= d.
+fn pf_mulmod<F: Field>(a: *F, b: *F, d: i32, g: *F, ng: i32, out: *F, qm2: i64) {
+    let prod: *F = alloc(2 * d);
+    let q: *F = alloc(2 * d);
+    let r: *F = alloc(2 * d);
+    pf_mul(a, d, b, d, prod);                   // length 2d-1
+    var i: i32 = 2 * d - 1;
+    while i < 2 * d { prod[i] = 0 as F; i = i + 1; }   // pad to 2d
+    pf_divmod(prod, 2 * d, g, ng, q, r, qm2);
+    var k: i32 = 0;
+    while k < d { out[k] = r[k]; k = k + 1; }
+    free(prod);
+    free(q);
+    free(r);
+}
+
+// x^e mod g by square-and-multiply. out length d = deg g (caller-owned).
+fn pf_powmod_x<F: Field>(e: i64, g: *F, ng: i32, out: *F, qm2: i64) {
+    let d: i32 = pf_deg(g, ng);
+    // out = 1 (reduced)
+    var i: i32 = 0;
+    while i < d { out[i] = 0 as F; i = i + 1; }
+    out[0] = 1 as F;
+    // base = x mod g
+    let base: *F = alloc(d);
+    let xp: *F = alloc(2);
+    let q0: *F = alloc(2);
+    let r0: *F = alloc(2);
+    xp[0] = 0 as F; xp[1] = 1 as F;
+    pf_divmod(xp, 2, g, ng, q0, r0, qm2);
+    i = 0;
+    while i < d { if i < 2 { base[i] = r0[i]; } else { base[i] = 0 as F; } i = i + 1; }
+    let tmp: *F = alloc(d);
+    var ee: i64 = e;
+    while ee > 0 {
+        if (ee % 2) == 1 {
+            pf_mulmod(out, base, d, g, ng, tmp, qm2);
+            var k: i32 = 0;
+            while k < d { out[k] = tmp[k]; k = k + 1; }
+        }
+        pf_mulmod(base, base, d, g, ng, tmp, qm2);
+        var k2: i32 = 0;
+        while k2 < d { base[k2] = tmp[k2]; k2 = k2 + 1; }
+        ee = ee / 2;
+    }
+    free(base);
+    free(xp);
+    free(q0);
+    free(r0);
+    free(tmp);
+}
+
+// Companion matrix of a MONIC g, degree d = ng-1: mult-by-x on F[x]/g, row-major
+// into M (d x d, caller-owned) — subdiagonal 1s, last column -g[0..d-1].
+fn pf_companion<F: Field>(g: *F, ng: i32, M: *F) {
+    let d: i32 = ng - 1;
+    var i: i32 = 0;
+    while i < d * d { M[i] = 0 as F; i = i + 1; }
+    var r: i32 = 1;
+    while r < d { M[r * d + (r - 1)] = 1 as F; r = r + 1; }   // subdiagonal
+    var k: i32 = 0;
+    while k < d { M[k * d + (d - 1)] = (0 as F) - g[k]; k = k + 1; }
+    // (charpoly of this companion == g, the gate's known-answer check)
+}
+
+// Charpoly of an m x m matrix M (monic, degree m) by eval-interp: det(t*I - M) at
+// t = 0..m, then Vandermonde solve. Needs |F| >= m+1. out caller-owned, >= m+1.
+fn pf_charpoly<F: Field>(M: *F, m: i32, out: *F, qm2: i64) {
+    let np: i32 = m + 1;
+    let ys: *F = alloc(np);
+    let vs: *F = alloc(np);
+    let tmp: *F = alloc(m * m);
+    var t: i32 = 0;
+    while t < np {
+        let yt: F = t as F;
+        ys[t] = yt;
+        var i: i32 = 0;
+        while i < m {
+            var j: i32 = 0;
+            while j < m {
+                var e: F = (0 as F) - M[i * m + j];
+                if i == j { e = e + yt; }
+                tmp[i * m + j] = e;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        vs[t] = la_det(tmp, m, qm2);
+        t = t + 1;
+    }
+    // Vandermonde V c = vs, V[t][j] = ys[t]^j -> c = charpoly coefficients
+    let V: *F = alloc(np * np);
+    var tt: i32 = 0;
+    while tt < np {
+        var p: F = 1 as F;
+        var j: i32 = 0;
+        while j < np { V[tt * np + j] = p; p = p * ys[tt]; j = j + 1; }
+        tt = tt + 1;
+    }
+    la_solve(V, np, vs, out, qm2);
+    free(ys);
+    free(vs);
+    free(tmp);
+    free(V);
+}
+
+// Radical (squarefree part): monic product of the DISTINCT irreducible factors of
+// g. PRIME-field form only; p = the characteristic. Returns deg+1; out sized >= ng.
+fn pf_radical<F: Field>(g: *F, ng: i32, p: i64, out: *F, qm2: i64) -> i32 {
+    let dg: i32 = pf_deg(g, ng);
+    if dg < 0 { out[0] = 0 as F; return 0; }        // zero poly
+    if dg == 0 { out[0] = 1 as F; return 1; }        // nonzero constant -> rad 1
+    let gp: *F = alloc(ng);
+    pf_deriv(g, ng, gp);
+    let dgp: i32 = pf_deg(gp, ng - 1);
+    if dgp < 0 {
+        // g' == 0  =>  g = h(x^p) = h^p ;  rad(g) = rad(h)
+        let pi: i32 = p as i32;
+        let hlen: i32 = dg / pi + 1;
+        let h: *F = alloc(hlen);
+        var i: i32 = 0;
+        while i < hlen { h[i] = g[i * pi]; i = i + 1; }
+        let rl: i32 = pf_radical(h, hlen, p, out, qm2);
+        free(gp); free(h);
+        return rl;
+    }
+    let d: *F = alloc(ng);
+    let dl: i32 = pf_gcd(g, ng, gp, ng - 1, d, qm2);
+    if dl <= 1 {
+        // gcd constant => g squarefree => radical = monic(g)
+        let lc: F = la_fpow(g[dg], qm2);
+        var i: i32 = 0;
+        while i <= dg { out[i] = g[i] * lc; i = i + 1; }
+        free(gp); free(d);
+        return dg + 1;
+    }
+    // w = g / d : the distinct factors whose multiplicity is not divisible by p
+    let wq: *F = alloc(ng);
+    let wr: *F = alloc(ng);
+    pf_divmod(g, ng, d, dl, wq, wr, qm2);
+    let wl: i32 = pf_deg(wq, ng) + 1;
+    // Isolate the p-divisible part: strip every w-factor out of d.
+    let cc: *F = alloc(ng);
+    var ccl: i32 = dl;
+    var ci: i32 = 0;
+    while ci < dl { cc[ci] = d[ci]; ci = ci + 1; }
+    let gtmp: *F = alloc(ng);
+    let qtmp: *F = alloc(ng);
+    let rtmp: *F = alloc(ng);
+    var guard: i32 = 0;
+    while guard < 1000 {
+        let gl2: i32 = pf_gcd(cc, ccl, wq, wl, gtmp, qm2);
+        if gl2 <= 1 { guard = 1000; }
+        else {
+            pf_divmod(cc, ccl, gtmp, gl2, qtmp, rtmp, qm2);
+            ccl = pf_deg(qtmp, ccl) + 1;
+            var k: i32 = 0;
+            while k < ccl { cc[k] = qtmp[k]; k = k + 1; }
+            guard = guard + 1;
+        }
+    }
+    // out = w  (then, if a p-power part remains, out = w * rad(cc))
+    var rlen: i32 = wl;
+    var k2: i32 = 0;
+    while k2 < wl { out[k2] = wq[k2]; k2 = k2 + 1; }
+    let dcc: i32 = pf_deg(cc, ccl);
+    if dcc > 0 {
+        let radcc: *F = alloc(ccl);
+        let rl2: i32 = pf_radical(cc, ccl, p, radcc, qm2);
+        let prod: *F = alloc(wl + rl2);
+        pf_mul(wq, wl, radcc, rl2, prod);
+        rlen = wl + rl2 - 1;
+        var m: i32 = 0;
+        while m < rlen { out[m] = prod[m]; m = m + 1; }
+        free(radcc); free(prod);
+    }
+    free(gp); free(d); free(wq); free(wr);
+    free(cc); free(gtmp); free(qtmp); free(rtmp);
+    // monic normalize
+    let dr: i32 = pf_deg(out, rlen);
+    let lc2: F = la_fpow(out[dr], qm2);
+    var z: i32 = 0;
+    while z <= dr { out[z] = out[z] * lc2; z = z + 1; }
+    return dr + 1;
+}
+
+// Does H have NO simple root (every root multiplicity >= 2)? 1 = yes, 0 = no.
+// Criterion: rad(H)^2 | H  <=>  rad(H) | (H / rad(H)).
+fn pf_no_simple_root<F: Field>(H: *F, nH: i32, p: i64, qm2: i64) -> i32 {
+    let dH: i32 = pf_deg(H, nH);
+    if dH <= 0 { return 1; }                          // constant: vacuous
+    let r: *F = alloc(nH);
+    let rl: i32 = pf_radical(H, nH, p, r, qm2);
+    let q1: *F = alloc(nH);
+    let e1: *F = alloc(nH);
+    pf_divmod(H, nH, r, rl, q1, e1, qm2);             // q1 = H / rad(H) (exact)
+    let q1l: i32 = pf_deg(q1, nH) + 1;
+    let q2: *F = alloc(nH);
+    let e2: *F = alloc(nH);
+    pf_divmod(q1, q1l, r, rl, q2, e2, qm2);           // rad(H) | q1 ?
+    let rem: i32 = pf_deg(e2, q1l);
+    free(r); free(q1); free(e1); free(q2); free(e2);
+    if rem < 0 { return 1; }
+    return 0;
+}

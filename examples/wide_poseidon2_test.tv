@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_poseidon2_test.tv — WP2 gate: Poseidon2 over BN254 Fr (254 bits, x^5),
+// state lanes as 4-limb i256 buffers — the first primitive over a real SNARK prime.
+// @internal-design: examples (wide crypto gates).
+//
+// Configuration (canonical BN254 sponge width): t=3, alpha=5, R_F=8, R_P=56.
+// Round constants + diagonal derived in-field identically to the oracle
+// (@internal-oracle: wide_poseidon2):
+//   rc_ext[r][i] = (r*3 + i + 1)^3 mod p,   rc_int[r] = (1000 + r)^3 mod p,
+//   diag = [2, 3, 4].
+//
+// Expected output: 12 limbs (the 3 output lanes) matching the oracle, then 1
+//   (permutation ran and matches oracle) and 1 (tamper rejected). Self-checking
+//   flags only: 1 1.
+//
+// Link: wide_poseidon2_test.o only (field_wide_* emitted into every module).
+
+extern "C" fn field_wide_add(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_mul(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_pow(dst: *i64, base: *i64, exp: *i64, f: *i64);
+
+// copy 4 limbs
+fn cp4(dst: *i64, src: *i64) {
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+}
+
+fn eq4(x: *i64, y: *i64) -> i32 {
+    if x[0] != y[0] { return 0; }
+    if x[1] != y[1] { return 0; }
+    if x[2] != y[2] { return 0; }
+    if x[3] != y[3] { return 0; }
+    return 1;
+}
+
+// set a 4-limb buffer to a small integer value
+fn set_small(buf: *i64, v: i64) {
+    buf[0] = v; buf[1] = 0; buf[2] = 0; buf[3] = 0;
+}
+
+// x^5 via field_wide_pow with exponent 5
+fn sbox5(dst: *i64, x: *i64, e5: *i64, f: *i64) {
+    field_wide_pow(dst, x, e5, f);
+}
+
+// external linear layer (t=3): sum = s0+s1+s2; s_i += sum.
+fn ext_linear(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+// internal linear layer: s_i = s_i * diag_i + sum(state). diag = [2,3,4].
+fn int_linear(s0: *i64, s1: *i64, s2: *i64, d0: *i64, d1: *i64, d2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_mul(s0, s0, d0, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_mul(s1, s1, d1, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_mul(s2, s2, d2, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+// derive (seed)^3 mod p into dst
+fn cube_seed(dst: *i64, seed: i64, e3: *i64, f: *i64) {
+    let sb: *i64 = alloc(4);
+    set_small(sb, seed);
+    field_wide_pow(dst, sb, e3, f);
+    free(sb);
+}
+
+fn main() -> i32 {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+    // exponent buffers
+    let e3: *i64 = alloc(4); set_small(e3, 3);
+    let e5: *i64 = alloc(4); set_small(e5, 5);
+
+    // diagonal [2,3,4]
+    let d0: *i64 = alloc(4); set_small(d0, 2);
+    let d1: *i64 = alloc(4); set_small(d1, 3);
+    let d2: *i64 = alloc(4); set_small(d2, 4);
+
+    // state [1,2,3]
+    let s0: *i64 = alloc(4); set_small(s0, 1);
+    let s1: *i64 = alloc(4); set_small(s1, 2);
+    let s2: *i64 = alloc(4); set_small(s2, 3);
+
+    let tmp: *i64 = alloc(4);
+    let rc: *i64 = alloc(4);
+
+    // initial external linear layer
+    ext_linear(s0, s1, s2, f);
+
+    // first half full rounds (r = 0..3)
+    var r: i32 = 0;
+    while r < 4 {
+        // add rc_ext[r][i] = (r*3 + i + 1)^3
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        // sbox
+        sbox5(tmp, s0, e5, f); cp4(s0, tmp);
+        sbox5(tmp, s1, e5, f); cp4(s1, tmp);
+        sbox5(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+
+    // partial rounds (r = 0..55)
+    var pr: i32 = 0;
+    while pr < 56 {
+        cube_seed(rc, (1000 + pr) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        sbox5(tmp, s0, e5, f); cp4(s0, tmp);
+        int_linear(s0, s1, s2, d0, d1, d2, f);
+        pr = pr + 1;
+    }
+
+    // second half full rounds (r = 4..7)
+    r = 4;
+    while r < 8 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        sbox5(tmp, s0, e5, f); cp4(s0, tmp);
+        sbox5(tmp, s1, e5, f); cp4(s1, tmp);
+        sbox5(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+
+    // check against oracle output (12 limbs)
+    let e0: *i64 = alloc(4);
+    e0[0]=15358845924747764580; e0[1]=4199114964982166564;
+    e0[2]=617904297198028354;  e0[3]=1322874355364490544;
+    let e1: *i64 = alloc(4);
+    e1[0]=18116290829645574013; e1[1]=4064655239359835621;
+    e1[2]=16710773147935874538; e1[3]=2568164333558711422;
+    let e2: *i64 = alloc(4);
+    e2[0]=10729409124738073866; e2[1]=13758415567025902978;
+    e2[2]=7018556513279895329;  e2[3]=1807771616417553028;
+
+    var ok: i32 = 1;
+    if eq4(s0, e0) == 0 { ok = 0; }
+    if eq4(s1, e1) == 0 { ok = 0; }
+    if eq4(s2, e2) == 0 { ok = 0; }
+    print(ok);   // expect 1: permutation matches oracle
+
+    // tamper: flip one limb of the expected and confirm mismatch detected
+    e0[0] = e0[0] + 1;
+    var tampered_detected: i32 = 1;
+    if eq4(s0, e0) == 1 { tampered_detected = 0; }
+    print(tampered_detected);   // expect 1: tamper rejected
+
+    return 0;
+}

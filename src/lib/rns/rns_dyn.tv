@@ -1,0 +1,294 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rns_dyn.tv — generic-N exact NN matmul over a RUNTIME prime basis (prime count
+// k a runtime dial): (1) per-prime dyn MAC (parallel), (2) Garner CRT reconstruct
+// + requantize. k<=6 uses a static limb buffer; arbitrary k: rns_crt_dyn_wide.
+// @internal-design: rns
+
+// ===== Stage 1 — generic dyn multiply-accumulate (one pass per prime) =====
+// Pure dot product over a runtime field. The matmul loop that calls it is
+// pfor-eligible (dyn array -> has_field; pure same-module call; flat body).
+
+fn rns_dot_dyn<F: Field>(x: *F, w: *F, K: i32, N: i32, o: i32) -> F {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    var acc: F = 0 as F;
+    var k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+
+// One MAC pass over the flattened T*N output for a single runtime prime carrier.
+// The host calls this k times (once per prime). Auto-parallelizes.
+fn rns_mac_dyn<F: Field>(xr: *F, wr: *F, r: *F, T: i32, K: i32, N: i32) {
+    let total: i32 = T * N;
+    for o in 0..total { r[o] = rns_dot_dyn(xr, wr, K, N, o); }
+}
+
+instantiate rns_dot_dyn<dyn>;
+instantiate rns_mac_dyn<dyn>;
+
+// Inverse 1/a in Field<p>, p and a runtime. The field's native Fermat inverse.
+fn inv_dyn<F: Field>(a: F) -> F { return 1 / a; }
+instantiate inv_dyn<dyn>;
+
+// ===== Stage 2 — generic-k Garner CRT reconstruction + requantize =====
+
+fn modp(x: i64, p: i64) -> i64 { let r: i64 = x % p; if r < 0 { return r + p; } return r; }
+
+// runtime modular inverse of (a mod p) in Z/pZ, via the dyn field 1/x.
+fn modinv(p: i64, a: i64) -> i64 {
+    let f: Field = field(p);
+    return inv_dyn_dyn(f, modp(a, p) as Field) as i64;
+}
+
+// add a nonneg i64 value v into LE 32-bit limb array L at limb offset `off`,
+// propagating carry. nlimb is the array length (carry stops at the top).
+fn limb_add(L: *i64, nlimb: i32, off: i32, v: i64) {
+    let m: i64 = 4294967295;
+    var cur: i64 = v;
+    var i: i32 = off;
+    while cur != 0 && i < nlimb {
+        let s: i64 = L[i] + (cur & m);
+        L[i] = s & m;
+        cur = (cur >> 32) + (s >> 32);
+        i = i + 1;
+    }
+}
+
+// A += s * (M as integer): accumulate multi-limb LE value M times small scalar
+// s (< 2^31) into accumulator A via shifted limb_adds.
+fn limb_addmul(A: *i64, nlimb: i32, M: *i64, s: i64) {
+    var i: i32 = 0;
+    while i < nlimb {
+        if M[i] != 0 { limb_add(A, nlimb, i, M[i] * s); }
+        i = i + 1;
+    }
+}
+
+// arithmetic shift of the (nonneg) limb value right by `shift` bits, returning i64.
+fn limbs_shr(L: *i64, nlimb: i32, shift: i64) -> i64 {
+    let w: i32 = (shift / 32) as i32;
+    let bit: i64 = shift % 32;
+    let m: i64 = 4294967295;
+    let l0: i64 = L[w] & m;
+    var l1: i64 = 0;
+    var l2: i64 = 0;
+    if w + 1 < nlimb { l1 = L[w + 1] & m; }
+    if w + 2 < nlimb { l2 = L[w + 2] & m; }
+    if bit == 0 { return l0 + (l1 << 32); }
+    let o0: i64 = ((l0 >> bit) | (l1 << (32 - bit))) & m;
+    let o1: i64 = ((l1 >> bit) | (l2 << (32 - bit))) & m;
+    return o0 + (o1 << 32);
+}
+
+// Generic Garner reconstruction of one exact value from k residues `a[c]` over
+// runtime primes `P[c]`, into LE limb buffer Lout (nlimb limbs, pre-zeroed by
+// caller); `mix` = caller scratch (nlimb) for the running mixed-radix weight
+// (P0*P1*...*P_{c-1}). Returns the top Garner digit (for the sign test).
+fn garner_limbs(P: *i64, k: i32, a: *i64, Lout: *i64, mix: *i64, nlimb: i32) -> i64 {
+    // digit 0
+    var xprev: i64 = modp(a[0], P[0]);
+    // Lout = x0
+    limb_add(Lout, nlimb, 0, xprev);
+    // mix = P[0]
+    var ci: i32 = 0;
+    while ci < nlimb { mix[ci] = 0; ci = ci + 1; }
+    mix[0] = P[0] & 4294967295;
+    mix[1] = (P[0] >> 32) & 4294967295;
+
+    var topdig: i64 = xprev;
+    var c: i32 = 1;
+    while c < k {
+        let pc: i64 = P[c];
+        // Garner digit: x_c = (a_c - L mod p_c) * inv(mix mod p_c) mod p_c, where
+        // L = value from first c residues, mix = prod_{<c} P (both folded mod p_c).
+        let lmod: i64 = limbs_mod(Lout, nlimb, pc);
+        let mmod: i64 = limbs_mod(mix, nlimb, pc);
+        let inv: i64 = modinv(pc, mmod);
+        let xc: i64 = (modp(a[c] - lmod, pc) * inv) % pc;
+        topdig = xc;
+        // Lout += xc * mix
+        limb_addmul(Lout, nlimb, mix, xc);
+        // mix *= pc   (multiply limb value by a < 2^31 scalar, in place via accumulate)
+        if c + 1 < k {
+            limbs_mul_small(mix, nlimb, pc);
+        }
+        c = c + 1;
+    }
+    return topdig;
+}
+
+// reduce an LE limb value mod p (p < 2^31), folding from the top limb down.
+fn limbs_mod(L: *i64, nlimb: i32, p: i64) -> i64 {
+    let m: i64 = 4294967295;
+    let base: i64 = (4294967296) % p;       // 2^32 mod p
+    var acc: i64 = 0;
+    var i: i32 = nlimb - 1;
+    while i >= 0 {
+        acc = (acc * base + (L[i] & m)) % p;
+        i = i - 1;
+    }
+    return acc;
+}
+
+// multiply an LE limb value by a small scalar s (< 2^32) in place.
+fn limbs_mul_small(L: *i64, nlimb: i32, s: i64) {
+    let m: i64 = 4294967295;
+    var carry: i64 = 0;
+    var i: i32 = 0;
+    while i < nlimb {
+        let prod: i64 = (L[i] & m) * s + carry;
+        L[i] = prod & m;
+        carry = prod >> 32;
+        i = i + 1;
+    }
+}
+
+// subtract LE value X from Pfull (both nlimb limbs) into M = Pfull - X.
+fn limbs_sub(PF: *i64, X: *i64, M: *i64, nlimb: i32) {
+    var borrow: i64 = 0;
+    var i: i32 = 0;
+    while i < nlimb {
+        var d: i64 = PF[i] - X[i] - borrow;
+        if d < 0 { d = d + 4294967296; borrow = 1; } else { borrow = 0; }
+        M[i] = d;
+        i = i + 1;
+    }
+}
+
+// Reconstruct the exact signed integer from k residues over runtime primes and
+// requantize by `shift`. Fully generic: caller provides scratch limb buffers
+// (Lout/mix/PF/M, each nlimb) and the precomputed Pfull = prod(P) limbs. nlimb
+// must hold prod(P) (k 31-bit primes -> ceil(k*31/32)+1 is safe).
+fn rns_crt_dyn_wide(P: *i64, k: i32, a: *i64, shift: i64,
+    Lout: *i64, mix: *i64, PF: *i64, M: *i64, nlimb: i32) -> i64 {
+    var i: i32 = 0;
+    while i < nlimb { Lout[i] = 0; i = i + 1; }
+    let topdig: i64 = garner_limbs(P, k, a, Lout, mix, nlimb);
+    // sign: value negative iff top Garner digit lies in the upper half of its
+    // prime. Round-half bias 2^(shift-1) added at its LIMB position; shift==0 -> EXACT.
+    var hlimb: i32 = 0;
+    var hbit: i64 = 0;
+    if shift > 0 {
+        let hb: i64 = shift - 1;
+        hlimb = (hb / 32) as i32;
+        hbit = 1 << (hb % 32);
+    }
+    if topdig > P[k - 1] / 2 {
+        limbs_sub(PF, Lout, M, nlimb);          // magnitude = Pfull - value
+        limb_add(M, nlimb, hlimb, hbit);
+        return 0 - limbs_shr(M, nlimb, shift);
+    }
+    limb_add(Lout, nlimb, hlimb, hbit);
+    return limbs_shr(Lout, nlimb, shift);
+}
+
+// Precompute Pfull = prod(P[0..k]) into LE limb buffer PF (nlimb, pre-zeroed).
+fn rns_pfull(P: *i64, k: i32, PF: *i64, nlimb: i32) {
+    var i: i32 = 0;
+    while i < nlimb { PF[i] = 0; i = i + 1; }
+    PF[0] = 1;
+    var c: i32 = 0;
+    while c < k {
+        limbs_mul_small(PF, nlimb, P[c]);
+        c = c + 1;
+    }
+}
+
+// BOUNDED-k convenience (the fast-path default): k <= 6 (product < 2^186, fits
+// 7 limbs), static limb buffers — no caller scratch. k > 6: rns_crt_dyn_wide.
+let LIMBS_MAX: i32 = 7;
+
+fn rns_crt_dyn(P: *i64, k: i32, a: *i64, shift: i64) -> i64 {
+    var Lout: [i64; 7] = 0;
+    var mix: [i64; 7] = 0;
+    var PF: [i64; 7] = 0;
+    var M: [i64; 7] = 0;
+    rns_pfull(P, k, &PF[0], LIMBS_MAX);
+    return rns_crt_dyn_wide(P, k, a, shift, &Lout[0], &mix[0], &PF[0], &M[0], LIMBS_MAX);
+}
+
+// ===== HOISTED-PRECOMPUTE Garner CRT (the per-output invariants, once) =====
+//
+// garner_precompute fills, once per (basis, k):
+//   mixtab[(c-1)*nlimb ..] = P[0]*..*P[c-1] as LE limbs, for c = 1..k-1
+//   ginv[c]                = inv((P[0]*..*P[c-1]) mod P[c]) in Z/P[c], c = 1..k-1
+//   PF                     = P[0]*..*P[k-1] (Pfull) as LE limbs (sign correction)
+fn garner_precompute(P: *i64, k: i32, mixtab: *i64, ginv: *i64, PF: *i64, nlimb: i32) {
+    var mix: [i64; 7] = 0;
+    mix[0] = P[0] & 4294967295;
+    mix[1] = (P[0] >> 32) & 4294967295;
+    var c: i32 = 1;
+    while c < k {
+        let base: i32 = (c - 1) * nlimb;        // snapshot mix = P[0]*..*P[c-1]
+        var i: i32 = 0;
+        while i < nlimb { mixtab[base + i] = mix[i]; i = i + 1; }
+        let pc: i64 = P[c];
+        ginv[c] = modinv(pc, limbs_mod(&mix[0], nlimb, pc));
+        limbs_mul_small(&mix[0], nlimb, pc);    // mix *= P[c]
+        c = c + 1;
+    }
+    var j: i32 = 0;                          // PF = P[0]*..*P[k-1]
+    while j < nlimb { PF[j] = mix[j]; j = j + 1; }
+}
+
+// Reconstruct + requantize one output using the PRECOMPUTED invariants —
+// rns_crt_dyn_wide minus per-output rns_pfull/modinv. Lout/M: caller scratch.
+fn rns_crt_fast(P: *i64, k: i32, a: *i64, shift: i64, Lout: *i64, M: *i64,
+    mixtab: *i64, ginv: *i64, PF: *i64, nlimb: i32) -> i64 {
+    var i: i32 = 0;
+    while i < nlimb { Lout[i] = 0; i = i + 1; }
+    let x0: i64 = modp(a[0], P[0]);
+    limb_add(Lout, nlimb, 0, x0);
+    var topdig: i64 = x0;
+    var c: i32 = 1;
+    while c < k {
+        let pc: i64 = P[c];
+        let lmod: i64 = limbs_mod(Lout, nlimb, pc);
+        let xc: i64 = (modp(a[c] - lmod, pc) * ginv[c]) % pc;
+        topdig = xc;
+        limb_addmul(Lout, nlimb, &mixtab[(c - 1) * nlimb], xc);
+        c = c + 1;
+    }
+    // sign + round-shift — identical to rns_crt_dyn_wide.
+    var hlimb: i32 = 0;
+    var hbit: i64 = 0;
+    if shift > 0 {
+        let hb: i64 = shift - 1;
+        hlimb = (hb / 32) as i32;
+        hbit = 1 << (hb % 32);
+    }
+    if topdig > P[k - 1] / 2 {
+        limbs_sub(PF, Lout, M, nlimb);
+        limb_add(M, nlimb, hlimb, hbit);
+        return 0 - limbs_shr(M, nlimb, shift);
+    }
+    limb_add(Lout, nlimb, hlimb, hbit);
+    return limbs_shr(Lout, nlimb, shift);
+}
+
+// CRT pass over the flattened output: y[o] = reconstruct(residues at o); rtab[c]
+// -> r_c (k separate *i64 arrays). Garner invariants precomputed ONCE, then each
+// output does only cheap digits. Bounded k<=6; k>6: rns_crt_dyn_wide. Serial.
+#[export]
+fn rns_crt_pass(P: *i64, k: i32, rtab: **i64, y: *i64, T: i32, N: i32, shift: i64) {
+    let total: i32 = T * N;
+    let nlimb: i32 = LIMBS_MAX;                  // 7
+    var mixtab: [i64; 42] = 0;              // (k-1)*nlimb, k<=6 -> 35 <= 42
+    var ginv: [i64; 7] = 0;
+    var PF: [i64; 7] = 0;
+    garner_precompute(P, k, &mixtab[0], &ginv[0], &PF[0], nlimb);
+
+    var a: [i64; 8] = 0;
+    var Lout: [i64; 7] = 0;
+    var M: [i64; 7] = 0;
+    var o: i32 = 0;
+    while o < total {
+        var c: i32 = 0;
+        while c < k { a[c] = rtab[c][o]; c = c + 1; }
+        y[o] = rns_crt_fast(P, k, &a[0], shift, &Lout[0], &M[0],
+            &mixtab[0], &ginv[0], &PF[0], nlimb);
+        o = o + 1;
+    }
+}

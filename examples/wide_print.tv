@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_print.tv — Slice 4 gate: full-width decimal printing of i128/u128 and
+// i256/u256 via double-dabble (binary -> BCD, no division of any width).
+// @internal-note: plan-wide-int-surface-types + @internal-design: examples (wide-int gates).
+
+fn main() {
+    // ---- 128-bit ----
+    let zero: u128 = 0;
+    print(zero);                                   // 0
+    let two64: u128 = 18446744073709551616;        // 2^64 (crosses the word)
+    print(two64);                                  // 18446744073709551616
+    let m64: u128 = 18446744073709551615;          // 2^64 - 1 (full low word)
+    print(m64);                                    // 18446744073709551615
+    let maxu: u128 = 340282366920938463463374607431768211455;  // 2^128 - 1
+    print(maxu);                                   // 340282366920938463463374607431768211455
+    let big: u128 = 1000000;
+    print(big << 80);                              // 1000000 * 2^80
+
+    // ---- 256-bit ----
+    let z256: i256 = 0;
+    print(z256);                                   // 0
+    let bn: i256 = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001;
+    print(bn);                                     // BN254 Fr modulus, 76 digits
+    let b256: u256 = 1000000;
+    print(b256 << 200);                            // 1000000 * 2^200
+    let max256: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+    print(max256);                                 // 2^256 - 1, 78 digits
+}

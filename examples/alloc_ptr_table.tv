@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// alloc_ptr_table.tv — multi-level pointer alloc element-size gate (known-issue
+// #19): `let tab: **i64 = alloc(N)` must reserve N*8 bytes (N pointers), not N.
+// @internal-design: examples (alloc_ptr_table, #19).
+//
+// Expected output: 5788160   (sum of i*(i+7) for i in 0..255)
+
+fn main() {
+    let n: i32 = 256;
+    let tab: **i64 = alloc(n);          // n pointer slots -> must be n*8 bytes
+
+    // Point each slot at its own row and write a distinct value through the table.
+    var i: i32 = 0;
+    while i < n {
+        let row: *i64 = alloc(1);       // one i64 -> 8 bytes
+        row[0] = (i as i64) * ((i as i64) + 7);
+        tab[i] = row;
+        i = i + 1;
+    }
+
+    // Read every slot back through the table and sum.
+    var sum: i64 = 0;
+    var j: i32 = 0;
+    while j < n {
+        let r: *i64 = tab[j];
+        sum = sum + r[0];
+        j = j + 1;
+    }
+
+    print(sum);                          // 5788160
+}

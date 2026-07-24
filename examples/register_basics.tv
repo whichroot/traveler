@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// register_basics.tv — Register<F, d> type: forward summation state machine
+//
+// Newton coefficients [10, 4, 2] represent the difference table:
+//   state[0]=10 (value), state[1]=4 (1st diff), state[2]=2 (2nd diff)
+// Evaluated at consecutive points:
+//   p(0)=10, p(1)=14, p(2)=20, p(3)=28, p(4)=38, p(5)=50
+//
+// advance() returns state[0] then updates state[k] += state[k+1] for k<d —
+// the return is the last moment of the current state (the phase transition).
+
+type F = Field<251>;
+
+fn main() {
+    var reg: Register<F, 2> = register(10, 4, 2);
+
+    let v0: F = advance(reg);
+    let v1: F = advance(reg);
+    let v2: F = advance(reg);
+    let v3: F = advance(reg);
+    let v4: F = advance(reg);
+    let v5: F = advance(reg);
+
+    print(v0);
+    print(v1);
+    print(v2);
+    print(v3);
+    print(v4);
+    print(v5);
+}

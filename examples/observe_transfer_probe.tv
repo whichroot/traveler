@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_transfer_probe.tv — the switcher question: does the learned
+// momentum->k map generalize across tracks? 2x2 fit/apply, transfer in permille.
+// @internal-design: observability (transfer probe)
+//
+// Link: observe_transfer_probe.o + learn.o + residual_cascade.o +
+//       piecewise_codec.o + ntt.o
+// Usage: observe_transfer_probe <A.wav> <B.wav>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn read(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+extern "C" fn pc_project_to_field(signed_samples: *i16, n: i32, field_samples: *i32) -> i32;
+extern "C" fn register_trace(input: *i32, n: i32, residual_out: *i32, momentum_out: *i32) -> i32;
+extern "C" fn learn_momentum_fit(residual: *i32, momentum: *i32, n: i32, p: i32, kmap: *i64);
+extern "C" fn learn_momentum_apply(residual: *i32, momentum: *i32, n: i32, p: i32, kmap: *i64) -> i64;
+
+let OTP_P: i32 = 65537;
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn read_bytes_all(fd: i32, buf: *u8, cap: i64) -> i64 {
+    var total: i64 = 0;
+    while total < cap {
+        let got: i64 = read(fd, (buf as i64 + total) as *u8, (cap - total) as usize);
+        if got <= 0 { return total; }
+        total = total + got;
+    }
+    return total;
+}
+
+fn read_le_u16(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256;
+}
+fn read_le_u32(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+    + (buf[pos + 2] as i32) * 65536 + (buf[pos + 3] as i32) * 16777216;
+}
+fn read_s16(buf: *u8, off: i32) -> i32 {
+    var val: i32 = buf[off] as i32 + (buf[off + 1] as i32) * 256;
+    if val >= 32768 { val = val - 65536; }
+    return val;
+}
+fn find_data_chunk(buf: *u8, file_size: i32, data_size_out: *i32) -> i32 {
+    var pos: i32 = 12;
+    while pos < file_size - 8 {
+        let c0: i32 = buf[pos] as i32;
+        let c1: i32 = buf[pos + 1] as i32;
+        let c2: i32 = buf[pos + 2] as i32;
+        let c3: i32 = buf[pos + 3] as i32;
+        let sz: i32 = read_le_u32(buf, pos + 4);
+        if c0 == 100 && c1 == 97 && c2 == 116 && c3 == 97 {
+            data_size_out[0] = sz;
+            return pos + 8;
+        }
+        pos = pos + 8 + sz + (sz % 2);
+    }
+    return 0;
+}
+
+// load mid channel, run the register trace; returns n. residual/momentum out.
+fn load_trace(path: *u8, res_out: **i32, mom_out: **i32) -> i32 {
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 { wr(2, "error: cannot open "); wr(2, path); wr(2, "\n"); exit(1); }
+    let buf: *u8 = alloc(134217728);
+    let file_size: i64 = read_bytes_all(fd, buf, 134217728);
+    close(fd);
+
+    let num_channels: i32 = read_le_u16(buf, 22);
+    let bits: i32 = read_le_u16(buf, 34);
+    if bits != 16 { wr(2, "error: only 16-bit PCM supported\n"); exit(1); }
+
+    var data_size_arr: [i32; 1] = 0;
+    let data_offset: i32 = find_data_chunk(buf, file_size as i32, &data_size_arr[0]);
+    if data_offset == 0 { wr(2, "error: no data chunk\n"); exit(1); }
+    let n: i32 = data_size_arr[0] / (2 * num_channels);
+
+    let chM: *i16 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        let base: i32 = data_offset + (i * num_channels) * 2;
+        let l: i32 = read_s16(buf, base);
+        var r: i32 = l;
+        if num_channels > 1 { r = read_s16(buf, base + 2); }
+        chM[i] = ((l + r) >> 1) as i16;
+        i = i + 1;
+    }
+    free(buf);
+
+    let field_samples: *i32 = alloc(n);
+    pc_project_to_field(chM, n, field_samples);
+    free(chM);
+
+    let residual: *i32 = alloc(n);
+    let momentum: *i32 = alloc(n);
+    register_trace(field_samples, n, residual, momentum);
+    free(field_samples);
+
+    res_out[0] = residual;
+    mom_out[0] = momentum;
+    return n;
+}
+
+fn report(label: *u8, bits: i64, self_bits: i64) {
+    wr(2, label);
+    wr_int(2, bits);
+    wr(2, " bits   (+");
+    wr_int(2, (bits - self_bits) * 1000 / (self_bits + 1));
+    wr(2, " permille vs self-fit)\n");
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc < 3 {
+        wr(2, "usage: observe_transfer_probe <A.wav> <B.wav>\n");
+        exit(1);
+    }
+
+    let resA_cell: **i32 = alloc(1);
+    let momA_cell: **i32 = alloc(1);
+    let resB_cell: **i32 = alloc(1);
+    let momB_cell: **i32 = alloc(1);
+    let nA: i32 = load_trace(argv[1], resA_cell, momA_cell);
+    let nB: i32 = load_trace(argv[2], resB_cell, momB_cell);
+    let resA: *i32 = resA_cell[0];
+    let momA: *i32 = momA_cell[0];
+    let resB: *i32 = resB_cell[0];
+    let momB: *i32 = momB_cell[0];
+    free(momB_cell); free(resB_cell); free(momA_cell); free(resA_cell);
+
+    wr(2, "A "); wr(2, argv[1]); wr(2, "  n="); wr_int(2, nA as i64); wr(2, "\n");
+    wr(2, "B "); wr(2, argv[2]); wr(2, "  n="); wr_int(2, nB as i64); wr(2, "\n");
+
+    let mapA: *i64 = alloc(18);
+    let mapB: *i64 = alloc(18);
+    learn_momentum_fit(resA, momA, nA, OTP_P, mapA);
+    learn_momentum_fit(resB, momB, nB, OTP_P, mapB);
+
+    // the learned maps themselves (bucket -> k), side by side
+    wr(2, "  mapA: ");
+    var b: i32 = 0;
+    while b < 18 { wr_int(2, mapA[b]); wr(2, " "); b = b + 1; }
+    wr(2, "\n  mapB: ");
+    b = 0;
+    while b < 18 { wr_int(2, mapB[b]); wr(2, " "); b = b + 1; }
+    wr(2, "\n");
+
+    let selfA: i64 = learn_momentum_apply(resA, momA, nA, OTP_P, mapA);
+    let selfB: i64 = learn_momentum_apply(resB, momB, nB, OTP_P, mapB);
+    let aOnB: i64 = learn_momentum_apply(resB, momB, nB, OTP_P, mapA);
+    let bOnA: i64 = learn_momentum_apply(resA, momA, nA, OTP_P, mapB);
+
+    report("  A self-fit : ", selfA, selfA);
+    report("  B self-fit : ", selfB, selfB);
+    report("  A-map on B : ", aOnB, selfB);
+    report("  B-map on A : ", bOnA, selfA);
+
+    free(mapB); free(mapA);
+    free(momB); free(resB); free(momA); free(resA);
+    print((nA + nB) as i64);
+    return 0;
+}

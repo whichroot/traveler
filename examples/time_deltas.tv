@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// time_deltas.tv — T1a: the machine's own clock as an algebraic process —
+// CLOCK_MONOTONIC lifted into F_{2^31-1}, Σ∘Δ = id bit-exact on live samples.
+// tvc_self ONLY. Design: @internal-design: time (T1a).
+//
+// Expected output:
+//   1     64 monotonic samples captured (the raw i64 clock never went back)
+//   2     Σ∘Δ reconstructed all 64 samples exactly over F_{2^31-1}
+//   700   the ? pipeline completed
+
+import "../src/lib/time/time.tv";
+import "../src/lib/core/poly_core.tv";
+
+fn run() -> Result<i64, TimeError> {
+    let k: i32 = 64;
+    let raw: *i64 = alloc(64);
+
+    // Sample CLOCK_MONOTONIC k times in a tight loop (span is microseconds).
+    var i: i32 = 0;
+    while i < k {
+        raw[i] = time_mono_ns()?;
+        i = i + 1;
+    }
+
+    // (1) The raw i64 stream is non-decreasing (equal reads are allowed — the
+    // clock resolution can be coarser than a loop iteration).
+    var mono: i32 = 1;
+    i = 1;
+    while i < k {
+        if raw[i] < raw[i - 1] { mono = 0; }
+        i = i + 1;
+    }
+    if mono == 1 { print(1); }
+
+    // Rebase to t[0] and lift into i32 field elements. The tight-loop span is
+    // microseconds, so rebased ns are far below p — the cast is exact.
+    let p: i32 = 2147483647;                 // M31 = 2^31 - 1 (prime)
+    let data: *i32 = alloc(64);
+    i = 0;
+    while i < k {
+        data[i] = (raw[i] - raw[0]) as i32;
+        i = i + 1;
+    }
+
+    // Δ: forward differences → the full Newton coefficient diagonal.
+    let coeffs: *i32 = alloc(64);
+    let work: *i32 = alloc(64);
+    let order: i32 = forward_diff(data, k, coeffs, k - 1, p, work);
+
+    // Σ: forward summation replays the coefficients back into the stream.
+    let out: *i32 = alloc(64);
+    let reg: *i32 = alloc(64);
+    forward_sum(coeffs, order, out, k, p, reg);
+
+    // (2) Bit-exact round-trip over the field — the isomorphism, on live time.
+    var ok: i32 = 1;
+    i = 0;
+    while i < k {
+        if out[i] != data[i] { ok = 0; }
+        i = i + 1;
+    }
+    if ok == 1 { print(2); }
+
+    free(raw);
+    free(data);
+    free(coeffs);
+    free(work);
+    free(out);
+    free(reg);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

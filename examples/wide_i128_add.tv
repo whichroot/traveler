@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_i128_add.tv — Slice 1 gate: division-free i128/u128 surface types —
+// add/sub/mul/shift/compare across the 64-bit boundary; NO __udivti3/__umodti3.
+// @internal-note: plan-wide-int-surface-types + @internal-design: examples (wide-int gates).
+
+fn main() {
+    let a64: i64 = 1000000;
+    let b64: i64 = 2000000;
+    let a: i128 = a64 as i128;
+    let b: i128 = b64 as i128;
+
+    let s: i128 = a + b;            // 3_000_000
+    print(s as i64);
+    let d: i128 = b - a;            // 1_000_000
+    print(d as i64);
+    let p: i128 = a * b;            // 2_000_000_000_000  (fits i64)
+    print(p as i64);
+
+    // Cross the 64-bit boundary: shift into the high word and back.
+    let hi: i128 = a << 80;         // ~100-bit value; low 64 bits are zero
+    print(hi as i64);               // 0
+    let lo: i128 = hi >> 80;        // back to 1_000_000
+    print(lo as i64);
+
+    // Signed compare (slt/sgt path).
+    let c1: i32 = (hi > p) as i32;  // 1
+    print(c1);
+
+    // Unsigned u128 (ult / lshr semantics, not ashr/slt).
+    let ua: u128 = a64 as u128;     // 1_000_000
+    let ub: u128 = b64 as u128;     // 2_000_000
+    let uprod: u128 = ua * ub;      // 2_000_000_000_000
+    print(uprod as i64);
+    let uc: i32 = (ua < ub) as i32; // 1
+    print(uc);
+
+    // Bitwise ops stay hardware i128 IR — positive controls proving the Slice 5
+    // refusal is division-ONLY (and / or / xor / shifts never pull a libcall).
+    let m1: u128 = 255 as u128;
+    let m2: u128 = 12 as u128;
+    print((m1 & m2) as i64);        // 12
+    print((m1 | m2) as i64);        // 255
+    print((m1 ^ m2) as i64);        // 243
+}

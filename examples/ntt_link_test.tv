@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ntt_link_test.tv — Two-file link test for NTT explicit instantiation
+//
+// Links against ntt.tv (compiled separately with explicit instantiations).
+// Calls the monomorphized NTT functions by their mangled names.
+//
+// Expected output: 3 lines of "1" (all tests pass)
+
+type Goldilocks = Field<18446744069414584321>;
+
+// Extern declarations for explicitly instantiated NTT functions
+extern "C" fn ntt_forward_Field18446744069414584321(data: *Goldilocks, log_n: i32);
+extern "C" fn ntt_inverse_Field18446744069414584321(data: *Goldilocks, log_n: i32);
+extern "C" fn poly_mul_ntt_Field18446744069414584321(a: *Goldilocks, b: *Goldilocks, out: *Goldilocks, n: i32, log_n: i32);
+
+fn main() -> i32 {
+    // Test 1: Round-trip NTT size 8
+    let n: i32 = 8;
+    let data: *Goldilocks = alloc(n);
+    data[0] = 10; data[1] = 20; data[2] = 30; data[3] = 40;
+    data[4] = 50; data[5] = 60; data[6] = 70; data[7] = 80;
+
+    let orig: *Goldilocks = alloc(n);
+    for i in 0..n { orig[i] = data[i]; }
+
+    ntt_forward_Field18446744069414584321(data, 3);
+    ntt_inverse_Field18446744069414584321(data, 3);
+
+    var pass1: i32 = 1;
+    for i in 0..n {
+        if data[i] != orig[i] { pass1 = 0; }
+    }
+    print(pass1);
+    free(data);
+    free(orig);
+
+    // Test 2: Poly mul (1+x)*(1+x) = 1 + 2x + x^2
+    let a: *Goldilocks = alloc(4);
+    let b: *Goldilocks = alloc(4);
+    let c: *Goldilocks = alloc(8);
+    a[0] = 1; a[1] = 1; a[2] = 0; a[3] = 0;
+    b[0] = 1; b[1] = 1; b[2] = 0; b[3] = 0;
+
+    poly_mul_ntt_Field18446744069414584321(a, b, c, 4, 2);
+
+    let one: Goldilocks = 1;
+    let two: Goldilocks = 2;
+    let zero: Goldilocks = 0;
+    var pass2: i32 = 1;
+    if c[0] != one  { pass2 = 0; }
+    if c[1] != two  { pass2 = 0; }
+    if c[2] != one  { pass2 = 0; }
+    for i in 3..8 {
+        if c[i] != zero { pass2 = 0; }
+    }
+    print(pass2);
+    free(a); free(b); free(c);
+
+    // Test 3: Poly mul (1+2x+3x^2+4x^3) * (5+6x+7x^2+8x^3)
+    let a4: *Goldilocks = alloc(4);
+    let b4: *Goldilocks = alloc(4);
+    let c4: *Goldilocks = alloc(8);
+    a4[0] = 1; a4[1] = 2; a4[2] = 3; a4[3] = 4;
+    b4[0] = 5; b4[1] = 6; b4[2] = 7; b4[3] = 8;
+
+    poly_mul_ntt_Field18446744069414584321(a4, b4, c4, 4, 2);
+
+    var pass3: i32 = 1;
+    let v5: Goldilocks = 5;
+    let v16: Goldilocks = 16;
+    let v34: Goldilocks = 34;
+    let v60: Goldilocks = 60;
+    let v61: Goldilocks = 61;
+    let v52: Goldilocks = 52;
+    let v32: Goldilocks = 32;
+    if c4[0] != v5  { pass3 = 0; }
+    if c4[1] != v16 { pass3 = 0; }
+    if c4[2] != v34 { pass3 = 0; }
+    if c4[3] != v60 { pass3 = 0; }
+    if c4[4] != v61 { pass3 = 0; }
+    if c4[5] != v52 { pass3 = 0; }
+    if c4[6] != v32 { pass3 = 0; }
+    if c4[7] != zero { pass3 = 0; }
+    print(pass3);
+    free(a4); free(b4); free(c4);
+
+    return 0;
+}

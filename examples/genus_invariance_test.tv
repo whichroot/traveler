@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_invariance_test.tv — A.3b: (d*, nseg) must NOT move under field change
+// (Goldilocks/BabyBear/65537) or affine transform (y+C, y*k, y*k+C); each prints 1.
+// @internal-design: genus (invariance of the signature)
+//
+// Values are kept small enough that no field wraps for the field test (max 33 <
+// 251); affine tests run over Goldilocks where +1000/*7 stay well below p.
+//
+// Expected output: all 1s (8 invariance checks):
+//   1 1 1 1 1 1 1 1
+//
+// Link: regime_fri.o + genus_probe.o + genus_invariance_test.o
+
+extern "C" fn genus_signature(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+
+// Fill `data` with sawtooth (i%P)*step, optionally scaled by k and offset by c:
+//   value = ((i % P) * step) * k + c
+fn fill_saw(data: *i64, n: i32, P: i32, step: i32, k: i64, c: i64) {
+    for i in 0..n {
+        let base: i64 = ((i % P) * step) as i64;
+        data[i] = base * k + c;
+    }
+}
+
+// Measure (d*, nseg) into out; return 1 iff it equals (want_d, want_nseg).
+fn check(
+    f: Field, data: *i64, n: i32, cert: *i64, work: *i64, out: *i64,
+    want_d: i64, want_nseg: i64
+) -> i32 {
+    genus_signature(f, data, n, 6, cert, work, out);
+    if out[0] == want_d && out[1] == want_nseg { return 1; }
+    return 0;
+}
+
+fn main() -> i32 {
+    let n: i32 = 48;
+    let P: i32 = 12;
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let out: *i64 = alloc(2);
+    let data: *i64 = alloc(n);
+
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let small: Field = field(65537);
+
+    // Reference: plain sawtooth -> (d*=1, nseg=4).
+    fill_saw(data, n, P, 3, 1, 0);
+
+    // INVARIANCE 1 — FIELD (3 primes, same small-valued data -> same signature)
+    print(check(gold,  data, n, cert, work, out, 1, 4));   // 1
+    print(check(baby,  data, n, cert, work, out, 1, 4));   // 1
+    print(check(small, data, n, cert, work, out, 1, 4));   // 1
+
+    // INVARIANCE 2 — AFFINE (over Goldilocks; values stay well below p)
+    fill_saw(data, n, P, 3, 1, 1000);    // + C
+    print(check(gold, data, n, cert, work, out, 1, 4));    // 1
+    fill_saw(data, n, P, 3, 7, 0);       // * k
+    print(check(gold, data, n, cert, work, out, 1, 4));    // 1
+    fill_saw(data, n, P, 3, 3, 500);     // * k + C
+    print(check(gold, data, n, cert, work, out, 1, 4));    // 1
+    fill_saw(data, n, P, 3, 13, 7);      // * k + C
+    print(check(gold, data, n, cert, work, out, 1, 4));    // 1
+
+    // INVARIANCE 1b — field-invariance of the TRANSFORMED shape too:
+    // scale that stays in-range for the smallest prime (max (11*3)*1 +.. keep <251)
+    fill_saw(data, n, P, 3, 2, 50);      // max 11*3*2+50 = 116 < 251
+    let a: i32 = check(gold,  data, n, cert, work, out, 1, 4);
+    let b: i32 = check(baby,  data, n, cert, work, out, 1, 4);
+    let c: i32 = check(small, data, n, cert, work, out, 1, 4);
+    if a == 1 && b == 1 && c == 1 { print(1); } else { print(0); }   // 1
+
+    free(data); free(cert); free(work); free(out);
+    return 0;
+}

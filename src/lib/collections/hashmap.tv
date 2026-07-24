@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// hashmap.tv — generic open-addressed HashMap<K,V>: keys hashed as `kw` raw
+// bytes, two hash modes, fixed cap=16, NO rehash (aborts). tvc_self ONLY.
+// @internal-design: collections
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn exit(code: i32);
+
+struct HashMap<K, V> {
+    keys: *K,
+    vals: *V,
+    used: *u8,
+    cap: i32,
+    len: i32,
+    kw: i32,
+    mode: i32,
+}
+
+// ---- Byte-level hashing primitives (operate on *u8 + width) ----
+
+// DJB2 over kw bytes, folded into [0, cap) with cap a power of two.
+fn hm_hash_djb2(p: *u8, kw: i32, cap: i32) -> i32 {
+    var h: u32 = 5381;
+    var i: i32 = 0;
+    while i < kw {
+        h = ((h << 5) + h) + (p[i] as u32);
+        i = i + 1;
+    }
+    return (h as i32) & (cap - 1);
+}
+
+// Value-direct: interpret kw little-endian bytes as an integer, mod cap.
+// Sound for field keys: the residue bytes ARE the value (no aliasing vs cap).
+fn hm_hash_value(p: *u8, kw: i32, cap: i32) -> i32 {
+    var v: u64 = 0;
+    var i: i32 = 0;
+    while i < kw {
+        v = v | ((p[i] as u64) << (i * 8));
+        i = i + 1;
+    }
+    return (v as i32) & (cap - 1);
+}
+
+fn hm_hash(p: *u8, kw: i32, cap: i32, mode: i32) -> i32 {
+    if mode == 1 {
+        return hm_hash_value(p, kw, cap);
+    }
+    return hm_hash_djb2(p, kw, cap);
+}
+
+fn hm_bytes_eq(a: *u8, b: *u8, kw: i32) -> i32 {
+    var i: i32 = 0;
+    while i < kw {
+        if a[i] != b[i] {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// ---- Constructors ----
+
+fn hashmap_new<K, V>(key_width: i32) -> HashMap<K, V> {
+    let k: *K = alloc(16);
+    let v: *V = alloc(16);
+    let u: *u8 = alloc(16);   // zero-initialized by alloc (memset)
+    return HashMap { keys: k, vals: v, used: u, cap: 16, len: 0, kw: key_width, mode: 0 };
+}
+
+fn hashmap_new_field<K, V>(key_width: i32) -> HashMap<K, V> {
+    let k: *K = alloc(16);
+    let v: *V = alloc(16);
+    let u: *u8 = alloc(16);
+    return HashMap { keys: k, vals: v, used: u, cap: 16, len: 0, kw: key_width, mode: 1 };
+}
+
+// ---- Core operations ----
+
+fn hashmap_insert<K, V>(m: *HashMap<K, V>, k: K, v: V) {
+    let kb: *u8 = (&k) as *u8;
+    var idx: i32 = hm_hash(kb, m.kw, m.cap, m.mode);
+    var probes: i32 = 0;
+    while probes < m.cap {
+        if m.used[idx] == 0 {
+            // Empty slot: table must have room (no rehash).
+            if m.len == m.cap {
+                write(2, "hashmap: insert into full map (cap 16, no rehash)\n", 50);
+                exit(1);
+            }
+            m.keys[idx] = k;
+            m.vals[idx] = v;
+            m.used[idx] = 1;
+            m.len = m.len + 1;
+            return;
+        }
+        // Occupied: overwrite if the key matches.
+        let slot_kb: *u8 = (&m.keys[idx]) as *u8;
+        if hm_bytes_eq(slot_kb, kb, m.kw) == 1 {
+            m.vals[idx] = v;
+            return;
+        }
+        idx = (idx + 1) & (m.cap - 1);
+        probes = probes + 1;
+    }
+    // Probed every slot without finding an empty or matching one: full.
+    write(2, "hashmap: insert into full map (cap 16, no rehash)\n", 50);
+    exit(1);
+}
+
+// Look up key k. Returns 1 and writes the value through `out` if found,
+// else returns 0.
+fn hashmap_get<K, V>(m: *HashMap<K, V>, k: K, out: *V) -> i32 {
+    let kb: *u8 = (&k) as *u8;
+    var idx: i32 = hm_hash(kb, m.kw, m.cap, m.mode);
+    var probes: i32 = 0;
+    while probes < m.cap {
+        if m.used[idx] == 0 {
+            return 0;   // empty slot ends the probe chain
+        }
+        let slot_kb: *u8 = (&m.keys[idx]) as *u8;
+        if hm_bytes_eq(slot_kb, kb, m.kw) == 1 {
+            out[0] = m.vals[idx];
+            return 1;
+        }
+        idx = (idx + 1) & (m.cap - 1);
+        probes = probes + 1;
+    }
+    return 0;
+}
+
+fn hashmap_contains<K, V>(m: *HashMap<K, V>, k: K) -> i32 {
+    let kb: *u8 = (&k) as *u8;
+    var idx: i32 = hm_hash(kb, m.kw, m.cap, m.mode);
+    var probes: i32 = 0;
+    while probes < m.cap {
+        if m.used[idx] == 0 {
+            return 0;
+        }
+        let slot_kb: *u8 = (&m.keys[idx]) as *u8;
+        if hm_bytes_eq(slot_kb, kb, m.kw) == 1 {
+            return 1;
+        }
+        idx = (idx + 1) & (m.cap - 1);
+        probes = probes + 1;
+    }
+    return 0;
+}
+
+fn hashmap_len<K, V>(m: *HashMap<K, V>) -> i32 {
+    return m.len;
+}
+
+fn hashmap_free<K, V>(m: *HashMap<K, V>) {
+    free(m.keys);
+    free(m.vals);
+    free(m.used);
+}

@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// generic_extfield.tv — Test generic functions with extension fields
+//
+// Verifies that fn<F: Field> monomorphizes correctly for ExtField types,
+// including operations on non-zero imaginary parts.
+//
+// Expected output:
+//   40 0      <- generic_add over Ext251 (real-only)
+//   3 0       <- generic_add over ExtGold (real-only)
+//   171 0     <- generic_mul over Ext251 (real-only)
+//   6 0       <- generic_mul over ExtGold (real-only)
+//   13 27     <- generic_add with imaginary parts
+//   59 130    <- generic_mul with imaginary parts (nr=2 for p=251)
+
+type F251 = Field<251>;
+type Ext251 = ExtField<Field<251>, 2>;
+type Goldilocks = Field<18446744069414584321>;
+type ExtGold = ExtField<Field<18446744069414584321>, 2>;
+
+fn generic_add<F: Field>(a: F, b: F) -> F {
+    return a + b;
+}
+
+fn generic_mul<F: Field>(a: F, b: F) -> F {
+    return a * b;
+}
+
+fn generic_inv_check<F: Field>(a: F) -> F {
+    let inv_a: F = a ** -1;
+    return a * inv_a;
+}
+
+fn main() -> i32 {
+    let i251: Ext251 = Ext251::IMAG;
+
+    // Test 1: Ext251 generic_add (real-only)
+    let a: Ext251 = 10;
+    let b: Ext251 = 30;
+    let r1: Ext251 = generic_add(a, b);
+    print(r1);
+
+    // Test 2: ExtGold generic_add (real-only)
+    let c: ExtGold = 1;
+    let d: ExtGold = 2;
+    let r2: ExtGold = generic_add(c, d);
+    print(r2);
+
+    // Test 3: Ext251 generic_mul (real-only)
+    let e: Ext251 = 200;
+    let f: Ext251 = 100;
+    let r3: Ext251 = generic_mul(e, f);
+    print(r3);
+
+    // Test 4: ExtGold generic_mul (real-only)
+    let g: ExtGold = 2;
+    let h: ExtGold = 3;
+    let r4: ExtGold = generic_mul(g, h);
+    print(r4);
+
+    // Test 5: generic_add with imaginary parts
+    // (3+7i) + (10+20i) = (13, 27)
+    let three: Ext251 = 3;
+    let seven: Ext251 = 7;
+    let x: Ext251 = three + seven * i251;
+    let ten: Ext251 = 10;
+    let twenty: Ext251 = 20;
+    let y: Ext251 = ten + twenty * i251;
+    let r5: Ext251 = generic_add(x, y);
+    print(r5);
+
+    // Test 6: generic_mul with imaginary parts
+    // (3+7i)(10+20i) = (59, 130) with nr=2
+    let r6: Ext251 = generic_mul(x, y);
+    print(r6);
+
+    return 0;
+}

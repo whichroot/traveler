@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// time_regime.tv — T1b: regime detection on a stream that IS time — a two-phase
+// inter-arrival stream (2 ms / 80 ms sleeps), binarized OUTSIDE the field,
+// boundary at index 8, field-invariant across two primes. tvc_self ONLY.
+// @internal-design: time (T1b).
+//
+// Expected output:
+//   1     the interval stream is cleanly two-phase (A = 0×8, B = 1×8)
+//   2     regime_detect found the boundary at index 8 (the 2ms→80ms edge)
+//   3     the boundary is field-invariant (same index under p=251 and p=65521)
+//   700   the ? pipeline completed
+
+import "../src/lib/time/time.tv";
+import "../src/lib/core/poly_core.tv";
+
+fn run() -> Result<i64, TimeError> {
+    let n: i32 = 16;
+    let ts: *i64 = alloc(17);                 // n+1 timestamps → n intervals
+
+    // Phase A: 8 short sleeps (2 ms). Phase B: 8 long sleeps (80 ms).
+    ts[0] = time_mono_ns()?;
+    var i: i32 = 0;
+    while i < n {
+        if i < 8 {
+            time_sleep_ms(2)?;
+        } else {
+            time_sleep_ms(80)?;
+        }
+        ts[i + 1] = time_mono_ns()?;
+        i = i + 1;
+    }
+
+    // Binarize OUTSIDE the field: the >= 40 ms decider runs on raw i64 ns; the
+    // {0,1} outcome is what enters F_p. 40 ms sits well between 2 ms and 80 ms.
+    let thresh_ns: i64 = 40000000;
+    let b: *i32 = alloc(16);
+    i = 0;
+    while i < n {
+        let d: i64 = ts[i + 1] - ts[i];
+        if d >= thresh_ns {
+            b[i] = 1;
+        } else {
+            b[i] = 0;
+        }
+        i = i + 1;
+    }
+
+    // (1) The quantized stream is cleanly two-phase (the flake canary: if a
+    // short sleep ever overshot 40 ms this fails loudly rather than silently).
+    var clean: i32 = 1;
+    i = 0;
+    while i < n {
+        if i < 8 {
+            if b[i] != 0 { clean = 0; }
+        } else {
+            if b[i] != 1 { clean = 0; }
+        }
+        i = i + 1;
+    }
+    if clean == 1 { print(1); }
+
+    // (2) regime_detect over F_251 lands the 2ms→80ms boundary at index 8.
+    let reg: *i32 = alloc(4);
+    let boundary: i32 = regime_detect(b, n, 0, 0, 251, reg);
+    if boundary == 8 { print(2); }
+
+    // (3) The boundary index is field-invariant — same index under a larger
+    // prime (the Boundary Invariance Theorem, made concrete on live timing).
+    let reg2: *i32 = alloc(4);
+    let boundary2: i32 = regime_detect(b, n, 0, 0, 65521, reg2);
+    if boundary2 == boundary { print(3); }
+
+    free(ts);
+    free(b);
+    free(reg);
+    free(reg2);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

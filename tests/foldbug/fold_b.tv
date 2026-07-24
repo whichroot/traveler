@@ -1,0 +1,39 @@
+// fold_b.tv — other half of the i128 fold reproducer (#15). A SECOND object that
+// also emits the `internal @field_dyn_*` runtime, plus main.
+//
+// KEY to the repro: fold_a and fold_b instantiate DIFFERENT generic wrappers
+// (fold_a: fsub_g; fold_b: fadd_g), so the user-facing *_g_dyn symbols do NOT
+// collide at link — but BOTH objects still emit the full duplicated
+// `internal @field_dyn_{add,sub,mul,...}` runtime. Those file-local internals
+// are what -O2 identical-code-folding mis-merges. (If both instantiate the SAME
+// wrapper, the global wrapper symbol collides and you get a plain duplicate-
+// symbol link error instead — a different, louder failure.)
+//
+// neg_b reaches @field_dyn_sub THROUGH fadd's instantiation only if the sub
+// runtime is emitted; to be sure both objects emit @field_dyn_sub, fold_b also
+// negates. We use fadd as the instantiated wrapper and compute 0 - v via the
+// field's own sub path exercised by the runtime present in this module.
+//
+// Goldilocks p = 18446744069414584321; 0 - 1 mod p = p-1 = 18446744069414584320.
+// CORRECT: that value twice. BUGGY (-O2 fold): off by exactly 2^32-1.
+fn fadd_g<F: Field>(a: F, b: F) -> F { return a + b; }
+instantiate fadd_g<dyn>;
+
+// neg via add: 0 - v == p - v; compute as field add of (p - v) is circular, so
+// instead exercise sub directly with its own generic under a DIFFERENT name.
+fn fsub2_g<F: Field>(a: F, b: F) -> F { return a - b; }
+instantiate fsub2_g<dyn>;
+
+#[export]
+fn neg_b(p: i64, v: i64) -> i64 {
+    let f: Field = field(p);
+    return fsub2_g_dyn(f, 0, v);
+}
+
+extern "C" fn neg_a(p: i64, v: i64) -> i64;
+
+fn main() {
+    let gold: i64 = 18446744069414584321;
+    print(neg_a(gold, 1));
+    print(neg_b(gold, 1));
+}

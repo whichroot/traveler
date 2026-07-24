@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_edge_test.tv — the honest edge as a gate (Phase A.3d): a synthesized
+// sawtooth resolves; a real Pigstep audio slice has NO onset <= d_max.
+// @internal-design: genus (no-onset as first-class measurement)
+//
+// Pigstep slice: left channel, 48 samples @ 50% mark, rebased min=0 (affine-
+// invariant); extracted live by genus_wav.tv, embedded so the gate is hermetic.
+//
+// Expected output:
+//   1            sawtooth onset = 1 (synthesized shape resolves)
+//   13           Pigstep onset = d_max+1 sentinel (NO onset <= 12) — the edge
+//   4            Pigstep nseg at d_max = trivial maximum (no exploitable struct)
+//
+// Link: regime_fri.o + genus_probe.o + genus_edge_test.o
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn genus_signature(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+
+fn main() -> i32 {
+    let f: Field = field(18446744069414584321);   // Goldilocks
+    let n: i32 = 48;
+    let d_max: i32 = 12;
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let out: *i64 = alloc(2);
+    let data: *i64 = alloc(n);
+
+    // Synthesized sawtooth P12 step3 -> resolves at onset d* = 1.
+    for i in 0..n { data[i] = ((i % 12) * 3) as i64; }
+    genus_signature(f, data, n, d_max, cert, work, out);
+    print(out[0] as i32);   // 1
+
+    // Real Pigstep (Mono Mix) left channel, 48 samples @ 50% mark, rebased min=0.
+    data[0]=20868; data[1]=26265; data[2]=22411; data[3]=14102; data[4]=6010; data[5]=13687;
+    data[6]=24745; data[7]=25205; data[8]=19171; data[9]=16879; data[10]=15782; data[11]=17005;
+    data[12]=14940; data[13]=6793; data[14]=1749; data[15]=17652; data[16]=23750; data[17]=7879;
+    data[18]=0; data[19]=6729; data[20]=15878; data[21]=11889; data[22]=13077; data[23]=17748;
+    data[24]=14566; data[25]=11972; data[26]=21279; data[27]=17120; data[28]=15991; data[29]=16031;
+    data[30]=9637; data[31]=14788; data[32]=18124; data[33]=17065; data[34]=19544; data[35]=29593;
+    data[36]=40421; data[37]=37020; data[38]=23387; data[39]=22436; data[40]=26772; data[41]=27886;
+    data[42]=32884; data[43]=31660; data[44]=28013; data[45]=30313; data[46]=30112; data[47]=31231;
+
+    genus_signature(f, data, n, d_max, cert, work, out);
+    print(out[0] as i32);   // 13 = d_max+1 sentinel: NO onset <= 12
+
+    let nseg_dmax: i32 = regime_prove_dyn(f, data, n, d_max, cert, work);
+    print(nseg_dmax);       // 4 = trivial maximum
+
+    free(data); free(cert); free(work); free(out);
+    return 0;
+}

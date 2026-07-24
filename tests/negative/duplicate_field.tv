@@ -1,0 +1,8 @@
+// Negative test: duplicate field declaration
+field F = Field<251>;
+field F = Field<65521>;
+
+fn main() {
+    let a: F = 100;
+    print(a);
+}

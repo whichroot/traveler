@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rns_dyn_matmul.tv — generic-N exact NN matmul over a RUNTIME prime basis
+// (k the precision dial); exact at ~66-bit accumulators, past a plain i64.
+// tvc_self ONLY (import-based; gated via compile_obj_self).
+// @internal-design: rns
+//
+// Expected output: 2912256
+
+import "../src/lib/rns/rns_dyn.tv";
+
+fn main() -> i32 {
+    let T: i32 = 8;
+    let K: i32 = 768;
+    let N: i32 = 2304;
+    let total: i32 = T * N;
+    let F: i64 = 58;                      // high scale -> ~66-bit accumulators (past i64)
+
+    // 4-prime basis (runtime array; change the length to change precision).
+    let k: i32 = 4;
+    let P: *i64 = alloc(k);
+    P[0] = 2013265921; P[1] = 1811939329; P[2] = 469762049; P[3] = 2130706433;
+
+    // Synthetic integer operands (the same values fed to every channel, reduced).
+    // x[T,K] and w[K,N] as plain i64; we reduce per prime into residue arrays.
+    let x: *i64 = alloc(T * K);
+    let w: *i64 = alloc(K * N);
+    var i: i32 = 0;
+    while i < T * K {
+        let v: i64 = ((i as i64 * 37 + 11) % (1 << 29)) - (1 << 28);   // ~2^28, signed
+        x[i] = v; i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        let v: i64 = ((i as i64 * 53 + 7) % (1 << 29)) - (1 << 28);
+        w[i] = v; i = i + 1;
+    }
+
+    // Per-prime residue arrays for x and w, plus the MAC output residues.
+    // Residue arrays are *i64 (the dyn channel element type). The pointer table
+    // is a **i64 of k entries — sized k*8 by the #19 alloc fix.
+    let rtab: **i64 = alloc(k);
+
+    // Run one dyn MAC pass per prime; collect residue outputs into rtab.
+    var c: i32 = 0;
+    while c < k {
+        let p: i64 = P[c];
+        let f: Field = field(p);
+        // reduce x, w into this prime
+        let xr: *i64 = alloc(T * K);
+        let wr: *i64 = alloc(K * N);
+        var a: i32 = 0;
+        while a < T * K { let r: i64 = x[a] % p; if r < 0 { xr[a] = r + p; } else { xr[a] = r; } a = a + 1; }
+        a = 0;
+        while a < K * N { let r: i64 = w[a] % p; if r < 0 { wr[a] = r + p; } else { wr[a] = r; } a = a + 1; }
+        let rc: *i64 = alloc(total);
+        rns_mac_dyn_dyn(f, xr, wr, rc, T, K, N);     // the auto-parallel MAC pass
+        rtab[c] = rc;
+        c = c + 1;
+    }
+
+    // CRT-reconstruct + requantize over the k residue channels.
+    let y: *i64 = alloc(total);
+    rns_crt_pass(P, k, rtab, y, T, N, F);
+
+    // Deterministic checksum of the exact outputs.
+    var sum: i64 = 0;
+    i = 0;
+    while i < total { sum = sum + y[i]; i = i + 1; }
+    print(sum);
+    return 0;
+}

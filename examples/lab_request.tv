@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// lab_request.tv — the read side of the lab harness: emit a request.json (the
+// orchestrator's task), then READ + PARSE it and pull out fields — the first act
+// of an experiment-container entrypoint. Exercises the json/ parser over an
+// object, a NESTED object, an array, and a missing key. tvc_self ONLY.
+// @internal-note: plan-self-improving-lab
+//
+// Expected output:
+//   1     run_id == "run-000041"
+//   2000  max_games (integer)
+//   4     budget.cpu_cores (nested object)
+//   2     tags array length
+//   1     tags[1] == "sprt"
+//   -1    a missing key resolves to -1
+//   42    a JSON float is REFUSED loudly (Err arm) — there are no floats
+//   700   the ? pipeline completed
+
+import "../src/lib/fs/fs.tv";
+import "../src/lib/json/json.tv";            // writer (emit the request)
+import "../src/lib/json/json_parse.tv";      // reader (parse it back)
+
+fn run() -> Result<i64, FsError> {
+    let path: *u8 = "/tmp/traveler_lab_request.json";
+
+    // 1. Emit a request.json — the orchestrator handing a bounded task.
+    var req: Str = str_new();
+    json_obj_open(&req);
+    json_field_str(&req, "run_id", "run-000041");  json_comma(&req);
+    json_field_str(&req, "project", "wanderer");   json_comma(&req);
+    json_field_int(&req, "max_games", 2000);       json_comma(&req);
+    json_key(&req, "budget");
+    json_obj_open(&req);
+    json_field_int(&req, "cpu_cores", 4);          json_comma(&req);
+    json_field_int(&req, "memory_mb", 8192);
+    json_obj_close(&req);                           json_comma(&req);
+    json_key(&req, "tags");
+    json_arr_open(&req);
+    json_str(&req, "paired");                      json_comma(&req);
+    json_str(&req, "sprt");
+    json_arr_close(&req);
+    json_obj_close(&req);
+    fs_write_string(path, &req)?;
+    str_free(&req);
+
+    // 2. Read it back and PARSE it (the experiment's first act).
+    let text: Str = fs_read_to_string(path)?;
+    match json_parse(text.data, text.len) {
+        Result::Ok(doc) => {
+            var d: Json = doc;
+            let root: i32 = json_root(&d);
+            // 3. Extract fields.
+            print(json_str_eq(&d, json_get(&d, root, "run_id"), "run-000041"));
+            print(json_as_int(&d, json_get(&d, root, "max_games")));
+            let budget: i32 = json_get(&d, root, "budget");
+            print(json_as_int(&d, json_get(&d, budget, "cpu_cores")));
+            let tags: i32 = json_get(&d, root, "tags");
+            print(json_len(&d, tags));
+            print(json_str_eq(&d, json_at(&d, tags, 1), "sprt"));
+            print(json_get(&d, root, "absent"));
+            json_free(&d);
+        }
+        Result::Err(e) => {
+            print(0 - 99);
+        }
+    }
+    str_free(&text);
+
+    // A JSON float is refused loudly (no float type) — the Err arm must fire.
+    match json_parse("3.14", 4) {
+        Result::Ok(bad) => { var b: Json = bad; json_free(&b); print(0 - 50); }
+        Result::Err(e) => { print(42); }
+    }
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

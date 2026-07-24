@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// closure_prove_through.tv — B2-closures Slice 2, the prove-through fence: a
+// pure closure of known identity PARALLELIZES; the same loop via fn pointer stays serial.
+// @internal-design: examples (closure_prove_through).
+//
+// Worker-count gate (grep 'define internal void @__pfor_worker'):
+//   closure_map  -> 1 worker  (prove-through: pure closure, known identity)
+//   fnptr_map    -> 0 workers (fenced: indirect call, unknown target)
+// Net: exactly 1 worker function in the module.
+//
+// Expected output: 16381 16381 (both maps compute the same values; the closure
+// path is parallel, the fn-pointer path sequential — same result, the thesis
+// holds: parallelism is the only thing that differs).
+
+type F = Field<2013265921>;
+
+fn addone(x: F) -> F { return x + 1 as F; }
+
+// PARALLELIZES: pure closure, identity known, body proven pure.
+fn closure_map(a: *F, out: *F, n: i32) {
+    let k: F = 1;
+    let f = |x: F| x + k;
+    for i in 0..n {
+        out[i] = f(a[i]);
+    }
+}
+
+// FENCED: indirect call through a function pointer (unprovable callee).
+fn fnptr_map(a: *F, out: *F, n: i32) {
+    let fp: fn(F)->F = &addone;
+    for i in 0..n {
+        out[i] = fp(a[i]);
+    }
+}
+
+fn sum(a: *F, n: i32) -> F {
+    var s: F = 0;
+    var w: i32 = 0;
+    while w < n { s = s + a[w]; w = w + 1; }
+    return s;
+}
+
+fn main() -> i32 {
+    let a: *F = alloc(4096);
+    let o1: *F = alloc(4096);
+    let o2: *F = alloc(4096);
+    var w: i32 = 0;
+    while w < 4096 { a[w] = (w % 7) as F; w = w + 1; }
+
+    closure_map(a, o1, 4096);
+    fnptr_map(a, o2, 4096);
+
+    print(sum(o1, 4096));   // 16381
+    print(sum(o2, 4096));   // 16381 (identical values; only parallelism differs)
+    return 0;
+}

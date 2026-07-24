@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_if_test_driver.tv — Driver for conditional select ZK test
+//
+// Expected output: 42 99 1 1
+//   42  = select_val(1, 42, 99) — sel=1 picks a
+//   99  = select_val(0, 42, 99) — sel=0 picks b
+//   1   = select_val(1, 1, 0)   — boolean result
+//   1   = ZK proof valid
+//
+// Linking: ntt.o + poseidon2.o + merkle.o + fri.o + plonk.o + zk_if_test.o + this.o
+
+type Goldilocks = Field<18446744069414584321>;
+
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+extern "C" fn select_val(
+    sel: Goldilocks, a: Goldilocks, b: Goldilocks) -> Goldilocks;
+
+extern "C" fn select_val_zk_prove(
+    sel: Goldilocks, a: Goldilocks, b: Goldilocks,
+    eval_out: *Goldilocks,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+
+fn main() -> i32 {
+    // Native tests
+    let r1: Goldilocks = select_val(1, 42, 99);
+    print(r1);  // 42
+
+    let r2: Goldilocks = select_val(0, 42, 99);
+    print(r2);  // 99
+
+    let r3: Goldilocks = select_val(1, 1, 0);
+    print(r3);  // 1
+
+    // ZK proof
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    let num_queries: i32 = 3;
+    let eval_out: *Goldilocks = alloc(16);
+    let fri_roots: *Goldilocks = alloc(128);
+    let fri_challenges: *Goldilocks = alloc(32);
+    let fri_final_poly: *Goldilocks = alloc(4);
+    let fri_query_values: *Goldilocks = alloc(512);
+    let fri_query_paths: *Goldilocks = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    let ok: i32 = select_val_zk_prove(1, 42, 99,
+        eval_out,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths,
+        fri_query_indices, fri_n_rounds, num_queries,
+        rc_init, rc_term, rc_int, diag);
+    print(ok);  // 1
+
+    return 0;
+}

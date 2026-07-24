@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ntt_test.tv — NTT implementation + test suite (single file)
+//
+// Number Theoretic Transform over Goldilocks field.
+// Generic functions, compiler-emitted root tables.
+//
+// Test 1: NTT forward + inverse round-trip (size 8)
+// Test 2: NTT forward + inverse round-trip (size 16)
+// Test 3: Polynomial multiplication (1+x)*(1+x) = 1+2x+x^2
+// Test 4: Polynomial multiplication (1+2x+3x^2+4x^3)*(5+6x+7x^2+8x^3)
+// Test 5: Root chain depth — roots[4]^16 = -1
+//
+// Expected output: 5 lines of "1" (all tests pass)
+
+type Goldilocks = Field<18446744069414584321>;
+
+// ============================================================
+//  NTT MODULE (generic over F: Field)
+// ============================================================
+
+// Reverse the low `bits` bits of integer x.
+fn bit_rev(x: i32, bits: i32) -> i32 {
+    var r: i32 = 0;
+    var v: i32 = x;
+    for i in 0..bits {
+        r = (r << 1) | (v & 1);
+        v = v >> 1;
+    }
+    return r;
+}
+
+// In-place bit-reversal permutation.
+fn bit_reverse_swap<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    for i in 0..n {
+        let j: i32 = bit_rev(i, log_n);
+        if i < j {
+            let tmp: F = data[i];
+            data[i] = data[j];
+            data[j] = tmp;
+        }
+    }
+}
+
+// Forward NTT (Cooley-Tukey DIT, in-place).
+// Input: natural order. Output: natural-order evaluation (output[k] = f(omega^k)).
+fn ntt_forward<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    bit_reverse_swap(data, log_n);
+
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_root(s);
+
+        var k: i32 = 0;
+        while k < n {
+            var w: F = 1;
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = w * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+                w = w * omega_m;
+            }
+            k = k + m;
+        }
+    }
+}
+
+// Inverse NTT (in-place, with 1/n scaling).
+fn ntt_inverse<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    bit_reverse_swap(data, log_n);
+
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_inv_root(s);
+
+        var k: i32 = 0;
+        while k < n {
+            var w: F = 1;
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = w * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+                w = w * omega_m;
+            }
+            k = k + m;
+        }
+    }
+
+    let scale: F = __ntt_n_inv(log_n - 1);
+    for i in 0..n {
+        data[i] = data[i] * scale;
+    }
+}
+
+// Polynomial multiplication via NTT.
+// a[0..n-1] * b[0..n-1] -> out[0..2n-1].  n must be 2^log_n.
+fn poly_mul_ntt<F: Field>(a: *F, b: *F, out: *F, n: i32, log_n: i32) {
+    let nn: i32 = n + n;
+    let log_nn: i32 = log_n + 1;
+
+    let fa: *F = alloc(nn);
+    let fb: *F = alloc(nn);
+    let zero: F = 0;
+    for i in 0..n {
+        fa[i] = a[i];
+        fb[i] = b[i];
+    }
+    for i in n..nn {
+        fa[i] = zero;
+        fb[i] = zero;
+    }
+
+    ntt_forward(fa, log_nn);
+    ntt_forward(fb, log_nn);
+
+    for i in 0..nn {
+        fa[i] = fa[i] * fb[i];
+    }
+
+    ntt_inverse(fa, log_nn);
+
+    for i in 0..nn {
+        out[i] = fa[i];
+    }
+
+    free(fa);
+    free(fb);
+}
+
+// Root accessor for testing
+fn ntt_get_root<F: Field>(s: i32) -> F { return __ntt_root(s); }
+
+// ============================================================
+//  TESTS
+// ============================================================
+
+fn main() -> i32 {
+    // Test 1: Round-trip NTT size 8
+    let n1: i32 = 8;
+    let data1: *Goldilocks = alloc(n1);
+    data1[0] = 10; data1[1] = 20; data1[2] = 30; data1[3] = 40;
+    data1[4] = 50; data1[5] = 60; data1[6] = 70; data1[7] = 80;
+
+    let orig1: *Goldilocks = alloc(n1);
+    for i in 0..n1 { orig1[i] = data1[i]; }
+
+    ntt_forward(data1, 3);
+    ntt_inverse(data1, 3);
+
+    var pass1: i32 = 1;
+    for i in 0..n1 {
+        if data1[i] != orig1[i] { pass1 = 0; }
+    }
+    print(pass1);
+    free(data1);
+    free(orig1);
+
+    // Test 2: Round-trip NTT size 16
+    let n2: i32 = 16;
+    let data2: *Goldilocks = alloc(n2);
+    for i in 0..n2 { data2[i] = (i + 1) as Goldilocks; }
+    let orig2: *Goldilocks = alloc(n2);
+    for i in 0..n2 { orig2[i] = data2[i]; }
+
+    ntt_forward(data2, 4);
+    ntt_inverse(data2, 4);
+
+    var pass2: i32 = 1;
+    for i in 0..n2 {
+        if data2[i] != orig2[i] { pass2 = 0; }
+    }
+    print(pass2);
+    free(data2);
+    free(orig2);
+
+    // Test 3: Poly mul (1+x)*(1+x) = 1 + 2x + x^2
+    let a3: *Goldilocks = alloc(4);
+    let b3: *Goldilocks = alloc(4);
+    let c3: *Goldilocks = alloc(8);
+    a3[0] = 1; a3[1] = 1; a3[2] = 0; a3[3] = 0;
+    b3[0] = 1; b3[1] = 1; b3[2] = 0; b3[3] = 0;
+
+    poly_mul_ntt(a3, b3, c3, 4, 2);
+
+    let one: Goldilocks = 1;
+    let two: Goldilocks = 2;
+    let zero: Goldilocks = 0;
+    var pass3: i32 = 1;
+    if c3[0] != one  { pass3 = 0; }
+    if c3[1] != two  { pass3 = 0; }
+    if c3[2] != one  { pass3 = 0; }
+    for i in 3..8 {
+        if c3[i] != zero { pass3 = 0; }
+    }
+    print(pass3);
+    free(a3); free(b3); free(c3);
+
+    // Test 4: Poly mul (1+2x+3x^2+4x^3) * (5+6x+7x^2+8x^3)
+    // = 5 + 16x + 34x^2 + 60x^3 + 61x^4 + 52x^5 + 32x^6
+    let a4: *Goldilocks = alloc(4);
+    let b4: *Goldilocks = alloc(4);
+    let c4: *Goldilocks = alloc(8);
+    a4[0] = 1; a4[1] = 2; a4[2] = 3; a4[3] = 4;
+    b4[0] = 5; b4[1] = 6; b4[2] = 7; b4[3] = 8;
+
+    poly_mul_ntt(a4, b4, c4, 4, 2);
+
+    var pass4: i32 = 1;
+    let v5: Goldilocks = 5;
+    let v16: Goldilocks = 16;
+    let v34: Goldilocks = 34;
+    let v60: Goldilocks = 60;
+    let v61: Goldilocks = 61;
+    let v52: Goldilocks = 52;
+    let v32: Goldilocks = 32;
+    if c4[0] != v5  { pass4 = 0; }
+    if c4[1] != v16 { pass4 = 0; }
+    if c4[2] != v34 { pass4 = 0; }
+    if c4[3] != v60 { pass4 = 0; }
+    if c4[4] != v61 { pass4 = 0; }
+    if c4[5] != v52 { pass4 = 0; }
+    if c4[6] != v32 { pass4 = 0; }
+    if c4[7] != zero { pass4 = 0; }
+    print(pass4);
+    free(a4); free(b4); free(c4);
+
+    // Test 5: Root chain depth — roots[4]^16 = -1
+    let r4: Goldilocks = ntt_get_root(4);
+    let r4_2: Goldilocks = r4 * r4;
+    let r4_4: Goldilocks = r4_2 * r4_2;
+    let r4_8: Goldilocks = r4_4 * r4_4;
+    let r4_16: Goldilocks = r4_8 * r4_8;
+    let neg1: Goldilocks = 18446744069414584320;
+    if r4_16 == neg1 { print(1); } else { print(0); }
+
+    return 0;
+}

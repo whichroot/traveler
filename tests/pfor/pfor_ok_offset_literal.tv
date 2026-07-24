@@ -1,0 +1,40 @@
+// pfor_ok_offset_literal.tv — POSITIVE CONTROL: literal-offset dual write
+//
+// Writes out[i] and out[i + 2048] with loop i in 0..2048.  All three
+// quantities (offset delta, loop start, loop end) are integer literals,
+// so disjointness is provable by direct compile-time arithmetic:
+// 2048 >= 2048 - 0.
+//
+// Disjointness proof obligation: case (a) — all literals.
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let a: *F = alloc(2048);
+    let b: *F = alloc(2048);
+    let out: *F = alloc(4096);
+
+    let mut w: i32 = 0;
+    while w < 2048 {
+        a[w] = (w % 11 + 1) as F;
+        b[w] = (w % 13 + 1) as F;
+        w = w + 1;
+    }
+
+    // SAFE: footprints [0,2048) and [2048,4096) are disjoint by literal math
+    for i in 0..2048 {
+        out[i] = a[i];
+        out[i + 2048] = b[i];
+    }
+
+    let mut s: F = 0;
+    w = 0;
+    while w < 4096 {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

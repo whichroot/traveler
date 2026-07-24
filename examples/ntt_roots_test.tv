@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ntt_roots_test.tv — Verify NTT root chain tables
+//
+// Tests that compiler-emitted NTT roots satisfy the algebraic properties:
+// 1. roots[0] = p-1  (primitive 2nd root of unity = -1)
+// 2. roots[1]^2 = -1 (primitive 4th root squared gives -1)
+// 3. roots[2]^4 = -1 (primitive 8th root to the 4th gives -1)
+// 4. roots[k] * inv_roots[k] = 1  (inverse round-trip)
+// 5. n_inv[k] * 2^(k+1) = 1      (scaling factor round-trip)
+//
+// Uses Field<18446744069414584321> (Goldilocks, NTT_MAX_LOG = 32)
+//
+// Expected output: 5 lines of "1" (all tests pass)
+
+type Goldilocks = Field<18446744069414584321>;
+
+fn get_root<F: Field>(stage: i32) -> F {
+    return __ntt_root(stage);
+}
+
+fn get_inv_root<F: Field>(stage: i32) -> F {
+    return __ntt_inv_root(stage);
+}
+
+fn get_n_inv<F: Field>(stage: i32) -> F {
+    return __ntt_n_inv(stage);
+}
+
+fn main() -> i32 {
+    let neg1: Goldilocks = 18446744069414584320;  // p-1 = -1 in the field
+    let one: Goldilocks = 1;
+
+    // Test 1: roots[0] = -1  (primitive 2nd root of unity)
+    let r0: Goldilocks = get_root(0);
+    if r0 == neg1 { print(1); } else { print(0); }
+
+    // Test 2: roots[1]^2 = -1  (primitive 4th root squared)
+    let r1: Goldilocks = get_root(1);
+    let r1_sq: Goldilocks = r1 * r1;
+    if r1_sq == neg1 { print(1); } else { print(0); }
+
+    // Test 3: roots[2]^4 = -1  (primitive 8th root to the 4th)
+    let r2: Goldilocks = get_root(2);
+    let r2_sq: Goldilocks = r2 * r2;
+    let r2_4: Goldilocks = r2_sq * r2_sq;
+    if r2_4 == neg1 { print(1); } else { print(0); }
+
+    // Test 4: root * inv_root = 1  (inverse round-trip for stage 1)
+    let ir1: Goldilocks = get_inv_root(1);
+    let prod: Goldilocks = r1 * ir1;
+    if prod == one { print(1); } else { print(0); }
+
+    // Test 5: n_inv[0] * 2 = 1  (inverse of 2)
+    let ni0: Goldilocks = get_n_inv(0);
+    let two: Goldilocks = 2;
+    let prod2: Goldilocks = ni0 * two;
+    if prod2 == one { print(1); } else { print(0); }
+
+    return 0;
+}

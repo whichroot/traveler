@@ -1,0 +1,227 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_coset.tv — Mobius W-B P4: the coset-support exhaustive (F_2, q in {3,5}):
+// PROMOTION + COSET verified over every admissible deg<=12 recurrence, counts gated.
+// @internal-design: nt (Mobius arc); @internal-note: plan-mobius-inclusion B3.
+
+import "../src/lib/nt/linalg.tv";     // la_nullspace
+import "../src/lib/nt/linrec.tv";     // bm
+
+type F2 = Field<2>;
+
+// minpoly(a) in F_2[x^q]? bm on the first 2L+2 terms -> connection poly Cm (deg Lm);
+// minpoly is its reversal m[e] = Cm[Lm-e]; 1 iff every nonzero exponent has e%q == 0.
+fn coset_ok(a: *F2, nterms: i32, q: i32) -> i32 {
+    let C: *F2 = alloc(nterms + 1);
+    let Lm: i32 = bm(a, nterms, C, 0);
+    // m[e] = C[Lm - e]; nonzero exponents of m must be multiples of q
+    var ok: i32 = 1;
+    var i: i32 = 0;
+    while i <= Lm {
+        if C[i] == (1 as F2) {
+            let e: i32 = Lm - i;
+            if (e % q) != 0 { ok = 0; }
+        }
+        i = i + 1;
+    }
+    free(C);
+    return ok;
+}
+
+// Enumerate the coset exhaustive for a given q. Returns via prints.
+fn run_coset(q: i32) {
+    let NGEN: i32 = 4 * 12 * q + 8;          // enough terms for window + promotion + bm
+    var instances: i32 = 0;
+    var distinct: i32 = 0;
+    var prom_viol: i32 = 0;
+    var coset_viol: i32 = 0;
+    var short_viol: i32 = 0;
+
+    // distinct-sequence signatures (63-bit prefixes); complexity <= 12 so faithful
+    let SIGCAP: i32 = 4096;
+    let sigs: *i64 = alloc(SIGCAP);
+    var nsig: i32 = 0;
+
+    var L: i32 = 1;
+    while L <= 12 {
+        // B[n][j] = coefficient of initial a_j in a_n, n=0..NGEN-1, j=0..L-1
+        let B: *F2 = alloc(NGEN * L);
+        let a: *F2 = alloc(NGEN);
+        // constraint window rows: k in [0,2L-1], j in [1,q-1] -> n=qk+j (q-nmid-n)
+        let winK: i32 = 2 * L;
+        let nrows: i32 = winK * (q - 1);
+        let M: *F2 = alloc(nrows * L);
+        let ns: *F2 = alloc(L * L);
+        // short-window control: only k in [0, L/2] (deliberately too short)
+        let shK: i32 = L / 2 + 1;
+        let shRows: i32 = shK * (q - 1);
+        let Msh: *F2 = alloc(shRows * L);
+        let nsh: *F2 = alloc(L * L);
+
+        let masks: i32 = 1 << (L - 1);          // c_1..c_{L-1} free; c_0=c_L=1
+        var mask: i32 = 0;
+        while mask < masks {
+            // connection poly coeffs Cc[0..L]: Cc[0]=1, Cc[L]=1, Cc[i]=bit(i-1)
+            // build B
+            var n: i32 = 0;
+            while n < NGEN {
+                var j: i32 = 0;
+                while j < L { B[n * L + j] = 0 as F2; j = j + 1; }
+                if n < L {
+                    B[n * L + n] = 1 as F2;
+                } else {
+                    // a_n = sum_{i=1}^{L} Cc[i] * a_{n-i}   (F_2)
+                    var i: i32 = 1;
+                    while i <= L {
+                        let ci: i32 = 0;
+                        var bit: i32 = 0;
+                        if i == L { bit = 1; }
+                        else { bit = (mask >> (i - 1)) & 1; }
+                        if bit == 1 {
+                            var j2: i32 = 0;
+                            while j2 < L {
+                                B[n * L + j2] = B[n * L + j2] + B[(n - i) * L + j2];
+                                j2 = j2 + 1;
+                            }
+                        }
+                        i = i + 1;
+                    }
+                }
+                n = n + 1;
+            }
+
+            // --- correct window: build M, nullspace, enumerate ---
+            var row: i32 = 0;
+            var k: i32 = 0;
+            while k < winK {
+                var j: i32 = 1;
+                while j < q {
+                    let nn: i32 = q * k + j;
+                    var c: i32 = 0;
+                    while c < L { M[row * L + c] = B[nn * L + c]; c = c + 1; }
+                    row = row + 1;
+                    j = j + 1;
+                }
+                k = k + 1;
+            }
+            let dim: i32 = la_nullspace(M, nrows, L, 0, ns);
+            // enumerate 2^dim - 1 nonzero combinations of basis vectors
+            let combos: i32 = 1 << dim;
+            var combo: i32 = 1;
+            while combo < combos {
+                // v = XOR of selected basis vectors; a_n = sum_j B[n][j]*v[j]
+                var n2: i32 = 0;
+                while n2 < NGEN {
+                    var acc: F2 = 0 as F2;
+                    var jb: i32 = 0;
+                    while jb < dim {
+                        if ((combo >> jb) & 1) == 1 {
+                            var jc: i32 = 0;
+                            while jc < L {
+                                if ns[jb * L + jc] == (1 as F2) {
+                                    acc = acc + B[n2 * L + jc];
+                                }
+                                jc = jc + 1;
+                            }
+                        }
+                        jb = jb + 1;
+                    }
+                    a[n2] = acc;
+                    n2 = n2 + 1;
+                }
+                instances = instances + 1;
+                // promotion: a_n == 0 for all q-nmid-n, n in [1, NGEN)
+                var pv: i32 = 0;
+                var nn2: i32 = 1;
+                while nn2 < NGEN {
+                    if (nn2 % q) != 0 {
+                        if a[nn2] == (1 as F2) { pv = 1; }
+                    }
+                    nn2 = nn2 + 1;
+                }
+                if pv == 1 { prom_viol = prom_viol + 1; }
+                // coset: minpoly in F_2[x^q]
+                if coset_ok(a, 2 * L + 2, q) == 0 { coset_viol = coset_viol + 1; }
+                // distinct signature: first 63 terms
+                var sig: i64 = 0;
+                var si: i32 = 0;
+                while si < 63 {
+                    if a[si] == (1 as F2) { sig = sig | (1 << (si as i64)); }
+                    si = si + 1;
+                }
+                var seen: i32 = 0;
+                var z: i32 = 0;
+                while z < nsig {
+                    if sigs[z] == sig { seen = 1; }
+                    z = z + 1;
+                }
+                if seen == 0 { if nsig < SIGCAP { sigs[nsig] = sig; nsig = nsig + 1; } distinct = distinct + 1; }
+                combo = combo + 1;
+            }
+
+            // --- short-window control: same, count promotion violations only ---
+            var rs: i32 = 0;
+            var ks: i32 = 0;
+            while ks < shK {
+                var j: i32 = 1;
+                while j < q {
+                    let nn: i32 = q * ks + j;
+                    var c: i32 = 0;
+                    while c < L { Msh[rs * L + c] = B[nn * L + c]; c = c + 1; }
+                    rs = rs + 1;
+                    j = j + 1;
+                }
+                ks = ks + 1;
+            }
+            let dimsh: i32 = la_nullspace(Msh, shRows, L, 0, nsh);
+            let combosh: i32 = 1 << dimsh;
+            var cs: i32 = 1;
+            while cs < combosh {
+                var n3: i32 = 0;
+                while n3 < NGEN {
+                    var acc: F2 = 0 as F2;
+                    var jb: i32 = 0;
+                    while jb < dimsh {
+                        if ((cs >> jb) & 1) == 1 {
+                            var jc: i32 = 0;
+                            while jc < L {
+                                if nsh[jb * L + jc] == (1 as F2) { acc = acc + B[n3 * L + jc]; }
+                                jc = jc + 1;
+                            }
+                        }
+                        jb = jb + 1;
+                    }
+                    a[n3] = acc;
+                    n3 = n3 + 1;
+                }
+                var pv2: i32 = 0;
+                var nn3: i32 = 1;
+                while nn3 < NGEN {
+                    if (nn3 % q) != 0 { if a[nn3] == (1 as F2) { pv2 = 1; } }
+                    nn3 = nn3 + 1;
+                }
+                if pv2 == 1 { short_viol = short_viol + 1; }
+                cs = cs + 1;
+            }
+
+            mask = mask + 1;
+        }
+        free(B); free(a); free(M); free(ns); free(Msh); free(nsh);
+        L = L + 1;
+    }
+    free(sigs);
+
+    print(q);
+    print(instances);
+    print(distinct);
+    print(prom_viol);
+    print(coset_viol);
+    print(short_viol);
+}
+
+fn main() {
+    // q=3: reference 1085 instances / 112 distinct / 0 viol / 596 short-window
+    run_coset(3);
+    // q=5: reference 148 instances / 0 viol
+    run_coset(5);
+}

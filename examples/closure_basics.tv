@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// closure_basics.tv — B2-closures minimal vertical slice: non-capturing,
+// by-value capture, generic HOF pass-down, block body with control flow.
+// @internal-design: examples (closure_basics).
+//
+// Expected output: 42 105 11 42 9
+
+// Higher-order fn, generic over the concrete closure identity C — monomorphized
+// per identity like any generic; no type erasure, no vtable.
+fn apply<C>(c: C, v: i32) -> i32 {
+    return c(v);
+}
+
+fn main() {
+    // Non-capturing closure (empty environment).
+    let double = |x: i32| x * 2;
+    print(double(21));          // 42
+
+    // Capturing closure: captures `base` by value.
+    let base: i32 = 100;
+    let add_base = |x: i32| x + base;
+    print(add_base(5));         // 105
+
+    // Capture is BY VALUE — each closure snapshots its environment.
+    let b2: i32 = 10;
+    let addb2 = |x: i32| x + b2;
+    print(addb2(1));            // 11
+
+    // Pass a closure DOWN to a generic HOF (monomorphized per identity).
+    let k: i32 = 7;
+    let f = |x: i32| x + k;
+    print(apply(f, 35));        // 42
+
+    // Block body with control flow + multiple captures.
+    let lo: i32 = 3;
+    let hi: i32 = 9;
+    let clamp_hi = |x: i32| {
+        if x > hi { return hi; }
+        if x < lo { return lo; }
+        return x;
+    };
+    print(clamp_hi(100));       // 9
+}

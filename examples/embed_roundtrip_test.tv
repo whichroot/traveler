@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// embed_roundtrip_test.tv — the lossless-at-rest certificate on real f32 bit
+// patterns: decode -> embed into Z/pZ -> prove M recovers exactly, over 2 primes.
+// @internal-design: examples (embed_roundtrip_test).
+//
+// Link: ieee.o + embed.o + embed_roundtrip_test.o
+
+extern "C" fn f32_decode(bits: i64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32;
+extern "C" fn embed_recovers_M(f: Field, M: i64, E: i64) -> i32;
+extern "C" fn embed_residue(p: i64, sign: i64, M: i64, E: i64) -> i64;
+
+fn main() -> i32 {
+    let gold: Field = field(18446744069414584321);   // Goldilocks 2^64-2^32+1
+    let nice: Field = field(2013265921);              // 15*2^27+1, 31-bit NTT prime
+
+    // A representative sweep of real f32 patterns (the membrane's daily diet):
+    // 1.0, 2.0, 0.5, 0.15625, -pi, tiny/big normals, 0.1 (exact in dyadic), -0.0.
+    let pats: *i64 = alloc(9);
+    pats[0] = 1065353216;   // 1.0
+    pats[1] = 1073741824;   // 2.0
+    pats[2] = 1056964608;   // 0.5
+    pats[3] = 1042284544;   // 0.15625
+    pats[4] = 3226013659;   // -pi
+    pats[5] = 1;            // smallest subnormal 2^-149
+    pats[6] = 2139095039;   // 0x7F7FFFFF largest finite normal
+    pats[7] = 1036831949;   // 0x3DCCCCCD = 0.1 (nearest f32)
+    pats[8] = 2147483648;   // -0.0
+
+    let s: *i64 = alloc(1);
+    let m: *i64 = alloc(1);
+    let e: *i64 = alloc(1);
+
+    var gold_ok: i32 = 0;
+    var nice_ok: i32 = 0;
+    var finite: i32 = 0;
+
+    for i in 0..9 {
+        let cls: i32 = f32_decode(pats[i], s, m, e);
+        // classes 0,1,2 are finite (zero, normal, subnormal); 3,4 are Inf/NaN.
+        if cls <= 2 {
+            finite = finite + 1;
+            gold_ok = gold_ok + embed_recovers_M(gold, m[0], e[0]);
+            nice_ok = nice_ok + embed_recovers_M(nice, m[0], e[0]);
+        }
+    }
+
+    // All finite patterns must certify under BOTH primes.
+    print(finite as i64);     // 9 (all sweep values finite)
+    print(gold_ok as i64);    // 9  — lossless at rest over Goldilocks
+    print(nice_ok as i64);    // 9  — lossless at rest over the 31-bit prime
+
+    // Visible, stable residues (Goldilocks): 1.0 and 0.5.
+    // 1.0 -> M=2^23, E=-23 -> 2^23 * inv(2)^23 = 1.
+    print(embed_residue(18446744069414584321, 0, 8388608, 0 - 23));   // 1
+    // 0.5 -> M=2^23, E=-24 -> = inv(2) = (p+1)/2 = 9223372034707292161.
+    print(embed_residue(18446744069414584321, 0, 8388608, 0 - 24));   // (p+1)/2
+
+    free(pats); free(s); free(m); free(e);
+    return 0;
+}

@@ -1,0 +1,401 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// crtsolve.tv -- multi-modular EXACT integer linear solve (the F1 Stage-3 seed).
+//
+// Solve A w = b over the rationals for integer A (n x n), b: per 31-bit prime p,
+// one-pass Gaussian elimination mod p yields (det_p, w_p); Cramer residues
+// num_i = det_p * w_i accumulate across K primes chosen by an integer Hadamard
+// bound; the exact signed det and num_i reconstruct by Garner CRT (the wide limb
+// machinery is imported from rns_dyn -- the GPT-2 RNS kernel, reused verbatim);
+// fixed-point outputs Wq_i = round(w_i * 2^qshift) come from limb long division.
+// "Precision = prime count." Everything i64: 31-bit primes keep every product
+// under 2^62, so the hot loop needs no wide arithmetic at all.
+//
+// Certificates, two tiers: cs_verify checks A*num == det*b mod FRESH primes
+// (probabilistic, in-chain); an external referee can re-check the printed
+// decimals unconditionally with big integers (verify, don't recompute).
+//
+// Contract (loud refusal, status 1): 1 <= n <= 4096, |A_ij| < 2^24, |b_i| < 2^30
+// (keeps column norms and verify products inside i64). Status: 0 ok, 1 contract,
+// 2 singular (det = 0), 3 q-overflow (|w|*2^qshift >= 2^31), 4 verify failed.
+// Scratch is allocated internally and never freed (one-shot solver processes).
+// Consumers: examples/crtsolve_test.tv (gate); wanderer's exact PST base (the
+// first consumer -- the chess engine that ordered this library into existence).
+// @internal-design: nt (crtsolve section).
+
+import "../rns/rns_dyn.tv";
+
+// ---------------- small helpers ----------------
+fn cs_bits(x: i64) -> i64 {
+    var b: i64 = 0;
+    var v: i64 = x;
+    while v > 0 { v = v >> 1; b = b + 1; }
+    return b;
+}
+fn cs_mulmod(a: i64, b: i64, p: i64) -> i64 { return (a * b) % p; }
+fn cs_powmod(base: i64, e: i64, p: i64) -> i64 {
+    var r: i64 = 1;
+    var bb: i64 = base % p;
+    var ee: i64 = e;
+    while ee > 0 {
+        if ee % 2 == 1 { r = (r * bb) % p; }
+        bb = (bb * bb) % p;
+        ee = ee / 2;
+    }
+    return r;
+}
+// deterministic Miller-Rabin for p < 3.2e9 (witnesses 2,3,5,7); p odd, p > 7.
+fn cs_is_prime(p: i64) -> i32 {
+    if p < 2 { return 0; }
+    if p % 2 == 0 { return 0; }
+    if p % 3 == 0 { return 0; }
+    if p % 5 == 0 { return 0; }
+    if p % 7 == 0 { return 0; }
+    var d: i64 = p - 1;
+    var s: i64 = 0;
+    while d % 2 == 0 { d = d / 2; s = s + 1; }
+    var wi: i32 = 0;
+    while wi < 4 {
+        var a: i64 = 2;
+        if wi == 1 { a = 3; }
+        if wi == 2 { a = 5; }
+        if wi == 3 { a = 7; }
+        var x: i64 = cs_powmod(a, d, p);
+        if x != 1 { if x != p - 1 {
+            var r: i64 = 1;
+            var ok: i32 = 0;
+            while r < s {
+                x = (x * x) % p;
+                if x == p - 1 { ok = 1; r = s; }
+                r = r + 1;
+            }
+            if ok == 0 { return 0; }
+        } }
+        wi = wi + 1;
+    }
+    return 1;
+}
+fn cs_prev_prime(from: i64) -> i64 {
+    var p: i64 = from;
+    if p % 2 == 0 { p = p - 1; }
+    while cs_is_prime(p) == 0 { p = p - 2; }
+    return p;
+}
+
+// ---------------- limb helpers (32-bit LE limbs, the rns_dyn convention) ----------------
+fn cs_cmp(A: *i64, B: *i64, nl: i32) -> i32 {
+    let m: i64 = 4294967295;
+    var i: i32 = nl - 1;
+    while i >= 0 {
+        let av: i64 = A[i] & m;
+        let bv: i64 = B[i] & m;
+        if av > bv { return 1; }
+        if av < bv { return 0 - 1; }
+        i = i - 1;
+    }
+    return 0;
+}
+fn cs_copy(dst: *i64, src: *i64, nl: i32) {
+    var i: i32 = 0;
+    while i < nl { dst[i] = src[i]; i = i + 1; }
+}
+// L = L / d in place, returns remainder; d < 2^30.
+fn cs_divmod_small(L: *i64, nl: i32, d: i64) -> i64 {
+    let m: i64 = 4294967295;
+    var rem: i64 = 0;
+    var i: i32 = nl - 1;
+    while i >= 0 {
+        let cur: i64 = (rem << 32) | (L[i] & m);
+        L[i] = cur / d;
+        rem = cur % d;
+        i = i - 1;
+    }
+    return rem;
+}
+// L <<= sh bits (sh < 32), in place; result must fit nl limbs.
+fn cs_shl_small(L: *i64, nl: i32, sh: i64) {
+    let m: i64 = 4294967295;
+    var carry: i64 = 0;
+    var i: i32 = 0;
+    while i < nl {
+        let v: i64 = ((L[i] & m) << sh) | carry;
+        L[i] = v & m;
+        carry = v >> 32;
+        i = i + 1;
+    }
+}
+// A += B.
+fn cs_addv(A: *i64, B: *i64, nl: i32) {
+    let m: i64 = 4294967295;
+    var carry: i64 = 0;
+    var i: i32 = 0;
+    while i < nl {
+        let s: i64 = (A[i] & m) + (B[i] & m) + carry;
+        A[i] = s & m;
+        carry = s >> 32;
+        i = i + 1;
+    }
+}
+fn cs_is_zero(L: *i64, nl: i32) -> i32 {
+    var i: i32 = 0;
+    while i < nl { if (L[i] & 4294967295) != 0 { return 0; } i = i + 1; }
+    return 1;
+}
+// largest q >= 0 with q*D <= N; q < 2^31 or status 3 upstream. T: nl scratch.
+fn cs_quotient(N: *i64, D: *i64, nl: i32, T: *i64) -> i64 {
+    var lo: i64 = 0;
+    var hi: i64 = 2147483648;
+    while lo < hi {
+        let mid: i64 = (lo + hi + 1) / 2;
+        cs_copy(T, D, nl);
+        limbs_mul_small(T, nl, mid);
+        if cs_cmp(T, N, nl) <= 0 { lo = mid; } else { hi = mid - 1; }
+    }
+    return lo;
+}
+// bit length of a limb magnitude.
+fn cs_mag_bits(L: *i64, nl: i32) -> i64 {
+    var i: i32 = nl - 1;
+    while i >= 0 {
+        let v: i64 = L[i] & 4294967295;
+        if v != 0 { return (i as i64) * 32 + cs_bits(v); }
+        i = i - 1;
+    }
+    return 0;
+}
+// (decimal certificate printing lives in the CONSUMERS -- libs are extern-free;
+//  drivers use cs_copy/cs_is_zero/cs_divmod_small to peel base-10^9 chunks.)
+
+// ---------------- one modular solve: A w = b (mod p), det tracked ----------------
+// M: caller scratch, n*(n+1). Partial pivot (first nonzero); det = sign*prod(pivots).
+// Returns det mod p (0 = singular mod p, the unlucky-prime case).
+fn cs_elim(A: *i64, b: *i64, n: i32, p: i64, M: *i64, wout: *i64) -> i64 {
+    let w1: i32 = n + 1;
+    var i: i32 = 0;
+    while i < n {
+        var j: i32 = 0;
+        while j < n { M[i * w1 + j] = modp(A[i * n + j], p); j = j + 1; }
+        M[i * w1 + n] = modp(b[i], p);
+        i = i + 1;
+    }
+    var det: i64 = 1;
+    var c: i32 = 0;
+    while c < n {
+        var pr: i32 = 0 - 1;
+        var r: i32 = c;
+        while r < n { if M[r * w1 + c] != 0 { pr = r; break; } r = r + 1; }
+        if pr < 0 { return 0; }
+        if pr != c {
+            var k: i32 = c;
+            while k <= n {
+                let t: i64 = M[c * w1 + k];
+                M[c * w1 + k] = M[pr * w1 + k];
+                M[pr * w1 + k] = t;
+                k = k + 1;
+            }
+            det = modp(0 - det, p);
+        }
+        let pv: i64 = M[c * w1 + c];
+        det = (det * pv) % p;
+        let ipv: i64 = modinv(p, pv);
+        var r2: i32 = c + 1;
+        while r2 < n {
+            let f: i64 = M[r2 * w1 + c];
+            if f != 0 {
+                let fac: i64 = (f * ipv) % p;
+                var k2: i32 = c;
+                while k2 <= n {
+                    M[r2 * w1 + k2] = modp(M[r2 * w1 + k2] - (fac * M[c * w1 + k2]) % p, p);
+                    k2 = k2 + 1;
+                }
+            }
+            r2 = r2 + 1;
+        }
+        c = c + 1;
+    }
+    var ii: i32 = n - 1;
+    while ii >= 0 {
+        var s: i64 = M[ii * w1 + n];
+        var jj: i32 = ii + 1;
+        while jj < n { s = modp(s - (M[ii * w1 + jj] * wout[jj]) % p, p); jj = jj + 1; }
+        wout[ii] = (s * modinv(p, M[ii * w1 + ii])) % p;
+        ii = ii - 1;
+    }
+    return det;
+}
+
+// ---------------- prime count from the integer Hadamard bound ----------------
+// bits(det) <= sum_j ceil(bits(||col_j||^2)/2); the Cramer numerator swaps one
+// column for b, so bits(num) <= that sum - min_col_half + b_half. K covers
+// max(det, num) plus sign/rounding headroom. Contract keeps norms inside i64.
+fn cs_kbound(A: *i64, b: *i64, n: i32) -> i32 {
+    var tot: i64 = 0;
+    var minh: i64 = 1000000000;
+    var j: i32 = 0;
+    while j < n {
+        var nrm: i64 = 0;
+        var i: i32 = 0;
+        while i < n { let v: i64 = A[i * n + j]; nrm = nrm + v * v; i = i + 1; }
+        var h: i64 = (cs_bits(nrm) + 1) / 2;
+        if h < 1 { h = 1; }
+        tot = tot + h;
+        if h < minh { minh = h; }
+        j = j + 1;
+    }
+    var bn: i64 = 0;
+    var i2: i32 = 0;
+    while i2 < n { let v2: i64 = b[i2]; bn = bn + v2 * v2; i2 = i2 + 1; }
+    var bh: i64 = (cs_bits(bn) + 1) / 2;
+    if bh < 1 { bh = 1; }
+    var maxb: i64 = tot;
+    let numb: i64 = tot - minh + bh;
+    if numb > maxb { maxb = numb; }
+    return ((maxb + 40) / 31 + 2) as i32;
+}
+
+// ---------------- reconstruction: one signed value from K residues ----------------
+// PF precomputed (rns_pfull). Lout/mix/Msc: nl scratch each. mag gets the
+// magnitude; returns the sign (+1/-1). Symmetric range: negative iff 2v > Pfull.
+fn cs_recon(P: *i64, K: i32, res: *i64, nl: i32, Lout: *i64, mix: *i64, PF: *i64, Msc: *i64, mag: *i64) -> i32 {
+    rns_crt_dyn_wide(P, K, res, 0, Lout, mix, PF, Msc, nl);
+    cs_copy(Msc, Lout, nl);
+    limbs_mul_small(Msc, nl, 2);
+    if cs_cmp(Msc, PF, nl) > 0 {
+        limbs_sub(PF, Lout, mag, nl);
+        return 0 - 1;
+    }
+    cs_copy(mag, Lout, nl);
+    return 1;
+}
+
+// ---------------- the one-call solver ----------------
+// outq[i] = round(w_i * 2^qshift), signed i64. info[0]=K info[1]=unlucky
+// info[2]=det_bits info[3]=det_sign info[4]=smallest prime used.
+// Keeps the reconstructed magnitudes internally for cs_verify (info via return).
+var g_cs_mags: *i64 = null;        // n * nl magnitudes (for verify/printing)
+var g_cs_signs: *i64 = null;       // n signs
+var g_cs_detmag: *i64 = null;      // nl
+var g_cs_detsign: i64 = 1;
+var g_cs_nl: i32 = 0;
+var g_cs_pmin: i64 = 0;
+
+fn crt_solve(A: *i64, b: *i64, n: i32, qshift: i64, outq: *i64, info: *i64) -> i32 {
+    if n < 1 { return 1; }
+    if n > 4096 { return 1; }
+    var i: i32 = 0;
+    while i < n {
+        var j: i32 = 0;
+        while j < n {
+            let v: i64 = A[i * n + j];
+            if v >= 16777216 { return 1; }
+            if v <= 0 - 16777216 { return 1; }
+            j = j + 1;
+        }
+        let bv: i64 = b[i];
+        if bv >= 1073741824 { return 1; }
+        if bv <= 0 - 1073741824 { return 1; }
+        i = i + 1;
+    }
+    let K: i32 = cs_kbound(A, b, n);
+    let P: *i64 = alloc(K);
+    let det_res: *i64 = alloc(K);
+    let num_res: *i64 = alloc(n * K);
+    let M: *i64 = alloc(n * (n + 1));
+    let w: *i64 = alloc(n);
+    var p: i64 = 2147483647;
+    var got: i32 = 0;
+    var unlucky: i64 = 0;
+    var zrun: i32 = 0;
+    while got < K {
+        let dp: i64 = cs_elim(A, b, n, p, M, w);
+        if dp == 0 {
+            unlucky = unlucky + 1;
+            zrun = zrun + 1;
+            if zrun >= 8 { return 2; }           // det = 0: genuinely singular
+        } else {
+            zrun = 0;
+            P[got] = p;
+            det_res[got] = dp;
+            var t: i32 = 0;
+            while t < n { num_res[t * K + got] = (dp * w[t]) % p; t = t + 1; }
+            got = got + 1;
+        }
+        p = cs_prev_prime(p - 2);
+    }
+    g_cs_pmin = P[K - 1];
+    let nl: i32 = ((K * 31) / 32 + 3) as i32;
+    g_cs_nl = nl;
+    let Lout: *i64 = alloc(nl);
+    let mix: *i64 = alloc(nl);
+    let PF: *i64 = alloc(nl);
+    let Msc: *i64 = alloc(nl);
+    let T: *i64 = alloc(nl);
+    rns_pfull(P, K, PF, nl);
+    g_cs_detmag = alloc(nl);
+    g_cs_detsign = cs_recon(P, K, det_res, nl, Lout, mix, PF, Msc, g_cs_detmag) as i64;
+    if cs_is_zero(g_cs_detmag, nl) == 1 { return 2; }
+    // dethalf = floor(det/2) for round-to-nearest
+    let dethalf: *i64 = alloc(nl);
+    cs_copy(dethalf, g_cs_detmag, nl);
+    cs_divmod_small(dethalf, nl, 2);
+    g_cs_mags = alloc(n * nl);
+    g_cs_signs = alloc(n);
+    var res1: *i64 = alloc(K);
+    i = 0;
+    while i < n {
+        var c: i32 = 0;
+        while c < K { res1[c] = num_res[i * K + c]; c = c + 1; }
+        g_cs_signs[i] = cs_recon(P, K, res1, nl, Lout, mix, PF, Msc, &g_cs_mags[i * nl]) as i64;
+        // q = round(|num| * 2^qshift / |det|)
+        cs_copy(Lout, &g_cs_mags[i * nl], nl);
+        cs_shl_small(Lout, nl, qshift);
+        cs_addv(Lout, dethalf, nl);
+        let q: i64 = cs_quotient(Lout, g_cs_detmag, nl, T);
+        if q >= 2147483648 { return 3; }
+        var sq: i64 = q;
+        if g_cs_signs[i] * g_cs_detsign < 0 { sq = 0 - q; }
+        outq[i] = sq;
+        i = i + 1;
+    }
+    info[0] = K as i64;
+    info[1] = unlucky;
+    info[2] = cs_mag_bits(g_cs_detmag, nl);
+    info[3] = g_cs_detsign;
+    info[4] = g_cs_pmin;
+    // in-chain certificate: A*num == det*b mod nfresh FRESH primes below every used prime
+    var vq: i64 = cs_prev_prime(g_cs_pmin - 2);
+    var vi: i32 = 0;
+    while vi < 3 {
+        if cs_verify_mod(A, b, n, vq) == 0 { return 4; }
+        vq = cs_prev_prime(vq - 2);
+        vi = vi + 1;
+    }
+    return 0;
+}
+
+// verify A*num == det*b (mod q) using the stored reconstruction.
+fn cs_verify_mod(A: *i64, b: *i64, n: i32, q: i64) -> i32 {
+    let nl: i32 = g_cs_nl;
+    var detq: i64 = limbs_mod(g_cs_detmag, nl, q);
+    if g_cs_detsign < 0 { detq = modp(0 - detq, q); }
+    let numq: *i64 = alloc(n);
+    var j: i32 = 0;
+    while j < n {
+        var v: i64 = limbs_mod(&g_cs_mags[j * nl], nl, q);
+        if g_cs_signs[j] < 0 { v = modp(0 - v, q); }
+        numq[j] = v;
+        j = j + 1;
+    }
+    var i: i32 = 0;
+    while i < n {
+        var lhs: i64 = 0;
+        var k: i32 = 0;
+        while k < n { lhs = (lhs + modp(A[i * n + k], q) * numq[k]) % q; k = k + 1; }
+        let rhs: i64 = (detq * modp(b[i], q)) % q;
+        if lhs != rhs { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+

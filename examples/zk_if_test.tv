@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_if_test.tv — #[zk] conditional select via multiplication
+//
+// select_val(sel, a, b) = sel*a + (1-sel)*b
+// When sel=1: returns a. When sel=0: returns b.
+// The ZK circuit proves this computation.
+//
+// Expected: 8 gates, 8 copies (3 params + 3 mul/sub + 1 add + 1 pad)
+
+type Goldilocks = Field<18446744069414584321>;
+
+#[export zk]
+fn select_val(sel: Goldilocks, a: Goldilocks, b: Goldilocks) -> Goldilocks {
+    let sa: Goldilocks = sel * a;
+    let one_minus_sel: Goldilocks = 1 - sel;
+    let sb: Goldilocks = one_minus_sel * b;
+    return sa + sb;
+}

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_fri_zk_test.tv — ZK regime composition driver, CANDLESTICK domain:
+// full composition + 3 tampers via the shared engine (src/lib/regime/regime_zk.tv).
+// @internal-design: regime (regime_zk; honest failure mode)
+//
+// Data: real cascade-v4 MES futures path (2026-03-10, 32 minute bars, quarter-
+// point ticks rebased to 0) — same as regime_fri_test.tv domain A.
+// HONESTY: no genuine PL structure here, nseg = n/2 = 16 (the trivial maximal
+// segmentation — see @internal-design: regime); genuine structure: regime_mnist_zk_test.
+//
+// Expected output:  16 1 0 0 0   (nseg=16, verify=1, three tampers rejected)
+
+extern "C" fn run_zk_domain(p: i64, data: *i64, n: i32, n_leaves: i32, out: *i64);
+
+fn main() -> i32 {
+    // Runtime-selected prime: Goldilocks (NTT-friendly, k=32).
+    let p: i64 = 18446744069414584321;
+
+    let n: i32 = 32;
+    let n_leaves: i32 = 32;
+    let data: *i64 = alloc(n);
+    data[0] = 0;   data[1] = 9;   data[2] = 21;  data[3] = 20;
+    data[4] = 35;  data[5] = 28;  data[6] = 25;  data[7] = 38;
+    data[8] = 31;  data[9] = 38;  data[10] = 39; data[11] = 46;
+    data[12] = 46; data[13] = 44; data[14] = 51; data[15] = 62;
+    data[16] = 56; data[17] = 54; data[18] = 70; data[19] = 65;
+    data[20] = 57; data[21] = 57; data[22] = 77; data[23] = 74;
+    data[24] = 79; data[25] = 66; data[26] = 56; data[27] = 53;
+    data[28] = 54; data[29] = 69; data[30] = 56; data[31] = 66;
+
+    let out: *i64 = alloc(5);
+    run_zk_domain(p, data, n, n_leaves, out);
+    for i in 0..5 { print(out[i] as i32); }
+
+    free(data);
+    free(out);
+    return 0;
+}

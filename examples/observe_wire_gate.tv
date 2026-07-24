@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_wire_gate.tv — round-trip gate for the observe-learn wire v2
+// (dyadic; src/lib/observe/wire.tv). Per case prints ONE line:
+//   c<k> <cost_model_bits> <wire_minus_header_minus_cost> <encode_cost_delta> <mismatches>
+// The last three MUST be 0: wire length == cost model + 32-bit header (bit
+// parity — every claimed bit is a decoder-payable bit), the encoder's
+// internal cost accumulation == codec_stereo_adaptive_bits (THE dyadic
+// recursion, shared), and decode(encode(x)) == x on ALL FOUR streams (l, r,
+// mid, side — derived channels included). v2: dyadic split trees (4096->256).
+// @internal-design: observability (wire gate)
+//
+// Cases: 1 silence (silent windows, tail window) · 2 ramp+step (fixed orders,
+// partition-forced) · 3 period-7 tonal (LPC arm) · 4 rough stereo LCG (dense,
+// r=2 partitions) · 5 scale-asymmetric (constant half / rough half) ·
+// 6 near-mono (small side: MS/LS/RS variety) · 7 tiny n=7 (n < window,
+// n < order) · 8 exact mono (MS==LS tie -> MS precedence).
+//
+// Build: wire.tv imports learn.tv (Model A), so link gate.o + wire.o only.
+
+extern "C" fn codec_stereo_adaptive_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64;
+// v3: wire_encode_stereo gains `bw` (per-block depth), wire_decode_stereo gains
+// `bw_out`. This lossless gate passes bw all-zero (s=0 corner) and subtracts the
+// 5*nblocks B_w header bits from the parity check (still 0).
+extern "C" fn wire_encode_stereo(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, bw: *i32, buf: *u8, out: *i64) -> i64;
+extern "C" fn wire_decode_stereo(buf: *u8, lf: *i32, rf: *i32, mf: *i32, sf: *i32, p_ch: i32, p_side: i32, max_fixed_order: i32, bw_out: *i32) -> i64;
+
+let P_CH: i32 = 65537;
+let P_SIDE: i32 = 131071;
+
+// one round trip; prints the gate line
+fn trip(case_id: i64, l: *i32, r: *i32, n: i32) {
+    // build the four offset streams (the driver convention)
+    let lf: *i32 = alloc(n);
+    let rf: *i32 = alloc(n);
+    let mf: *i32 = alloc(n);
+    let sf: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        lf[i] = l[i] + 32768;
+        rf[i] = r[i] + 32768;
+        mf[i] = ((l[i] + r[i]) >> 1) + 32768;
+        sf[i] = (l[i] - r[i]) + 65535;
+        i = i + 1;
+    }
+
+    let sout: *i64 = alloc(4);
+    let cost: i64 = codec_stereo_adaptive_bits(lf, rf, mf, sf, n, P_CH, P_SIDE,
+        4, 8, 8, 17, sout);
+
+    // Per-block depth profile: all-zero = lossless corner (s=0).
+    let nblocks: i32 = (n + 4095) / 4096;
+    let bw: *i32 = alloc(nblocks);
+    let bwd: *i32 = alloc(nblocks);
+    var bi: i32 = 0;
+    while bi < nblocks { bw[bi] = 0; bi = bi + 1; }
+
+    let buf: *u8 = alloc(n * 6 + 4096);
+    let eout: *i64 = alloc(5);
+    let bits: i64 = wire_encode_stereo(lf, rf, mf, sf, n, P_CH, P_SIDE,
+        4, 8, 8, 17, bw, buf, eout);
+
+    let dl: *i32 = alloc(n);
+    let dr: *i32 = alloc(n);
+    let dm: *i32 = alloc(n);
+    let ds: *i32 = alloc(n);
+    wire_decode_stereo(buf, dl, dr, dm, ds, P_CH, P_SIDE, 4, bwd);
+
+    var mism: i64 = 0;
+    i = 0;
+    while i < n {
+        if dl[i] != lf[i] { mism = mism + 1; }
+        if dr[i] != rf[i] { mism = mism + 1; }
+        if dm[i] != mf[i] { mism = mism + 1; }
+        if ds[i] != sf[i] { mism = mism + 1; }
+        i = i + 1;
+    }
+
+    print(case_id);
+    print(cost);
+    print(bits - 32 - 5 * (nblocks as i64) - cost);  // wire == cost + n hdr + B_w
+    print(eout[4] - cost);         // encoder's cost accumulation == scorer
+    print(mism);                   // losslessness, all four streams
+
+    free(ds); free(dm); free(dr); free(dl);
+    free(eout); free(buf); free(bwd); free(bw); free(sout);
+    free(sf); free(mf); free(rf); free(lf);
+}
+
+fn main() -> i32 {
+    // --- case 1: silence, tail window (3000 = 2x1024 + 952)
+    let n1: i32 = 3000;
+    let l1: *i32 = alloc(n1);
+    let r1: *i32 = alloc(n1);
+    var i: i32 = 0;
+    while i < n1 { l1[i] = 0; r1[i] = 0; i = i + 1; }
+    trip(1, l1, r1, n1);
+    free(r1); free(l1);
+
+    // --- case 2: ramp + mid-window step (fixed orders, partitions)
+    let n2: i32 = 2048;
+    let l2: *i32 = alloc(n2);
+    let r2: *i32 = alloc(n2);
+    i = 0;
+    while i < n2 {
+        var v: i32 = i / 4 - 256;
+        if i >= 1500 { v = v + 900; }
+        l2[i] = v;
+        r2[i] = v - i / 8;
+        i = i + 1;
+    }
+    trip(2, l2, r2, n2);
+    free(r2); free(l2);
+
+    // --- case 3: period-7 tonal on a slow ramp (the LPC arm)
+    let n3: i32 = 4096;
+    let l3: *i32 = alloc(n3);
+    let r3: *i32 = alloc(n3);
+    i = 0;
+    while i < n3 {
+        let ph: i32 = i % 7;
+        var w: i32 = 0;
+        if ph == 0 { w = 0 - 900; }
+        if ph == 1 { w = 0 - 400; }
+        if ph == 2 { w = 350; }
+        if ph == 3 { w = 800; }
+        if ph == 4 { w = 500; }
+        if ph == 5 { w = 0 - 100; }
+        if ph == 6 { w = 0 - 650; }
+        l3[i] = w + i / 16;
+        r3[i] = w - i / 32 + 40;
+        i = i + 1;
+    }
+    trip(3, l3, r3, n3);
+    free(r3); free(l3);
+
+    // --- case 4: rough stereo LCG (dense; r=2 partitions)
+    let n4: i32 = 3333;
+    let l4: *i32 = alloc(n4);
+    let r4: *i32 = alloc(n4);
+    var st: i64 = 12345;
+    i = 0;
+    while i < n4 {
+        st = (st * 1103515245 + 12345) % 2147483648;
+        l4[i] = ((st % 8000) - 4000) as i32;
+        st = (st * 1103515245 + 12345) % 2147483648;
+        r4[i] = ((st % 8000) - 4000) as i32;
+        i = i + 1;
+    }
+    trip(4, l4, r4, n4);
+    free(r4); free(l4);
+
+    // --- case 5: scale-asymmetric (constant half, rough half)
+    let n5: i32 = 1024;
+    let l5: *i32 = alloc(n5);
+    let r5: *i32 = alloc(n5);
+    st = 777;
+    i = 0;
+    while i < n5 {
+        if i < 512 {
+            l5[i] = 100;
+            r5[i] = 100;
+        } else {
+            st = (st * 1103515245 + 12345) % 2147483648;
+            l5[i] = ((st % 3000) - 1500) as i32;
+            st = (st * 1103515245 + 12345) % 2147483648;
+            r5[i] = ((st % 3000) - 1500) as i32;
+        }
+        i = i + 1;
+    }
+    trip(5, l5, r5, n5);
+    free(r5); free(l5);
+
+    // --- case 6: near-mono (tiny side; MS/LS/RS variety)
+    let n6: i32 = 2500;
+    let l6: *i32 = alloc(n6);
+    let r6: *i32 = alloc(n6);
+    st = 424242;
+    i = 0;
+    while i < n6 {
+        st = (st * 1103515245 + 12345) % 2147483648;
+        let base: i32 = ((st % 20000) - 10000) as i32;
+        l6[i] = base;
+        r6[i] = base + ((st % 5) as i32) - 2;
+        i = i + 1;
+    }
+    trip(6, l6, r6, n6);
+    free(r6); free(l6);
+
+    // --- case 7: tiny n=7 (n < window, n < LPC order)
+    let n7: i32 = 7;
+    let l7: *i32 = alloc(n7);
+    let r7: *i32 = alloc(n7);
+    i = 0;
+    while i < n7 {
+        l7[i] = i * 100 - 300;
+        r7[i] = 0 - i * 50;
+        i = i + 1;
+    }
+    trip(7, l7, r7, n7);
+    free(r7); free(l7);
+
+    // --- case 8: exact mono (MS == LS tie -> MS precedence on the wire)
+    let n8: i32 = 2048;
+    let l8: *i32 = alloc(n8);
+    let r8: *i32 = alloc(n8);
+    st = 99;
+    i = 0;
+    while i < n8 {
+        st = (st * 1103515245 + 12345) % 2147483648;
+        let v: i32 = ((st % 12000) - 6000) as i32;
+        l8[i] = v;
+        r8[i] = v;
+        i = i + 1;
+    }
+    trip(8, l8, r8, n8);
+    free(r8); free(l8);
+
+    return 0;
+}

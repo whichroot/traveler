@@ -1,0 +1,322 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_genus_census.tv — nseg(d) blend sweep on MNIST contours (Moore trace,
+// ~40-110 pts): synthetic controls first, then the per-class census.
+// @internal-design: genus (MNIST contour census + negatives)
+//
+// SYNTHETIC CONTROLS (proving the instrument BEFORE trusting MNIST, N=64):
+//   parab  = exact degree-2 over 64 pts  -> MUST collapse to nseg=1 at d>=2.
+//   twoarc = two degree-2 arcs glued     -> MUST plateau at nseg=2 at d>=2.
+//
+// Uses regime_prove<dyn> directly (regime_fri.tv). Two-file link.
+// Usage: ./mnist_genus_census <data_directory>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn wr_int_pad(fd: i32, n: i64, w: i32) {
+    var tmp: i64 = n;
+    if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = w - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216
+    + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256
+    + (buf[off + 3] as i32);
+}
+
+// ink test on the 28x28 image with a binarization threshold.
+fn is_ink(img: *u8, x: i32, y: i32, thr: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x > 27 { return 0; }
+    if y > 27 { return 0; }
+    if (img[y * 28 + x] as i32) > thr { return 1; }
+    return 0;
+}
+
+// Moore-neighbor contour trace. Writes the x-coordinate of each boundary point
+// into cx[], y into cy[]; returns contour length (0 if no ink). Clockwise
+// 8-neighborhood, b = backtrack direction, search from (b+1) clockwise; new
+// backtrack = (found+4)%8. Capped at max_len.
+fn trace_contour(img: *u8, thr: i32, cx: *i64, cy: *i64, max_len: i32) -> i32 {
+    // clockwise neighbor offsets: 0=E,1=SE,2=S,3=SW,4=W,5=NW,6=N,7=NE
+    var dx: [i32; 8] = 0;
+    var dy: [i32; 8] = 0;
+    dx[0]=1;  dy[0]=0;
+    dx[1]=1;  dy[1]=1;
+    dx[2]=0;  dy[2]=1;
+    dx[3]=0-1; dy[3]=1;
+    dx[4]=0-1; dy[4]=0;
+    dx[5]=0-1; dy[5]=0-1;
+    dx[6]=0;  dy[6]=0-1;
+    dx[7]=1;  dy[7]=0-1;
+
+    // find start: first ink, scan top->bottom, left->right
+    var sx: i32 = 0-1;
+    var sy: i32 = 0-1;
+    var yy: i32 = 0;
+    while yy < 28 {
+        var xx: i32 = 0;
+        while xx < 28 {
+            if is_ink(img, xx, yy, thr) == 1 {
+                sx = xx; sy = yy;
+                xx = 28; yy = 28;   // break both
+            }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    if sx < 0 { return 0; }
+
+    var clen: i32 = 0;
+    cx[0] = sx as i64; cy[0] = sy as i64;
+    clen = 1;
+
+    var curx: i32 = sx;
+    var cury: i32 = sy;
+    var b: i32 = 4;   // entered from West
+    var steps: i32 = 0;
+    while steps < max_len {
+        var found: i32 = 0 - 1;
+        var k: i32 = 0;
+        while k < 8 {
+            let dd: i32 = (b + 1 + k) % 8;
+            let nx: i32 = curx + dx[dd];
+            let ny: i32 = cury + dy[dd];
+            if is_ink(img, nx, ny, thr) == 1 {
+                found = dd;
+                k = 8;
+            }
+            k = k + 1;
+        }
+        if found < 0 { return clen; }   // isolated pixel
+        let nxp: i32 = curx + dx[found];
+        let nyp: i32 = cury + dy[found];
+        // returned to start -> closed contour
+        if nxp == sx { if nyp == sy { return clen; } }
+        if clen < max_len {
+            cx[clen] = nxp as i64;
+            cy[clen] = nyp as i64;
+            clen = clen + 1;
+        } else {
+            return clen;
+        }
+        curx = nxp; cury = nyp;
+        b = (found + 4) % 8;
+        steps = steps + 1;
+    }
+    return clen;
+}
+
+// Sweep nseg over d=0..dmax for `prof` (len m) on three fields. nsweep[d] =
+// Goldilocks nseg. Returns 1 iff the whole vector is field-identical.
+fn sweep_three(
+    gold: Field, baby: Field, small: Field,
+    prof: *i64, m: i32, dmax: i32, cert: *i64, work: *i64, nsweep: *i64
+) -> i32 {
+    var agree: i32 = 1;
+    for d in 0..(dmax + 1) {
+        let g: i32 = regime_prove_dyn(gold, prof, m, d, cert, work);
+        let b: i32 = regime_prove_dyn(baby, prof, m, d, cert, work);
+        let s: i32 = regime_prove_dyn(small, prof, m, d, cert, work);
+        nsweep[d] = g as i64;
+        if g != b { agree = 0; }
+        if g != s { agree = 0; }
+    }
+    return agree;
+}
+
+fn print_sweep_row(fd: i32, label: *u8, m: i32, nsweep: *i64, dmax: i32) {
+    wr(fd, label);
+    wr_int_pad(fd, m as i64, 5);
+    var d: i32 = 0;
+    while d < (dmax + 1) {
+        wr_int_pad(fd, nsweep[d], 6);
+        d = d + 1;
+    }
+    wr(fd, "\n");
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: mnist_genus_census <data_directory>\n");
+        exit(1);
+    }
+
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let small: Field = field(65537);
+    let dmax: i32 = 8;
+
+    let cert: *i64 = alloc(256 * 3);
+    let work: *i64 = alloc(256);
+    let nsweep: *i64 = alloc(9);
+    let prof: *i64 = alloc(256);
+
+    // ---- SYNTHETIC CONTROLS: prove the instrument resolves global vs local ----
+    wr(1, "=== INSTRUMENT CONTROLS (N=64, prove resolution) ===\n");
+    wr(1, "label    m    d0    d1    d2    d3    d4    d5    d6    d7    d8\n");
+
+    // parab: exact degree-2 -> must collapse to nseg=1 at d>=2
+    var t: i32 = 0;
+    while t < 64 {
+        let u: i64 = (t - 32) as i64;
+        prof[t] = u * u;
+        t = t + 1;
+    }
+    sweep_three(gold, baby, small, prof, 64, dmax, cert, work, nsweep);
+    print_sweep_row(1, "parab ", 64, nsweep, dmax);
+
+    // twoarc: two degree-2 arcs glued -> must plateau at nseg=2 at d>=2
+    t = 0;
+    while t < 64 {
+        if t < 32 {
+            let u1: i64 = (t - 16) as i64;
+            prof[t] = u1 * u1;
+        } else {
+            let u2: i64 = (t - 48) as i64;
+            prof[t] = u2 * u2;
+        }
+        t = t + 1;
+    }
+    sweep_three(gold, baby, small, prof, 64, dmax, cert, work, nsweep);
+    print_sweep_row(1, "twoarc", 64, nsweep, dmax);
+    wr(1, "\n");
+
+    // ---- MNIST contour sweep ----
+    wr(2, "Loading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+
+    let n_test: i32 = read_be_i32(test_img, 4);
+    var n_proc: i32 = 1000;
+    if n_proc > n_test { n_proc = n_test; }
+    wr(2, "Tracing contours + sweeping nseg(d) on x(t), ");
+    wr_int(2, n_proc as i64);
+    wr(2, " images x 3 fields...\n");
+
+    let cx: *i64 = alloc(256);
+    let cy: *i64 = alloc(256);
+
+    var counts: [i64; 10] = 0;
+    var len_sum: [i64; 10] = 0;
+    var nseg_sum: [i64; 90] = 0;     // 10 classes x 9 degrees (x of contour)
+    var agree_cnt: [i64; 10] = 0;
+    let thr: i32 = 64;
+
+    var i: i32 = 0;
+    while i < n_proc {
+        let label: i32 = test_lbl[8 + i] as i32;
+        let img: *u8 = &test_img[16 + i * 784];
+
+        let clen: i32 = trace_contour(img, thr, cx, cy, 200);
+        if clen >= 9 {
+            counts[label] = counts[label] + 1;
+            len_sum[label] = len_sum[label] + (clen as i64);
+            // x(t) of the contour
+            var k: i32 = 0;
+            while k < clen { prof[k] = cx[k]; k = k + 1; }
+            let ok: i32 = sweep_three(gold, baby, small, prof, clen, dmax,
+                cert, work, nsweep);
+            agree_cnt[label] = agree_cnt[label] + (ok as i64);
+            var d: i32 = 0;
+            while d < (dmax + 1) {
+                nseg_sum[label * 9 + d] = nseg_sum[label * 9 + d] + nsweep[d];
+                d = d + 1;
+            }
+        }
+        if (i + 1) % 200 == 0 {
+            wr(2, "  "); wr_int(2, (i + 1) as i64);
+            wr(2, " / "); wr_int(2, n_proc as i64); wr(2, "\n");
+        }
+        i = i + 1;
+    }
+
+    wr(1, "=== MNIST contour x(t): mean nseg(d) x100, mean contour len ===\n");
+    wr(1, "collapse to 100 = globally polynomial; plateau>100 = piecewise arcs\n");
+    wr(1, "class    n   len   d0    d1    d2    d3    d4    d5    d6    d7    d8 agr%\n");
+    var cls: i32 = 0;
+    while cls < 10 {
+        wr(1, "    "); wr_int(1, cls as i64);
+        wr_int_pad(1, counts[cls], 6);
+        if counts[cls] > 0 {
+            wr_int_pad(1, len_sum[cls] / counts[cls], 5);
+            var d: i32 = 0;
+            while d < (dmax + 1) {
+                wr_int_pad(1, (nseg_sum[cls * 9 + d] * 100) / counts[cls], 6);
+                d = d + 1;
+            }
+            wr_int_pad(1, (agree_cnt[cls] * 100) / counts[cls], 5);
+        }
+        wr(1, "\n");
+        cls = cls + 1;
+    }
+
+    var tot: i64 = 0;
+    var tot_ag: i64 = 0;
+    cls = 0;
+    while cls < 10 {
+        tot = tot + counts[cls];
+        tot_ag = tot_ag + agree_cnt[cls];
+        cls = cls + 1;
+    }
+    wr(1, "\n");
+    wr(1, "FINITE/CONTINUOUS ALIGNMENT: ");
+    wr_int(1, (tot_ag * 100) / tot);
+    wr(1, "% of "); wr_int(1, tot);
+    wr(1, " contours: full nseg(d) sweep identical across all 3 fields\n");
+
+    free(test_img); free(test_lbl); free(cx); free(cy);
+    free(prof); free(cert); free(work); free(nsweep);
+    return 0;
+}

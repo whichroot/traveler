@@ -1,0 +1,11 @@
+// Negative: BinField<K, P> with K outside [2, 63]. The one-word width model
+// carries elements and reduce-as-you-shift products in u64, which holds
+// through K = 63; K > 63 is the fixed-limb move (deferred, the BN254 shape).
+// The width bound is checked before the polynomial (a degree-64 P needs bit
+// 64 — it cannot even ride a u64 literal), so P here is a placeholder.
+binfield G = BinField<64, 0x1B>;
+
+fn main() {
+    let x: G = 5;
+    print(x);
+}

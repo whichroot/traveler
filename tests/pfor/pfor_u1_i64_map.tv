@@ -1,0 +1,37 @@
+// pfor_u1_i64_map.tv — U1 (Stage D) positive control: the flip-set shape.
+// An element-independent i64 own-cell map: stride-1 injective write, own-cell
+// read, pure body, every capture primitive (out/a: *i64, k: i64 scalar).
+// Pre-U1 this exact shape was refused `not-field` (the type-proxy); post-U1
+// it MUST dispatch — lost parallelism here is a regression.
+//
+// MUST PARALLELIZE. Expected workers: 1 (asserted under stage1; the frozen C
+// seed keeps the old gate and compiles it serial — dual parity is output-only).
+// N=4096 > the 512 dispatch threshold, so threads actually spawn at runtime.
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *i64 = alloc(n);
+    let out: *i64 = alloc(n);
+    let k: i64 = 1103515245;
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = (w as i64) * 7 - 3;
+        out[w] = 0;
+        w = w + 1;
+    }
+
+    // The U1 flip shape: own-cell map over primitive captures.
+    for i in 0..n {
+        out[i] = a[i] * k + (i as i64);
+    }
+
+    // Serial checksum (order-independent; no wrap at these magnitudes).
+    let mut s: i64 = 0;
+    w = 0;
+    while w < n {
+        s = s + out[w];
+        w = w + 1;
+    }
+    print(s);
+    return 0;
+}

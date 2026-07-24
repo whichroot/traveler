@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rs_errdec_core.tv — RS ERROR decode (unknown positions), carrier-free core:
+// syndromes -> bm<GF> -> Chien (positions) -> Forney (values), cross-gated vs
+// erasure-reduction. Carrier header binds `GF` + `gf_qm2()` = |GF| - 2 + imports.
+// @internal-design: ecc + @internal-design: nt (the bm<F> seam)
+
+// ---- GRS dual multipliers: u_i = 1 / prod_{j!=i} (x_i - x_j), x = index+1 -----
+// For any codeword c_i = P(x_i) (deg P < k), sum_i u_i c_i x_i^m = 0 for m <= n-k-1
+// (an order-(n-1) divided difference of a degree-<(n-1) polynomial). char 2: - == +.
+fn rs_dual_mult(i: i32, n: i32) -> GF {
+    let xi: GF = (i + 1) as GF;
+    var denom: GF = 1;
+    var j: i32 = 0;
+    while j < n {
+        if j != i {
+            let xj: GF = (j + 1) as GF;
+            denom = denom * (xi + xj);
+        }
+        j = j + 1;
+    }
+    return 1 / denom;
+}
+
+// ---- Syndromes S_m = sum_i u_i * recv_i * x_i^m, m = 0..n-k-1 ------------------
+// Vanish on codewords; on recv = code + error, S_m = sum_l (u*e)_l X_l^m (a power
+// sum in the error-location values X_l = x at each corrupted position). syn owns n-k.
+#[export]
+fn rs_syndromes(recv: *GF, n: i32, k: i32, syn: *GF) {
+    let nk: i32 = n - k;
+    var m: i32 = 0;
+    while m < nk {
+        var s: GF = 0;
+        var i: i32 = 0;
+        while i < n {
+            let xi: GF = (i + 1) as GF;
+            let ui: GF = rs_dual_mult(i, n);
+            var xp: GF = 1;              // x_i^m by repeated multiply
+            var e: i32 = 0;
+            while e < m { xp = xp * xi; e = e + 1; }
+            s = s + recv[i] * ui * xp;
+            i = i + 1;
+        }
+        syn[m] = s;
+        m = m + 1;
+    }
+}
+
+fn rs_all_zero(a: *GF, m: i32) -> i32 {
+    var i: i32 = 0;
+    while i < m {
+        if a[i] != (0 as GF) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// ---- Locate: bm<GF> on the syndromes -> error-locator Lambda, then Chien -------
+// bm returns nu = #errors and Lambda[0..nu] (Lambda[0]=1, Lambda(x)=prod(1-X_l x)).
+// Chien search: position i is an error iff Lambda(x_i^-1) == 0. Fills err_pos[0..nu-1]
+// (ascending i). Returns nu, or -1 if the root-count disagrees with nu.
+#[export]
+fn rs_locate(syn: *GF, n: i32, k: i32, lambda: *GF, err_pos: *i32) -> i32 {
+    let nk: i32 = n - k;
+    let nu: i32 = bm(syn, nk, lambda, gf_qm2());  // qm2 = |GF| - 2 (Fermat, carrier data)
+    var found: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let xi: GF = (i + 1) as GF;
+        let xinv: GF = 1 / xi;
+        var val: GF = 0;                      // Lambda(x_i^-1) = sum C[m] x_i^-m
+        var xp: GF = 1;
+        var m: i32 = 0;
+        while m <= nu {
+            val = val + lambda[m] * xp;
+            xp = xp * xinv;
+            m = m + 1;
+        }
+        if val == (0 as GF) {
+            if found < nu { err_pos[found] = i; }
+            found = found + 1;
+        }
+        i = i + 1;
+    }
+    if found != nu { return 0 - 1; }
+    return nu;
+}
+
+// ---- Forney: recover the error VALUES at the located positions ----------------
+// Omega(x) = S(x)*Lambda(x) mod x^(n-k) (deg < nu); then for each error location
+// X_l: Y_l = X_l * Omega(X_l^-1) / Lambda'(X_l^-1) (char 2: -1 == 1), and the true
+// error e = Y_l / u_i (undo the dual weight). Lambda'(y) = sum_{m odd} C[m] y^(m-1).
+fn rs_forney(syn: *GF, n: i32, k: i32, lambda: *GF, nu: i32, err_pos: *i32, err_val: *GF) {
+    let nk: i32 = n - k;
+    let omega: *GF = alloc(nk);
+    var a: i32 = 0;
+    while a < nk {
+        var acc: GF = 0;
+        var b: i32 = 0;
+        while b <= a {
+            if (a - b) <= nu { acc = acc + syn[b] * lambda[a - b]; }
+            b = b + 1;
+        }
+        omega[a] = acc;
+        a = a + 1;
+    }
+    var l: i32 = 0;
+    while l < nu {
+        let p: i32 = err_pos[l];
+        let xl: GF = (p + 1) as GF;
+        let y: GF = 1 / xl;
+        var ov: GF = 0;                       // Omega(y), deg < nu
+        var xp: GF = 1;
+        var a2: i32 = 0;
+        while a2 < nu {
+            ov = ov + omega[a2] * xp;
+            xp = xp * y;
+            a2 = a2 + 1;
+        }
+        var lp: GF = 0;                        // Lambda'(y) = sum_{m odd} C[m] y^(m-1)
+        var ypow: GF = 1;
+        var m: i32 = 1;
+        while m <= nu {
+            if (m % 2) == 1 { lp = lp + lambda[m] * ypow; }
+            ypow = ypow * y;
+            m = m + 1;
+        }
+        let yl: GF = xl * ov * (1 / lp);
+        let ui: GF = rs_dual_mult(p, n);
+        err_val[l] = yl * (1 / ui);
+        l = l + 1;
+    }
+    free(omega);
+}
+
+// ---- Full error decode (Forney route): correct -> verify -> interpolate -------
+// Recovers the k data symbols into out_data; fills err_pos/err_val (caller owns,
+// sized >= n and >= t respectively). Returns nu on success, -1 on REFUSAL (order
+// out of range, Chien mismatch, or nonzero-syndrome verify).
+#[export]
+fn rs_decode_errors(recv: *GF, n: i32, k: i32, out_data: *GF, err_pos: *i32, err_val: *GF) -> i32 {
+    let nk: i32 = n - k;
+    let t: i32 = nk / 2;
+    let syn: *GF = alloc(nk);
+    rs_syndromes(recv, n, k, syn);
+    let lambda: *GF = alloc(nk + 1);
+    let nu: i32 = rs_locate(syn, n, k, lambda, err_pos);
+    var result: i32 = nu;
+    if nu < 0 {
+        result = 0 - 1;
+    } else {
+        if nu > t {
+            result = 0 - 1;
+        } else {
+            let corrected: *GF = alloc(n);
+            var i: i32 = 0;
+            while i < n { corrected[i] = recv[i]; i = i + 1; }
+            if nu > 0 {
+                rs_forney(syn, n, k, lambda, nu, err_pos, err_val);
+                var l: i32 = 0;
+                while l < nu {
+                    let p: i32 = err_pos[l];
+                    corrected[p] = corrected[p] + err_val[l];   // subtract == add (char 2)
+                    l = l + 1;
+                }
+            }
+            // refusal certificate: a real codeword has all-zero syndromes (eq0)
+            let syn2: *GF = alloc(nk);
+            rs_syndromes(corrected, n, k, syn2);
+            let vok: i32 = rs_all_zero(syn2, nk);
+            free(syn2);
+            if vok == 0 {
+                result = 0 - 1;
+            } else {
+                let idx: *i32 = alloc(k);
+                let val: *GF = alloc(k);
+                let scratch: *GF = alloc(k);
+                var j: i32 = 0;
+                while j < k { idx[j] = j; val[j] = corrected[j]; j = j + 1; }
+                rs_decode(idx, val, k, out_data, scratch);
+                free(idx);
+                free(val);
+                free(scratch);
+                result = nu;
+            }
+            free(corrected);
+        }
+    }
+    free(syn);
+    free(lambda);
+    return result;
+}
+
+// ---- Erasure-reduction route (the cross-gate's second, independent path) ------
+// Given the located error positions, treat them as erasures: gather the first k
+// surviving symbols and run rs_core's Lagrange decode. Must yield the same
+// data as the Forney route. Returns 0 on success, -1 if too few survivors.
+#[export]
+fn rs_decode_erasure_at(recv: *GF, n: i32, k: i32, err_pos: *i32, nu: i32, out_data: *GF) -> i32 {
+    let idx: *i32 = alloc(k);
+    let val: *GF = alloc(k);
+    let scratch: *GF = alloc(k);
+    var got: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        if got < k {
+            var iserr: i32 = 0;
+            var l: i32 = 0;
+            while l < nu {
+                if err_pos[l] == i { iserr = 1; }
+                l = l + 1;
+            }
+            if iserr == 0 {
+                idx[got] = i;
+                val[got] = recv[i];
+                got = got + 1;
+            }
+        }
+        i = i + 1;
+    }
+    var result: i32 = 0;
+    if got < k {
+        result = 0 - 1;
+    } else {
+        rs_decode(idx, val, k, out_data, scratch);
+    }
+    free(idx);
+    free(val);
+    free(scratch);
+    return result;
+}

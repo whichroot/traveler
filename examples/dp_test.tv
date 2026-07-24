@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dp_test.tv — Standalone test for the DP segmenter.
+// Tests with increasing signal lengths to find the scaling breakpoint.
+
+type F = Field<65521>;
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { wr(fd, "-"); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    let d: i32 = (n % 10) as i32 + 48;
+    var buf: [u8; 2] = 0;
+    buf[0] = d as u8;
+    write(fd, &buf[0], 1);
+}
+
+// Critical fns inlined to avoid overhead. P=65521 is fixed for this DP timing
+// spike, so arithmetic uses BAKED Field<65521> ops (branchless), not (a±b)%p.
+let P: i32 = 65521;
+let HALF_P: i32 = 32760;
+let MAX_ORDER: i32 = 6;
+let MIN_SEGMENT: i32 = 16;
+let MAX_SEGMENT: i32 = 4096;
+let SEGMENT_OVERHEAD_BYTES: i32 = 5;
+
+fn field_sub(a: i32, b: i32) -> i32 {
+    return ((a as F) - (b as F)) as i32;
+}
+fn field_add(a: i32, b: i32) -> i32 {
+    return ((a as F) + (b as F)) as i32;
+}
+fn center(diff: i32) -> i32 { if diff > 32760 { return diff - 65521; } return diff; }
+
+fn literal_cost(n: i32) -> i64 { return (3 + n * 2) as i64 * 8; }
+
+fn main() {
+    // Test: 512 samples of a simple ramp
+    let n: i32 = 512;
+    let samples: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        samples[i] = (i * 100) % P;
+        i = i + 1;
+    }
+
+    wr(1, "Starting DP on ");
+    wr_int(1, n as i64);
+    wr(1, " samples...\n");
+
+    // Timing test: srem in a tight loop
+    var test_val: i32 = 12345;
+    var tj: i32 = 0;
+    while tj < 3000 {
+        test_val = (test_val + 1000) % 65521;
+        tj = tj + 1;
+    }
+    wr(1, "srem loop test: val=");
+    wr_int(1, test_val as i64);
+    wr(1, "\n");
+
+    // Allocate DP arrays
+    let dp: *i64 = alloc(n + 1);
+    let bt: *i32 = alloc(n + 1);
+    let bo: *i32 = alloc(n + 1);
+
+    dp[0] = 0;
+    i = 1;
+    while i <= n {
+        dp[i] = 9223372036854775807;
+        bt[i] = 0;
+        bo[i] = 1;
+        i = i + 1;
+    }
+
+    // Incremental registers
+    let prev: *i32 = alloc(MAX_ORDER + 1);
+    let sum_abs: *i64 = alloc(MAX_ORDER + 1);
+    let count: *i32 = alloc(MAX_ORDER + 1);
+
+    var outer: i32 = 0;
+    while outer < n {
+        if outer % 100 == 0 {
+            wr(1, "  outer=");
+            wr_int(1, outer as i64);
+            wr(1, "\n");
+        }
+        // Init registers
+        var k: i32 = 0;
+        while k <= MAX_ORDER {
+            prev[k] = 0;
+            sum_abs[k] = 0;
+            count[k] = 0;
+            k = k + 1;
+        }
+        prev[0] = samples[outer];
+
+        var j_end: i32 = outer + MAX_SEGMENT;
+        if j_end > n { j_end = n; }
+
+        var j: i32 = outer + 1;
+        var new_val: i32 = 0;
+        var diff: i32 = 0;
+        var c: i32 = 0;
+        while j <= j_end {
+            new_val = samples[j - 1];
+            k = 1;
+            while k <= 6 {
+                diff = (new_val - prev[k - 1] + 65521) % 65521;
+                prev[k - 1] = new_val;
+                new_val = diff;
+                c = diff;
+                if c > 32760 { c = c - 65521; }
+                if c < 0 { c = 0 - c; }
+                //sum_abs[k] = sum_abs[k] + c as i64;
+                count[k] = count[k] + 1;
+                k = k + 1;
+            }
+            prev[6] = new_val;
+
+            let seg_len: i32 = j - outer;
+
+            if seg_len >= MIN_SEGMENT {
+                var order: i32 = 1;
+                while order <= MAX_ORDER {
+                    if count[order] < 1 {
+                        order = order + 1;
+                        continue;
+                    }
+                    let mean_abs: i64 = sum_abs[order] / count[order] as i64;
+                    var est_k: i32 = 0;
+                    var m: i64 = mean_abs;
+                    while m > 1 { m = m >> 1; est_k = est_k + 1; }
+
+                    var rice_per: i64 = 1 + est_k as i64;
+                    if est_k < 20 {
+                        rice_per = rice_per + mean_abs / (1 << est_k) as i64;
+                    }
+                    let header_bits: i64 = (SEGMENT_OVERHEAD_BYTES + order * 4) as i64 * 8;
+                    let est_cost: i64 = header_bits + rice_per * count[order] as i64;
+
+                    let total: i64 = dp[outer] + est_cost;
+                    if total < dp[j] {
+                        dp[j] = total;
+                        bt[j] = outer;
+                        bo[j] = order;
+                    }
+                    order = order + 1;
+                }
+
+                let lit_cost: i64 = dp[outer] + literal_cost(seg_len);
+                if lit_cost < dp[j] {
+                    dp[j] = lit_cost;
+                    bt[j] = outer;
+                    bo[j] = 0 - 1;
+                }
+            }
+
+            j = j + 1;
+        }
+        outer = outer + 1;
+    }
+
+    wr(1, "DP forward pass complete. dp[n] = ");
+    wr_int(1, dp[n]);
+    wr(1, "\n");
+
+    free(count);
+    free(sum_abs);
+    free(prev);
+    free(bo);
+    free(bt);
+    free(dp);
+    free(samples);
+}

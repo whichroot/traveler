@@ -1,0 +1,200 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dyn_ntt_test.tv — the SAME generic NTT source compiled <dyn>: prime bound at
+// runtime, root chain from the carrier blob (not baked @ntt_roots globals).
+// @internal-design: crypto
+//
+// Root-choice-invariant quantities over a runtime prime:
+//   Test 1: forward+inverse round-trip (size 8) == identity
+//   Test 2: forward+inverse round-trip (size 16) == identity
+//   Test 3: poly mul (1+x)^2 = 1 + 2x + x^2
+//   Test 4: poly mul (1+2x+3x^2+4x^3)*(5+6x+7x^2+8x^3)
+//           = 5 + 16x + 34x^2 + 60x^3 + 61x^4 + 52x^5 + 32x^6
+//   Test 5: same over a SECOND runtime prime (Goldilocks) — round-trip
+//
+// Expected output: 1 1 1 1 1
+
+// Generic NTT element buffers are *F; under <dyn> the element is i64-backed
+// and the prime rides in the leading Field carrier argument.
+
+fn bit_rev(x: i32, bits: i32) -> i32 {
+    var r: i32 = 0;
+    var v: i32 = x;
+    for i in 0..bits {
+        r = (r << 1) | (v & 1);
+        v = v >> 1;
+    }
+    return r;
+}
+
+fn bit_reverse_swap<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    for i in 0..n {
+        let j: i32 = bit_rev(i, log_n);
+        if i < j {
+            let tmp: F = data[i];
+            data[i] = data[j];
+            data[j] = tmp;
+        }
+    }
+}
+
+fn ntt_forward<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    bit_reverse_swap(data, log_n);
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_root(s);
+        var k: i32 = 0;
+        while k < n {
+            var w: F = 1;
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = w * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+                w = w * omega_m;
+            }
+            k = k + m;
+        }
+    }
+}
+
+fn ntt_inverse<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    bit_reverse_swap(data, log_n);
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_inv_root(s);
+        var k: i32 = 0;
+        while k < n {
+            var w: F = 1;
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = w * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+                w = w * omega_m;
+            }
+            k = k + m;
+        }
+    }
+    let scale: F = __ntt_n_inv(log_n - 1);
+    for i in 0..n {
+        data[i] = data[i] * scale;
+    }
+}
+
+fn poly_mul_ntt<F: Field>(a: *F, b: *F, out: *F, n: i32, log_n: i32) {
+    let nn: i32 = n + n;
+    let log_nn: i32 = log_n + 1;
+    let fa: *F = alloc(nn);
+    let fb: *F = alloc(nn);
+    let zero: F = 0;
+    for i in 0..n {
+        fa[i] = a[i];
+        fb[i] = b[i];
+    }
+    for i in n..nn {
+        fa[i] = zero;
+        fb[i] = zero;
+    }
+    ntt_forward(fa, log_nn);
+    ntt_forward(fb, log_nn);
+    for i in 0..nn {
+        fa[i] = fa[i] * fb[i];
+    }
+    ntt_inverse(fa, log_nn);
+    for i in 0..nn {
+        out[i] = fa[i];
+    }
+    free(fa);
+    free(fb);
+}
+
+instantiate bit_reverse_swap<dyn>;
+instantiate ntt_forward<dyn>;
+instantiate ntt_inverse<dyn>;
+instantiate poly_mul_ntt<dyn>;
+
+fn roundtrip(f: Field, vals: *i64, log_n: i32) -> i32 {
+    let n: i32 = 1 << log_n;
+    let data: *i64 = alloc(n);
+    let orig: *i64 = alloc(n);
+    for i in 0..n {
+        data[i] = vals[i];
+        orig[i] = vals[i];
+    }
+    ntt_forward_dyn(f, data, log_n);
+    ntt_inverse_dyn(f, data, log_n);
+    var ok: i32 = 1;
+    for i in 0..n {
+        if data[i] != orig[i] { ok = 0; }
+    }
+    free(data);
+    free(orig);
+    return ok;
+}
+
+fn main() -> i32 {
+    // Runtime-selected prime #1: Fermat16 = 65537 (2-adic val 16)
+    let f: Field = field(65537);
+
+    // Test 1: round-trip size 8
+    let v1: *i64 = alloc(8);
+    v1[0] = 10; v1[1] = 20; v1[2] = 30; v1[3] = 40;
+    v1[4] = 50; v1[5] = 60; v1[6] = 70; v1[7] = 80;
+    print(roundtrip(f, v1, 3));
+    free(v1);
+
+    // Test 2: round-trip size 16
+    let v2: *i64 = alloc(16);
+    for i in 0..16 { v2[i] = (i + 1) as i64; }
+    print(roundtrip(f, v2, 4));
+    free(v2);
+
+    // Test 3: poly mul (1+x)^2 = 1 + 2x + x^2
+    let a3: *i64 = alloc(4);
+    let b3: *i64 = alloc(4);
+    let c3: *i64 = alloc(8);
+    a3[0] = 1; a3[1] = 1; a3[2] = 0; a3[3] = 0;
+    b3[0] = 1; b3[1] = 1; b3[2] = 0; b3[3] = 0;
+    poly_mul_ntt_dyn(f, a3, b3, c3, 4, 2);
+    var p3: i32 = 1;
+    if c3[0] != 1 { p3 = 0; }
+    if c3[1] != 2 { p3 = 0; }
+    if c3[2] != 1 { p3 = 0; }
+    for i in 3..8 { if c3[i] != 0 { p3 = 0; } }
+    print(p3);
+    free(a3); free(b3); free(c3);
+
+    // Test 4: poly mul (1+2x+3x^2+4x^3)*(5+6x+7x^2+8x^3)
+    let a4: *i64 = alloc(4);
+    let b4: *i64 = alloc(4);
+    let c4: *i64 = alloc(8);
+    a4[0] = 1; a4[1] = 2; a4[2] = 3; a4[3] = 4;
+    b4[0] = 5; b4[1] = 6; b4[2] = 7; b4[3] = 8;
+    poly_mul_ntt_dyn(f, a4, b4, c4, 4, 2);
+    var p4: i32 = 1;
+    if c4[0] != 5  { p4 = 0; }
+    if c4[1] != 16 { p4 = 0; }
+    if c4[2] != 34 { p4 = 0; }
+    if c4[3] != 60 { p4 = 0; }
+    if c4[4] != 61 { p4 = 0; }
+    if c4[5] != 52 { p4 = 0; }
+    if c4[6] != 32 { p4 = 0; }
+    if c4[7] != 0  { p4 = 0; }
+    print(p4);
+    free(a4); free(b4); free(c4);
+
+    // Test 5: same generic code, SECOND runtime prime (Goldilocks)
+    let g: Field = field(18446744069414584321);
+    let v5: *i64 = alloc(16);
+    for i in 0..16 { v5[i] = (i * 7 + 3) as i64; }
+    print(roundtrip(g, v5, 4));
+    free(v5);
+
+    return 0;
+}

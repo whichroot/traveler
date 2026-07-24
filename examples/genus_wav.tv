@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_wav.tv — the honest edge on real audio (Phase A.3d): read a 16-bit PCM
+// WAV, run the genus probe on a slice; recorded music yields the no-onset sentinel.
+// @internal-design: genus (no-onset as first-class measurement)
+//
+// Prints for the slice:
+//   sample_rate
+//   d_max_clean   (largest degree swept with NO onset; D itself if none ever)
+//   onset         (d* if found within D, else D+1 sentinel = "no onset <= D")
+//   nseg_at_dmax  (the canonical regime count at degree d_max = the trivial
+//                  maximum n/(d_max+1) for structureless audio)
+//
+// Usage: genus_wav <file.wav>
+// Link: regime_fri.o + genus_probe.o + genus_wav.o
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn genus_signature(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+
+fn wr(fd: i32, s: *u8) { let n: usize = strlen(s); write(fd, s, n); }
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc < 2 {
+        wr(2, "usage: genus_wav <file.wav>\n");
+        exit(1);
+    }
+    let path: *u8 = argv[1];
+
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 { wr(2, "error: cannot open file\n"); exit(1); }
+    let buf: *u8 = alloc(67108864);   // 64 MB cap
+    let file_size: i64 = read_bytes(fd, buf, 67108864);
+    close(fd);
+
+    let num_channels: i32 = buf[22] as i32 + (buf[23] as i32) * 256;
+    let sample_rate: i32 = buf[24] as i32 + (buf[25] as i32) * 256
+    + (buf[26] as i32) * 65536 + (buf[27] as i32) * 16777216;
+    let bits: i32 = buf[34] as i32 + (buf[35] as i32) * 256;
+    if bits != 16 { wr(2, "error: only 16-bit PCM supported\n"); exit(1); }
+
+    // Walk RIFF chunks to find the real data offset (extended fmt chunks put
+    // data past byte 44 — landing on audio, not header bytes; see @internal-design: genus).
+    var data_offset: i32 = 0;
+    var data_size: i32 = 0;
+    var pos: i32 = 12;
+    while pos < (file_size as i32) - 8 {
+        let c0: i32 = buf[pos] as i32;
+        let c1: i32 = buf[pos + 1] as i32;
+        let c2: i32 = buf[pos + 2] as i32;
+        let c3: i32 = buf[pos + 3] as i32;
+        let sz: i32 = buf[pos + 4] as i32 + (buf[pos + 5] as i32) * 256
+        + (buf[pos + 6] as i32) * 65536 + (buf[pos + 7] as i32) * 16777216;
+        // 'data' = 0x64 0x61 0x74 0x61
+        if c0 == 100 && c1 == 97 && c2 == 116 && c3 == 97 {
+            data_offset = pos + 8;
+            data_size = sz;
+            pos = (file_size as i32);   // stop
+        } else {
+            pos = pos + 8 + sz + (sz % 2);
+        }
+    }
+    if data_offset == 0 { wr(2, "error: no data chunk\n"); exit(1); }
+    let total_frames: i32 = (data_size / 2) / num_channels;
+
+    // Slice n samples from the 50% mark (left channel), rebased to min=0
+    // (affine-invariant; keeps values non-negative for field embedding).
+    let n: i32 = 48;
+    let start_frame: i32 = total_frames / 2;
+    let raw: *i64 = alloc(n);
+    var mn: i64 = 2147483647;
+    for i in 0..n {
+        let byte_off: i32 = data_offset + (start_frame + i) * num_channels * 2;
+        let lo: i32 = buf[byte_off] as i32;
+        let hi: i32 = buf[byte_off + 1] as i32;
+        var val: i32 = lo + hi * 256;
+        if val >= 32768 { val = val - 65536; }   // sign extend
+        raw[i] = val as i64;
+        if raw[i] < mn { mn = raw[i]; }
+    }
+    let data: *i64 = alloc(n);
+    for i in 0..n { data[i] = raw[i] - mn; }
+
+    let f: Field = field(18446744069414584321);   // Goldilocks
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let out: *i64 = alloc(2);
+
+    // Sweep up to a generous d_max; the no-onset result IS the measurement.
+    let d_max: i32 = 12;
+    genus_signature(f, data, n, d_max, cert, work, out);
+    let onset: i32 = out[0] as i32;   // d* if <= d_max, else d_max+1 sentinel
+
+    // d_max_clean: the largest degree swept with no onset. If onset never
+    // appeared, that's d_max; otherwise it's onset-1.
+    var d_clean: i32 = d_max;
+    if onset <= d_max { d_clean = onset - 1; }
+
+    // Regime count at d_max — for structureless audio this is the trivial
+    // maximum (n/(d_max+1)), the signature of "no exploitable structure".
+    let nseg_dmax: i32 = regime_prove_dyn(f, data, n, d_max, cert, work);
+
+    print(sample_rate);   // e.g. 44100
+    print(d_clean);       // largest clean degree (=d_max if never resolves)
+    print(onset);         // d* or d_max+1 sentinel
+    print(nseg_dmax);     // regime count at d_max
+
+    free(buf); free(raw); free(data);
+    free(cert); free(work); free(out);
+    return 0;
+}

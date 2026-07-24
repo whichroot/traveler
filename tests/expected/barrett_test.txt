@@ -1,0 +1,13 @@
+(p-1)*(p-1) mod p = PASS
+2*2 mod p = PASS
+(p-1)*2 mod p = PASS
+0*anything = PASS
+1*x = PASS
+inv(2)*2 = PASS
+Barrett 64-bit: 6/6 correct
+1
+4
+18446744073709551555
+0
+18446744073709551556
+1

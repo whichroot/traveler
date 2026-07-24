@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// trait_dispatch.tv — Type-directed trait dispatch + bound enforcement (B2b Slice 3).
+//
+// tvc_self ONLY (gated in tests/dynfield/run.sh). Slice 2 registered impl
+// methods under mangled names called explicitly. Slice 3 makes them USABLE:
+//
+//   1. Method-call resolution: r.area() resolves to Shape__Rect__area through
+//      the receiver's type — type-directed, NOT name-keyed. The collision
+//      wound is fully healed: r.area() and c.area() reach different impls.
+//   2. Bound enforcement: fn f<T: Shape>(x: T) verifies T implements Shape
+//      (reads g_gen_bounds, write-only until now), and x.area() inside
+//      resolves through the monomorphized concrete type.
+//
+// All STATICALLY MONOMORPHIZED — no vtable, no dynamic dispatch. A generic
+// over a trait bound compiles to one specialized function per concrete type;
+// the dispatch is resolved at compile time. The field thesis is intact.
+//
+// Expected output:
+//   200    r.area()              -> Shape__Rect__area (10*20)
+//   78     c.area()              -> Shape__Circle__area (314*25/100)
+//   60     r.perimeter()         -> Shape__Rect__perimeter (2*(10+20))
+//   200    describe(r) via <T: Shape> bound, x.area()  (T=Rect)
+//   78     describe(c) via <T: Shape> bound, x.area()  (T=Circle)
+
+struct Rect { w: i32, h: i32 }
+struct Circle { r: i32 }
+
+trait Shape {
+    fn area(self) -> i32;
+    fn perimeter(self) -> i32;
+}
+
+impl Shape for Rect {
+    fn area(self) -> i32 { return self.w * self.h; }
+    fn perimeter(self) -> i32 { return 2 * (self.w + self.h); }
+}
+
+impl Shape for Circle {
+    fn area(self) -> i32 { return (314 * self.r * self.r) / 100; }
+    fn perimeter(self) -> i32 { return (628 * self.r) / 100; }
+}
+
+// Generic over a trait bound — the decision contract as a constraint.
+// x.area() resolves through the monomorphized concrete type.
+fn describe<T: Shape>(x: T) -> i32 {
+    return x.area();
+}
+
+fn main() -> i32 {
+    let r: Rect = Rect { w: 10, h: 20 };
+    let c: Circle = Circle { r: 5 };
+
+    // Type-directed method dispatch.
+    print(r.area());          // 200
+    print(c.area());          // 78
+    print(r.perimeter());     // 60
+
+    // Bound-constrained generic dispatch.
+    print(describe(r));       // 200 (T=Rect)
+    print(describe(c));       // 78  (T=Circle)
+    return 0;
+}

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_mnist_zk_test.tv — ZK regime composition driver, MNIST IMAGE domain:
+// the domain where the PL assumption HOLDS (genuine segments, nseg=4 < 16).
+// Shared engine: src/lib/regime/regime_zk.tv (run_zk_domain).
+// @internal-design: regime (regime_zk; honest failure mode)
+//
+// Data: row 14 of MNIST test image 0 (label 7), 0..255, zero-padded 28->32
+// for a power-of-two leaf count. Row layout: [0 x16][59 249 254 62][0 x12].
+//
+// Expected output:  4 1 0 0 0
+
+extern "C" fn run_zk_domain(p: i64, data: *i64, n: i32, n_leaves: i32, out: *i64);
+
+fn main() -> i32 {
+    // Runtime-selected prime: Goldilocks (NTT-friendly, k=32).
+    let p: i64 = 18446744069414584321;
+
+    let n: i32 = 32;        // 28 pixels + 4 zero pad
+    let n_leaves: i32 = 32;
+    let data: *i64 = alloc(n);
+    // MNIST t10k image 0 (label 7), row 14:
+    data[0] = 0;   data[1] = 0;   data[2] = 0;   data[3] = 0;
+    data[4] = 0;   data[5] = 0;   data[6] = 0;   data[7] = 0;
+    data[8] = 0;   data[9] = 0;   data[10] = 0;  data[11] = 0;
+    data[12] = 0;  data[13] = 0;  data[14] = 0;  data[15] = 0;
+    data[16] = 59; data[17] = 249; data[18] = 254; data[19] = 62;
+    data[20] = 0;  data[21] = 0;  data[22] = 0;  data[23] = 0;
+    data[24] = 0;  data[25] = 0;  data[26] = 0;  data[27] = 0;
+    data[28] = 0;  data[29] = 0;  data[30] = 0;  data[31] = 0;  // pad
+
+    let out: *i64 = alloc(5);
+    run_zk_domain(p, data, n, n_leaves, out);
+    for i in 0..5 { print(out[i] as i32); }
+
+    free(data);
+    free(out);
+    return 0;
+}

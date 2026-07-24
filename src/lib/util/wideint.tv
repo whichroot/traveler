@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wideint.tv — fixed-width non-negative wide integers as little-endian arrays of
+// 31-bit limbs (base B = 2^31); MULTIPLY and COMPARE only (no wide sub/div).
+// Callers own all buffers (alloc nl limbs); a "wide" is a *i64 of length nl.
+// @internal-design: mobius-inclusion (why 31-bit limbs, Acc<W> note)
+
+// w = x, x >= 0, split into limbs (higher limbs zeroed up to nl).
+#[export]
+fn w_set_i64(w: *i64, nl: i32, x: i64) {
+    let B: i64 = 2147483648;            // 2^31
+    var xx: i64 = x;
+    var i: i32 = 0;
+    while i < nl {
+        w[i] = xx % B;
+        xx = xx / B;
+        i = i + 1;
+    }
+}
+
+// w = 2^e. e >= 0 and e < 31*nl. One limb gets a single set bit.
+#[export]
+fn w_set_pow2(w: *i64, nl: i32, e: i64) {
+    var i: i32 = 0;
+    while i < nl { w[i] = 0; i = i + 1; }
+    let limb: i32 = (e / 31) as i32;
+    let bit: i64 = e % 31;
+    var v: i64 = 1;
+    var t: i64 = 0;
+    while t < bit { v = v * 2; t = t + 1; }   // v = 2^bit, < 2^31 = B
+    w[limb] = v;
+}
+
+// out = a * b (schoolbook, carrying). Caller sizes nl so the product fits in nl
+// limbs (any carry past limb nl-1 is dropped — true only when a*b < B^nl). Every
+// intermediate t = out[i+j] + a[i]*b[j] + carry is < B + B^2 + B < 2^63.
+#[export]
+fn w_mul(a: *i64, b: *i64, out: *i64, nl: i32) {
+    let B: i64 = 2147483648;
+    var i: i32 = 0;
+    while i < nl { out[i] = 0; i = i + 1; }
+    i = 0;
+    while i < nl {
+        var carry: i64 = 0;
+        var j: i32 = 0;
+        while j < nl {
+            if i + j < nl {
+                let t: i64 = out[i + j] + a[i] * b[j] + carry;
+                out[i + j] = t % B;
+                carry = t / B;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// compare a, b: returns 1 if a > b, -1 if a < b, 0 if equal.
+#[export]
+fn w_cmp(a: *i64, b: *i64, nl: i32) -> i32 {
+    var i: i32 = nl - 1;
+    while i >= 0 {
+        if a[i] > b[i] { return 1; }
+        if a[i] < b[i] { return 0 - 1; }
+        i = i - 1;
+    }
+    return 0;
+}
+
+// w mod m, for 0 < m <= 2^31 (an independent casting-out checksum for tests, and a
+// general-purpose reduction). (w[i]%m)*pw < 2^31 * 2^31 = 2^62 fits i64.
+#[export]
+fn w_mod_small(w: *i64, nl: i32, m: i64) -> i64 {
+    let B: i64 = 2147483648;
+    let bm: i64 = B % m;
+    var acc: i64 = 0;
+    var pw: i64 = 1;                 // B^i mod m
+    var i: i32 = 0;
+    while i < nl {
+        acc = (acc + (w[i] % m) * pw) % m;
+        pw = (pw * bm) % m;
+        i = i + 1;
+    }
+    return acc;
+}

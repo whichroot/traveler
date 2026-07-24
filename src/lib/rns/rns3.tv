@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rns3.tv — 3-prime baked-tier RNS exact matmul: per-prime parallel MAC (pfor),
+// then 5-limb (i32) Garner CRT reconstruct + requantize. Inputs PRE-REDUCED [0,p).
+// @internal-design: rns
+//
+// Basis (all k*2^n+1, prime, < 2^31 -> i32 channel; product ~2^91.5):
+//   p0 = 2013265921 = 15*2^27+1
+//   p1 = 1811939329 = 27*2^26+1
+//   p2 =  469762049 =  7*2^26+1
+
+type FP0 = Field<2013265921>;
+type FP1 = Field<1811939329>;
+type FP2 = Field<469762049>;
+
+let P0: i64 = 2013265921;
+let P1: i64 = 1811939329;
+let P2: i64 = 469762049;
+
+// ---- Stage 1: per-prime parallel multiply-accumulate (pure dot helpers) ----
+
+fn dot0(x: *FP0, w: *FP0, K: i32, N: i32, o: i32) -> FP0 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    var acc: FP0 = 0 as FP0;
+    var k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+fn dot1(x: *FP1, w: *FP1, K: i32, N: i32, o: i32) -> FP1 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    var acc: FP1 = 0 as FP1;
+    var k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+fn dot2(x: *FP2, w: *FP2, K: i32, N: i32, o: i32) -> FP2 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    var acc: FP2 = 0 as FP2;
+    var k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+
+// The three parallel MAC passes. Each writes its prime's residue accumulators.
+#[export]
+fn rns3_mac(xr0: *FP0, xr1: *FP1, xr2: *FP2,
+    wr0: *FP0, wr1: *FP1, wr2: *FP2,
+    r0: *FP0, r1: *FP1, r2: *FP2,
+    T: i32, K: i32, N: i32) {
+    let total: i32 = T * N;
+    for o in 0..total { r0[o] = dot0(xr0, wr0, K, N, o); }
+    for o in 0..total { r1[o] = dot1(xr1, wr1, K, N, o); }
+    for o in 0..total { r2[o] = dot2(xr2, wr2, K, N, o); }
+}
+
+// ---- Stage 2: Garner CRT reconstruction (5 i32 limbs) + requantize ----
+
+fn modp(x: i64, p: i64) -> i64 { let r: i64 = x % p; if r < 0 { return r + p; } return r; }
+fn inv1(a: i64) -> i64 { let f: FP1 = a as FP1; let g: FP1 = 1 / f; return g as i64; }
+fn inv2(a: i64) -> i64 { let f: FP2 = a as FP2; let g: FP2 = 1 / f; return g as i64; }
+
+// add a nonneg i64 value v (< 2^62) into 5-limb LE array L at limb offset off.
+fn limb_add(L: *i64, off: i32, v: i64) {
+    let m: i64 = 4294967295;
+    var cur: i64 = v;
+    var i: i32 = off;
+    while cur != 0 {
+        let s: i64 = L[i] + (cur & m);
+        L[i] = s & m;
+        cur = (cur >> 32) + (s >> 32);
+        i = i + 1;
+    }
+}
+
+// Reconstruct the exact signed integer from 3 residues and requantize by `shift`
+// (round-to-nearest, magnitude-symmetric). Pure.
+fn crt3_requant(a0: i64, a1: i64, a2: i64, shift: i64) -> i64 {
+    // Garner digits x0..x2
+    let x0: i64 = a0;
+    var t1: i64 = modp(a1 - x0, P1);
+    t1 = (t1 * inv0_p1()) % P1;
+    let x1: i64 = t1;
+    var t2: i64 = modp(a2 - x0, P2);
+    t2 = (t2 * inv0_p2()) % P2;
+    t2 = modp(t2 - x1, P2);
+    t2 = (t2 * inv1_p2()) % P2;
+    let x2: i64 = t2;
+
+    // value = x0 + x1*P0 + x2*(P0*P1), into 5 LE 32-bit limbs.
+    var L: [i64; 5] = 0;
+    L[0] = 0; L[1] = 0; L[2] = 0; L[3] = 0; L[4] = 0;
+    limb_add(&L[0], 0, x0);
+    limb_add(&L[0], 0, x1 * P0);       // x1<2^31, P0~2^31 -> < 2^62
+    let p0p1_lo: i64 = 3825205249;     // (P0*P1) & 0xFFFFFFFF
+    let p0p1_hi: i64 = 849346560;      // (P0*P1) >> 32
+    limb_add(&L[0], 0, x2 * p0p1_lo);
+    limb_add(&L[0], 1, x2 * p0p1_hi);
+
+    // Sign: value is negative iff the top Garner digit x2 lies in the upper half.
+    if x2 > P2 / 2 {
+        var PF: [i64; 5] = 0;
+        PF[0] = pfull0(); PF[1] = pfull1(); PF[2] = pfull2();
+        PF[3] = pfull3(); PF[4] = pfull4();
+        var M: [i64; 5] = 0;
+        var borrow: i64 = 0;
+        var i: i32 = 0;
+        while i < 5 {
+            var d: i64 = PF[i] - L[i] - borrow;
+            if d < 0 { d = d + 4294967296; borrow = 1; } else { borrow = 0; }
+            M[i] = d;
+            i = i + 1;
+        }
+        limb_add(&M[0], 0, 1 << (shift - 1));
+        return 0 - limbs_shr(&M[0], shift);
+    }
+    limb_add(&L[0], 0, 1 << (shift - 1));
+    return limbs_shr(&L[0], shift);
+}
+
+// arithmetic shift of a 5-limb LE value right by `shift` (< 64), returning i64.
+fn limbs_shr(L: *i64, shift: i64) -> i64 {
+    let w: i32 = (shift / 32) as i32;
+    let bit: i64 = shift % 32;
+    let m: i64 = 4294967295;
+    if bit == 0 {
+        return (L[w] & m) + ((L[w + 1] & m) << 32);
+    }
+    let o0: i64 = ((L[w] >> bit) | (L[w + 1] << (32 - bit))) & m;
+    let o1: i64 = ((L[w + 1] >> bit) | (L[w + 2] << (32 - bit))) & m;
+    return o0 + (o1 << 32);
+}
+
+// Precomputed Garner inverses (constants; computed once via field 1/x).
+fn inv0_p1() -> i64 { return inv1(modp(P0, P1)); }
+fn inv0_p2() -> i64 { return inv2(modp(P0, P2)); }
+fn inv1_p2() -> i64 { return inv2(modp(P1, P2)); }
+
+// Pfull = P0*P1*P2 as 5 little-endian 32-bit limbs (~91 bits; top two zero).
+fn pfull0() -> i64 { return 1; }
+fn pfull1() -> i64 { return 1267728385; }
+fn pfull2() -> i64 { return 92897280; }
+fn pfull3() -> i64 { return 0; }
+fn pfull4() -> i64 { return 0; }
+
+// The CRT parallel pass: y[o] = crt3_requant(residues, shift). Captures the
+// Field-typed residue arrays (has_field=1) so it auto-parallelizes.
+#[export]
+fn rns3_crt(r0: *FP0, r1: *FP1, r2: *FP2, y: *i64, T: i32, N: i32, shift: i64) {
+    let total: i32 = T * N;
+    for o in 0..total {
+        y[o] = crt3_requant(r0[o] as i64, r1[o] as i64, r2[o] as i64, shift);
+    }
+}

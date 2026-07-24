@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_local.tv — Mobius W-B P5: Theorem "Local" — principal-class minimum Fourier
+// support 2q - delta_0 - delta_1 via exact DFT per carrier. tvc_self-only (import).
+// @internal-design: nt; @internal-note: plan-mobius-inclusion B4.
+// Output rows are 5 ints: q, p, k, value, status  (status 1 = reachable+verified
+// [value = computed support], -1 = refused [value = 2q-delta from the theorem]).
+
+import "../src/lib/nt/linalg.tv";     // la_fpow
+
+type F19 = Field<19>;
+type F37 = Field<37>;
+type F101 = Field<101>;
+type B6 = BinField<6, 0x43>;          // F_64: x^6 + x + 1
+type B20 = BinField<20, 0x100009>;    // F_2^20: x^20 + x^3 + 1
+
+// primitive q^2-th root of unity in F (requires q^2 | ord-1, ord = |F|): the first
+// c^{(ord-1)/q^2} whose q-th power != 1 (order exactly q^2) — any hit works.
+fn find_zeta<F: Field>(q: i32, ord: i64) -> F {
+    let qq: i64 = (q as i64) * (q as i64);
+    let ex: i64 = (ord - 1) / qq;
+    var c: i32 = 2;
+    while c < (ord as i32) {
+        let cand: F = la_fpow(c as F, ex);
+        let ck: F = la_fpow(cand, q as i64);
+        if ck == (1 as F) { c = c + 1; } else { return cand; }
+    }
+    return 1 as F;
+}
+
+// Fill u[0..q^2-1] with the A=1 extremal principal-class solution.
+fn build_u<F: Field>(q: i32, zeta: F, u: *F) {
+    let qq: i32 = q * q;
+    let omega: F = la_fpow(zeta, q as i64);         // primitive q-th root
+    // G(T) = T * prod_{i=2..q-1} (T - omega^i)   (excludes 1 and omega^1)
+    let Gc: *F = alloc(q + 1);
+    let tmp: *F = alloc(q + 1);
+    Gc[0] = 0 as F; Gc[1] = 1 as F;
+    var glen: i32 = 2;
+    var i: i32 = 2;
+    while i < q {
+        let wi: F = la_fpow(omega, i as i64);
+        let negwi: F = (0 as F) - wi;
+        var z: i32 = 0;
+        while z <= glen { tmp[z] = 0 as F; z = z + 1; }
+        var j: i32 = 0;
+        while j < glen {
+            tmp[j] = tmp[j] + Gc[j] * negwi;
+            tmp[j + 1] = tmp[j + 1] + Gc[j];
+            j = j + 1;
+        }
+        glen = glen + 1;
+        var m: i32 = 0;
+        while m < glen { Gc[m] = tmp[m]; m = m + 1; }
+        i = i + 1;
+    }
+    // u(0)=0; u(q t)=g(t)=Gc[t]; u(n)=-Gc[n mod q] for units n
+    var n: i32 = 0;
+    while n < qq { u[n] = 0 as F; n = n + 1; }
+    var t: i32 = 1;
+    while t < q { u[(q * t) % qq] = Gc[t]; t = t + 1; }
+    n = 0;
+    while n < qq {
+        if (n % q) != 0 { u[n] = (0 as F) - Gc[n % q]; }
+        n = n + 1;
+    }
+    free(Gc); free(tmp);
+}
+
+// verify (Z) u[q^2 n]=0 (u[0]=0), (S) u[qn]=-u[n] for units n, (W) some u[qt]!=0
+fn eqlocal_ok<F: Field>(q: i32, u: *F) -> i32 {
+    let qq: i32 = q * q;
+    var ok: i32 = 1;
+    var n: i32 = 0;
+    while n < qq {
+        if (n % q) != 0 {
+            let lhs: F = u[(q * n) % qq];
+            let rhs: F = (0 as F) - u[n];
+            if lhs == rhs { ok = ok; } else { ok = 0; }
+        }
+        n = n + 1;
+    }
+    if u[0] == (0 as F) { ok = ok; } else { ok = 0; }
+    var wit: i32 = 0;
+    var t: i32 = 1;
+    while t < q { if u[(q * t) % qq] == (0 as F) { wit = wit; } else { wit = 1; } t = t + 1; }
+    if wit == 0 { ok = 0; }
+    return ok;
+}
+
+// Fourier support: #{ x : sum_n u[n] zeta^{-nx} != 0 }
+fn dft_support<F: Field>(q: i32, zeta: F, u: *F) -> i32 {
+    let qq: i32 = q * q;
+    var supp: i32 = 0;
+    var x: i32 = 0;
+    while x < qq {
+        var cc: F = 0 as F;
+        var n: i32 = 0;
+        while n < qq {
+            let e: i32 = (qq - ((n * x) % qq)) % qq;      // -nx mod q^2
+            cc = cc + u[n] * la_fpow(zeta, e as i64);
+            n = n + 1;
+        }
+        if cc == (0 as F) { x = x; } else { supp = supp + 1; }
+        x = x + 1;
+    }
+    return supp;
+}
+
+// pchar/k are print-only (the characteristic and extension degree of F);
+// the computation itself never consults them — the carrier IS the field.
+fn reachable<F: Field>(q: i32, pchar: i64, k: i32, zeta: F) {
+    let qq: i32 = q * q;
+    let u: *F = alloc(qq);
+    build_u(q, zeta, u);
+    let ok: i32 = eqlocal_ok(q, u);
+    let supp: i32 = dft_support(q, zeta, u);
+    free(u);
+    // q, p (characteristic), k (extension degree), support, status
+    print(q); print(pchar as i32); print(k); print(supp); print(ok);
+}
+
+fn main() {
+    // --- REACHABLE (prime fields, delta=0, min = 2q) ---
+    let z19: F19 = find_zeta(3, 19);
+    reachable(3, 19, 1, z19);              // 3 19 1 6 1
+    let z37: F37 = find_zeta(3, 37);
+    reachable(3, 37, 1, z37);              // 3 37 1 6 1
+    let z101: F101 = find_zeta(5, 101);
+    reachable(5, 101, 1, z101);            // 5 101 1 10 1
+
+    // --- REACHABLE (binary extensions — the BinField<K!=8> unlock's flip;
+    //     delta_0 = delta_1 = 1, so the minimum is 2q - 2) ---
+    let z6: B6 = find_zeta(3, 64);         // U_9 in F_64* (9 | 63)
+    reachable(3, 2, 6, z6);                // 3 2 6 4 1
+    print(3); print(7);  print(3);  print(6);  print(0 - 1);   // F_7^3 (refused)
+    let z20: B20 = find_zeta(5, 1048576);  // U_25 in F_2^20* (25 | 2^20-1)
+    reachable(5, 2, 20, z20);              // 5 2 20 8 1
+
+    // --- NAMED REFUSALS (need general ExtField<F, m>: odd char, m > 2) ---
+    // rows: q, p, k (extension degree), 2q-delta_0-delta_1, -1
+    print(5); print(3);  print(20); print(9);  print(0 - 1);   // F_3^20
+    print(5); print(7);  print(4);  print(10); print(0 - 1);   // F_7^4
+    print(5); print(11); print(5);  print(10); print(0 - 1);   // F_11^5
+}

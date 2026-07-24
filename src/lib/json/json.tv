@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// json.tv — a minimal JSON *writer*: append structural tokens and escaped
+// scalar values onto an owned Str. Deliberately low-level (token appenders, not
+// a document builder) so it stays tiny and the caller keeps full control of
+// shape — the lab's event/heartbeat/final records are fixed-shape and need no
+// more. Parsing (request.json) is a separate slice. tvc_self ONLY.
+// @internal-design: json
+
+import "../collections/string.tv";
+import "../fmt/fmt.tv";
+
+fn json_obj_open(s: *Str)  { str_push(s, 123); }   // {
+fn json_obj_close(s: *Str) { str_push(s, 125); }   // }
+fn json_arr_open(s: *Str)  { str_push(s, 91); }    // [
+fn json_arr_close(s: *Str) { str_push(s, 93); }    // ]
+fn json_comma(s: *Str)     { str_push(s, 44); }    // ,
+fn json_colon(s: *Str)     { str_push(s, 58); }    // :
+
+// A JSON string literal: quote, JSON-escaped bytes, quote.
+fn json_str(s: *Str, val: *u8) {
+    str_push(s, 34);                 // "
+    fmt_push_json_escaped(s, val);
+    str_push(s, 34);                 // "
+}
+
+// A quoted, escaped object key followed by its colon (`"key":`).
+fn json_key(s: *Str, key: *u8) {
+    json_str(s, key);
+    json_colon(s);
+}
+
+// A JSON integer value.
+fn json_int(s: *Str, n: i64) {
+    fmt_push_i64(s, n);
+}
+
+// One `"key": <int>` member (the caller handles separating commas).
+fn json_field_int(s: *Str, key: *u8, n: i64) {
+    json_key(s, key);
+    json_int(s, n);
+}
+
+// One `"key": "<escaped string>"` member.
+fn json_field_str(s: *Str, key: *u8, val: *u8) {
+    json_key(s, key);
+    json_str(s, val);
+}

@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// lnbounds_selftest.tv — verify the directed ln bounds bracket the true value.
+// Prints, per argument, a LOWER and UPPER bound on ln in millionths (micros).
+// Expected (true ln * 1e6): ln2=693147, ln3=1098612, ln10=2302585,
+// ln43=3761200, ln62=4127134. Each printed lower <= true <= upper, gap ~1 micro
+// (the display rounding; the underlying bound gap at SI=2^30 is ~1e-9).
+
+import "../src/lib/util/lnbounds.tv";
+
+// floor(v * 1e6 / SI): display a lower bound without inflating it.
+fn micro_lo(v: i64) -> i64 {
+    let SI: i64 = 1073741824;
+    return (v * 1000000) / SI;
+}
+// ceil(v * 1e6 / SI): display an upper bound without deflating it.
+fn micro_hi(v: i64) -> i64 {
+    let SI: i64 = 1073741824;
+    return (v * 1000000 + SI - 1) / SI;
+}
+
+fn show(V: i64) {
+    print(micro_lo(ln_lo(V)) as i32);
+    print(micro_hi(ln_hi(V)) as i32);
+}
+
+fn main() -> i32 {
+    let SI: i64 = 1073741824;
+    print(micro_lo(ln2_lo()) as i32);   // 693147
+    print(micro_hi(ln2_hi()) as i32);   // 693148
+    show(2 * SI);                        // 693147 / 693148
+    show(3 * SI);                        // 1098612 / 1098613
+    show(10 * SI);                       // 2302585 / 2302586
+    show(43 * SI);                       // 3761200 / 3761201
+    show(62 * SI);                       // 4127134 / 4127135
+    return 0;
+}

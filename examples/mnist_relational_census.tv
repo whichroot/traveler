@@ -1,0 +1,528 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_relational_census.tv — Level 2 census: relational (spectral-moment)
+// signatures on real MNIST; targets the Level-1 negatives (3-vs-5, clusters).
+// @internal-design: features (the ladder, Level 2)
+//
+// Per digit, on the radial-cut arcs of its contour, three symmetric {0,1}
+// relation graphs, read as tr(M^2), tr(M^3) over a dyn field:
+//   M_len  : edge iff arcs i,j have DIFFERENT lengths.
+//   M_turn : edge iff arcs i,j's start junctions turn the SAME way (corner seq).
+//   M_adj  : edge iff arc endpoints within an INTRINSIC scale (no magic const).
+// -> a 6-number relational signature. We accumulate per-class MEANs and report:
+//   (1) per-class mean relational signature,
+//   2) the least-separated pair under RELATIONAL features (the Level-2 verdict),
+//   3) the digit-3-vs-5 distance specifically (did Level 2 crack the negative?).
+//
+// Field-agreement (Goldilocks vs BabyBear) checked on a sample.
+//
+// Three-file link: regime_fri.o + relational.o + mnist_relational_census.o
+// Usage: ./mnist_relational_census <data_directory>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn mat_trace_pow_dyn(
+    f: Field, M: *i64, m: i32, k: i32, P: *i64, Q: *i64) -> i64;
+
+fn wr(fd: i32, s: *u8) { let len: usize = strlen(s); write(fd, s, len); }
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+fn wr_pad(fd: i32, n: i64, w: i32) {
+    var tmp: i64 = n; if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = w - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216 + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256 + (buf[off + 3] as i32);
+}
+
+fn is_ink(img: *u8, x: i32, y: i32, thr: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x > 27 { return 0; }
+    if y > 27 { return 0; }
+    if (img[y * 28 + x] as i32) > thr { return 1; }
+    return 0;
+}
+
+fn trace_contour(img: *u8, thr: i32, cx: *i64, cy: *i64, max_len: i32) -> i32 {
+    var dx: [i32; 8] = 0;
+    var dy: [i32; 8] = 0;
+    dx[0]=1;  dy[0]=0;
+    dx[1]=1;  dy[1]=1;
+    dx[2]=0;  dy[2]=1;
+    dx[3]=0-1; dy[3]=1;
+    dx[4]=0-1; dy[4]=0;
+    dx[5]=0-1; dy[5]=0-1;
+    dx[6]=0;  dy[6]=0-1;
+    dx[7]=1;  dy[7]=0-1;
+    var sx: i32 = 0-1;
+    var sy: i32 = 0-1;
+    var yy: i32 = 0;
+    while yy < 28 {
+        var xx: i32 = 0;
+        while xx < 28 {
+            if is_ink(img, xx, yy, thr) == 1 { sx = xx; sy = yy; xx = 28; yy = 28; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    if sx < 0 { return 0; }
+    cx[0] = sx as i64; cy[0] = sy as i64;
+    var clen: i32 = 1;
+    var curx: i32 = sx;
+    var cury: i32 = sy;
+    var b: i32 = 4;
+    var steps: i32 = 0;
+    while steps < max_len {
+        var found: i32 = 0 - 1;
+        var k: i32 = 0;
+        while k < 8 {
+            let dd: i32 = (b + 1 + k) % 8;
+            let nx: i32 = curx + dx[dd];
+            let ny: i32 = cury + dy[dd];
+            if is_ink(img, nx, ny, thr) == 1 { found = dd; k = 8; }
+            k = k + 1;
+        }
+        if found < 0 { return clen; }
+        let nxp: i32 = curx + dx[found];
+        let nyp: i32 = cury + dy[found];
+        if nxp == sx { if nyp == sy { return clen; } }
+        if clen < max_len {
+            cx[clen] = nxp as i64; cy[clen] = nyp as i64; clen = clen + 1;
+        } else { return clen; }
+        curx = nxp; cury = nyp;
+        b = (found + 4) % 8;
+        steps = steps + 1;
+    }
+    return clen;
+}
+
+// integer angular ordering (octant + cross-product, no trig)
+fn octant(dx: i64, dy: i64) -> i32 {
+    if dx > 0 { if dy >= 0 { if dx > dy { return 0; } return 1; } }
+    if dx <= 0 { if dy > 0 { if dy >= (0 - dx) { return 2; } return 3; } }
+    if dx < 0 { if dy <= 0 { if (0 - dx) > (0 - dy) { return 4; } return 5; } }
+    if (0 - dy) > dx { return 6; }
+    return 7;
+}
+fn angle_less(ax: i64, ay: i64, bx: i64, by: i64) -> i32 {
+    let oa: i32 = octant(ax, ay);
+    let ob: i32 = octant(bx, by);
+    if oa != ob { if oa < ob { return 1; } return 0; }
+    let cross: i64 = ax * by - ay * bx;
+    if cross > 0 { return 1; }
+    return 0;
+}
+fn radial_order(cx: *i64, cy: *i64, n: i32, ox: *i64, oy: *i64) {
+    var sx: i64 = 0;
+    var sy: i64 = 0;
+    var i: i32 = 0;
+    while i < n { sx = sx + cx[i]; sy = sy + cy[i]; i = i + 1; }
+    let mx: i64 = sx / (n as i64);
+    let my: i64 = sy / (n as i64);
+    i = 0;
+    while i < n { ox[i] = cx[i]; oy[i] = cy[i]; i = i + 1; }
+    i = 0;
+    while i < n {
+        var best: i32 = i;
+        var j: i32 = i + 1;
+        while j < n {
+            let bx: i64 = ox[best] - mx; let by: i64 = oy[best] - my;
+            let jx: i64 = ox[j] - mx;    let jy: i64 = oy[j] - my;
+            if angle_less(jx, jy, bx, by) == 1 { best = j; }
+            j = j + 1;
+        }
+        let tx: i64 = ox[i]; ox[i] = ox[best]; ox[best] = tx;
+        let ty: i64 = oy[i]; oy[i] = oy[best]; oy[best] = ty;
+        i = i + 1;
+    }
+}
+
+fn view_cuts(f: Field, view: *i64, n: i32, cert: *i64, work: *i64, starts: *i32) -> i32 {
+    let nseg: i32 = regime_prove_dyn(f, view, n, 1, cert, work);
+    var k: i32 = 0;
+    while k < nseg { starts[k] = cert[k * 3] as i32; k = k + 1; }
+    return nseg;
+}
+fn merge_cuts(ax: *i32, an: i32, bx: *i32, bn: i32, out: *i32) -> i32 {
+    var i: i32 = 0;
+    var j: i32 = 0;
+    var o: i32 = 0;
+    while i < an {
+        if j < bn {
+            if bx[j] < ax[i] {
+                if o == 0 { out[o] = bx[j]; o = o + 1; }
+                else { if out[o - 1] != bx[j] { out[o] = bx[j]; o = o + 1; } }
+                j = j + 1;
+            } else {
+                if o == 0 { out[o] = ax[i]; o = o + 1; }
+                else { if out[o - 1] != ax[i] { out[o] = ax[i]; o = o + 1; } }
+                if ax[i] == bx[j] { j = j + 1; }
+                i = i + 1;
+            }
+        } else {
+            if o == 0 { out[o] = ax[i]; o = o + 1; }
+            else { if out[o - 1] != ax[i] { out[o] = ax[i]; o = o + 1; } }
+            i = i + 1;
+        }
+    }
+    while j < bn {
+        if o == 0 { out[o] = bx[j]; o = o + 1; }
+        else { if out[o - 1] != bx[j] { out[o] = bx[j]; o = o + 1; } }
+        j = j + 1;
+    }
+    return o;
+}
+
+fn build_arcs(
+    X: *i64, Y: *i64, n: i32, starts: *i32, m: i32,
+    alen: *i32, sx: *i64, sy: *i64, ex: *i64, ey: *i64, turn: *i32
+) {
+    var k: i32 = 0;
+    while k < m {
+        let s: i32 = starts[k];
+        var e: i32 = n;
+        if k + 1 < m { e = starts[k + 1]; }
+        alen[k] = e - s;
+        sx[k] = X[s]; sy[k] = Y[s];
+        ex[k] = X[e - 1]; ey[k] = Y[e - 1];
+        k = k + 1;
+    }
+    k = 0;
+    while k < m {
+        let pk: i32 = (k + m - 1) % m;
+        let ps: i32 = starts[pk];
+        var pe: i32 = n;
+        if pk + 1 < m { pe = starts[pk + 1]; }
+        let s: i32 = starts[k];
+        var e: i32 = n;
+        if k + 1 < m { e = starts[k + 1]; }
+        var tc: i32 = 0;
+        if (pe - ps) >= 2 { if (e - s) >= 2 {
+                let aax: i64 = X[pe - 1] - X[pe - 2];
+                let aay: i64 = Y[pe - 1] - Y[pe - 2];
+                let bbx: i64 = X[s + 1] - X[s];
+                let bby: i64 = Y[s + 1] - Y[s];
+                let cross: i64 = aax * bby - aay * bbx;
+                if cross > 0 { tc = 1; }
+                if cross < 0 { tc = 0 - 1; }
+            } }
+        turn[k] = tc;
+        k = k + 1;
+    }
+}
+
+fn build_M_len(alen: *i32, m: i32, M: *i64) {
+    var i: i32 = 0;
+    while i < m {
+        var j: i32 = 0;
+        while j < m {
+            var v: i64 = 0;
+            if i != j { if alen[i] != alen[j] { v = 1; } }
+            M[i * m + j] = v;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+fn build_M_turn(turn: *i32, m: i32, M: *i64) {
+    var i: i32 = 0;
+    while i < m {
+        var j: i32 = 0;
+        while j < m {
+            var v: i64 = 0;
+            if i != j { if turn[i] != 0 { if turn[i] == turn[j] { v = 1; } } }
+            M[i * m + j] = v;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+fn ep_d2(sx: *i64, sy: *i64, ex: *i64, ey: *i64, i: i32, j: i32) -> i64 {
+    var best: i64 = 0 - 1;
+    var a: i32 = 0;
+    while a < 2 {
+        var b: i32 = 0;
+        while b < 2 {
+            var pax: i64 = sx[i]; var pay: i64 = sy[i];
+            if a == 1 { pax = ex[i]; pay = ey[i]; }
+            var pbx: i64 = sx[j]; var pby: i64 = sy[j];
+            if b == 1 { pbx = ex[j]; pby = ey[j]; }
+            let dx: i64 = pax - pbx; let dy: i64 = pay - pby;
+            let d2: i64 = dx * dx + dy * dy;
+            if best < 0 { best = d2; } else { if d2 < best { best = d2; } }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    return best;
+}
+fn build_M_adj(sx: *i64, sy: *i64, ex: *i64, ey: *i64, m: i32, M: *i64) {
+    var sum: i64 = 0;
+    var cnt: i32 = 0;
+    var i: i32 = 0;
+    while i < m {
+        var best: i64 = 0 - 1;
+        var j: i32 = 0;
+        while j < m {
+            if i != j {
+                let d2: i64 = ep_d2(sx, sy, ex, ey, i, j);
+                if best < 0 { best = d2; } else { if d2 < best { best = d2; } }
+            }
+            j = j + 1;
+        }
+        if best >= 0 { sum = sum + best; cnt = cnt + 1; }
+        i = i + 1;
+    }
+    var thr: i64 = 0;
+    if cnt > 0 { thr = sum / (cnt as i64); }
+    i = 0;
+    while i < m {
+        var j: i32 = 0;
+        while j < m {
+            var v: i64 = 0;
+            if i != j { if ep_d2(sx, sy, ex, ey, i, j) <= thr { v = 1; } }
+            M[i * m + j] = v;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// Build the 6-number radial-cut relational signature of one image into sig[0..5]:
+//   [len2, len3, turn2, turn3, adj2, adj3]. Also writes Level-1 nseg d1,d2 of x
+//   and y into l1[0..3] (baseline). Returns narcs (0 if no contour).
+fn signature(
+    f: Field, img: *u8, thr: i32,
+    cx: *i64, cy: *i64, ox: *i64, oy: *i64, vbuf: *i64,
+    cert: *i64, work: *i64,
+    sa: *i32, sb: *i32, su: *i32,
+    alen: *i32, asx: *i64, asy: *i64, aex: *i64, aey: *i64, aturn: *i32,
+    M: *i64, P: *i64, Q: *i64, sig: *i64, l1: *i64
+) -> i32 {
+    let n: i32 = trace_contour(img, thr, cx, cy, 400);
+    if n < 6 { return 0; }
+    // Level-1 baseline: nseg d1,d2 on x and y
+    var i: i32 = 0;
+    while i < n { vbuf[i] = cx[i]; i = i + 1; }
+    l1[0] = regime_prove_dyn(f, vbuf, n, 1, cert, work) as i64;
+    l1[1] = regime_prove_dyn(f, vbuf, n, 2, cert, work) as i64;
+    i = 0;
+    while i < n { vbuf[i] = cy[i]; i = i + 1; }
+    l1[2] = regime_prove_dyn(f, vbuf, n, 1, cert, work) as i64;
+    l1[3] = regime_prove_dyn(f, vbuf, n, 2, cert, work) as i64;
+    // radial-cut arcs (the discriminative view)
+    radial_order(cx, cy, n, ox, oy);
+    i = 0;
+    while i < n { vbuf[i] = ox[i]; i = i + 1; }
+    let an: i32 = view_cuts(f, vbuf, n, cert, work, sa);
+    i = 0;
+    while i < n { vbuf[i] = oy[i]; i = i + 1; }
+    let bn: i32 = view_cuts(f, vbuf, n, cert, work, sb);
+    let m: i32 = merge_cuts(sa, an, sb, bn, su);
+    if m < 1 { return 0; }
+    build_arcs(ox, oy, n, su, m, alen, asx, asy, aex, aey, aturn);
+    build_M_len(alen, m, M);
+    sig[0] = mat_trace_pow_dyn(f, M, m, 2, P, Q);
+    sig[1] = mat_trace_pow_dyn(f, M, m, 3, P, Q);
+    build_M_turn(aturn, m, M);
+    sig[2] = mat_trace_pow_dyn(f, M, m, 2, P, Q);
+    sig[3] = mat_trace_pow_dyn(f, M, m, 3, P, Q);
+    build_M_adj(asx, asy, aex, aey, m, M);
+    sig[4] = mat_trace_pow_dyn(f, M, m, 2, P, Q);
+    sig[5] = mat_trace_pow_dyn(f, M, m, 3, P, Q);
+    return m;
+}
+
+fn l1_dist(mean: *i64, a: i32, b: i32, nf: i32) -> i64 {
+    var dist: i64 = 0;
+    var j: i32 = 0;
+    while j < nf {
+        let d: i64 = mean[a * nf + j] - mean[b * nf + j];
+        if d < 0 { dist = dist - d; } else { dist = dist + d; }
+        j = j + 1;
+    }
+    return dist;
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 { wr(2, "usage: mnist_relational_census <data_dir>\n"); exit(1); }
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    wr(2, "Loading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "cannot open labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+    let n_test: i32 = read_be_i32(test_img, 4);
+
+    var n_proc: i32 = 2000;
+    if n_proc > n_test { n_proc = n_test; }
+    wr(2, "Relational radial-cut signatures on "); wr_int(2, n_proc as i64);
+    wr(2, " images (3 relations x tr M^2,M^3)...\n");
+
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let thr: i32 = 64;
+
+    // per-class accumulators: 6 relational features + 4 Level-1 features.
+    var counts: [i64; 10] = 0;
+    var rsums: [i64; 60] = 0;     // 10 classes x 6 relational features
+    var lsums: [i64; 40] = 0;     // 10 classes x 4 Level-1 features
+    var field_ok: i32 = 1;
+
+    let cap: i32 = 400;
+    let cx: *i64 = alloc(cap);
+    let cy: *i64 = alloc(cap);
+    let ox: *i64 = alloc(cap);
+    let oy: *i64 = alloc(cap);
+    let vbuf: *i64 = alloc(cap);
+    let cert: *i64 = alloc(cap * 3);
+    let work: *i64 = alloc(cap);
+    let sa: *i32 = alloc(cap);
+    let sb: *i32 = alloc(cap);
+    let su: *i32 = alloc(cap);
+    let mcap: i32 = 256;
+    let alen: *i32 = alloc(mcap);
+    let asx: *i64 = alloc(mcap);
+    let asy: *i64 = alloc(mcap);
+    let aex: *i64 = alloc(mcap);
+    let aey: *i64 = alloc(mcap);
+    let aturn: *i32 = alloc(mcap);
+    let M: *i64 = alloc(mcap * mcap);
+    let P: *i64 = alloc(mcap * mcap);
+    let Q: *i64 = alloc(mcap * mcap);
+    let sig: *i64 = alloc(6);
+    let sig_b: *i64 = alloc(6);
+    let l1: *i64 = alloc(4);
+    let l1_b: *i64 = alloc(4);
+
+    var i: i32 = 0;
+    while i < n_proc {
+        let label: i32 = test_lbl[8 + i] as i32;
+        let img: *u8 = &test_img[16 + i * 784];
+        let m: i32 = signature(gold, img, thr, cx, cy, ox, oy, vbuf, cert, work, sa, sb, su, alen, asx, asy, aex, aey, aturn, M, P, Q, sig, l1);
+        if m > 0 {
+            counts[label] = counts[label] + 1;
+            var j: i32 = 0;
+            while j < 6 { rsums[label * 6 + j] = rsums[label * 6 + j] + sig[j]; j = j + 1; }
+            j = 0;
+            while j < 4 { lsums[label * 4 + j] = lsums[label * 4 + j] + l1[j]; j = j + 1; }
+            if (i % 200) == 0 {
+                signature(baby, img, thr, cx, cy, ox, oy, vbuf, cert, work, sa, sb, su, alen, asx, asy, aex, aey, aturn, M, P, Q, sig_b, l1_b);
+                var k: i32 = 0;
+                while k < 6 { if sig[k] != sig_b[k] { field_ok = 0; } k = k + 1; }
+            }
+        }
+        if (i + 1) % 500 == 0 { wr(2, "  "); wr_int(2, (i + 1) as i64); wr(2, " / "); wr_int(2, n_proc as i64); wr(2, "\n"); }
+        i = i + 1;
+    }
+
+    // mean signatures (x100) per class
+    let rmean: *i64 = alloc(60);
+    let lmean: *i64 = alloc(40);
+    var cls: i32 = 0;
+    while cls < 10 {
+        var j: i32 = 0;
+        while j < 6 {
+            if counts[cls] > 0 { rmean[cls * 6 + j] = (rsums[cls * 6 + j] * 100) / counts[cls]; }
+            else { rmean[cls * 6 + j] = 0; }
+            j = j + 1;
+        }
+        j = 0;
+        while j < 4 {
+            if counts[cls] > 0 { lmean[cls * 4 + j] = (lsums[cls * 4 + j] * 100) / counts[cls]; }
+            else { lmean[cls * 4 + j] = 0; }
+            j = j + 1;
+        }
+        cls = cls + 1;
+    }
+
+    // ---- report relational mean signatures ----
+    wr(1, "=== MNIST Level-2 Relational Signature (radial-cut, mean x100) ===\n");
+    wr(1, "fields: Goldilocks/BabyBear   field-agreement: ");
+    if field_ok == 1 { wr(1, "OK\n"); } else { wr(1, "BROKEN\n"); }
+    wr(1, "cls    n  | len2 len3 | turn2 turn3 | adj2 adj3\n");
+    cls = 0;
+    while cls < 10 {
+        wr(1, "  "); wr_int(1, cls as i64);
+        wr_pad(1, counts[cls], 6); wr(1, " |");
+        wr_pad(1, rmean[cls * 6 + 0], 6); wr_pad(1, rmean[cls * 6 + 1], 6); wr(1, " |");
+        wr_pad(1, rmean[cls * 6 + 2], 7); wr_pad(1, rmean[cls * 6 + 3], 7); wr(1, " |");
+        wr_pad(1, rmean[cls * 6 + 4], 6); wr_pad(1, rmean[cls * 6 + 5], 6);
+        wr(1, "\n");
+        cls = cls + 1;
+    }
+
+    // ---- the verdict: 3-vs-5 distance and least-separated pair ----
+    // Level-1 baseline (4 features: x_d1,x_d2,y_d1,y_d2)
+    wr(1, "\n--- the Level-1 NEGATIVE under Level-2 relational features ---\n");
+    wr(1, "digit 3 vs 5: Level-1 L1="); wr_int(1, l1_dist(lmean, 3, 5, 4));
+    wr(1, "  relational L1="); wr_int(1, l1_dist(rmean, 3, 5, 6)); wr(1, "\n");
+
+    // least-separated pair under relational features
+    var min_dist: i64 = 1000000000;
+    var min_a: i32 = 0;
+    var min_b: i32 = 0;
+    var a: i32 = 0;
+    while a < 10 {
+        var bdig: i32 = a + 1;
+        while bdig < 10 {
+            let dist: i64 = l1_dist(rmean, a, bdig, 6);
+            if dist < min_dist { min_dist = dist; min_a = a; min_b = bdig; }
+            bdig = bdig + 1;
+        }
+        a = a + 1;
+    }
+    wr(1, "LEAST-SEPARATED PAIR (relational, the Level-2 negative): ");
+    wr_int(1, min_a as i64); wr(1, " vs "); wr_int(1, min_b as i64);
+    wr(1, "  L1="); wr_int(1, min_dist); wr(1, " (x100 units)\n");
+
+    // curvy clusters {2,3,5} and {6,7,8}: report intra-cluster relational spread
+    wr(1, "\n--- curvy-cluster relational distances (x100) ---\n");
+    wr(1, "  {2,3,5}: 2-3="); wr_int(1, l1_dist(rmean, 2, 3, 6));
+    wr(1, " 2-5="); wr_int(1, l1_dist(rmean, 2, 5, 6));
+    wr(1, " 3-5="); wr_int(1, l1_dist(rmean, 3, 5, 6)); wr(1, "\n");
+    wr(1, "  {6,7,8}: 6-7="); wr_int(1, l1_dist(rmean, 6, 7, 6));
+    wr(1, " 6-8="); wr_int(1, l1_dist(rmean, 6, 8, 6));
+    wr(1, " 7-8="); wr_int(1, l1_dist(rmean, 7, 8, 6)); wr(1, "\n");
+
+    free(test_img); free(test_lbl);
+    free(cx); free(cy); free(ox); free(oy); free(vbuf); free(cert); free(work);
+    free(sa); free(sb); free(su); free(alen); free(asx); free(asy); free(aex); free(aey); free(aturn);
+    free(M); free(P); free(Q); free(sig); free(sig_b); free(l1); free(l1_b); free(rmean); free(lmean);
+    return 0;
+}

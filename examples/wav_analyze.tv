@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wav_analyze.tv — Forward difference analysis of 16-bit PCM WAV files
+//
+// Reads a WAV file, deinterleaves stereo channels, applies forward
+// differences at orders 1-6, and reports the energy (max absolute
+// difference) at each order for each block. This tells us how much
+// polynomial structure the audio has.
+//
+// Usage: wav_analyze <file.wav>
+//
+// The output: per-order statistics showing what fraction of blocks
+// have small residuals at each difference order.
+
+type F = Field<65521>;
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        wr(fd, "-");
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    let d: i32 = (n % 10) as i32 + 48;
+    var buf: [u8; 2] = 0;
+    buf[0] = d as u8;
+    write(fd, &buf[0], 1);
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: wav_analyze <file.wav>\n");
+        exit(1);
+    }
+
+    let path: *u8 = argv[1];
+
+    // Open and read entire file into buffer
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 {
+        wr(2, "error: cannot open file\n");
+        exit(1);
+    }
+    let buf: *u8 = alloc(67108864);  // 64 MB max
+    let file_size: i64 = read_bytes(fd, buf, 67108864);
+    close(fd);
+
+    // Parse WAV header (44 bytes for standard PCM)
+    // Bytes 22-23: num channels (little-endian u16)
+    let num_channels: i32 = buf[22] as i32 + (buf[23] as i32) * 256;
+    // Bytes 24-27: sample rate (little-endian u32)
+    let sample_rate: i32 = buf[24] as i32 + (buf[25] as i32) * 256 + (buf[26] as i32) * 65536 + (buf[27] as i32) * 16777216;
+    // Bytes 34-35: bits per sample
+    let bits: i32 = buf[34] as i32 + (buf[35] as i32) * 256;
+
+    wr(2, "WAV: ");
+    wr_int(2, num_channels as i64);
+    wr(2, "ch ");
+    wr_int(2, sample_rate as i64);
+    wr(2, "Hz ");
+    wr_int(2, bits as i64);
+    wr(2, "bit ");
+    wr_int(2, file_size);
+    wr(2, " bytes\n");
+
+    if bits != 16 {
+        wr(2, "error: only 16-bit PCM supported\n");
+        exit(1);
+    }
+
+    // Find data chunk (skip to byte 44 for standard WAV)
+    let data_offset: i32 = 44;
+    let data_size: i32 = (file_size as i32) - data_offset;
+    let num_samples: i32 = data_size / 2;
+    let num_frames: i32 = num_samples / num_channels;
+
+    wr(2, "Frames: ");
+    wr_int(2, num_frames as i64);
+    wr(2, "  Duration: ");
+    wr_int(2, (num_frames / sample_rate) as i64);
+    wr(2, "s\n");
+
+    // Deinterleave channel 0 (left) into a signed 16-bit array
+    // We'll analyze just the left channel for speed
+    let samples: *i32 = alloc(num_frames);
+    var i: i32 = 0;
+    while i < num_frames {
+        let byte_off: i32 = data_offset + i * num_channels * 2;
+        // Little-endian signed 16-bit
+        let lo: i32 = buf[byte_off] as i32;
+        let hi: i32 = buf[byte_off + 1] as i32;
+        var val: i32 = lo + hi * 256;
+        if val >= 32768 { val = val - 65536; }  // sign extend
+        samples[i] = val;
+        i = i + 1;
+    }
+
+    // Forward difference analysis
+    // For each block of 4096 samples, compute differences at orders 1-6
+    // Report: max |diff| at each order, averaged across all blocks
+    let blksize: i32 = 4096;
+    let nblocks: i32 = num_frames / blksize;
+
+    wr(2, "Blocks: ");
+    wr_int(2, nblocks as i64);
+    wr(2, " x ");
+    wr_int(2, blksize as i64);
+    wr(2, " samples\n\n");
+
+    // For each order, count blocks where max|diff| fits in N bits
+    let work: *i32 = alloc(blksize);
+
+    var order: i32 = 1;
+    while order <= 6 {
+        var total_maxd: i64 = 0;
+        var blocks_under_128: i32 = 0;
+        var blocks_under_256: i32 = 0;
+        var blocks_under_1024: i32 = 0;
+        var blocks_under_4096: i32 = 0;
+
+        var blk: i32 = 0;
+        while blk < nblocks {
+            let base: i32 = blk * blksize;
+            // Copy block to work buffer
+            var j: i32 = 0;
+            while j < blksize {
+                work[j] = samples[base + j];
+                j = j + 1;
+            }
+            // Apply forward differences 'order' times
+            var sz: i32 = blksize;
+            var lev: i32 = 0;
+            while lev < order {
+                var k: i32 = 0;
+                while k < sz - 1 {
+                    work[k] = work[k + 1] - work[k];
+                    k = k + 1;
+                }
+                sz = sz - 1;
+                lev = lev + 1;
+            }
+            // Find max |diff| in this block
+            var maxd: i32 = 0;
+            j = 0;
+            while j < sz {
+                var v: i32 = work[j];
+                if v < 0 { v = 0 - v; }
+                if v > maxd { maxd = v; }
+                j = j + 1;
+            }
+            total_maxd = total_maxd + maxd as i64;
+            if maxd < 128 { blocks_under_128 = blocks_under_128 + 1; }
+            if maxd < 256 { blocks_under_256 = blocks_under_256 + 1; }
+            if maxd < 1024 { blocks_under_1024 = blocks_under_1024 + 1; }
+            if maxd < 4096 { blocks_under_4096 = blocks_under_4096 + 1; }
+
+            blk = blk + 1;
+        }
+
+        let avg_maxd: i64 = total_maxd / nblocks as i64;
+
+        wr(2, "Order ");
+        wr_int(2, order as i64);
+        wr(2, ": avg_max=");
+        wr_int(2, avg_maxd);
+        wr(2, "  <128: ");
+        wr_int(2, blocks_under_128 as i64);
+        wr(2, "/");
+        wr_int(2, nblocks as i64);
+        wr(2, "  <256: ");
+        wr_int(2, blocks_under_256 as i64);
+        wr(2, "  <1024: ");
+        wr_int(2, blocks_under_1024 as i64);
+        wr(2, "  <4096: ");
+        wr_int(2, blocks_under_4096 as i64);
+        wr(2, "\n");
+
+        order = order + 1;
+    }
+
+    // PCM size for reference
+    let pcm_size: i32 = num_frames * 2;
+    wr(2, "\nPCM (left channel): ");
+    wr_int(2, pcm_size as i64);
+    wr(2, " bytes\n");
+
+    // Theoretical: blocks fitting N bits after order-k diffs → N bits/sample;
+    // best case order 4 all <128 → 7 bits/sample → 43.75% of PCM (pre-entropy).
+
+    free(work);
+    free(samples);
+    free(buf);
+}

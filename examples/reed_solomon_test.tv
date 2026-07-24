@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// reed_solomon_test.tv — RS(8,4) erasure round-trip over GF(2^8): encode 4 data
+// symbols to 8, delete 4, recover via Lagrange; prints 1 per matching symbol.
+// @internal-design: ecc
+// Link: reed_solomon.o + reed_solomon_test.o (extern-based, seed-buildable).
+
+type GF = BinField<8, 0x11B>;
+
+extern "C" fn rs_encode(data: *GF, k: i32, code: *GF, n: i32);
+extern "C" fn rs_decode(have_idx: *i32, have_val: *GF, k: i32, out_data: *GF, scratch: *GF);
+
+fn main() -> i32 {
+    let k: i32 = 4;
+    let n: i32 = 8;
+
+    // Original data: 4 arbitrary GF(2^8) symbols.
+    let data: *GF = alloc(k);
+    data[0] = 0xDE; data[1] = 0xAD; data[2] = 0xBE; data[3] = 0xEF;
+
+    // Encode -> 8 code symbols.
+    let code: *GF = alloc(n);
+    rs_encode(data, k, code, n);
+
+    // Simulate erasure: keep only symbols at indices 1, 3, 4, 6 (delete 0,2,5,7).
+    // Any 4 of the 8 suffice; this picks a non-trivial scattered survivor set.
+    let have_idx: *i32 = alloc(k);
+    let have_val: *GF = alloc(k);
+    have_idx[0] = 1; have_val[0] = code[1];
+    have_idx[1] = 3; have_val[1] = code[3];
+    have_idx[2] = 4; have_val[2] = code[4];
+    have_idx[3] = 6; have_val[3] = code[6];
+
+    // Decode (recover the k data coefficients).
+    let out: *GF = alloc(k);
+    let scratch: *GF = alloc(k);
+    rs_decode(have_idx, have_val, k, out, scratch);
+
+    // Verify: each recovered coefficient matches the original. Prints 1,1,1,1.
+    var i: i32 = 0;
+    while i < k {
+        if out[i] == data[i] { print(1); } else { print(0); }
+        i = i + 1;
+    }
+
+    // Second scenario: a DIFFERENT survivor set (indices 0,1,2,3 — the first 4)
+    // must recover the same data. Prints 1,1,1,1.
+    have_idx[0] = 0; have_val[0] = code[0];
+    have_idx[1] = 1; have_val[1] = code[1];
+    have_idx[2] = 2; have_val[2] = code[2];
+    have_idx[3] = 3; have_val[3] = code[3];
+    rs_decode(have_idx, have_val, k, out, scratch);
+    i = 0;
+    while i < k {
+        if out[i] == data[i] { print(1); } else { print(0); }
+        i = i + 1;
+    }
+    return 0;
+}

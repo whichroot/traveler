@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// struct_reassign.tv — #51 gate: aggregate-var REASSIGNMENT.
+//
+// codegen_expr returns structs/enums BY POINTER (reference semantics), so
+// AST_ASSIGN used to emit `store %S %ptr` — storing the aggregate's ADDRESS as
+// its value (invalid IR; llc rejects). The INIT path (`var s: S = mk()`) binds
+// the alloca directly and was always fine, so only reassignment miscompiled.
+// The fix loads the value through the pointer before storing into the LHS slot.
+//
+// Covers the class: reassign a struct from a CALL, from another struct VAR, and
+// reassign an enum from a construct. tvc_self-only — the frozen C seed shares
+// the struct-var-call-reassign rough edge, so this does NOT route through dual
+// parity. See @internal-note: known-issues #51.
+
+struct S { x: i32, y: i32 }
+enum E { A(i32), B(i32) }
+
+fn mk(v: i32) -> S {
+    return S { x: v, y: v + 1 };
+}
+
+fn main() -> i32 {
+    // INIT from a call (already worked)
+    var s: S = mk(10);
+    print(s.x);   // 10
+    print(s.y);   // 11
+
+    // REASSIGN from a call (the #51 miscompile)
+    s = mk(20);
+    print(s.x);   // 20
+    print(s.y);   // 21
+
+    // REASSIGN from another aggregate var (same class: RHS is pointer-backed)
+    var t: S = mk(30);
+    s = t;
+    print(s.x);   // 30
+    print(s.y);   // 31
+
+    // REASSIGN an enum from a construct (the enum branch of the fix)
+    var e: E = E::A(1);
+    e = E::B(2);
+    match e {
+        E::A(v) => { print(100 + v); }
+        E::B(v) => { print(200 + v); }   // 202
+    }
+
+    return 0;
+}

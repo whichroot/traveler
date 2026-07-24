@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// assign_widen.tv — regression: implicit integer widening on plain ASSIGNMENT
+// (`c = expr`), not just `let`-binding; zext (u8->i32) and sext (i16->i32).
+// @internal-design: examples (assign_widen).
+
+#[export]
+fn main() -> i32 {
+    let b: *u8 = alloc(4);
+    b[0] = 200;                 // 200 > 127: exercises zext, not sext
+
+    let bind_u8: i32 = b[0];    // let-binding path (already worked)
+    print(bind_u8);             // 200
+
+    var asn_u8: i32 = 0;
+    asn_u8 = b[0];              // assignment path (the fix)
+    print(asn_u8);              // 200
+
+    let s: *i16 = alloc(8);
+    s[0] = 0 - 5;               // negative: exercises sext
+
+    var asn_i16: i32 = 0;
+    asn_i16 = s[0];            // signed widening on assignment
+    print(asn_i16);            // -5
+
+    return 0;
+}

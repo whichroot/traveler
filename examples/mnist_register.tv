@@ -1,0 +1,3617 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_register.tv — MNIST classification via Register<F, d> feature
+// extraction: the full experiment ladder (scans, scorers, cascade, k-NN).
+// @internal-design: genus (mnist_register — the experiment log)
+//
+// Two scan strategies, same scorer:
+//   A: Dual scan (28 rows + 28 columns = 56 sequences of length 28)
+//   B: Hilbert scan (784 pixels reordered by Hilbert curve, 56 windows of 14)
+//
+// Per window: forward_diff at order 3 → 4 Newton coefficients + 1 boundary count
+// Feature vector: 56 windows × 5 values = 280 features per strategy
+// Scorer: histogram discriminant (same as mnist_classify.tv)
+//
+// Usage: mnist_register <data_directory>
+// No floats. No GPU. No gradient descent. Register<F, d> is the feature extractor.
+
+type F = Field<257>;
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216
+    + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256
+    + (buf[off + 3] as i32);
+}
+
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+
+// ============================================================
+//  HILBERT CURVE: 2D -> 1D mapping for 32x32 grid
+// ============================================================
+
+// Convert Hilbert curve index d to (x,y) coordinates for an n×n grid.
+// Uses iterative algorithm (no pointer dereference needed).
+fn hilbert_d2xy_x(n: i32, d: i32) -> i32 {
+    var rx: i32 = 0;
+    var ry: i32 = 0;
+    var s: i32 = 1;
+    var td: i32 = d;
+    var x: i32 = 0;
+    var y: i32 = 0;
+    while s < n {
+        rx = (td / 2) & 1;
+        ry = (td ^ rx) & 1;
+        // Rotate
+        if ry == 0 {
+            if rx == 1 { x = s - 1 - x; y = s - 1 - y; }
+            let tmp: i32 = x; x = y; y = tmp;
+        }
+        x = x + s * rx;
+        y = y + s * ry;
+        td = td / 4;
+        s = s * 2;
+    }
+    return x;
+}
+
+fn hilbert_d2xy_y(n: i32, d: i32) -> i32 {
+    var rx: i32 = 0;
+    var ry: i32 = 0;
+    var s: i32 = 1;
+    var td: i32 = d;
+    var x: i32 = 0;
+    var y: i32 = 0;
+    while s < n {
+        rx = (td / 2) & 1;
+        ry = (td ^ rx) & 1;
+        if ry == 0 {
+            if rx == 1 { x = s - 1 - x; y = s - 1 - y; }
+            let tmp: i32 = x; x = y; y = tmp;
+        }
+        x = x + s * rx;
+        y = y + s * ry;
+        td = td / 4;
+        s = s * 2;
+    }
+    return y;
+}
+
+// Build Hilbert scan order for 28x28 embedded in 32x32.
+// Returns number of valid pixels (should be 784).
+fn build_hilbert_order(order: *i32) -> i32 {
+    var count: i32 = 0;
+    var d: i32 = 0;
+    while d < 1024 {
+        let hx: i32 = hilbert_d2xy_x(32, d);
+        let hy: i32 = hilbert_d2xy_y(32, d);
+        if hx < 28 && hy < 28 {
+            order[count] = hy * 28 + hx;
+            count = count + 1;
+        }
+        d = d + 1;
+    }
+    return count;
+}
+
+// ============================================================
+//  FORWARD DIFFERENCE: extract Newton coefficients at fixed order
+// ============================================================
+
+// Compute forward differences at order 3 (4 coefficients) for a window
+// of 'n' field elements (i32 values, arithmetic mod 257).
+// Writes 4 coefficients to 'coeffs'.
+fn forward_diff_order3(data: *i32, n: i32, coeffs: *i32) {
+    // Newton forward differences: work array approach
+    // coeffs[k] = Δ^k data[0]
+    let p: i32 = 257;
+    var work: [i32; 32] = 0;
+    var i: i32 = 0;
+    let lim: i32 = n;
+    while i < lim {
+        work[i] = data[i] % p;
+        i = i + 1;
+    }
+    // Extract differences
+    var k: i32 = 0;
+    while k < 4 && k < n {
+        coeffs[k] = work[0];
+        // Update work: work[i] = work[i+1] - work[i]
+        var j: i32 = 0;
+        while j < n - 1 - k {
+            work[j] = ((work[j + 1] - work[j]) % p + p) % p;
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+}
+
+// ============================================================
+//  REGIME DETECTION: count boundaries via register prediction
+// ============================================================
+
+// Count regime boundaries in a window of 'n' field elements at order 1.
+// A boundary is where |predicted - actual| > threshold.
+fn count_boundaries(data: *i32, n: i32, threshold: i32) -> i32 {
+    let p: i32 = 257;
+    if n < 2 { return 0; }
+    var r0: i32 = data[0] % p;
+    var r1: i32 = ((data[1] - data[0]) % p + p) % p;
+    var count: i32 = 0;
+    var i: i32 = 1;
+    while i < n {
+        // Advance register
+        let predicted: i32 = r0;
+        r0 = (r0 + r1) % p;
+        let actual: i32 = data[i] % p;
+        // Residual
+        var diff: i32 = actual - predicted;
+        if diff < 0 { diff = 0 - diff; }
+        if diff > p / 2 { diff = p - diff; }
+        if diff > threshold {
+            count = count + 1;
+            // Re-initialize from current data
+            if i + 1 < n {
+                r0 = data[i] % p;
+                r1 = ((data[i + 1] - data[i]) % p + p) % p;
+            }
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+// ============================================================
+//  FEATURE EXTRACTION
+// ============================================================
+
+// Extract 280 features via dual scan (28 rows + 28 columns).
+// Per scan: 4 Newton coefficients at order 3 + 1 boundary count = 5 values.
+// 56 scans × 5 = 280 features.
+fn extract_dual_features(pixels: *u8, features: *i32) {
+    var window: [i32; 28] = 0;
+    var coeffs: [i32; 4] = 0;
+    var fi: i32 = 0;
+
+    // 28 row scans
+    var row: i32 = 0;
+    while row < 28 {
+        var c: i32 = 0;
+        while c < 28 {
+            window[c] = pixels[row * 28 + c] as i32;
+            c = c + 1;
+        }
+        forward_diff_order3(&window[0], 28, &coeffs[0]);
+        features[fi] = coeffs[0]; fi = fi + 1;
+        features[fi] = coeffs[1]; fi = fi + 1;
+        features[fi] = coeffs[2]; fi = fi + 1;
+        features[fi] = coeffs[3]; fi = fi + 1;
+        features[fi] = count_boundaries(&window[0], 28, 20);
+        fi = fi + 1;
+        row = row + 1;
+    }
+
+    // 28 column scans
+    var col: i32 = 0;
+    while col < 28 {
+        var r: i32 = 0;
+        while r < 28 {
+            window[r] = pixels[r * 28 + col] as i32;
+            r = r + 1;
+        }
+        forward_diff_order3(&window[0], 28, &coeffs[0]);
+        features[fi] = coeffs[0]; fi = fi + 1;
+        features[fi] = coeffs[1]; fi = fi + 1;
+        features[fi] = coeffs[2]; fi = fi + 1;
+        features[fi] = coeffs[3]; fi = fi + 1;
+        features[fi] = count_boundaries(&window[0], 28, 20);
+        fi = fi + 1;
+        col = col + 1;
+    }
+}
+
+// Extract 280 features via Hilbert scan (56 windows of 14 pixels).
+// Same per-window feature extraction as dual scan.
+fn extract_hilbert_features(pixels: *u8, hilbert_order: *i32, features: *i32) {
+    var window: [i32; 14] = 0;
+    var coeffs: [i32; 4] = 0;
+    var fi: i32 = 0;
+
+    var wi: i32 = 0;
+    while wi < 56 {
+        // Fill window from Hilbert-ordered pixels
+        var j: i32 = 0;
+        while j < 14 {
+            let px_idx: i32 = hilbert_order[wi * 14 + j];
+            window[j] = pixels[px_idx] as i32;
+            j = j + 1;
+        }
+        forward_diff_order3(&window[0], 14, &coeffs[0]);
+        features[fi] = coeffs[0]; fi = fi + 1;
+        features[fi] = coeffs[1]; fi = fi + 1;
+        features[fi] = coeffs[2]; fi = fi + 1;
+        features[fi] = coeffs[3]; fi = fi + 1;
+        features[fi] = count_boundaries(&window[0], 14, 20);
+        fi = fi + 1;
+        wi = wi + 1;
+    }
+}
+
+// ============================================================
+//  ADAPTIVE ORDER: find best polynomial order per window
+// ============================================================
+
+// Try orders 1-4, return the lowest order where total absolute residual < threshold.
+// Writes coefficients for the selected order to 'coeffs'. Returns the order.
+fn forward_diff_best_order(data: *i32, n: i32, coeffs: *i32, threshold: i32) -> i32 {
+    let p: i32 = 257;
+    var best_order: i32 = 4;
+    var ord: i32 = 1;
+    while ord <= 4 {
+        // Compute forward differences at this order
+        var work: [i32; 32] = 0;
+        var i: i32 = 0;
+        while i < n { work[i] = data[i] % p; i = i + 1; }
+        var tmp_coeffs: [i32; 5] = 0;
+        var k: i32 = 0;
+        while k <= ord && k < n {
+            tmp_coeffs[k] = work[0];
+            var j: i32 = 0;
+            while j < n - 1 - k {
+                work[j] = ((work[j + 1] - work[j]) % p + p) % p;
+                j = j + 1;
+            }
+            k = k + 1;
+        }
+        // Forward sum with these coefficients, compute total residual
+        var r: [i32; 5] = 0;
+        k = 0;
+        while k <= ord { r[k] = tmp_coeffs[k]; k = k + 1; }
+        var total_res: i32 = 0;
+        i = 0;
+        while i < n {
+            let predicted: i32 = r[0];
+            let actual: i32 = data[i] % p;
+            var diff: i32 = ((actual - predicted) % p + p) % p;
+            if diff > p / 2 { diff = p - diff; }
+            total_res = total_res + diff;
+            // Advance register
+            k = 0;
+            while k < ord { r[k] = (r[k] + r[k + 1]) % p; k = k + 1; }
+            i = i + 1;
+        }
+        if total_res < threshold {
+            best_order = ord;
+            k = 0;
+            while k <= ord { coeffs[k] = tmp_coeffs[k]; k = k + 1; }
+            // Zero remaining
+            while k < 4 { coeffs[k] = 0; k = k + 1; }
+            return best_order;
+        }
+        ord = ord + 1;
+    }
+    // No order fit well -- use order 4 coefficients
+    var work2: [i32; 32] = 0;
+    var i: i32 = 0;
+    while i < n { work2[i] = data[i] % p; i = i + 1; }
+    var k: i32 = 0;
+    while k < 4 && k < n {
+        coeffs[k] = work2[0];
+        var j: i32 = 0;
+        while j < n - 1 - k {
+            work2[j] = ((work2[j + 1] - work2[j]) % p + p) % p;
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+    return best_order;
+}
+
+// Extract Hilbert features with adaptive order selection.
+// Writes 56 windows × 5 features (4 coefficients + boundary count) to 'features'.
+// Writes the selected order per window to 'orders' (56 values).
+fn extract_hilbert_adaptive(pixels: *u8, hilbert_order: *i32, features: *i32, orders: *i32) {
+    var window: [i32; 14] = 0;
+    var coeffs: [i32; 4] = 0;
+    var fi: i32 = 0;
+
+    var wi: i32 = 0;
+    while wi < 56 {
+        var j: i32 = 0;
+        while j < 14 {
+            let px_idx: i32 = hilbert_order[wi * 14 + j];
+            window[j] = pixels[px_idx] as i32;
+            j = j + 1;
+        }
+        let ord: i32 = forward_diff_best_order(&window[0], 14, &coeffs[0], 140);
+        orders[wi] = ord;
+        features[fi] = coeffs[0]; fi = fi + 1;
+        features[fi] = coeffs[1]; fi = fi + 1;
+        features[fi] = coeffs[2]; fi = fi + 1;
+        features[fi] = coeffs[3]; fi = fi + 1;
+        features[fi] = count_boundaries(&window[0], 14, 20);
+        fi = fi + 1;
+        wi = wi + 1;
+    }
+}
+
+// ============================================================
+//  HISTOGRAM FEATURES (from mnist_classify.tv)
+// ============================================================
+
+// Extract 84 histogram features: 28 grid density + 28 row sums + 28 column sums.
+// Pixels are binarized: > 128 counts as ON. Values in {0, ..., 28}.
+fn extract_hist_features(pixels: *u8, features: *i32) {
+    // Grid features: 4x7 blocks of 7x4 pixels
+    var rb: i32 = 0;
+    while rb < 4 {
+        var cb: i32 = 0;
+        while cb < 7 {
+            var count: i32 = 0;
+            var r: i32 = 0;
+            while r < 7 {
+                var c: i32 = 0;
+                while c < 4 {
+                    let px: i32 = pixels[(rb * 7 + r) * 28 + cb * 4 + c] as i32;
+                    if px > 128 { count = count + 1; }
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            features[rb * 7 + cb] = count;
+            cb = cb + 1;
+        }
+        rb = rb + 1;
+    }
+    // Row sums
+    var row: i32 = 0;
+    while row < 28 {
+        var sum: i32 = 0;
+        var col: i32 = 0;
+        while col < 28 {
+            if pixels[row * 28 + col] as i32 > 128 { sum = sum + 1; }
+            col = col + 1;
+        }
+        features[28 + row] = sum;
+        row = row + 1;
+    }
+    // Column sums
+    var col2: i32 = 0;
+    while col2 < 28 {
+        var sum2: i32 = 0;
+        var row2: i32 = 0;
+        while row2 < 28 {
+            if pixels[row2 * 28 + col2] as i32 > 128 { sum2 = sum2 + 1; }
+            row2 = row2 + 1;
+        }
+        features[56 + col2] = sum2;
+        col2 = col2 + 1;
+    }
+}
+
+// Extract hybrid features: 280 Hilbert polynomial + 84 histogram = 364.
+fn extract_hybrid_features(pixels: *u8, hilbert_order: *i32, features: *i32) {
+    // First 280: Hilbert polynomial features
+    extract_hilbert_features(pixels, hilbert_order, features);
+    // Next 84: histogram features
+    extract_hist_features(pixels, &features[280]);
+}
+
+// ============================================================
+//  VIA NEGATIVA: extract error features from register prediction
+// ============================================================
+
+// For each Hilbert window: run a degree-3 register through the data,
+// collect prediction errors, extract 7 features from the error sequence:
+//   error_sum, error_max, error_var, error_poly[0..2], error_boundaries
+// 56 windows x 7 = 392 features.
+fn extract_hilbert_errors(pixels: *u8, hilbert_order: *i32, features: *i32) {
+    let p: i32 = 257;
+    var window: [i32; 14] = 0;
+    var coeffs: [i32; 4] = 0;
+    var errors: [i32; 14] = 0;
+    var error_coeffs: [i32; 4] = 0;
+    var fi: i32 = 0;
+
+    var wi: i32 = 0;
+    while wi < 56 {
+        // Fill window from Hilbert-ordered pixels
+        var j: i32 = 0;
+        while j < 14 {
+            let px_idx: i32 = hilbert_order[wi * 14 + j];
+            window[j] = pixels[px_idx] as i32;
+            j = j + 1;
+        }
+
+        // Compute order-3 Newton coefficients
+        forward_diff_order3(&window[0], 14, &coeffs[0]);
+
+        // Init register from coeffs, advance, collect abs_centered errors.
+        // Via negativa: the error sequence IS the feature (@internal-design: genus).
+        var r0: i32 = coeffs[0];
+        var r1: i32 = coeffs[1];
+        var r2: i32 = coeffs[2];
+        var r3: i32 = coeffs[3];
+
+        var error_sum: i32 = 0;
+        var error_max: i32 = 0;
+        var error_sq_sum: i64 = 0;
+
+        j = 0;
+        while j < 14 {
+            let predicted: i32 = r0;
+            let actual: i32 = window[j] % p;
+            var diff: i32 = ((actual - predicted) % p + p) % p;
+            if diff > p / 2 { diff = p - diff; }
+            errors[j] = diff;
+
+            error_sum = error_sum + diff;
+            if diff > error_max { error_max = diff; }
+            error_sq_sum = error_sq_sum + (diff as i64) * (diff as i64);
+
+            // Advance register (order 3)
+            r0 = (r0 + r1) % p;
+            r1 = (r1 + r2) % p;
+            r2 = (r2 + r3) % p;
+
+            j = j + 1;
+        }
+
+        // Error variance: mean(error^2) - mean(error)^2
+        let mean_err: i32 = error_sum / 14;
+        let mean_sq: i64 = error_sq_sum / 14;
+        var variance: i32 = (mean_sq - (mean_err as i64) * (mean_err as i64)) as i32;
+        if variance < 0 { variance = 0; }
+
+        // Forward diff on error sequence: polynomial structure of the failure
+        forward_diff_order3(&errors[0], 14, &error_coeffs[0]);
+
+        // Boundary count on error sequence (threshold 10)
+        let error_boundaries: i32 = count_boundaries(&errors[0], 14, 10);
+
+        // Write 7 features for this window (normalized to ~[0,256] range)
+        // error_sum: [0,1792] -> /7 -> [0,256]
+        // error_max: [0,128] -> *2 -> [0,256]
+        // variance: [0,16384] -> /64 -> [0,256]
+        // error_poly: already mod 257
+        // error_boundaries: [0,13] -> *20 -> [0,260]
+        features[fi] = error_sum / 7; fi = fi + 1;
+        features[fi] = error_max * 2; fi = fi + 1;
+        features[fi] = variance / 64; fi = fi + 1;
+        features[fi] = error_coeffs[0]; fi = fi + 1;
+        features[fi] = error_coeffs[1]; fi = fi + 1;
+        features[fi] = error_coeffs[2]; fi = fi + 1;
+        features[fi] = error_boundaries * 20; fi = fi + 1;
+
+        wi = wi + 1;
+    }
+}
+
+// ============================================================
+//  REGIME ANALYSIS: full-sequence Hilbert scan with regime detection
+// ============================================================
+
+// Walk all 784 Hilbert-ordered pixels with a degree-3 Register.
+// At each regime boundary (error > threshold), re-initialize from current data.
+// Each regime boundary = a new polynomial function.
+//
+// Output: 127 features:
+//   [0..2]:   n_regimes (scaled), mean_regime_len, regime_len_var
+//   [3..7]:   order_histogram (count of regimes at order 0,1,2,3,4) (scaled *10)
+//   [8..10]:  mean_error, max_error, error_var (all normalized to ~[0,256])
+//   [11..38]: boundary_density (28 spatial bins, boundaries per bin, scaled *40)
+//   [39..66]: error_profile (28 spatial bins, mean error per bin, scaled *2)
+//   [67..126]: per-regime coefficients (first 12 regimes × 5: order*64 + 4 coeffs)
+fn extract_regime_features(pixels: *u8, hilbert_order: *i32, features: *i32) {
+    let p: i32 = 257;
+    let threshold: i32 = 20;
+    let max_regimes: i32 = 12;
+
+    // Working arrays
+    var seq: [i32; 784] = 0;   // Hilbert-ordered pixel sequence
+    var regime_starts: [i32; 64] = 0;
+    var regime_orders: [i32; 64] = 0;
+    var regime_coeffs: [i32; 256] = 0;  // 64 regimes × 4 coefficients
+    var boundary_bins: [i32; 28] = 0;
+    var error_bins_sum: [i32; 28] = 0;
+    var error_bins_count: [i32; 28] = 0;
+
+    // Build Hilbert-ordered pixel sequence
+    var i: i32 = 0;
+    while i < 784 {
+        seq[i] = pixels[hilbert_order[i]] as i32;
+        i = i + 1;
+    }
+
+    // Initialize register from first 4 pixels
+    var coeffs: [i32; 4] = 0;
+    forward_diff_order3(&seq[0], 14, &coeffs[0]);
+    var r0: i32 = coeffs[0];
+    var r1: i32 = coeffs[1];
+    var r2: i32 = coeffs[2];
+    var r3: i32 = coeffs[3];
+
+    var n_regimes: i32 = 1;
+    regime_starts[0] = 0;
+    regime_orders[0] = 3;
+    regime_coeffs[0] = coeffs[0];
+    regime_coeffs[1] = coeffs[1];
+    regime_coeffs[2] = coeffs[2];
+    regime_coeffs[3] = coeffs[3];
+
+    // Error accumulators
+    var total_error: i64 = 0;
+    var max_error: i32 = 0;
+    var error_sq_sum: i64 = 0;
+    var n_errors: i32 = 0;
+
+    // Walk the full sequence
+    i = 0;
+    while i < 784 {
+        let predicted: i32 = r0;
+        let actual: i32 = seq[i] % p;
+        var diff: i32 = ((actual - predicted) % p + p) % p;
+        if diff > p / 2 { diff = p - diff; }
+
+        // Accumulate error stats
+        total_error = total_error + diff as i64;
+        if diff > max_error { max_error = diff; }
+        error_sq_sum = error_sq_sum + (diff as i64) * (diff as i64);
+        n_errors = n_errors + 1;
+
+        // Error profile: which spatial bin
+        let bin: i32 = i / 28;
+        if bin < 28 {
+            error_bins_sum[bin] = error_bins_sum[bin] + diff;
+            error_bins_count[bin] = error_bins_count[bin] + 1;
+        }
+
+        // Regime boundary check (skip first 4 pixels of each regime)
+        let regime_start: i32 = regime_starts[n_regimes - 1];
+        if i - regime_start >= 4 && diff > threshold && n_regimes < 64 {
+            // Record boundary
+            if bin < 28 {
+                boundary_bins[bin] = boundary_bins[bin] + 1;
+            }
+
+            // Detect order of the completed regime: check c3, c2 for near-zero
+            let ri: i32 = (n_regimes - 1) * 4;
+            var c3_abs: i32 = regime_coeffs[ri + 3];
+            if c3_abs > p / 2 { c3_abs = p - c3_abs; }
+            var c2_abs: i32 = regime_coeffs[ri + 2];
+            if c2_abs > p / 2 { c2_abs = p - c2_abs; }
+            if c3_abs < 3 && c2_abs < 3 {
+                regime_orders[n_regimes - 1] = 1;
+            } else {
+                if c3_abs < 3 {
+                    regime_orders[n_regimes - 1] = 2;
+                }
+            }
+
+            // Re-initialize register from current position
+            let remain: i32 = 784 - i;
+            if remain >= 4 {
+                forward_diff_order3(&seq[i], 14, &coeffs[0]);
+                if remain < 14 {
+                    forward_diff_order3(&seq[i], remain, &coeffs[0]);
+                }
+                r0 = coeffs[0];
+                r1 = coeffs[1];
+                r2 = coeffs[2];
+                r3 = coeffs[3];
+            } else {
+                if remain >= 2 {
+                    r0 = seq[i] % p;
+                    r1 = ((seq[i + 1] - seq[i]) % p + p) % p;
+                    r2 = 0; r3 = 0;
+                } else {
+                    r0 = seq[i] % p;
+                    r1 = 0; r2 = 0; r3 = 0;
+                }
+                coeffs[0] = r0; coeffs[1] = r1; coeffs[2] = r2; coeffs[3] = r3;
+            }
+
+            // Start new regime
+            regime_starts[n_regimes] = i;
+            regime_orders[n_regimes] = 3;
+            regime_coeffs[n_regimes * 4] = coeffs[0];
+            regime_coeffs[n_regimes * 4 + 1] = coeffs[1];
+            regime_coeffs[n_regimes * 4 + 2] = coeffs[2];
+            regime_coeffs[n_regimes * 4 + 3] = coeffs[3];
+            n_regimes = n_regimes + 1;
+        } else {
+            // Advance register
+            r0 = (r0 + r1) % p;
+            r1 = (r1 + r2) % p;
+            r2 = (r2 + r3) % p;
+        }
+
+        i = i + 1;
+    }
+
+    // === Build feature vector (127 values) ===
+    var fi: i32 = 0;
+
+    // [0..2]: Summary statistics (normalized to ~[0,256])
+    features[fi] = n_regimes * 8; fi = fi + 1;   // n_regimes: typically 5-30, *8 -> [40,240]
+    let mean_len: i32 = 784 / (n_regimes + 1);
+    features[fi] = mean_len; fi = fi + 1;          // mean_regime_len: ~26-156
+    // Regime length variance
+    var len_var_sum: i64 = 0;
+    var ri: i32 = 0;
+    while ri < n_regimes {
+        let rstart: i32 = regime_starts[ri];
+        var rend: i32 = 784;
+        if ri + 1 < n_regimes { rend = regime_starts[ri + 1]; }
+        let rlen: i32 = rend - rstart;
+        let dlen: i64 = (rlen - mean_len) as i64;
+        len_var_sum = len_var_sum + dlen * dlen;
+        ri = ri + 1;
+    }
+    let len_var: i32 = (len_var_sum / (n_regimes as i64 + 1)) as i32;
+    features[fi] = len_var / 8; fi = fi + 1;       // normalized
+
+    // [3..7]: Order histogram (scaled *10)
+    var oh: [i32; 5] = 0;
+    ri = 0;
+    while ri < n_regimes {
+        let ord: i32 = regime_orders[ri];
+        if ord >= 0 && ord < 5 { oh[ord] = oh[ord] + 1; }
+        ri = ri + 1;
+    }
+    var oi: i32 = 0;
+    while oi < 5 { features[fi] = oh[oi] * 10; fi = fi + 1; oi = oi + 1; }
+
+    // [8..10]: Error summary (normalized)
+    let mean_err: i32 = (total_error / 784) as i32;
+    features[fi] = mean_err * 2; fi = fi + 1;       // mean_error: ~[0,128] -> *2
+    features[fi] = max_error * 2; fi = fi + 1;       // max_error: ~[0,128] -> *2
+    let err_var: i64 = error_sq_sum / 784 - (mean_err as i64) * (mean_err as i64);
+    var ev: i32 = err_var as i32;
+    if ev < 0 { ev = 0; }
+    features[fi] = ev / 4; fi = fi + 1;              // normalized
+
+    // [11..38]: Boundary density (28 spatial bins, scaled *40)
+    var bi: i32 = 0;
+    while bi < 28 {
+        features[fi] = boundary_bins[bi] * 40; fi = fi + 1;
+        bi = bi + 1;
+    }
+
+    // [39..66]: Error profile (28 spatial bins, mean error per bin, scaled *2)
+    bi = 0;
+    while bi < 28 {
+        if error_bins_count[bi] > 0 {
+            features[fi] = (error_bins_sum[bi] / error_bins_count[bi]) * 2;
+        } else {
+            features[fi] = 0;
+        }
+        fi = fi + 1;
+        bi = bi + 1;
+    }
+
+    // [67..126]: Per-regime coefficients (first 12 regimes × 5 values)
+    // For each regime: [order*64, c0, c1, c2, c3]
+    ri = 0;
+    while ri < max_regimes {
+        if ri < n_regimes {
+            features[fi] = regime_orders[ri] * 64; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4]; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4 + 1]; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4 + 2]; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4 + 3]; fi = fi + 1;
+        } else {
+            // Zero-pad unused regime slots
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+        }
+        ri = ri + 1;
+    }
+}
+
+// ============================================================
+//  MAIN
+// ============================================================
+//  HORIZONTAL REGIME: same algorithm, row-major pixel order
+// ============================================================
+
+// Identical to extract_regime_features but traverses pixels in row-major order
+// (left-to-right, top-to-bottom) instead of Hilbert order.
+// This gives a different 1D projection of the 2D feature space.
+fn extract_regime_features_horiz(pixels: *u8, features: *i32) {
+    let p: i32 = 257;
+    let threshold: i32 = 20;
+    let max_regimes: i32 = 12;
+
+    var seq: [i32; 784] = 0;
+    var regime_starts: [i32; 64] = 0;
+    var regime_orders: [i32; 64] = 0;
+    var regime_coeffs: [i32; 256] = 0;
+    var boundary_bins: [i32; 28] = 0;
+    var error_bins_sum: [i32; 28] = 0;
+    var error_bins_count: [i32; 28] = 0;
+
+    // Row-major order: pixels are already stored this way in MNIST
+    var i: i32 = 0;
+    while i < 784 {
+        seq[i] = pixels[i] as i32;
+        i = i + 1;
+    }
+
+    var coeffs: [i32; 4] = 0;
+    forward_diff_order3(&seq[0], 14, &coeffs[0]);
+    var r0: i32 = coeffs[0];
+    var r1: i32 = coeffs[1];
+    var r2: i32 = coeffs[2];
+    var r3: i32 = coeffs[3];
+
+    var n_regimes: i32 = 1;
+    regime_starts[0] = 0;
+    regime_orders[0] = 3;
+    regime_coeffs[0] = coeffs[0];
+    regime_coeffs[1] = coeffs[1];
+    regime_coeffs[2] = coeffs[2];
+    regime_coeffs[3] = coeffs[3];
+
+    var total_error: i64 = 0;
+    var max_error: i32 = 0;
+    var error_sq_sum: i64 = 0;
+    var n_errors: i32 = 0;
+
+    i = 0;
+    while i < 784 {
+        let predicted: i32 = r0;
+        let actual: i32 = seq[i] % p;
+        var diff: i32 = ((actual - predicted) % p + p) % p;
+        if diff > p / 2 { diff = p - diff; }
+
+        total_error = total_error + diff as i64;
+        if diff > max_error { max_error = diff; }
+        error_sq_sum = error_sq_sum + (diff as i64) * (diff as i64);
+        n_errors = n_errors + 1;
+
+        let bin: i32 = i / 28;
+        if bin < 28 {
+            error_bins_sum[bin] = error_bins_sum[bin] + diff;
+            error_bins_count[bin] = error_bins_count[bin] + 1;
+        }
+
+        let regime_start: i32 = regime_starts[n_regimes - 1];
+        if i - regime_start >= 4 && diff > threshold && n_regimes < 64 {
+            if bin < 28 {
+                boundary_bins[bin] = boundary_bins[bin] + 1;
+            }
+
+            let ri: i32 = (n_regimes - 1) * 4;
+            var c3_abs: i32 = regime_coeffs[ri + 3];
+            if c3_abs > p / 2 { c3_abs = p - c3_abs; }
+            var c2_abs: i32 = regime_coeffs[ri + 2];
+            if c2_abs > p / 2 { c2_abs = p - c2_abs; }
+            if c3_abs < 3 && c2_abs < 3 {
+                regime_orders[n_regimes - 1] = 1;
+            } else {
+                if c3_abs < 3 {
+                    regime_orders[n_regimes - 1] = 2;
+                }
+            }
+
+            let remain: i32 = 784 - i;
+            if remain >= 4 {
+                forward_diff_order3(&seq[i], 14, &coeffs[0]);
+                if remain < 14 {
+                    forward_diff_order3(&seq[i], remain, &coeffs[0]);
+                }
+                r0 = coeffs[0]; r1 = coeffs[1]; r2 = coeffs[2]; r3 = coeffs[3];
+            } else {
+                if remain >= 2 {
+                    r0 = seq[i] % p;
+                    r1 = ((seq[i + 1] - seq[i]) % p + p) % p;
+                    r2 = 0; r3 = 0;
+                } else {
+                    r0 = seq[i] % p; r1 = 0; r2 = 0; r3 = 0;
+                }
+                coeffs[0] = r0; coeffs[1] = r1; coeffs[2] = r2; coeffs[3] = r3;
+            }
+
+            regime_starts[n_regimes] = i;
+            regime_orders[n_regimes] = 3;
+            regime_coeffs[n_regimes * 4] = coeffs[0];
+            regime_coeffs[n_regimes * 4 + 1] = coeffs[1];
+            regime_coeffs[n_regimes * 4 + 2] = coeffs[2];
+            regime_coeffs[n_regimes * 4 + 3] = coeffs[3];
+            n_regimes = n_regimes + 1;
+        } else {
+            r0 = (r0 + r1) % p;
+            r1 = (r1 + r2) % p;
+            r2 = (r2 + r3) % p;
+        }
+
+        i = i + 1;
+    }
+
+    // Build feature vector — same layout as extract_regime_features
+    var fi: i32 = 0;
+
+    features[fi] = n_regimes * 8; fi = fi + 1;
+    let mean_len: i32 = 784 / (n_regimes + 1);
+    features[fi] = mean_len; fi = fi + 1;
+    var len_var_sum: i64 = 0;
+    var ri: i32 = 0;
+    while ri < n_regimes {
+        let rstart: i32 = regime_starts[ri];
+        var rend: i32 = 784;
+        if ri + 1 < n_regimes { rend = regime_starts[ri + 1]; }
+        let rlen: i32 = rend - rstart;
+        let dlen: i64 = (rlen - mean_len) as i64;
+        len_var_sum = len_var_sum + dlen * dlen;
+        ri = ri + 1;
+    }
+    let len_var: i32 = (len_var_sum / (n_regimes as i64 + 1)) as i32;
+    features[fi] = len_var / 8; fi = fi + 1;
+
+    var oh: [i32; 5] = 0;
+    ri = 0;
+    while ri < n_regimes {
+        let ord: i32 = regime_orders[ri];
+        if ord >= 0 && ord < 5 { oh[ord] = oh[ord] + 1; }
+        ri = ri + 1;
+    }
+    var oi: i32 = 0;
+    while oi < 5 { features[fi] = oh[oi] * 10; fi = fi + 1; oi = oi + 1; }
+
+    let mean_err: i32 = (total_error / 784) as i32;
+    features[fi] = mean_err * 2; fi = fi + 1;
+    features[fi] = max_error * 2; fi = fi + 1;
+    let err_var: i64 = error_sq_sum / 784 - (mean_err as i64) * (mean_err as i64);
+    var ev: i32 = err_var as i32;
+    if ev < 0 { ev = 0; }
+    features[fi] = ev / 4; fi = fi + 1;
+
+    var bi: i32 = 0;
+    while bi < 28 { features[fi] = boundary_bins[bi] * 40; fi = fi + 1; bi = bi + 1; }
+
+    bi = 0;
+    while bi < 28 {
+        if error_bins_count[bi] > 0 {
+            features[fi] = (error_bins_sum[bi] / error_bins_count[bi]) * 2;
+        } else { features[fi] = 0; }
+        fi = fi + 1;
+        bi = bi + 1;
+    }
+
+    ri = 0;
+    while ri < max_regimes {
+        if ri < n_regimes {
+            features[fi] = regime_orders[ri] * 64; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4]; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4 + 1]; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4 + 2]; fi = fi + 1;
+            features[fi] = regime_coeffs[ri * 4 + 3]; fi = fi + 1;
+        } else {
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+            features[fi] = 0; fi = fi + 1;
+        }
+        ri = ri + 1;
+    }
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: mnist_register <data_directory>\n");
+        exit(1);
+    }
+
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    let n_train: i32 = 60000;
+    let n_feat: i32 = 280;
+    let n_classes: i32 = 10;
+
+    // Feature values: coefficients are mod 257 (0-256), boundaries are 0-27.
+    // Quantize all to 0..256 range. n_vals = 257.
+    let n_vals: i32 = 257;
+    let feat_stride: i32 = n_feat * n_vals;
+
+    // --- Read MNIST data ---
+    wr(2, "Reading training images...\n");
+    let train_img: *u8 = alloc(47040016);
+    path_build(&path_buf[0], dir, "train-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open train images\n"); exit(1); }
+    read_bytes(fd, train_img, 47040016);
+    close(fd);
+
+    let train_lbl: *u8 = alloc(60008);
+    path_build(&path_buf[0], dir, "train-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open train labels\n"); exit(1); }
+    read_bytes(fd, train_lbl, 60008);
+    close(fd);
+
+    wr(2, "Reading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+
+    let n_test: i32 = read_be_i32(test_img, 4);
+
+    wr(2, "Train: "); wr_int(2, n_train as i64);
+    wr(2, "  Test: "); wr_int(2, n_test as i64);
+    wr(2, "  Features: "); wr_int(2, n_feat as i64);
+    wr(2, "\n");
+
+    // --- Build Hilbert scan order ---
+    wr(2, "Building Hilbert order...\n");
+    let hilbert_order: *i32 = alloc(1024);
+    let n_hilbert: i32 = build_hilbert_order(hilbert_order);
+    wr(2, "  Hilbert pixels: "); wr_int(2, n_hilbert as i64); wr(2, "\n");
+
+    // --- Allocate working buffers ---
+    let features: *i32 = alloc(n_feat);
+    let hist: *i32 = alloc(n_classes * feat_stride);
+    let total: *i32 = alloc(feat_stride);
+
+    // ========================================
+    //  STRATEGY A: DUAL SCAN
+    // ========================================
+    wr(2, "=== Strategy A: Dual Scan ===\n");
+    wr(2, "Training (dual)...\n");
+
+    // Zero histograms
+    var zi: i32 = 0;
+    while zi < n_classes * feat_stride { hist[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < feat_stride { total[zi] = 0; zi = zi + 1; }
+
+    var i: i32 = 0;
+    while i < n_train {
+        extract_dual_features(&train_img[16 + i * 784], features);
+        let label: i32 = train_lbl[8 + i] as i32;
+        var j: i32 = 0;
+        while j < n_feat {
+            let v: i32 = features[j];
+            if v >= 0 && v < n_vals {
+                hist[label * feat_stride + j * n_vals + v] = hist[label * feat_stride + j * n_vals + v] + 1;
+                total[j * n_vals + v] = total[j * n_vals + v] + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Build lookup tables
+    let lookup: *i32 = alloc(n_classes * feat_stride);
+    var k: i32 = 0;
+    while k < n_classes {
+        var j: i32 = 0;
+        while j < n_feat {
+            var v: i32 = 0;
+            while v < n_vals {
+                let idx: i32 = k * feat_stride + j * n_vals + v;
+                let t: i32 = total[j * n_vals + v];
+                if t > 0 {
+                    lookup[idx] = (hist[idx] * 100) / t;
+                }
+                v = v + 1;
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    // Classify
+    wr(2, "Classifying (dual)...\n");
+    var correct_a: i32 = 0;
+    var ti: i32 = 0;
+    while ti < n_test {
+        extract_dual_features(&test_img[16 + ti * 784], features);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_score: i32 = 0 - 1;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var score: i32 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat {
+                let fv: i32 = features[jj];
+                if fv >= 0 && fv < n_vals {
+                    score = score + lookup[kk * feat_stride + jj * n_vals + fv];
+                }
+                jj = jj + 1;
+            }
+            if score > best_score {
+                best_score = score;
+                best_class = kk;
+            }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_a = correct_a + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Dual: "); wr_int(1, correct_a as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_a as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // ========================================
+    //  STRATEGY B: HILBERT SCAN
+    // ========================================
+    wr(2, "=== Strategy B: Hilbert Scan ===\n");
+    wr(2, "Training (hilbert)...\n");
+
+    // Zero histograms
+    zi = 0;
+    while zi < n_classes * feat_stride { hist[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < feat_stride { total[zi] = 0; zi = zi + 1; }
+
+    i = 0;
+    while i < n_train {
+        extract_hilbert_features(&train_img[16 + i * 784], hilbert_order, features);
+        let label: i32 = train_lbl[8 + i] as i32;
+        var j: i32 = 0;
+        while j < n_feat {
+            let v: i32 = features[j];
+            if v >= 0 && v < n_vals {
+                hist[label * feat_stride + j * n_vals + v] = hist[label * feat_stride + j * n_vals + v] + 1;
+                total[j * n_vals + v] = total[j * n_vals + v] + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Reuse lookup buffer -- zero and rebuild
+    zi = 0;
+    while zi < n_classes * feat_stride { lookup[zi] = 0; zi = zi + 1; }
+
+    k = 0;
+    while k < n_classes {
+        var j: i32 = 0;
+        while j < n_feat {
+            var v: i32 = 0;
+            while v < n_vals {
+                let idx: i32 = k * feat_stride + j * n_vals + v;
+                let t: i32 = total[j * n_vals + v];
+                if t > 0 {
+                    lookup[idx] = (hist[idx] * 100) / t;
+                }
+                v = v + 1;
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    // Classify
+    wr(2, "Classifying (hilbert)...\n");
+    var correct_b: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, features);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_score: i32 = 0 - 1;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var score: i32 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat {
+                let fv: i32 = features[jj];
+                if fv >= 0 && fv < n_vals {
+                    score = score + lookup[kk * feat_stride + jj * n_vals + fv];
+                }
+                jj = jj + 1;
+            }
+            if score > best_score {
+                best_score = score;
+                best_class = kk;
+            }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_b = correct_b + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Hilbert: "); wr_int(1, correct_b as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_b as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // ========================================
+    //  STRATEGY C: HYBRID (Hilbert poly + histogram)
+    // ========================================
+    wr(2, "=== Strategy C: Hybrid (Hilbert + Histogram) ===\n");
+
+    let n_feat_c: i32 = 364;
+    let feat_stride_c: i32 = n_feat_c * n_vals;
+    let features_c: *i32 = alloc(n_feat_c);
+    let hist_c: *i32 = alloc(n_classes * feat_stride_c);
+    let total_c: *i32 = alloc(feat_stride_c);
+    zi = 0;
+    while zi < n_classes * feat_stride_c { hist_c[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < feat_stride_c { total_c[zi] = 0; zi = zi + 1; }
+
+    wr(2, "Training (hybrid)...\n");
+    i = 0;
+    while i < n_train {
+        extract_hybrid_features(&train_img[16 + i * 784], hilbert_order, features_c);
+        let label: i32 = train_lbl[8 + i] as i32;
+        var j: i32 = 0;
+        while j < n_feat_c {
+            let v: i32 = features_c[j];
+            if v >= 0 && v < n_vals {
+                hist_c[label * feat_stride_c + j * n_vals + v] = hist_c[label * feat_stride_c + j * n_vals + v] + 1;
+                total_c[j * n_vals + v] = total_c[j * n_vals + v] + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    let lookup_c: *i32 = alloc(n_classes * feat_stride_c);
+    k = 0;
+    while k < n_classes {
+        var j: i32 = 0;
+        while j < n_feat_c {
+            var v: i32 = 0;
+            while v < n_vals {
+                let idx: i32 = k * feat_stride_c + j * n_vals + v;
+                let t: i32 = total_c[j * n_vals + v];
+                if t > 0 {
+                    lookup_c[idx] = (hist_c[idx] * 100) / t;
+                }
+                v = v + 1;
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    wr(2, "Classifying (hybrid)...\n");
+    var correct_c: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_score: i32 = 0 - 1;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var score: i32 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_c {
+                let fv: i32 = features_c[jj];
+                if fv >= 0 && fv < n_vals {
+                    score = score + lookup_c[kk * feat_stride_c + jj * n_vals + fv];
+                }
+                jj = jj + 1;
+            }
+            if score > best_score {
+                best_score = score;
+                best_class = kk;
+            }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_c = correct_c + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Hybrid: "); wr_int(1, correct_c as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_c as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(hist_c);
+    free(total_c);
+    free(lookup_c);
+
+    // ========================================
+    //  SCORER 1: QUANTIZED LOOKUP (hybrid features, coarser bins)
+    // ========================================
+    wr(2, "=== Scorer 1: Quantized Hybrid Lookup ===\n");
+
+    // Polynomial features: value / 16 → {0..16}. Histogram features: unchanged {0..28}.
+    // Use n_vals_q = 29 for all (max of 17 and 29).
+    let n_vals_q: i32 = 29;
+    let feat_stride_q: i32 = n_feat_c * n_vals_q;
+    let hist_q: *i32 = alloc(n_classes * feat_stride_q);
+    let total_q: *i32 = alloc(feat_stride_q);
+
+    wr(2, "Training (quantized)...\n");
+    i = 0;
+    while i < n_train {
+        extract_hybrid_features(&train_img[16 + i * 784], hilbert_order, features_c);
+        let label: i32 = train_lbl[8 + i] as i32;
+        var j: i32 = 0;
+        while j < n_feat_c {
+            var v: i32 = features_c[j];
+            // Quantize polynomial features (first 280) to {0..16}
+            if j < 280 { v = v / 16; }
+            if v >= 0 && v < n_vals_q {
+                hist_q[label * feat_stride_q + j * n_vals_q + v] = hist_q[label * feat_stride_q + j * n_vals_q + v] + 1;
+                total_q[j * n_vals_q + v] = total_q[j * n_vals_q + v] + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    let lookup_q: *i32 = alloc(n_classes * feat_stride_q);
+    k = 0;
+    while k < n_classes {
+        var j: i32 = 0;
+        while j < n_feat_c {
+            var v: i32 = 0;
+            while v < n_vals_q {
+                let idx: i32 = k * feat_stride_q + j * n_vals_q + v;
+                let t: i32 = total_q[j * n_vals_q + v];
+                if t > 0 { lookup_q[idx] = (hist_q[idx] * 100) / t; }
+                v = v + 1;
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    wr(2, "Classifying (quantized)...\n");
+    var correct_q: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_score: i32 = 0 - 1;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var score: i32 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_c {
+                var fv: i32 = features_c[jj];
+                if jj < 280 { fv = fv / 16; }
+                if fv >= 0 && fv < n_vals_q {
+                    score = score + lookup_q[kk * feat_stride_q + jj * n_vals_q + fv];
+                }
+                jj = jj + 1;
+            }
+            if score > best_score { best_score = score; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_q = correct_q + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Quant-hybrid: "); wr_int(1, correct_q as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_q as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(hist_q);
+    free(total_q);
+    free(lookup_q);
+
+    // ========================================
+    //  SCORER 2: CENTROID (no binning, plain integer distance)
+    // ========================================
+    wr(2, "=== Scorer 2: Centroid Distance ===\n");
+
+    // Mean feature vector per class: centroids[class*n_feat_c+j] = sum/count.
+    // Accumulate in i32 (60K * 256 = 15.3M, fits in i32).
+    let centroids: *i32 = alloc(n_classes * n_feat_c);
+    let class_counts: *i32 = alloc(n_classes);
+
+    // Accumulate sums
+    let centroid_sums: *i32 = alloc(n_classes * n_feat_c);
+    zi = 0;
+    while zi < n_classes { class_counts[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_c { centroid_sums[zi] = 0; zi = zi + 1; }
+    i = 0;
+    while i < n_train {
+        extract_hybrid_features(&train_img[16 + i * 784], hilbert_order, features_c);
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts[label] = class_counts[label] + 1;
+        var j: i32 = 0;
+        while j < n_feat_c {
+            centroid_sums[label * n_feat_c + j] = centroid_sums[label * n_feat_c + j] + features_c[j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Divide to get means
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts[k];
+        if cc > 0 {
+            var j: i32 = 0;
+            while j < n_feat_c {
+                centroids[k * n_feat_c + j] = centroid_sums[k * n_feat_c + j] / cc;
+                j = j + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    // Classify: Hilbert-only centroid (first 280 features) + confusion matrix
+    wr(2, "Classifying (centroid-hilbert)...\n");
+    var correct_ch: i32 = 0;
+    var confusion: [i32; 100] = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < 280 {
+                let d: i64 = (features_c[jj] - centroids[kk * n_feat_c + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_ch = correct_ch + 1; }
+        confusion[actual * 10 + best_class] = confusion[actual * 10 + best_class] + 1;
+        ti = ti + 1;
+    }
+
+    wr(1, "Centroid-hilbert: "); wr_int(1, correct_ch as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_ch as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // Print confusion matrix
+    wr(1, "Confusion matrix (row=actual, col=predicted):\n");
+    var cr: i32 = 0;
+    while cr < 10 {
+        wr_int(1, cr as i64); wr(1, ":");
+        var cc: i32 = 0;
+        while cc < 10 {
+            wr(1, " "); wr_int(1, confusion[cr * 10 + cc] as i64);
+            cc = cc + 1;
+        }
+        wr(1, "\n");
+        cr = cr + 1;
+    }
+
+    // Classify: full hybrid centroid (all 364 features)
+    wr(2, "Classifying (centroid-hybrid)...\n");
+    var correct_cfull: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_c {
+                let d: i64 = (features_c[jj] - centroids[kk * n_feat_c + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_cfull = correct_cfull + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Centroid-hybrid: "); wr_int(1, correct_cfull as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_cfull as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // ========================================
+    //  SCORER 3: SPLIT HYBRID (lookup for histogram, centroid for polynomial)
+    // ========================================
+    wr(2, "=== Scorer 3: Split Hybrid ===\n");
+
+    // Histogram lookup on features 280..363 (84 histogram features)
+    // Already have lookup table from Strategy A/B scorer -- rebuild for histogram only
+    let n_feat_h: i32 = 84;
+    let n_vals_h: i32 = 29;
+    let feat_stride_h: i32 = n_feat_h * n_vals_h;
+    let hist_h: *i32 = alloc(n_classes * feat_stride_h);
+    let total_h: *i32 = alloc(feat_stride_h);
+
+    i = 0;
+    while i < n_train {
+        extract_hist_features(&train_img[16 + i * 784], features_c);
+        let label: i32 = train_lbl[8 + i] as i32;
+        var j: i32 = 0;
+        while j < n_feat_h {
+            let v: i32 = features_c[j];
+            if v >= 0 && v < n_vals_h {
+                hist_h[label * feat_stride_h + j * n_vals_h + v] = hist_h[label * feat_stride_h + j * n_vals_h + v] + 1;
+                total_h[j * n_vals_h + v] = total_h[j * n_vals_h + v] + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    let lookup_h: *i32 = alloc(n_classes * feat_stride_h);
+    k = 0;
+    while k < n_classes {
+        var j: i32 = 0;
+        while j < n_feat_h {
+            var v: i32 = 0;
+            while v < n_vals_h {
+                let idx: i32 = k * feat_stride_h + j * n_vals_h + v;
+                let t: i32 = total_h[j * n_vals_h + v];
+                if t > 0 { lookup_h[idx] = (hist_h[idx] * 100) / t; }
+                v = v + 1;
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    // Classify: total = lookup_score * 10 - centroid_distance / 1000
+    // (histogram lookup + polynomial centroid, scaled to balance the signals)
+    wr(2, "Classifying (split)...\n");
+    var correct_s: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_score: i64 = 0 - 999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            // Lookup score on histogram features (features_c[280..363])
+            var lscore: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_h {
+                let fv: i32 = features_c[280 + jj];
+                if fv >= 0 && fv < n_vals_h {
+                    lscore = lscore + lookup_h[kk * feat_stride_h + jj * n_vals_h + fv] as i64;
+                }
+                jj = jj + 1;
+            }
+            // Centroid distance on polynomial features (features_c[0..279])
+            var cdist: i64 = 0;
+            jj = 0;
+            while jj < 280 {
+                let d: i64 = (features_c[jj] - centroids[kk * n_feat_c + jj]) as i64;
+                cdist = cdist + d * d;
+                jj = jj + 1;
+            }
+            // Combine: higher lookup is better, lower distance is better
+            let combined: i64 = lscore * 10 - cdist / 1000;
+            if combined > best_score { best_score = combined; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_s = correct_s + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Split-hybrid: "); wr_int(1, correct_s as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_s as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(hist_h);
+    free(total_h);
+    free(lookup_h);
+
+    // ========================================
+    //  PHASE 1: FISHER-WEIGHTED CENTROID
+    // ========================================
+    wr(2, "=== Phase 1: Fisher Weighting ===\n");
+
+    // Within-class variance: sum of (feature - centroid)^2 across all training images
+    // Need i64 accumulators (60K * 256^2 = ~3.9 billion)
+    let within_var: *i64 = alloc(n_feat_c);
+    zi = 0;
+    while zi < n_feat_c { within_var[zi] = 0; zi = zi + 1; }
+    let between_var: *i32 = alloc(n_feat_c);
+    let fisher_weight: *i32 = alloc(n_feat_c);
+    let grand_mean: *i32 = alloc(n_feat_c);
+
+    // Compute within-class variance (second pass over training data)
+    wr(2, "Computing within-class variance...\n");
+    i = 0;
+    while i < n_train {
+        extract_hybrid_features(&train_img[16 + i * 784], hilbert_order, features_c);
+        let label: i32 = train_lbl[8 + i] as i32;
+        var j: i32 = 0;
+        while j < n_feat_c {
+            let d: i64 = (features_c[j] - centroids[label * n_feat_c + j]) as i64;
+            within_var[j] = within_var[j] + d * d;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Compute between-class variance
+    // Grand mean = average of 10 centroids
+    var j: i32 = 0;
+    while j < n_feat_c {
+        var sum_c: i32 = 0;
+        k = 0;
+        while k < n_classes {
+            sum_c = sum_c + centroids[k * n_feat_c + j];
+            k = k + 1;
+        }
+        grand_mean[j] = sum_c / n_classes;
+        j = j + 1;
+    }
+
+    j = 0;
+    while j < n_feat_c {
+        var bv: i32 = 0;
+        k = 0;
+        while k < n_classes {
+            let d: i32 = centroids[k * n_feat_c + j] - grand_mean[j];
+            bv = bv + d * d;
+            k = k + 1;
+        }
+        between_var[j] = bv;
+        j = j + 1;
+    }
+
+    // Fisher weight: between_var * 256 / (within_var / n_train + 1)
+    j = 0;
+    while j < n_feat_c {
+        let wv_per_sample: i64 = within_var[j] / (n_train as i64) + 1;
+        let fw: i64 = (between_var[j] as i64) * 256 / wv_per_sample;
+        fisher_weight[j] = fw as i32;
+        j = j + 1;
+    }
+
+    // Fisher-weighted centroid on polynomial features only (280)
+    wr(2, "Classifying (fisher-hilbert)...\n");
+    var correct_fh: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < 280 {
+                let d: i64 = (features_c[jj] - centroids[kk * n_feat_c + jj]) as i64;
+                let w: i64 = fisher_weight[jj] as i64;
+                dist = dist + w * d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_fh = correct_fh + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Fisher-hilbert: "); wr_int(1, correct_fh as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_fh as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // Fisher-weighted centroid on all 364 features
+    wr(2, "Classifying (fisher-hybrid)...\n");
+    var correct_ff: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hybrid_features(&test_img[16 + ti * 784], hilbert_order, features_c);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_c {
+                let d: i64 = (features_c[jj] - centroids[kk * n_feat_c + jj]) as i64;
+                let w: i64 = fisher_weight[jj] as i64;
+                dist = dist + w * d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_ff = correct_ff + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Fisher-hybrid: "); wr_int(1, correct_ff as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_ff as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // ========================================
+    //  PHASE 1a: VIA NEGATIVA (error features only)
+    // ========================================
+    wr(2, "=== Phase 1a: Via Negativa (error features only) ===\n");
+
+    let n_feat_e: i32 = 392;  // 56 windows x 7 error features
+    let features_e: *i32 = alloc(n_feat_e);
+    let centroids_e: *i32 = alloc(n_classes * n_feat_e);
+    let class_counts_e: *i32 = alloc(n_classes);
+    let centroid_sums_e: *i64 = alloc(n_classes * n_feat_e);
+    zi = 0;
+    while zi < n_classes { class_counts_e[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_e { centroid_sums_e[zi] = 0; zi = zi + 1; }
+
+    wr(2, "Training (via negativa)...\n");
+    i = 0;
+    while i < n_train {
+        extract_hilbert_errors(&train_img[16 + i * 784], hilbert_order, features_e);
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts_e[label] = class_counts_e[label] + 1;
+        var je: i32 = 0;
+        while je < n_feat_e {
+            centroid_sums_e[label * n_feat_e + je] = centroid_sums_e[label * n_feat_e + je] + features_e[je] as i64;
+            je = je + 1;
+        }
+        i = i + 1;
+    }
+
+    // Compute centroids
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts_e[k];
+        if cc > 0 {
+            var je: i32 = 0;
+            while je < n_feat_e {
+                centroids_e[k * n_feat_e + je] = (centroid_sums_e[k * n_feat_e + je] / (cc as i64)) as i32;
+                je = je + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    // Classify
+    wr(2, "Classifying (via negativa)...\n");
+    var correct_vn: i32 = 0;
+    var confusion_vn: [i32; 100] = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_errors(&test_img[16 + ti * 784], hilbert_order, features_e);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_e {
+                let d: i64 = (features_e[jj] - centroids_e[kk * n_feat_e + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_vn = correct_vn + 1; }
+        confusion_vn[actual * 10 + best_class] = confusion_vn[actual * 10 + best_class] + 1;
+        ti = ti + 1;
+    }
+
+    wr(1, "Via-negativa: "); wr_int(1, correct_vn as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_vn as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // Print via negativa confusion matrix
+    wr(1, "VN confusion (row=actual, col=predicted):\n");
+    cr = 0;
+    while cr < 10 {
+        wr_int(1, cr as i64); wr(1, ":");
+        var cc: i32 = 0;
+        while cc < 10 {
+            wr(1, " "); wr_int(1, confusion_vn[cr * 10 + cc] as i64);
+            cc = cc + 1;
+        }
+        wr(1, "\n");
+        cr = cr + 1;
+    }
+
+    free(features_e);
+    free(centroids_e);
+    free(class_counts_e);
+    free(centroid_sums_e);
+
+    // ========================================
+    //  PHASE 1b: COMBINED (coefficients + errors)
+    // ========================================
+    wr(2, "=== Phase 1b: Combined (coefficients + errors) ===\n");
+
+    let n_feat_cb: i32 = 672;  // 280 coefficients + 392 errors
+    let features_cb: *i32 = alloc(n_feat_cb);
+    let centroids_cb: *i32 = alloc(n_classes * n_feat_cb);
+    let class_counts_cb: *i32 = alloc(n_classes);
+    let centroid_sums_cb: *i64 = alloc(n_classes * n_feat_cb);
+    zi = 0;
+    while zi < n_classes { class_counts_cb[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_cb { centroid_sums_cb[zi] = 0; zi = zi + 1; }
+
+    wr(2, "Training (combined)...\n");
+    i = 0;
+    while i < n_train {
+        extract_hilbert_features(&train_img[16 + i * 784], hilbert_order, features_cb);
+        extract_hilbert_errors(&train_img[16 + i * 784], hilbert_order, &features_cb[280]);
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts_cb[label] = class_counts_cb[label] + 1;
+        var jcb: i32 = 0;
+        while jcb < n_feat_cb {
+            centroid_sums_cb[label * n_feat_cb + jcb] = centroid_sums_cb[label * n_feat_cb + jcb] + features_cb[jcb] as i64;
+            jcb = jcb + 1;
+        }
+        i = i + 1;
+    }
+
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts_cb[k];
+        if cc > 0 {
+            var jcb: i32 = 0;
+            while jcb < n_feat_cb {
+                centroids_cb[k * n_feat_cb + jcb] = (centroid_sums_cb[k * n_feat_cb + jcb] / (cc as i64)) as i32;
+                jcb = jcb + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    wr(2, "Classifying (combined)...\n");
+    var correct_cb: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, features_cb);
+        extract_hilbert_errors(&test_img[16 + ti * 784], hilbert_order, &features_cb[280]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_cb {
+                let d: i64 = (features_cb[jj] - centroids_cb[kk * n_feat_cb + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_cb = correct_cb + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Combined: "); wr_int(1, correct_cb as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_cb as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(features_cb);
+    free(centroids_cb);
+    free(class_counts_cb);
+    free(centroid_sums_cb);
+
+    // ========================================
+    //  REGIME ANALYSIS: full-sequence Hilbert regime detection
+    // ========================================
+    wr(2, "=== Regime Analysis ===\n");
+
+    let n_feat_r: i32 = 127;
+    let features_r: *i32 = alloc(n_feat_r);
+
+    // --- Step 2: Regime-only ---
+    let centroids_r: *i32 = alloc(n_classes * n_feat_r);
+    let class_counts_r: *i32 = alloc(n_classes);
+    let centroid_sums_r: *i64 = alloc(n_classes * n_feat_r);
+    zi = 0;
+    while zi < n_classes { class_counts_r[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_r { centroid_sums_r[zi] = 0; zi = zi + 1; }
+
+    wr(2, "Training (regime)...\n");
+    i = 0;
+    while i < n_train {
+        extract_regime_features(&train_img[16 + i * 784], hilbert_order, features_r);
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts_r[label] = class_counts_r[label] + 1;
+        var jr: i32 = 0;
+        while jr < n_feat_r {
+            centroid_sums_r[label * n_feat_r + jr] = centroid_sums_r[label * n_feat_r + jr] + features_r[jr] as i64;
+            jr = jr + 1;
+        }
+        i = i + 1;
+    }
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts_r[k];
+        if cc > 0 {
+            var jr: i32 = 0;
+            while jr < n_feat_r {
+                centroids_r[k * n_feat_r + jr] = (centroid_sums_r[k * n_feat_r + jr] / (cc as i64)) as i32;
+                jr = jr + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    wr(2, "Classifying (regime)...\n");
+    var correct_r: i32 = 0;
+    var confusion_r: [i32; 100] = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, features_r);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_r {
+                let d: i64 = (features_r[jj] - centroids_r[kk * n_feat_r + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_r = correct_r + 1; }
+        confusion_r[actual * 10 + best_class] = confusion_r[actual * 10 + best_class] + 1;
+        ti = ti + 1;
+    }
+
+    wr(1, "Regime-only: "); wr_int(1, correct_r as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_r as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    wr(1, "Regime confusion (row=actual, col=predicted):\n");
+    cr = 0;
+    while cr < 10 {
+        wr_int(1, cr as i64); wr(1, ":");
+        var cc: i32 = 0;
+        while cc < 10 {
+            wr(1, " "); wr_int(1, confusion_r[cr * 10 + cc] as i64);
+            cc = cc + 1;
+        }
+        wr(1, "\n");
+        cr = cr + 1;
+    }
+
+    free(centroids_r);
+    free(class_counts_r);
+    free(centroid_sums_r);
+
+    // --- Step 3: Window + Regime combined (280 + 127 = 407) ---
+    wr(2, "=== Window + Regime Combined ===\n");
+
+    let n_feat_wr: i32 = 407;  // 280 window + 127 regime
+    let features_wr: *i32 = alloc(n_feat_wr);
+    let centroids_wr: *i32 = alloc(n_classes * n_feat_wr);
+    let class_counts_wr: *i32 = alloc(n_classes);
+    let centroid_sums_wr: *i64 = alloc(n_classes * n_feat_wr);
+    zi = 0;
+    while zi < n_classes { class_counts_wr[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_wr { centroid_sums_wr[zi] = 0; zi = zi + 1; }
+
+    wr(2, "Training (window+regime)...\n");
+    i = 0;
+    while i < n_train {
+        extract_hilbert_features(&train_img[16 + i * 784], hilbert_order, features_wr);
+        extract_regime_features(&train_img[16 + i * 784], hilbert_order, &features_wr[280]);
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts_wr[label] = class_counts_wr[label] + 1;
+        var jwr: i32 = 0;
+        while jwr < n_feat_wr {
+            centroid_sums_wr[label * n_feat_wr + jwr] = centroid_sums_wr[label * n_feat_wr + jwr] + features_wr[jwr] as i64;
+            jwr = jwr + 1;
+        }
+        i = i + 1;
+    }
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts_wr[k];
+        if cc > 0 {
+            var jwr: i32 = 0;
+            while jwr < n_feat_wr {
+                centroids_wr[k * n_feat_wr + jwr] = (centroid_sums_wr[k * n_feat_wr + jwr] / (cc as i64)) as i32;
+                jwr = jwr + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    wr(2, "Classifying (window+regime)...\n");
+    var correct_wr: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, features_wr);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &features_wr[280]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_wr {
+                let d: i64 = (features_wr[jj] - centroids_wr[kk * n_feat_wr + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_wr = correct_wr + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Window+Regime: "); wr_int(1, correct_wr as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_wr as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(features_wr);
+    free(centroids_wr);
+    free(class_counts_wr);
+    free(centroid_sums_wr);
+
+    // --- Step 4: Full combined (280 + 392 + 127 = 799) ---
+    wr(2, "=== Full Combined (window + error + regime) ===\n");
+
+    let n_feat_full: i32 = 799;
+    let features_full: *i32 = alloc(n_feat_full);
+    let centroids_full: *i32 = alloc(n_classes * n_feat_full);
+    let class_counts_full: *i32 = alloc(n_classes);
+    let centroid_sums_full: *i64 = alloc(n_classes * n_feat_full);
+    zi = 0;
+    while zi < n_classes { class_counts_full[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_full { centroid_sums_full[zi] = 0; zi = zi + 1; }
+
+    wr(2, "Training (full)...\n");
+    i = 0;
+    while i < n_train {
+        extract_hilbert_features(&train_img[16 + i * 784], hilbert_order, features_full);
+        extract_hilbert_errors(&train_img[16 + i * 784], hilbert_order, &features_full[280]);
+        extract_regime_features(&train_img[16 + i * 784], hilbert_order, &features_full[672]);
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts_full[label] = class_counts_full[label] + 1;
+        var jf: i32 = 0;
+        while jf < n_feat_full {
+            centroid_sums_full[label * n_feat_full + jf] = centroid_sums_full[label * n_feat_full + jf] + features_full[jf] as i64;
+            jf = jf + 1;
+        }
+        i = i + 1;
+    }
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts_full[k];
+        if cc > 0 {
+            var jf: i32 = 0;
+            while jf < n_feat_full {
+                centroids_full[k * n_feat_full + jf] = (centroid_sums_full[k * n_feat_full + jf] / (cc as i64)) as i32;
+                jf = jf + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    wr(2, "Classifying (full)...\n");
+    var correct_full: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, features_full);
+        extract_hilbert_errors(&test_img[16 + ti * 784], hilbert_order, &features_full[280]);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &features_full[672]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_full {
+                let d: i64 = (features_full[jj] - centroids_full[kk * n_feat_full + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_full = correct_full + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Full-combined: "); wr_int(1, correct_full as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_full as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(features_r);
+    free(features_full);
+    free(centroids_full);
+    free(class_counts_full);
+    free(centroid_sums_full);
+
+    // ========================================
+    //  PHASE 3: THREE-LAYER CLASSIFICATION
+    //  Layer 1: Hilbert window coefficients (local texture)
+    //  Layer 2: Hilbert + horizontal regime (global context, two paths)
+    //  Layer 3: Boundary correlation (curvature tensor)
+    // ========================================
+    wr(2, "=== Phase 3: Three-Layer (texture + dual regime + correlation) ===\n");
+
+    // 280 window + 127 hilbert regime + 127 horiz regime + 28 correlation = 562
+    let n_feat_3l: i32 = 562;
+    let features_3l: *i32 = alloc(n_feat_3l);
+    let centroids_3l: *i32 = alloc(n_classes * n_feat_3l);
+    let class_counts_3l: *i32 = alloc(n_classes);
+    let centroid_sums_3l: *i64 = alloc(n_classes * n_feat_3l);
+    zi = 0;
+    while zi < n_classes { class_counts_3l[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_3l { centroid_sums_3l[zi] = 0; zi = zi + 1; }
+
+    // Buffers for horizontal regime features and correlation
+    let feat_horiz: *i32 = alloc(127);
+
+    wr(2, "Training (three-layer)...\n");
+    i = 0;
+    while i < n_train {
+        // Layer 1: Hilbert window coefficients (280 features at offset 0)
+        extract_hilbert_features(&train_img[16 + i * 784], hilbert_order, features_3l);
+        // Layer 2a: Hilbert regime (127 features at offset 280)
+        extract_regime_features(&train_img[16 + i * 784], hilbert_order, &features_3l[280]);
+        // Layer 2b: Horizontal regime (127 features at offset 407)
+        extract_regime_features_horiz(&train_img[16 + i * 784], &features_3l[407]);
+        // Layer 3: Boundary correlation (28 features at offset 534)
+        // For each spatial bin: hilbert_boundary * horiz_boundary
+        // Hilbert boundary density is at features_3l[280+11..280+38] = [291..318]
+        // Horiz boundary density is at features_3l[407+11..407+38] = [418..445]
+        var bi: i32 = 0;
+        while bi < 28 {
+            let hb: i32 = features_3l[291 + bi];  // hilbert boundary density (scaled *40)
+            let vb: i32 = features_3l[418 + bi];  // horiz boundary density (scaled *40)
+            // Product captures correlation: high when BOTH paths see boundaries
+            // Scale down to avoid dominating: (hb/40) * (vb/40) * 40
+            features_3l[534 + bi] = (hb / 40) * (vb / 40) * 40;
+            bi = bi + 1;
+        }
+
+        let label: i32 = train_lbl[8 + i] as i32;
+        class_counts_3l[label] = class_counts_3l[label] + 1;
+        var j3: i32 = 0;
+        while j3 < n_feat_3l {
+            centroid_sums_3l[label * n_feat_3l + j3] = centroid_sums_3l[label * n_feat_3l + j3] + features_3l[j3] as i64;
+            j3 = j3 + 1;
+        }
+        i = i + 1;
+    }
+
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = class_counts_3l[k];
+        if cc > 0 {
+            var j3: i32 = 0;
+            while j3 < n_feat_3l {
+                centroids_3l[k * n_feat_3l + j3] = (centroid_sums_3l[k * n_feat_3l + j3] / (cc as i64)) as i32;
+                j3 = j3 + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    // Classify: three-layer
+    wr(2, "Classifying (three-layer)...\n");
+    var correct_3l: i32 = 0;
+    var confusion_3l: [i32; 100] = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, features_3l);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &features_3l[280]);
+        extract_regime_features_horiz(&test_img[16 + ti * 784], &features_3l[407]);
+        var bi: i32 = 0;
+        while bi < 28 {
+            let hb: i32 = features_3l[291 + bi];
+            let vb: i32 = features_3l[418 + bi];
+            features_3l[534 + bi] = (hb / 40) * (vb / 40) * 40;
+            bi = bi + 1;
+        }
+
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_3l {
+                let d: i64 = (features_3l[jj] - centroids_3l[kk * n_feat_3l + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_3l = correct_3l + 1; }
+        confusion_3l[actual * 10 + best_class] = confusion_3l[actual * 10 + best_class] + 1;
+        ti = ti + 1;
+    }
+
+    wr(1, "Three-layer: "); wr_int(1, correct_3l as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_3l as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // Print three-layer confusion matrix
+    wr(1, "3L confusion (row=actual, col=predicted):\n");
+    cr = 0;
+    while cr < 10 {
+        wr_int(1, cr as i64); wr(1, ":");
+        var cc: i32 = 0;
+        while cc < 10 {
+            wr(1, " "); wr_int(1, confusion_3l[cr * 10 + cc] as i64);
+            cc = cc + 1;
+        }
+        wr(1, "\n");
+        cr = cr + 1;
+    }
+
+    // Also test: Window + Hilbert regime + Horiz regime (no correlation, additive only)
+    // to measure whether correlation adds value over additive
+    wr(2, "Classifying (additive dual-regime, no correlation)...\n");
+    var correct_add: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, features_3l);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &features_3l[280]);
+        extract_regime_features_horiz(&test_img[16 + ti * 784], &features_3l[407]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < 534 {   // 280 + 127 + 127, skip the 28 correlation features
+                let d: i64 = (features_3l[jj] - centroids_3l[kk * n_feat_3l + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_add = correct_add + 1; }
+        ti = ti + 1;
+    }
+
+    wr(1, "Additive-dual: "); wr_int(1, correct_add as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_add as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    free(features_3l);
+    free(centroids_3l);
+    free(class_counts_3l);
+    free(centroid_sums_3l);
+    free(feat_horiz);
+
+    // ========================================
+    //  PHASE 4: GEODESIC SCORING
+    //  k-NN + variance-normalized centroid
+    // ========================================
+    wr(2, "=== Phase 4: k-NN Scoring ===\n");
+
+    // --- Step 1: Extract and store ALL training features (534 per image) ---
+    let n_feat_dual: i32 = 534;  // 280 window + 127 hilbert regime + 127 horiz regime
+    let train_feats: *i32 = alloc(n_train * n_feat_dual);
+    let train_labels: *i32 = alloc(n_train);
+
+    wr(2, "Extracting all training features...\n");
+    i = 0;
+    while i < n_train {
+        let off: i32 = i * n_feat_dual;
+        extract_hilbert_features(&train_img[16 + i * 784], hilbert_order, &train_feats[off]);
+        extract_regime_features(&train_img[16 + i * 784], hilbert_order, &train_feats[off + 280]);
+        extract_regime_features_horiz(&train_img[16 + i * 784], &train_feats[off + 407]);
+        train_labels[i] = train_lbl[8 + i] as i32;
+        if i % 10000 == 0 { wr(2, "  "); wr_int(2, i as i64); wr(2, "/60000\n"); }
+        i = i + 1;
+    }
+    wr(2, "  60000/60000\n");
+
+    // --- Step 2: Compute per-feature variance for normalization ---
+    wr(2, "Computing per-feature variance...\n");
+    let feat_mean: *i64 = alloc(n_feat_dual);
+    let feat_var: *i64 = alloc(n_feat_dual);
+    zi = 0;
+    while zi < n_feat_dual { feat_mean[zi] = 0; feat_var[zi] = 0; zi = zi + 1; }
+
+    i = 0;
+    while i < n_train {
+        let off: i32 = i * n_feat_dual;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            feat_mean[fj] = feat_mean[fj] + train_feats[off + fj] as i64;
+            fj = fj + 1;
+        }
+        i = i + 1;
+    }
+    // feat_mean[j] now has sum. Compute E[x²] in second pass.
+    let feat_sq: *i64 = alloc(n_feat_dual);
+    zi = 0;
+    while zi < n_feat_dual { feat_sq[zi] = 0; zi = zi + 1; }
+    i = 0;
+    while i < n_train {
+        let off: i32 = i * n_feat_dual;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            let v: i64 = train_feats[off + fj] as i64;
+            feat_sq[fj] = feat_sq[fj] + v * v;
+            fj = fj + 1;
+        }
+        i = i + 1;
+    }
+    // var = E[x²] - E[x]² = (sum_sq / N) - (sum / N)²
+    var fj: i32 = 0;
+    while fj < n_feat_dual {
+        let mean_sq: i64 = feat_sq[fj] / (n_train as i64);
+        let mean_val: i64 = feat_mean[fj] / (n_train as i64);
+        feat_var[fj] = mean_sq - mean_val * mean_val;
+        if feat_var[fj] < 1 { feat_var[fj] = 1; }  // avoid division by zero
+        fj = fj + 1;
+    }
+    free(feat_sq);
+
+    // --- Compute centroids from stored features ---
+    let cent_dual: *i32 = alloc(n_classes * n_feat_dual);
+    let cnt_dual: *i32 = alloc(n_classes);
+    let sum_dual: *i64 = alloc(n_classes * n_feat_dual);
+    zi = 0;
+    while zi < n_classes { cnt_dual[zi] = 0; zi = zi + 1; }
+    zi = 0;
+    while zi < n_classes * n_feat_dual { sum_dual[zi] = 0; zi = zi + 1; }
+    i = 0;
+    while i < n_train {
+        let off: i32 = i * n_feat_dual;
+        let label: i32 = train_labels[i];
+        cnt_dual[label] = cnt_dual[label] + 1;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            sum_dual[label * n_feat_dual + fj] = sum_dual[label * n_feat_dual + fj] + train_feats[off + fj] as i64;
+            fj = fj + 1;
+        }
+        i = i + 1;
+    }
+    k = 0;
+    while k < n_classes {
+        let cc: i32 = cnt_dual[k];
+        if cc > 0 {
+            var fj: i32 = 0;
+            while fj < n_feat_dual {
+                cent_dual[k * n_feat_dual + fj] = (sum_dual[k * n_feat_dual + fj] / (cc as i64)) as i32;
+                fj = fj + 1;
+            }
+        }
+        k = k + 1;
+    }
+    free(sum_dual);
+
+    // --- Step 2: Variance-normalized centroid ---
+    wr(2, "Classifying (variance-normalized centroid)...\n");
+    var correct_vn_c: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        var test_feat: *i32 = alloc(n_feat_dual);
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, test_feat);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &test_feat[280]);
+        extract_regime_features_horiz(&test_img[16 + ti * 784], &test_feat[407]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        var best_dist: i64 = 9999999999;
+        var best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_dual {
+                let d: i64 = (test_feat[jj] - cent_dual[kk * n_feat_dual + jj]) as i64;
+                // Variance-normalized: d²/var instead of d²
+                // Scale up by 1000 to preserve integer precision
+                dist = dist + (d * d * 1000) / feat_var[jj];
+                jj = jj + 1;
+            }
+            if dist < best_dist { best_dist = dist; best_class = kk; }
+            kk = kk + 1;
+        }
+        if best_class == actual { correct_vn_c = correct_vn_c + 1; }
+        free(test_feat);
+        ti = ti + 1;
+    }
+
+    wr(1, "Var-norm-centroid: "); wr_int(1, correct_vn_c as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_vn_c as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // --- Step 3: k-NN on 534 features ---
+    wr(2, "k-NN classification (534 features)...\n");
+
+    // Try k=1, k=3, k=5
+    var knn_k: i32 = 1;
+    while knn_k <= 5 {
+        wr(2, "  k="); wr_int(2, knn_k as i64); wr(2, "...\n");
+        var correct_knn: i32 = 0;
+        // For k=3, also build confusion matrix
+        var confusion_knn: [i32; 100] = 0;
+
+        ti = 0;
+        while ti < n_test {
+            var test_feat: *i32 = alloc(n_feat_dual);
+            extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, test_feat);
+            extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &test_feat[280]);
+            extract_regime_features_horiz(&test_img[16 + ti * 784], &test_feat[407]);
+            let actual: i32 = test_lbl[8 + ti] as i32;
+
+            // Find k nearest neighbors
+            // Keep top-k as parallel arrays of distances and labels
+            var top_dist: [i64; 7] = 0;
+            var top_label: [i32; 7] = 0;
+            var qi: i32 = 0;
+            while qi < 7 { top_dist[qi] = 9999999999; top_label[qi] = 0; qi = qi + 1; }
+
+            i = 0;
+            while i < n_train {
+                let off: i32 = i * n_feat_dual;
+                var dist: i64 = 0;
+                var jj: i32 = 0;
+                while jj < n_feat_dual {
+                    let d: i64 = (test_feat[jj] - train_feats[off + jj]) as i64;
+                    dist = dist + d * d;
+                    jj = jj + 1;
+                }
+
+                // Insert into top-k if closer than the worst current neighbor
+                if dist < top_dist[knn_k - 1] {
+                    // Find insertion point
+                    var pos: i32 = knn_k - 1;
+                    while pos > 0 && dist < top_dist[pos - 1] {
+                        top_dist[pos] = top_dist[pos - 1];
+                        top_label[pos] = top_label[pos - 1];
+                        pos = pos - 1;
+                    }
+                    top_dist[pos] = dist;
+                    top_label[pos] = train_labels[i];
+                }
+                i = i + 1;
+            }
+
+            // Majority vote among k neighbors
+            var votes: [i32; 10] = 0;
+            qi = 0;
+            while qi < knn_k {
+                votes[top_label[qi]] = votes[top_label[qi]] + 1;
+                qi = qi + 1;
+            }
+            var best_class: i32 = 0;
+            var best_votes: i32 = 0;
+            var ci: i32 = 0;
+            while ci < 10 {
+                if votes[ci] > best_votes { best_votes = votes[ci]; best_class = ci; }
+                ci = ci + 1;
+            }
+
+            if best_class == actual { correct_knn = correct_knn + 1; }
+            if knn_k == 3 {
+                confusion_knn[actual * 10 + best_class] = confusion_knn[actual * 10 + best_class] + 1;
+            }
+            free(test_feat);
+            if ti % 1000 == 0 { wr(2, "    "); wr_int(2, ti as i64); wr(2, "/10000\n"); }
+            ti = ti + 1;
+        }
+
+        wr(1, "kNN-"); wr_int(1, knn_k as i64);
+        wr(1, "(534): "); wr_int(1, correct_knn as i64);
+        wr(1, "/"); wr_int(1, n_test as i64);
+        wr(1, " ("); wr_int(1, ((correct_knn as i64) * 1000) / (n_test as i64));
+        wr(1, " permille)\n");
+
+        // Print confusion matrix for k=3
+        if knn_k == 3 {
+            wr(1, "kNN-3 confusion (row=actual, col=predicted):\n");
+            cr = 0;
+            while cr < 10 {
+                wr_int(1, cr as i64); wr(1, ":");
+                var cc: i32 = 0;
+                while cc < 10 {
+                    wr(1, " "); wr_int(1, confusion_knn[cr * 10 + cc] as i64);
+                    cc = cc + 1;
+                }
+                wr(1, "\n");
+                cr = cr + 1;
+            }
+        }
+
+        knn_k = knn_k + 2;  // 1 -> 3 -> 5
+    }
+
+    // --- Step 5: k-NN on 407 features (single-path, for comparison) ---
+    wr(2, "k-NN on 407 features (single-path)...\n");
+    var correct_knn407: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        var test_feat: *i32 = alloc(n_feat_dual);
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, test_feat);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &test_feat[280]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+
+        var top_dist: [i64; 7] = 0;
+        var top_label: [i32; 7] = 0;
+        var qi: i32 = 0;
+        while qi < 7 { top_dist[qi] = 9999999999; top_label[qi] = 0; qi = qi + 1; }
+
+        i = 0;
+        while i < n_train {
+            let off: i32 = i * n_feat_dual;
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < 407 {  // only first 407 features (window + hilbert regime)
+                let d: i64 = (test_feat[jj] - train_feats[off + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+
+            if dist < top_dist[2] {  // k=3
+                var pos: i32 = 2;
+                while pos > 0 && dist < top_dist[pos - 1] {
+                    top_dist[pos] = top_dist[pos - 1];
+                    top_label[pos] = top_label[pos - 1];
+                    pos = pos - 1;
+                }
+                top_dist[pos] = dist;
+                top_label[pos] = train_labels[i];
+            }
+            i = i + 1;
+        }
+
+        var votes: [i32; 10] = 0;
+        qi = 0;
+        while qi < 3 {
+            votes[top_label[qi]] = votes[top_label[qi]] + 1;
+            qi = qi + 1;
+        }
+        var best_class: i32 = 0;
+        var best_votes: i32 = 0;
+        var ci: i32 = 0;
+        while ci < 10 {
+            if votes[ci] > best_votes { best_votes = votes[ci]; best_class = ci; }
+            ci = ci + 1;
+        }
+
+        if best_class == actual { correct_knn407 = correct_knn407 + 1; }
+        free(test_feat);
+        if ti % 1000 == 0 { wr(2, "    "); wr_int(2, ti as i64); wr(2, "/10000\n"); }
+        ti = ti + 1;
+    }
+
+    wr(1, "kNN-3(407): "); wr_int(1, correct_knn407 as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((correct_knn407 as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // ========================================
+    //  TREE<F>: EMPIRICAL DISCOVERY OF P
+    //  Phase 1: Confidence landscape (vote distribution)
+    //  Phase 2: Signatures (nearest-to-centroid exemplar)
+    //  Phase 3: Threshold sweep (fast path vs slow path)
+    //  Phase 4: Calibration (fast vs slow disagreements)
+    // ========================================
+    wr(1, "\n=== Tree<F>: Empirical Discovery of P ===\n");
+
+    // --- Phase 2: Build Signatures (nearest-to-centroid exemplar per class) ---
+    wr(2, "Building signatures (nearest-to-centroid)...\n");
+    var sig_idx: [i32; 10] = 0;
+    var sig_best_dist: [i64; 10] = 0;
+    var si: i32 = 0;
+    while si < 10 { sig_best_dist[si] = 9999999999; si = si + 1; }
+
+    i = 0;
+    while i < n_train {
+        let label: i32 = train_labels[i];
+        let off: i32 = i * n_feat_dual;
+        var dist: i64 = 0;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            let d: i64 = (train_feats[off + fj] - cent_dual[label * n_feat_dual + fj]) as i64;
+            dist = dist + d * d;
+            fj = fj + 1;
+        }
+        if dist < sig_best_dist[label] {
+            sig_best_dist[label] = dist;
+            sig_idx[label] = i;
+        }
+        i = i + 1;
+    }
+
+    // Copy signature features for fast access
+    let sig_feats: *i32 = alloc(10 * n_feat_dual);
+    si = 0;
+    while si < 10 {
+        let src_off: i32 = sig_idx[si] * n_feat_dual;
+        let dst_off: i32 = si * n_feat_dual;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            sig_feats[dst_off + fj] = train_feats[src_off + fj];
+            fj = fj + 1;
+        }
+        wr(2, "  Class "); wr_int(2, si as i64);
+        wr(2, " sig_idx="); wr_int(2, sig_idx[si] as i64);
+        wr(2, " dist_to_centroid="); wr_int(2, sig_best_dist[si]);
+        wr(2, "\n");
+        si = si + 1;
+    }
+
+    // --- Phase 1+3+4: Combined measurement loop ---
+    wr(2, "Running Tree<F> experiment (Signature + k=5 k-NN)...\n");
+
+    // Phase 1: vote distribution counters
+    var vote5_count: i32 = 0;
+    var vote5_correct: i32 = 0;
+    var vote4_count: i32 = 0;
+    var vote4_correct: i32 = 0;
+    var vote3_count: i32 = 0;
+    var vote3_correct: i32 = 0;
+
+    // Phase 4: calibration counters
+    var cal_both_right: i32 = 0;
+    var cal_fast_only: i32 = 0;
+    var cal_slow_only: i32 = 0;
+    var cal_both_wrong: i32 = 0;
+
+    // Phase 3: per-image records for threshold sweep
+    let tree_fast_class: *i32 = alloc(n_test);
+    let tree_fast_gap: *i64 = alloc(n_test);
+    let tree_slow_class: *i32 = alloc(n_test);
+    let tree_actual: *i32 = alloc(n_test);
+
+    ti = 0;
+    while ti < n_test {
+        var test_feat: *i32 = alloc(n_feat_dual);
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, test_feat);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &test_feat[280]);
+        extract_regime_features_horiz(&test_img[16 + ti * 784], &test_feat[407]);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+        tree_actual[ti] = actual;
+
+        // --- Fast path: compare to 10 Signatures ---
+        var best_sig_dist: i64 = 9999999999;
+        var second_sig_dist: i64 = 9999999999;
+        var best_sig_class: i32 = 0;
+        var sc: i32 = 0;
+        while sc < 10 {
+            var dist: i64 = 0;
+            var fj: i32 = 0;
+            while fj < n_feat_dual {
+                let d: i64 = (test_feat[fj] - sig_feats[sc * n_feat_dual + fj]) as i64;
+                dist = dist + d * d;
+                fj = fj + 1;
+            }
+            if dist < best_sig_dist {
+                second_sig_dist = best_sig_dist;
+                best_sig_dist = dist;
+                best_sig_class = sc;
+            } else {
+                if dist < second_sig_dist {
+                    second_sig_dist = dist;
+                }
+            }
+            sc = sc + 1;
+        }
+        tree_fast_class[ti] = best_sig_class;
+        tree_fast_gap[ti] = second_sig_dist - best_sig_dist;
+
+        // --- Slow path: k=5 k-NN ---
+        var top_dist: [i64; 7] = 0;
+        var top_label: [i32; 7] = 0;
+        var qi: i32 = 0;
+        while qi < 7 { top_dist[qi] = 9999999999; top_label[qi] = 0; qi = qi + 1; }
+
+        i = 0;
+        while i < n_train {
+            let off: i32 = i * n_feat_dual;
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_dual {
+                let d: i64 = (test_feat[jj] - train_feats[off + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < top_dist[4] {
+                var pos: i32 = 4;
+                while pos > 0 && dist < top_dist[pos - 1] {
+                    top_dist[pos] = top_dist[pos - 1];
+                    top_label[pos] = top_label[pos - 1];
+                    pos = pos - 1;
+                }
+                top_dist[pos] = dist;
+                top_label[pos] = train_labels[i];
+            }
+            i = i + 1;
+        }
+
+        // Majority vote
+        var votes: [i32; 10] = 0;
+        qi = 0;
+        while qi < 5 {
+            votes[top_label[qi]] = votes[top_label[qi]] + 1;
+            qi = qi + 1;
+        }
+        var best_class: i32 = 0;
+        var best_votes: i32 = 0;
+        var ci: i32 = 0;
+        while ci < 10 {
+            if votes[ci] > best_votes { best_votes = votes[ci]; best_class = ci; }
+            ci = ci + 1;
+        }
+        tree_slow_class[ti] = best_class;
+
+        // Phase 1: vote distribution
+        if best_votes == 5 {
+            vote5_count = vote5_count + 1;
+            if best_class == actual { vote5_correct = vote5_correct + 1; }
+        }
+        if best_votes == 4 {
+            vote4_count = vote4_count + 1;
+            if best_class == actual { vote4_correct = vote4_correct + 1; }
+        }
+        if best_votes == 3 {
+            vote3_count = vote3_count + 1;
+            if best_class == actual { vote3_correct = vote3_correct + 1; }
+        }
+
+        // Phase 4: calibration
+        var fast_right: i32 = 0;
+        if best_sig_class == actual { fast_right = 1; }
+        var slow_right: i32 = 0;
+        if best_class == actual { slow_right = 1; }
+
+        if fast_right == 1 && slow_right == 1 { cal_both_right = cal_both_right + 1; }
+        if fast_right == 1 && slow_right == 0 { cal_fast_only = cal_fast_only + 1; }
+        if fast_right == 0 && slow_right == 1 { cal_slow_only = cal_slow_only + 1; }
+        if fast_right == 0 && slow_right == 0 { cal_both_wrong = cal_both_wrong + 1; }
+
+        free(test_feat);
+        if ti % 1000 == 0 { wr(2, "  "); wr_int(2, ti as i64); wr(2, "/10000\n"); }
+        ti = ti + 1;
+    }
+
+    // --- Output Phase 1: k=5 vote distribution ---
+    wr(1, "\nPhase 1: k=5 vote distribution (what P looks like)\n");
+    wr(1, "5-0 (unanimous): "); wr_int(1, vote5_count as i64);
+    wr(1, " count, "); wr_int(1, vote5_correct as i64); wr(1, " correct");
+    if vote5_count > 0 {
+        wr(1, ", "); wr_int(1, ((vote5_correct as i64) * 1000) / (vote5_count as i64));
+        wr(1, " permille");
+    }
+    wr(1, "\n");
+    wr(1, "4-1 (strong):    "); wr_int(1, vote4_count as i64);
+    wr(1, " count, "); wr_int(1, vote4_correct as i64); wr(1, " correct");
+    if vote4_count > 0 {
+        wr(1, ", "); wr_int(1, ((vote4_correct as i64) * 1000) / (vote4_count as i64));
+        wr(1, " permille");
+    }
+    wr(1, "\n");
+    wr(1, "3-2 (contested): "); wr_int(1, vote3_count as i64);
+    wr(1, " count, "); wr_int(1, vote3_correct as i64); wr(1, " correct");
+    if vote3_count > 0 {
+        wr(1, ", "); wr_int(1, ((vote3_correct as i64) * 1000) / (vote3_count as i64));
+        wr(1, " permille");
+    }
+    wr(1, "\n");
+
+    // --- Output Phase 4: Calibration matrix ---
+    wr(1, "\nPhase 4: Calibration (Signature vs k-NN)\n");
+    wr(1, "Both right:         "); wr_int(1, cal_both_right as i64); wr(1, "\n");
+    wr(1, "Sig right, kNN wrong: "); wr_int(1, cal_fast_only as i64); wr(1, "\n");
+    wr(1, "kNN right, Sig wrong: "); wr_int(1, cal_slow_only as i64); wr(1, "\n");
+    wr(1, "Both wrong:         "); wr_int(1, cal_both_wrong as i64); wr(1, "\n");
+
+    let sig_total_correct: i32 = cal_both_right + cal_fast_only;
+    let knn_total_correct: i32 = cal_both_right + cal_slow_only;
+    wr(1, "Signature alone: "); wr_int(1, sig_total_correct as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((sig_total_correct as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+    wr(1, "k-NN alone:      "); wr_int(1, knn_total_correct as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((knn_total_correct as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // --- Output Phase 3: Threshold sweep ---
+    wr(1, "\nPhase 3: Tree routing threshold sweep\n");
+    wr(1, "gap = second_sig_dist - best_sig_dist (higher = more confident)\n");
+
+    // Find gap range
+    var min_gap: i64 = 9999999999;
+    var max_gap: i64 = 0;
+    ti = 0;
+    while ti < n_test {
+        if tree_fast_gap[ti] < min_gap { min_gap = tree_fast_gap[ti]; }
+        if tree_fast_gap[ti] > max_gap { max_gap = tree_fast_gap[ti]; }
+        ti = ti + 1;
+    }
+    wr(1, "Gap range: "); wr_int(1, min_gap); wr(1, " to "); wr_int(1, max_gap); wr(1, "\n");
+    wr(1, "Threshold | Fast% | Fast-Acc | Slow-Acc | Combined | Correct\n");
+
+    // Sweep 11 thresholds (0%, 10%, ..., 100% of max gap)
+    var step: i32 = 0;
+    while step <= 10 {
+        let threshold: i64 = (max_gap * (step as i64)) / 10;
+
+        var fast_count: i32 = 0;
+        var fast_correct: i32 = 0;
+        var slow_count: i32 = 0;
+        var slow_correct: i32 = 0;
+
+        ti = 0;
+        while ti < n_test {
+            if tree_fast_gap[ti] >= threshold {
+                // Fast path: use Signature prediction
+                fast_count = fast_count + 1;
+                if tree_fast_class[ti] == tree_actual[ti] { fast_correct = fast_correct + 1; }
+            } else {
+                // Slow path: use k-NN prediction
+                slow_count = slow_count + 1;
+                if tree_slow_class[ti] == tree_actual[ti] { slow_correct = slow_correct + 1; }
+            }
+            ti = ti + 1;
+        }
+
+        let total_correct: i32 = fast_correct + slow_correct;
+        wr_int(1, threshold);
+        wr(1, " | ");
+        wr_int(1, ((fast_count as i64) * 100) / (n_test as i64));
+        wr(1, "% | ");
+        if fast_count > 0 {
+            wr_int(1, ((fast_correct as i64) * 1000) / (fast_count as i64));
+        } else { wr(1, "n/a"); }
+        wr(1, " | ");
+        if slow_count > 0 {
+            wr_int(1, ((slow_correct as i64) * 1000) / (slow_count as i64));
+        } else { wr(1, "n/a"); }
+        wr(1, " | ");
+        wr_int(1, ((total_correct as i64) * 1000) / (n_test as i64));
+        wr(1, " | ");
+        wr_int(1, total_correct as i64);
+        wr(1, "/"); wr_int(1, n_test as i64);
+        wr(1, "\n");
+
+        step = step + 1;
+    }
+
+    // Free Phase 2a buffers (keep tree_slow_class, tree_actual for reuse)
+    free(tree_fast_class);
+    free(tree_fast_gap);
+    free(sig_feats);
+
+    // ========================================
+    //  Phase 2b: Multi-exemplar Signatures (M=10 per class)
+    //  + Centroid routing
+    // ========================================
+    wr(1, "\n=== Phase 2b: Stronger Signatures ===\n");
+
+    // --- Build multi-exemplar signatures (top-10 nearest-to-centroid per class) ---
+    wr(2, "Building multi-exemplar signatures (M=10)...\n");
+    let n_exemplars: i32 = 10;
+    let n_total_ex: i32 = 10 * n_exemplars;
+    let multi_sig_idx: *i32 = alloc(n_total_ex);
+    let multi_sig_dist: *i64 = alloc(n_total_ex);
+    var mi: i32 = 0;
+    while mi < n_total_ex { multi_sig_dist[mi] = 9999999999; mi = mi + 1; }
+
+    i = 0;
+    while i < n_train {
+        let label: i32 = train_labels[i];
+        let off: i32 = i * n_feat_dual;
+        var dist: i64 = 0;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            let d: i64 = (train_feats[off + fj] - cent_dual[label * n_feat_dual + fj]) as i64;
+            dist = dist + d * d;
+            fj = fj + 1;
+        }
+        let base: i32 = label * n_exemplars;
+        if dist < multi_sig_dist[base + n_exemplars - 1] {
+            var pos: i32 = n_exemplars - 1;
+            while pos > 0 && dist < multi_sig_dist[base + pos - 1] {
+                multi_sig_dist[base + pos] = multi_sig_dist[base + pos - 1];
+                multi_sig_idx[base + pos] = multi_sig_idx[base + pos - 1];
+                pos = pos - 1;
+            }
+            multi_sig_dist[base + pos] = dist;
+            multi_sig_idx[base + pos] = i;
+        }
+        i = i + 1;
+    }
+
+    // Copy multi-exemplar features for fast access
+    let multi_sig_feats: *i32 = alloc(n_total_ex * n_feat_dual);
+    mi = 0;
+    while mi < n_total_ex {
+        let src_off: i32 = multi_sig_idx[mi] * n_feat_dual;
+        let dst_off: i32 = mi * n_feat_dual;
+        var fj: i32 = 0;
+        while fj < n_feat_dual {
+            multi_sig_feats[dst_off + fj] = train_feats[src_off + fj];
+            fj = fj + 1;
+        }
+        mi = mi + 1;
+    }
+
+    // --- Test loop: multi-exemplar + centroid in one pass ---
+    wr(2, "Classifying (multi-exemplar + centroid)...\n");
+    let multi_fast_class: *i32 = alloc(n_test);
+    let multi_fast_gap: *i64 = alloc(n_test);
+    let cent_fast_class: *i32 = alloc(n_test);
+    let cent_fast_gap: *i64 = alloc(n_test);
+    var multi_correct: i32 = 0;
+    var cent_correct: i32 = 0;
+
+    ti = 0;
+    while ti < n_test {
+        var test_feat: *i32 = alloc(n_feat_dual);
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, test_feat);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &test_feat[280]);
+        extract_regime_features_horiz(&test_img[16 + ti * 784], &test_feat[407]);
+        let actual: i32 = tree_actual[ti];
+
+        // --- Multi-exemplar: find per-class best distance among 100 exemplars ---
+        var class_best: [i64; 10] = 0;
+        var ci: i32 = 0;
+        while ci < 10 { class_best[ci] = 9999999999; ci = ci + 1; }
+
+        mi = 0;
+        while mi < n_total_ex {
+            let ex_class: i32 = mi / n_exemplars;
+            let ex_off: i32 = mi * n_feat_dual;
+            var dist: i64 = 0;
+            var fj: i32 = 0;
+            while fj < n_feat_dual {
+                let d: i64 = (test_feat[fj] - multi_sig_feats[ex_off + fj]) as i64;
+                dist = dist + d * d;
+                fj = fj + 1;
+            }
+            if dist < class_best[ex_class] { class_best[ex_class] = dist; }
+            mi = mi + 1;
+        }
+
+        // Best and second-best class for multi-exemplar
+        var me_best_dist: i64 = 9999999999;
+        var me_second_dist: i64 = 9999999999;
+        var me_best_class: i32 = 0;
+        ci = 0;
+        while ci < 10 {
+            if class_best[ci] < me_best_dist {
+                me_second_dist = me_best_dist;
+                me_best_dist = class_best[ci];
+                me_best_class = ci;
+            } else {
+                if class_best[ci] < me_second_dist {
+                    me_second_dist = class_best[ci];
+                }
+            }
+            ci = ci + 1;
+        }
+        multi_fast_class[ti] = me_best_class;
+        multi_fast_gap[ti] = me_second_dist - me_best_dist;
+        if me_best_class == actual { multi_correct = multi_correct + 1; }
+
+        // --- Centroid: distance to 10 centroids ---
+        var c_best_dist: i64 = 9999999999;
+        var c_second_dist: i64 = 9999999999;
+        var c_best_class: i32 = 0;
+        var kk: i32 = 0;
+        while kk < 10 {
+            var dist: i64 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat_dual {
+                let d: i64 = (test_feat[jj] - cent_dual[kk * n_feat_dual + jj]) as i64;
+                dist = dist + d * d;
+                jj = jj + 1;
+            }
+            if dist < c_best_dist {
+                c_second_dist = c_best_dist;
+                c_best_dist = dist;
+                c_best_class = kk;
+            } else {
+                if dist < c_second_dist {
+                    c_second_dist = dist;
+                }
+            }
+            kk = kk + 1;
+        }
+        cent_fast_class[ti] = c_best_class;
+        cent_fast_gap[ti] = c_second_dist - c_best_dist;
+        if c_best_class == actual { cent_correct = cent_correct + 1; }
+
+        free(test_feat);
+        if ti % 1000 == 0 { wr(2, "  "); wr_int(2, ti as i64); wr(2, "/10000\n"); }
+        ti = ti + 1;
+    }
+
+    // --- Results ---
+    wr(1, "\nMulti-exemplar(M=10): "); wr_int(1, multi_correct as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((multi_correct as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+    wr(1, "Centroid routing:    "); wr_int(1, cent_correct as i64);
+    wr(1, "/"); wr_int(1, n_test as i64);
+    wr(1, " ("); wr_int(1, ((cent_correct as i64) * 1000) / (n_test as i64));
+    wr(1, " permille)\n");
+
+    // --- Multi-exemplar calibration ---
+    var me_both_right: i32 = 0;
+    var me_fast_only: i32 = 0;
+    var me_slow_only: i32 = 0;
+    var me_both_wrong: i32 = 0;
+    ti = 0;
+    while ti < n_test {
+        var fr: i32 = 0;
+        if multi_fast_class[ti] == tree_actual[ti] { fr = 1; }
+        var sr: i32 = 0;
+        if tree_slow_class[ti] == tree_actual[ti] { sr = 1; }
+        if fr == 1 && sr == 1 { me_both_right = me_both_right + 1; }
+        if fr == 1 && sr == 0 { me_fast_only = me_fast_only + 1; }
+        if fr == 0 && sr == 1 { me_slow_only = me_slow_only + 1; }
+        if fr == 0 && sr == 0 { me_both_wrong = me_both_wrong + 1; }
+        ti = ti + 1;
+    }
+    wr(1, "\nMulti-exemplar calibration:\n");
+    wr(1, "Both right:          "); wr_int(1, me_both_right as i64); wr(1, "\n");
+    wr(1, "ME right, kNN wrong: "); wr_int(1, me_fast_only as i64); wr(1, "\n");
+    wr(1, "kNN right, ME wrong: "); wr_int(1, me_slow_only as i64); wr(1, "\n");
+    wr(1, "Both wrong:          "); wr_int(1, me_both_wrong as i64); wr(1, "\n");
+
+    // --- Multi-exemplar threshold sweep ---
+    wr(1, "\nMulti-exemplar Tree routing:\n");
+    min_gap = 9999999999;
+    max_gap = 0;
+    ti = 0;
+    while ti < n_test {
+        if multi_fast_gap[ti] < min_gap { min_gap = multi_fast_gap[ti]; }
+        if multi_fast_gap[ti] > max_gap { max_gap = multi_fast_gap[ti]; }
+        ti = ti + 1;
+    }
+    wr(1, "Gap range: "); wr_int(1, min_gap); wr(1, " to "); wr_int(1, max_gap); wr(1, "\n");
+    wr(1, "Thresh | Fast% | Fast-Acc | Slow-Acc | Combined | Correct\n");
+
+    step = 0;
+    while step <= 10 {
+        let threshold: i64 = (max_gap * (step as i64)) / 10;
+        var fast_count: i32 = 0;
+        var fast_correct: i32 = 0;
+        var slow_count: i32 = 0;
+        var slow_correct: i32 = 0;
+        ti = 0;
+        while ti < n_test {
+            if multi_fast_gap[ti] >= threshold {
+                fast_count = fast_count + 1;
+                if multi_fast_class[ti] == tree_actual[ti] { fast_correct = fast_correct + 1; }
+            } else {
+                slow_count = slow_count + 1;
+                if tree_slow_class[ti] == tree_actual[ti] { slow_correct = slow_correct + 1; }
+            }
+            ti = ti + 1;
+        }
+        let total_correct: i32 = fast_correct + slow_correct;
+        wr_int(1, threshold);
+        wr(1, " | ");
+        wr_int(1, ((fast_count as i64) * 100) / (n_test as i64));
+        wr(1, "% | ");
+        if fast_count > 0 { wr_int(1, ((fast_correct as i64) * 1000) / (fast_count as i64)); }
+        else { wr(1, "n/a"); }
+        wr(1, " | ");
+        if slow_count > 0 { wr_int(1, ((slow_correct as i64) * 1000) / (slow_count as i64)); }
+        else { wr(1, "n/a"); }
+        wr(1, " | ");
+        wr_int(1, ((total_correct as i64) * 1000) / (n_test as i64));
+        wr(1, " | ");
+        wr_int(1, total_correct as i64);
+        wr(1, "/"); wr_int(1, n_test as i64);
+        wr(1, "\n");
+        step = step + 1;
+    }
+
+    // --- Centroid threshold sweep ---
+    wr(1, "\nCentroid Tree routing:\n");
+    min_gap = 9999999999;
+    max_gap = 0;
+    ti = 0;
+    while ti < n_test {
+        if cent_fast_gap[ti] < min_gap { min_gap = cent_fast_gap[ti]; }
+        if cent_fast_gap[ti] > max_gap { max_gap = cent_fast_gap[ti]; }
+        ti = ti + 1;
+    }
+    wr(1, "Gap range: "); wr_int(1, min_gap); wr(1, " to "); wr_int(1, max_gap); wr(1, "\n");
+    wr(1, "Thresh | Fast% | Fast-Acc | Slow-Acc | Combined | Correct\n");
+
+    step = 0;
+    while step <= 10 {
+        let threshold: i64 = (max_gap * (step as i64)) / 10;
+        var fast_count: i32 = 0;
+        var fast_correct: i32 = 0;
+        var slow_count: i32 = 0;
+        var slow_correct: i32 = 0;
+        ti = 0;
+        while ti < n_test {
+            if cent_fast_gap[ti] >= threshold {
+                fast_count = fast_count + 1;
+                if cent_fast_class[ti] == tree_actual[ti] { fast_correct = fast_correct + 1; }
+            } else {
+                slow_count = slow_count + 1;
+                if tree_slow_class[ti] == tree_actual[ti] { slow_correct = slow_correct + 1; }
+            }
+            ti = ti + 1;
+        }
+        let total_correct: i32 = fast_correct + slow_correct;
+        wr_int(1, threshold);
+        wr(1, " | ");
+        wr_int(1, ((fast_count as i64) * 100) / (n_test as i64));
+        wr(1, "% | ");
+        if fast_count > 0 { wr_int(1, ((fast_correct as i64) * 1000) / (fast_count as i64)); }
+        else { wr(1, "n/a"); }
+        wr(1, " | ");
+        if slow_count > 0 { wr_int(1, ((slow_correct as i64) * 1000) / (slow_count as i64)); }
+        else { wr(1, "n/a"); }
+        wr(1, " | ");
+        wr_int(1, ((total_correct as i64) * 1000) / (n_test as i64));
+        wr(1, " | ");
+        wr_int(1, total_correct as i64);
+        wr(1, "/"); wr_int(1, n_test as i64);
+        wr(1, "\n");
+        step = step + 1;
+    }
+
+    // Free Phase 2b buffers (keep tree_slow_class, tree_actual, cent_dual for cascade)
+    free(multi_sig_idx);
+    free(multi_sig_dist);
+    free(multi_sig_feats);
+    free(multi_fast_class);
+    free(multi_fast_gap);
+    free(cent_fast_class);
+    free(cent_fast_gap);
+
+    // ========================================
+    //  CASCADE: Cortical Hierarchy Experiment
+    //  8 levels of increasing feature resolution
+    //  Incremental centroid distance, ratio-based confidence
+    // ========================================
+    wr(1, "\n=== Cascade: Cortical Hierarchy ===\n");
+
+    let n_levels: i32 = 8;
+
+    // Feature ranges per level: [start, end) into the 534-feature vector
+    // Levels 0-5: Hilbert regime internals (280-406)
+    // Level 6: Hilbert window coefficients (0-279)
+    // Level 7: Horizontal regime (407-533)
+    var level_start: [i32; 8] = 0;
+    var level_end: [i32; 8] = 0;
+    level_start[0] = 280; level_end[0] = 283;
+    level_start[1] = 283; level_end[1] = 288;
+    level_start[2] = 288; level_end[2] = 291;
+    level_start[3] = 291; level_end[3] = 319;
+    level_start[4] = 319; level_end[4] = 347;
+    level_start[5] = 347; level_end[5] = 407;
+    level_start[6] = 0;   level_end[6] = 280;
+    level_start[7] = 407; level_end[7] = 534;
+
+    // Cumulative feature counts per level
+    var level_cum_feats: [i32; 8] = 0;
+    level_cum_feats[0] = 3;
+    level_cum_feats[1] = 8;
+    level_cum_feats[2] = 11;
+    level_cum_feats[3] = 39;
+    level_cum_feats[4] = 67;
+    level_cum_feats[5] = 127;
+    level_cum_feats[6] = 407;
+    level_cum_feats[7] = 534;
+
+    // Per-image, per-level: predicted class and confidence ratio
+    let casc_class: *i32 = alloc(n_test * n_levels);
+    let casc_ratio: *i32 = alloc(n_test * n_levels);
+
+    wr(2, "Computing cascade predictions (8 levels)...\n");
+    ti = 0;
+    while ti < n_test {
+        var test_feat: *i32 = alloc(n_feat_dual);
+        extract_hilbert_features(&test_img[16 + ti * 784], hilbert_order, test_feat);
+        extract_regime_features(&test_img[16 + ti * 784], hilbert_order, &test_feat[280]);
+        extract_regime_features_horiz(&test_img[16 + ti * 784], &test_feat[407]);
+
+        // Running per-class distances (accumulated across levels)
+        var class_dist: [i64; 10] = 0;
+
+        var lv: i32 = 0;
+        while lv < n_levels {
+            let fs: i32 = level_start[lv];
+            let fe: i32 = level_end[lv];
+
+            // Add this level's features to per-class distances
+            var ci: i32 = 0;
+            while ci < 10 {
+                var fj: i32 = fs;
+                while fj < fe {
+                    let d: i64 = (test_feat[fj] - cent_dual[ci * n_feat_dual + fj]) as i64;
+                    class_dist[ci] = class_dist[ci] + d * d;
+                    fj = fj + 1;
+                }
+                ci = ci + 1;
+            }
+
+            // Find best and second-best class
+            var best_dist: i64 = 9999999999;
+            var second_dist: i64 = 9999999999;
+            var best_class: i32 = 0;
+            ci = 0;
+            while ci < 10 {
+                if class_dist[ci] < best_dist {
+                    second_dist = best_dist;
+                    best_dist = class_dist[ci];
+                    best_class = ci;
+                } else {
+                    if class_dist[ci] < second_dist {
+                        second_dist = class_dist[ci];
+                    }
+                }
+                ci = ci + 1;
+            }
+
+            casc_class[ti * n_levels + lv] = best_class;
+            if best_dist > 0 {
+                casc_ratio[ti * n_levels + lv] = (second_dist * 100 / best_dist) as i32;
+            } else {
+                casc_ratio[ti * n_levels + lv] = 9999;
+            }
+
+            lv = lv + 1;
+        }
+
+        free(test_feat);
+        if ti % 2000 == 0 { wr(2, "  "); wr_int(2, ti as i64); wr(2, "/10000\n"); }
+        ti = ti + 1;
+    }
+
+    // --- Phase A: Per-level standalone accuracy ---
+    wr(1, "\nPhase A: Per-level standalone accuracy\n");
+    wr(1, "Level | Feats | Correct | Permille\n");
+    var lv: i32 = 0;
+    while lv < n_levels {
+        var correct: i32 = 0;
+        ti = 0;
+        while ti < n_test {
+            if casc_class[ti * n_levels + lv] == tree_actual[ti] { correct = correct + 1; }
+            ti = ti + 1;
+        }
+        wr(1, "L"); wr_int(1, lv as i64);
+        wr(1, "    | "); wr_int(1, level_cum_feats[lv] as i64);
+        wr(1, "   | "); wr_int(1, correct as i64);
+        wr(1, "/10000 | "); wr_int(1, ((correct as i64) * 1000) / (n_test as i64));
+        wr(1, "\n");
+        lv = lv + 1;
+    }
+
+    // --- Phase A: Per-digit per-level accuracy ---
+    wr(1, "\nPer-digit accuracy at each level (permille):\n");
+    wr(1, "Digit | L0   L1   L2   L3   L4   L5   L6   L7\n");
+    var digit: i32 = 0;
+    while digit < 10 {
+        wr_int(1, digit as i64); wr(1, "     |");
+        lv = 0;
+        while lv < n_levels {
+            var dcount: i32 = 0;
+            var dcorrect: i32 = 0;
+            ti = 0;
+            while ti < n_test {
+                if tree_actual[ti] == digit {
+                    dcount = dcount + 1;
+                    if casc_class[ti * n_levels + lv] == digit { dcorrect = dcorrect + 1; }
+                }
+                ti = ti + 1;
+            }
+            if dcount > 0 {
+                let perm: i32 = ((dcorrect as i64) * 1000 / (dcount as i64)) as i32;
+                if perm < 100 { wr(1, "  "); }
+                else { if perm < 1000 { wr(1, " "); } }
+                wr_int(1, perm as i64);
+            } else { wr(1, "   0"); }
+            lv = lv + 1;
+        }
+        wr(1, "\n");
+        digit = digit + 1;
+    }
+
+    // --- Phase B+D: Cascade simulation ---
+    wr(1, "\nPhase B: Cascade simulation\n");
+    wr(1, "ratio = second_dist*100/first_dist (higher = more confident)\n");
+    wr(1, "Ratio | L0  L1  L2  L3  L4  L5  L6  L7  kNN | Correct (permille) | Avg-ops\n");
+
+    var ratio_thresh: [i32; 10] = 0;
+    ratio_thresh[0] = 105;
+    ratio_thresh[1] = 110;
+    ratio_thresh[2] = 115;
+    ratio_thresh[3] = 120;
+    ratio_thresh[4] = 130;
+    ratio_thresh[5] = 150;
+    ratio_thresh[6] = 200;
+    ratio_thresh[7] = 300;
+    ratio_thresh[8] = 500;
+    ratio_thresh[9] = 1000;
+
+    var ri: i32 = 0;
+    while ri < 10 {
+        let rthresh: i32 = ratio_thresh[ri];
+        var level_term: [i32; 9] = 0;
+        var cascade_correct: i32 = 0;
+        var total_cost: i64 = 0;
+
+        ti = 0;
+        while ti < n_test {
+            var terminated: i32 = 0;
+            var term_class: i32 = 0;
+            lv = 0;
+            while lv < n_levels && terminated == 0 {
+                if casc_ratio[ti * n_levels + lv] >= rthresh {
+                    terminated = 1;
+                    term_class = casc_class[ti * n_levels + lv];
+                    level_term[lv] = level_term[lv] + 1;
+                    total_cost = total_cost + (level_cum_feats[lv] as i64) * 10;
+                }
+                lv = lv + 1;
+            }
+            if terminated == 0 {
+                level_term[8] = level_term[8] + 1;
+                term_class = tree_slow_class[ti];
+                total_cost = total_cost + (n_feat_dual as i64) * (n_train as i64);
+            }
+            if term_class == tree_actual[ti] { cascade_correct = cascade_correct + 1; }
+            ti = ti + 1;
+        }
+
+        wr_int(1, rthresh as i64); wr(1, " |");
+        lv = 0;
+        while lv < 9 {
+            wr(1, " "); wr_int(1, level_term[lv] as i64);
+            lv = lv + 1;
+        }
+        wr(1, " | ");
+        wr_int(1, cascade_correct as i64); wr(1, " (");
+        wr_int(1, ((cascade_correct as i64) * 1000) / (n_test as i64));
+        wr(1, ") | ");
+        wr_int(1, total_cost / (n_test as i64));
+        wr(1, "\n");
+
+        ri = ri + 1;
+    }
+
+    // --- Phase D: Per-digit termination profile at ratio=150 ---
+    wr(1, "\nPhase D: Per-digit termination profile (ratio >= 150)\n");
+    wr(1, "Digit | L0  L1  L2  L3  L4  L5  L6  L7  kNN | Correct/Total\n");
+    digit = 0;
+    while digit < 10 {
+        var dlevel: [i32; 9] = 0;
+        var dcorrect: i32 = 0;
+        var dtotal: i32 = 0;
+        ti = 0;
+        while ti < n_test {
+            if tree_actual[ti] == digit {
+                dtotal = dtotal + 1;
+                var terminated: i32 = 0;
+                var term_class: i32 = 0;
+                lv = 0;
+                while lv < n_levels && terminated == 0 {
+                    if casc_ratio[ti * n_levels + lv] >= 150 {
+                        terminated = 1;
+                        term_class = casc_class[ti * n_levels + lv];
+                        dlevel[lv] = dlevel[lv] + 1;
+                    }
+                    lv = lv + 1;
+                }
+                if terminated == 0 {
+                    dlevel[8] = dlevel[8] + 1;
+                    term_class = tree_slow_class[ti];
+                }
+                if term_class == digit { dcorrect = dcorrect + 1; }
+            }
+            ti = ti + 1;
+        }
+        wr_int(1, digit as i64); wr(1, "     |");
+        lv = 0;
+        while lv < 9 {
+            wr(1, " "); wr_int(1, dlevel[lv] as i64);
+            lv = lv + 1;
+        }
+        wr(1, " | "); wr_int(1, dcorrect as i64);
+        wr(1, "/"); wr_int(1, dtotal as i64);
+        wr(1, "\n");
+        digit = digit + 1;
+    }
+
+    // ========================================
+    //  COLLAPSED CASCADE: Precision curves + optimal policy
+    //  Uses stored casc_class/casc_ratio from 8-level run
+    // ========================================
+    wr(1, "\n=== Collapsed Cascade: Precision Curves ===\n");
+
+    // Precision curve for levels L0, L3, L6, L7
+    // At each level: accuracy of predictions with ratio >= threshold
+    var probe_levels: [i32; 4] = 0;
+    probe_levels[0] = 0;
+    probe_levels[1] = 3;
+    probe_levels[2] = 6;
+    probe_levels[3] = 7;
+
+    var probe_ratios: [i32; 10] = 0;
+    probe_ratios[0] = 105;
+    probe_ratios[1] = 110;
+    probe_ratios[2] = 120;
+    probe_ratios[3] = 130;
+    probe_ratios[4] = 150;
+    probe_ratios[5] = 200;
+    probe_ratios[6] = 300;
+    probe_ratios[7] = 500;
+    probe_ratios[8] = 1000;
+    probe_ratios[9] = 2000;
+
+    var pi: i32 = 0;
+    while pi < 4 {
+        let plv: i32 = probe_levels[pi];
+        wr(1, "\nL"); wr_int(1, plv as i64);
+        wr(1, " ("); wr_int(1, level_cum_feats[plv] as i64);
+        wr(1, " features) precision curve:\n");
+        wr(1, "Ratio>= | Count | Correct | Permille\n");
+
+        var pri: i32 = 0;
+        while pri < 10 {
+            let rr: i32 = probe_ratios[pri];
+            var pcount: i32 = 0;
+            var pcorrect: i32 = 0;
+            ti = 0;
+            while ti < n_test {
+                if casc_ratio[ti * n_levels + plv] >= rr {
+                    pcount = pcount + 1;
+                    if casc_class[ti * n_levels + plv] == tree_actual[ti] {
+                        pcorrect = pcorrect + 1;
+                    }
+                }
+                ti = ti + 1;
+            }
+            wr_int(1, rr as i64); wr(1, "    | ");
+            wr_int(1, pcount as i64); wr(1, " | ");
+            wr_int(1, pcorrect as i64); wr(1, " | ");
+            if pcount > 0 {
+                wr_int(1, ((pcorrect as i64) * 1000) / (pcount as i64));
+            } else { wr(1, "n/a"); }
+            wr(1, "\n");
+            pri = pri + 1;
+        }
+        pi = pi + 1;
+    }
+
+    // --- Per-class precision at L0 (gate candidates) ---
+    wr(1, "\nL0 per-class precision (predicted class C, ratio >= R):\n");
+    wr(1, "Class | Ratio>= | Count | Correct | Permille\n");
+    var gc: i32 = 0;
+    while gc < 10 {
+        var gri: i32 = 0;
+        while gri < 5 {
+            var gate_ratios: [i32; 5] = 0;
+            gate_ratios[0] = 150;
+            gate_ratios[1] = 200;
+            gate_ratios[2] = 300;
+            gate_ratios[3] = 500;
+            gate_ratios[4] = 1000;
+            let gr: i32 = gate_ratios[gri];
+            var gcount: i32 = 0;
+            var gcorrect: i32 = 0;
+            ti = 0;
+            while ti < n_test {
+                if casc_class[ti * n_levels + 0] == gc && casc_ratio[ti * n_levels + 0] >= gr {
+                    gcount = gcount + 1;
+                    if tree_actual[ti] == gc { gcorrect = gcorrect + 1; }
+                }
+                ti = ti + 1;
+            }
+            if gcount > 0 {
+                wr_int(1, gc as i64); wr(1, "     | ");
+                wr_int(1, gr as i64); wr(1, "    | ");
+                wr_int(1, gcount as i64); wr(1, " | ");
+                wr_int(1, gcorrect as i64); wr(1, " | ");
+                wr_int(1, ((gcorrect as i64) * 1000) / (gcount as i64));
+                wr(1, "\n");
+            }
+            gri = gri + 1;
+        }
+        gc = gc + 1;
+    }
+
+    // --- Collapsed cascade simulation (6 configs, per-level ratio thresholds) ---
+    // Gate: L0 only for class 1; Level A: L3; Level B: L6; Level C: L7; Fallback: kNN
+    wr(1, "\nCollapsed cascade (Gate-1 -> L3 -> L6 -> L7 -> kNN):\n");
+    wr(1, "Config | G1-thresh | L3-thr | L6-thr | L7-thr | Gate L3  L6  L7  kNN | Correct (pm) | Avg-ops\n");
+
+    var cfg: i32 = 0;
+    while cfg < 6 {
+        // Per-config thresholds
+        var g1_thr: i32 = 0;
+        var l3_thr: i32 = 0;
+        var l6_thr: i32 = 0;
+        var l7_thr: i32 = 0;
+
+        if cfg == 0 { g1_thr = 500; l3_thr = 500; l6_thr = 300; l7_thr = 200; }
+        if cfg == 1 { g1_thr = 300; l3_thr = 300; l6_thr = 200; l7_thr = 150; }
+        if cfg == 2 { g1_thr = 200; l3_thr = 200; l6_thr = 150; l7_thr = 120; }
+        if cfg == 3 { g1_thr = 0;   l3_thr = 500; l6_thr = 300; l7_thr = 200; }
+        if cfg == 4 { g1_thr = 0;   l3_thr = 0;   l6_thr = 300; l7_thr = 200; }
+        if cfg == 5 { g1_thr = 0;   l3_thr = 0;   l6_thr = 0;   l7_thr = 200; }
+
+        var term_gate: i32 = 0;
+        var term_l3: i32 = 0;
+        var term_l6: i32 = 0;
+        var term_l7: i32 = 0;
+        var term_knn: i32 = 0;
+        var ccorrect: i32 = 0;
+        var ccost: i64 = 0;
+
+        ti = 0;
+        while ti < n_test {
+            var tclass: i32 = 0;
+            var done: i32 = 0;
+
+            // Gate: L0 for class 1 only
+            if done == 0 && g1_thr > 0 {
+                if casc_class[ti * n_levels + 0] == 1 && casc_ratio[ti * n_levels + 0] >= g1_thr {
+                    tclass = 1;
+                    done = 1;
+                    term_gate = term_gate + 1;
+                    ccost = ccost + 30;
+                }
+            }
+            // Level A: L3 (39 features)
+            if done == 0 && l3_thr > 0 {
+                if casc_ratio[ti * n_levels + 3] >= l3_thr {
+                    tclass = casc_class[ti * n_levels + 3];
+                    done = 1;
+                    term_l3 = term_l3 + 1;
+                    ccost = ccost + 390;
+                }
+            }
+            // Level B: L6 (407 features)
+            if done == 0 && l6_thr > 0 {
+                if casc_ratio[ti * n_levels + 6] >= l6_thr {
+                    tclass = casc_class[ti * n_levels + 6];
+                    done = 1;
+                    term_l6 = term_l6 + 1;
+                    ccost = ccost + 4070;
+                }
+            }
+            // Level C: L7 (534 features)
+            if done == 0 && l7_thr > 0 {
+                if casc_ratio[ti * n_levels + 7] >= l7_thr {
+                    tclass = casc_class[ti * n_levels + 7];
+                    done = 1;
+                    term_l7 = term_l7 + 1;
+                    ccost = ccost + 5340;
+                }
+            }
+            // Fallback: k-NN
+            if done == 0 {
+                tclass = tree_slow_class[ti];
+                term_knn = term_knn + 1;
+                ccost = ccost + 32040000;
+            }
+
+            if tclass == tree_actual[ti] { ccorrect = ccorrect + 1; }
+            ti = ti + 1;
+        }
+
+        wr_int(1, cfg as i64); wr(1, "      | ");
+        wr_int(1, g1_thr as i64); wr(1, "       | ");
+        wr_int(1, l3_thr as i64); wr(1, "    | ");
+        wr_int(1, l6_thr as i64); wr(1, "    | ");
+        wr_int(1, l7_thr as i64); wr(1, "    | ");
+        wr_int(1, term_gate as i64); wr(1, " ");
+        wr_int(1, term_l3 as i64); wr(1, " ");
+        wr_int(1, term_l6 as i64); wr(1, " ");
+        wr_int(1, term_l7 as i64); wr(1, " ");
+        wr_int(1, term_knn as i64);
+        wr(1, " | "); wr_int(1, ccorrect as i64);
+        wr(1, " ("); wr_int(1, ((ccorrect as i64) * 1000) / (n_test as i64));
+        wr(1, ") | "); wr_int(1, ccost / (n_test as i64));
+        wr(1, "\n");
+
+        cfg = cfg + 1;
+    }
+
+    // Free cascade + remaining buffers
+    free(casc_class);
+    free(casc_ratio);
+    free(tree_slow_class);
+    free(tree_actual);
+
+    free(train_feats);
+    free(train_labels);
+    free(feat_mean);
+    free(feat_var);
+    free(cent_dual);
+    free(cnt_dual);
+
+    // Done
+    exit(0);
+
+    // NOTE: Feature Information Analysis section removed (parser 1024-stmt
+    // block limit); original preserved in session-notes. Details: @internal-design: genus.
+
+}

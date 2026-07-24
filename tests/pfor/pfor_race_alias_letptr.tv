@@ -1,0 +1,37 @@
+// #46 regression: a body-local pointer copy must NEVER be an array base —
+// the hazard tables are name-keyed and cannot see `let p = out;`.
+//
+// Loop A (write side, the demonstrated race): p aliases out. Iteration j
+// writes cell j+1 via p; iteration j+1 writes cell j+1 via out. Serial
+// order gives out[1024] = 1024*7 = 7168; pre-fix dispatch printed 2046
+// under TRAVELER_THREADS=2 (the chunk-boundary cell). Reason: private-base.
+//
+// Loop B (read side): q aliases out2. q[j+1] reads the cell iteration j+1
+// writes — serial reads the ORIGINAL value (out2[j] = 3(j+1)+1 = 3j+4);
+// any dispatch order can read the overwritten one. Refused at hazard time
+// (private_read taint + a write present). Reason: private-base.
+//
+// Both loops MUST stay serial: 0 workers.
+fn main() -> i32 {
+    let n: i32 = 2048;
+    let out: *i64 = alloc((n + 1) * 8);
+    var i: i32 = 0;
+    while i < n + 1 { out[i] = 0; i = i + 1; }
+    for j in 0..2048 {
+        let p: *i64 = out;
+        p[j + 1] = (j * 2) as i64;
+        out[j] = (j * 7) as i64;
+    }
+    print(out[1024]);
+
+    let out2: *i64 = alloc((n + 1) * 8);
+    i = 0;
+    while i < n + 1 { out2[i] = (i * 3) as i64; i = i + 1; }
+    for j in 0..2048 {
+        let q: *i64 = out2;
+        out2[j] = q[j + 1] + 1;
+    }
+    print(out2[0]);
+    print(out2[2047]);
+    return 0;
+}

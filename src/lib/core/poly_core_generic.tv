@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poly_core_generic.tv — field-generic (<F: Field>) four-operation kernel:
+// forward_sum / forward_diff / regime_detect / eval_at. Caller-owned buffers.
+// @internal-design: core
+
+// ===== FORWARD SUMMATION (decode) =====
+
+// Evaluate a Newton-basis polynomial (coeffs[0..order]) at n consecutive
+// points into out[0..n-1], via the register reg[0..order] (caller scratch).
+#[export]
+fn forward_sum<F: Field>(coeffs: *F, order: i32, out: *F, n: i32, reg: *F) {
+    // Initialize register from Newton coefficients
+    var k: i32 = 0;
+    while k <= order {
+        reg[k] = coeffs[k];
+        k = k + 1;
+    }
+
+    // Evaluate at n consecutive points
+    var i: i32 = 0;
+    while i < n {
+        out[i] = reg[0];
+        // Advance register: reg[j] += reg[j+1]
+        var j: i32 = 0;
+        while j < order {
+            reg[j] = reg[j] + reg[j + 1];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// ===== FORWARD DIFFERENCES (analyze) =====
+
+// Compute Newton forward differences of data[0..n-1] into coeffs, up to
+// max_order, using work[0..n-1] as scratch. Returns the detected order.
+#[export]
+fn forward_diff<F: Field>(data: *F, n: i32, coeffs: *F, max_order: i32, work: *F) -> i32 {
+    // Copy data to work buffer
+    var i: i32 = 0;
+    while i < n {
+        work[i] = data[i];
+        i = i + 1;
+    }
+
+    // Compute forward differences level by level
+    var d: i32 = 0;
+    var remaining: i32 = n;
+    while d <= max_order && remaining > 0 {
+        coeffs[d] = work[0];
+
+        // Check if all values at this level are zero (for d > 0)
+        if d > 0 {
+            var all_zero: i32 = 1;
+            var ci: i32 = 0;
+            while ci < remaining {
+                let val: F = work[ci];
+                let zero: F = 0;
+                if val != zero {
+                    all_zero = 0;
+                }
+                ci = ci + 1;
+            }
+            if all_zero == 1 {
+                return d;
+            }
+        }
+
+        // Compute next level: work[j] = work[j+1] - work[j]
+        var j: i32 = 0;
+        while j < remaining - 1 {
+            work[j] = work[j + 1] - work[j];
+            j = j + 1;
+        }
+        remaining = remaining - 1;
+        d = d + 1;
+    }
+
+    return max_order;
+}
+
+// ===== REGIME DETECTION (segment) =====
+
+// Walk data[0..n-1] with an order-`order` difference register (reg, caller
+// scratch); return the first index whose residual exceeds threshold, else n.
+#[export]
+fn regime_detect<F: Field>(data: *F, n: i32, order: i32, threshold: i32, reg: *F) -> i32 {
+    if n <= order { return n; }
+
+    // Initialize register via forward differencing on first order+1 samples
+    var k: i32 = 0;
+    while k <= order {
+        reg[k] = data[k];
+        k = k + 1;
+    }
+    // In-place forward difference
+    var d: i32 = 0;
+    while d < order {
+        var j: i32 = order;
+        while j > d {
+            reg[j] = reg[j] - reg[j - 1];
+            j = j - 1;
+        }
+        d = d + 1;
+    }
+
+    // Advance register through initialization window
+    var adv: i32 = 0;
+    while adv < order {
+        var j: i32 = 0;
+        while j < order {
+            reg[j] = reg[j] + reg[j + 1];
+            j = j + 1;
+        }
+        adv = adv + 1;
+    }
+
+    // Scan: predict via register advance, compare to actual
+    var i: i32 = order + 1;
+    while i < n {
+        var j: i32 = 0;
+        while j < order {
+            reg[j] = reg[j] + reg[j + 1];
+            j = j + 1;
+        }
+        let predicted: F = reg[0];
+        let actual: F = data[i];
+        let residual: F = actual - predicted;
+        // signed() converts field element to balanced signed integer
+        let s: i32 = signed(residual);
+        var abs_res: i32 = s;
+        if abs_res < 0 { abs_res = 0 - abs_res; }
+        if abs_res > threshold {
+            return i;
+        }
+        reg[0] = actual;
+        i = i + 1;
+    }
+
+    return n;
+}
+
+// ===== ARBITRARY-POINT EVALUATION (query) =====
+
+// Evaluate a Newton-basis polynomial (coeffs[0..order]) at an arbitrary field
+// point x: Horner on the binomial basis f(x) = Σ c_k · C(x, k).
+#[export]
+fn eval_at<F: Field>(coeffs: *F, order: i32, x: F) -> F {
+    let zero: F = 0;
+    if order < 0 { return zero; }
+    var result: F = coeffs[order];
+    var k: i32 = order - 1;
+    while k >= 0 {
+        let xmk: F = x - (k as F);
+        let kp1: F = (k + 1) as F;
+        let inv_kp1: F = 1 / kp1;
+        let factor: F = xmk * inv_kp1;
+        result = coeffs[k] + result * factor;
+        k = k - 1;
+    }
+    return result;
+}

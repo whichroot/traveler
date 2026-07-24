@@ -1,0 +1,368 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// json_parse.tv — a minimal JSON *reader*: parse a byte buffer into a flat,
+// index-based value arena (left-child / right-sibling tree — tvc_self's own AST
+// style), Result at the membrane. INTEGERS ONLY: a JSON float (`.`/`e`) is a
+// LOUD parse error, never silently truncated (there are no floats — spec §5).
+// String spans are recorded RAW (offset+len into the source); unescaping-on-
+// extract is deferred until a consumer needs it. tvc_self ONLY.
+// @internal-design: json
+//
+// First consumer: the lab experiment entrypoint reading its request.json.
+
+import "../core/result.tv";
+import "../collections/string.tv";
+
+// Value kinds.
+let JSON_NULL: i32 = 0;
+let JSON_BOOL: i32 = 1;
+let JSON_INT: i32 = 2;
+let JSON_STR: i32 = 3;
+let JSON_ARR: i32 = 4;
+let JSON_OBJ: i32 = 5;
+
+enum JsonError {
+    ParseFailed,
+}
+
+// One value node. Objects/arrays are a first_child + next_sibling chain; an
+// object member carries its key span (koff/klen) on the value node itself.
+struct JsonNode {
+    kind: i32,
+    ival: i64,          // JSON_INT value; JSON_BOOL 0/1
+    soff: i32,          // JSON_STR: raw value span start (into src)
+    slen: i32,          // JSON_STR: raw value span length
+    koff: i32,          // object member: key span start
+    klen: i32,          // object member: key span length
+    first_child: i32,   // JSON_ARR/JSON_OBJ: first element/member, else -1
+    next_sibling: i32,  // next element/member, else -1
+}
+
+struct Json {
+    src: *u8,           // borrowed source text (caller keeps it alive)
+    nodes: *JsonNode,   // owned node arena
+    nnodes: i32,
+    root: i32,          // root node index
+    pos: i32,           // parse cursor (transient)
+    len: i32,
+    ok: i32,            // 1 while parsing is clean; 0 on the first error
+}
+
+// ---- arena + scanning ----
+
+fn json_node(d: *Json, kind: i32) -> i32 {
+    let i: i32 = d.nnodes;
+    d.nodes[i].kind = kind;
+    d.nodes[i].ival = 0;
+    d.nodes[i].soff = 0;
+    d.nodes[i].slen = 0;
+    d.nodes[i].koff = 0;
+    d.nodes[i].klen = 0;
+    d.nodes[i].first_child = 0 - 1;
+    d.nodes[i].next_sibling = 0 - 1;
+    d.nnodes = d.nnodes + 1;
+    return i;
+}
+
+fn json_ws(d: *Json) {
+    while d.pos < d.len {
+        let c: u8 = d.src[d.pos];
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            d.pos = d.pos + 1;
+        } else {
+            return;
+        }
+    }
+}
+
+// Scan a "…" string starting at the opening quote; return the raw span in
+// span_off/span_len (via out pointers) and leave pos past the closing quote.
+// Backslash escapes are skipped during scanning so an escaped quote does not end
+// the span early (the span is stored RAW — unescaping is a later slice).
+fn json_scan_string(d: *Json, span_off: *i32, span_len: *i32) {
+    d.pos = d.pos + 1;                       // consume opening quote
+    let start: i32 = d.pos;
+    while d.pos < d.len {
+        let c: u8 = d.src[d.pos];
+        if c == 92 {                         // backslash: skip the escaped byte
+            d.pos = d.pos + 2;
+        } else if c == 34 {                  // closing quote
+            span_off[0] = start;
+            span_len[0] = d.pos - start;
+            d.pos = d.pos + 1;
+            return;
+        } else {
+            d.pos = d.pos + 1;
+        }
+    }
+    d.ok = 0;                                // unterminated
+}
+
+// ---- recursive-descent value parser ----
+
+fn json_value(d: *Json) -> i32 {
+    json_ws(d);
+    if d.pos >= d.len { d.ok = 0; return 0 - 1; }
+    let c: u8 = d.src[d.pos];
+    if c == 123 { return json_object(d); }   // {
+    if c == 91 { return json_array(d); }      // [
+    if c == 34 { return json_string(d); }     // "
+    if c == 116 { return json_lit(d, "true", JSON_BOOL, 1); }    // t
+    if c == 102 { return json_lit(d, "false", JSON_BOOL, 0); }   // f
+    if c == 110 { return json_lit(d, "null", JSON_NULL, 0); }    // n
+    if c == 45 || (c >= 48 && c <= 57) { return json_number(d); }
+    d.ok = 0;
+    return 0 - 1;
+}
+
+fn json_lit(d: *Json, lit: *u8, kind: i32, val: i64) -> i32 {
+    var i: i32 = 0;
+    while lit[i] != 0 {
+        if d.pos >= d.len || d.src[d.pos] != lit[i] {
+            d.ok = 0;
+            return 0 - 1;
+        }
+        d.pos = d.pos + 1;
+        i = i + 1;
+    }
+    let n: i32 = json_node(d, kind);
+    d.nodes[n].ival = val;
+    return n;
+}
+
+fn json_string(d: *Json) -> i32 {
+    var off: i32 = 0;
+    var ln: i32 = 0;
+    json_scan_string(d, &off, &ln);
+    if d.ok == 0 { return 0 - 1; }
+    let n: i32 = json_node(d, JSON_STR);
+    d.nodes[n].soff = off;
+    d.nodes[n].slen = ln;
+    return n;
+}
+
+fn json_number(d: *Json) -> i32 {
+    var neg: i32 = 0;
+    if d.src[d.pos] == 45 {                  // '-'
+        neg = 1;
+        d.pos = d.pos + 1;
+    }
+    var val: i64 = 0;
+    var ndig: i32 = 0;
+    while d.pos < d.len && d.src[d.pos] >= 48 && d.src[d.pos] <= 57 {
+        val = val * 10 + (d.src[d.pos] - 48) as i64;
+        d.pos = d.pos + 1;
+        ndig = ndig + 1;
+    }
+    if ndig == 0 { d.ok = 0; return 0 - 1; }
+    // Refuse floats loudly (no float type): a '.', 'e', or 'E' is a parse error.
+    if d.pos < d.len {
+        let c: u8 = d.src[d.pos];
+        if c == 46 || c == 101 || c == 69 { d.ok = 0; return 0 - 1; }
+    }
+    if neg == 1 { val = 0 - val; }
+    let n: i32 = json_node(d, JSON_INT);
+    d.nodes[n].ival = val;
+    return n;
+}
+
+fn json_array(d: *Json) -> i32 {
+    d.pos = d.pos + 1;                       // consume '['
+    let arr: i32 = json_node(d, JSON_ARR);
+    json_ws(d);
+    if d.pos < d.len && d.src[d.pos] == 93 { // empty ']'
+        d.pos = d.pos + 1;
+        return arr;
+    }
+    var last: i32 = 0 - 1;
+    while d.ok == 1 {
+        let v: i32 = json_value(d);
+        if d.ok == 0 { return 0 - 1; }
+        if last == 0 - 1 {
+            d.nodes[arr].first_child = v;
+        } else {
+            d.nodes[last].next_sibling = v;
+        }
+        last = v;
+        json_ws(d);
+        if d.pos >= d.len { d.ok = 0; return 0 - 1; }
+        let c: u8 = d.src[d.pos];
+        if c == 93 { d.pos = d.pos + 1; return arr; }   // ']'
+        if c == 44 {
+            d.pos = d.pos + 1;                          // ',' -> next element
+        } else {
+            d.ok = 0;
+            return 0 - 1;
+        }
+    }
+    return 0 - 1;
+}
+
+fn json_object(d: *Json) -> i32 {
+    d.pos = d.pos + 1;                       // consume '{'
+    let obj: i32 = json_node(d, JSON_OBJ);
+    json_ws(d);
+    if d.pos < d.len && d.src[d.pos] == 125 { // empty '}'
+        d.pos = d.pos + 1;
+        return obj;
+    }
+    var last: i32 = 0 - 1;
+    while d.ok == 1 {
+        json_ws(d);
+        if d.pos >= d.len || d.src[d.pos] != 34 { d.ok = 0; return 0 - 1; }
+        var koff: i32 = 0;
+        var klen: i32 = 0;
+        json_scan_string(d, &koff, &klen);
+        if d.ok == 0 { return 0 - 1; }
+        json_ws(d);
+        if d.pos >= d.len || d.src[d.pos] != 58 { d.ok = 0; return 0 - 1; }  // ':'
+        d.pos = d.pos + 1;
+        let v: i32 = json_value(d);
+        if d.ok == 0 { return 0 - 1; }
+        d.nodes[v].koff = koff;
+        d.nodes[v].klen = klen;
+        if last == 0 - 1 {
+            d.nodes[obj].first_child = v;
+        } else {
+            d.nodes[last].next_sibling = v;
+        }
+        last = v;
+        json_ws(d);
+        if d.pos >= d.len { d.ok = 0; return 0 - 1; }
+        let c: u8 = d.src[d.pos];
+        if c == 125 { d.pos = d.pos + 1; return obj; }  // '}'
+        if c == 44 {
+            d.pos = d.pos + 1;                          // ',' -> next member
+        } else {
+            d.ok = 0;
+            return 0 - 1;
+        }
+    }
+    return 0 - 1;
+}
+
+// ---- public entry ----
+
+// Parse a buffer into an owned value arena. `src` must outlive the Json (string
+// spans point into it). A value node count is bounded by the byte length, so the
+// arena is sized once (no realloc). Trailing non-whitespace after the root value
+// is a parse error.
+fn json_parse(src: *u8, len: i32) -> Result<Json, JsonError> {
+    let nodes: *JsonNode = alloc(len + 8);
+    var d: Json = Json {
+        src: src,
+        nodes: nodes,
+        nnodes: 0,
+        root: 0 - 1,
+        pos: 0,
+        len: len,
+        ok: 1,
+    };
+    let r: i32 = json_value(&d);
+    d.root = r;
+    if d.ok == 0 {
+        free(d.nodes);
+        return Result::Err(JsonError::ParseFailed);
+    }
+    json_ws(&d);
+    if d.pos != d.len {
+        free(d.nodes);
+        return Result::Err(JsonError::ParseFailed);
+    }
+    return Result::Ok(d);
+}
+
+fn json_free(d: *Json) {
+    free(d.nodes);
+}
+
+// ---- accessors ----
+
+fn json_root(d: *Json) -> i32 { return d.root; }
+// n < 0 (a missing json_get) is null/0 — the guard the other accessors already
+// carry, so passing a missing-key result straight through never indexes node -1.
+fn json_kind(d: *Json, n: i32) -> i32 {
+    if n < 0 { return JSON_NULL; }
+    return d.nodes[n].kind;
+}
+// The i64 value of an INT (or BOOL 0/1) node. Named `_as_int` to avoid the
+// writer's json_int (append) — Traveler dispatches on name, not signature.
+fn json_as_int(d: *Json, n: i32) -> i64 {
+    if n < 0 { return 0; }
+    return d.nodes[n].ival;
+}
+
+// Look up an object member by key (NUL-terminated). Value node index, or -1.
+fn json_get(d: *Json, obj: i32, key: *u8) -> i32 {
+    if obj < 0 { return 0 - 1; }
+    if d.nodes[obj].kind != JSON_OBJ { return 0 - 1; }
+    var c: i32 = d.nodes[obj].first_child;
+    while c != 0 - 1 {
+        if json_span_eq(d, d.nodes[c].koff, d.nodes[c].klen, key) == 1 {
+            return c;
+        }
+        c = d.nodes[c].next_sibling;
+    }
+    return 0 - 1;
+}
+
+// Raw-span == C-string (shared by key lookup and string-value comparison).
+fn json_span_eq(d: *Json, off: i32, ln: i32, s: *u8) -> i32 {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        if i >= ln { return 0; }
+        if d.src[off + i] != s[i] { return 0; }
+        i = i + 1;
+    }
+    if i != ln { return 0; }
+    return 1;
+}
+
+// Compare a string node's raw value span to a C string.
+fn json_str_eq(d: *Json, n: i32, val: *u8) -> i32 {
+    if n < 0 { return 0; }
+    if d.nodes[n].kind != JSON_STR { return 0; }
+    return json_span_eq(d, d.nodes[n].soff, d.nodes[n].slen, val);
+}
+
+// Copy a string node's raw value span into a fresh Str (no unescape — v1).
+fn json_str_copy(d: *Json, n: i32) -> Str {
+    var s: Str = str_new();
+    if n < 0 { return s; }
+    if d.nodes[n].kind != JSON_STR { return s; }
+    let off: i32 = d.nodes[n].soff;
+    let ln: i32 = d.nodes[n].slen;
+    var i: i32 = 0;
+    while i < ln {
+        str_push(&s, d.src[off + i]);
+        i = i + 1;
+    }
+    return s;
+}
+
+// Array element count (0 if not an array).
+fn json_len(d: *Json, arr: i32) -> i32 {
+    if arr < 0 { return 0; }
+    if d.nodes[arr].kind != JSON_ARR { return 0; }
+    var n: i32 = 0;
+    var c: i32 = d.nodes[arr].first_child;
+    while c != 0 - 1 {
+        n = n + 1;
+        c = d.nodes[c].next_sibling;
+    }
+    return n;
+}
+
+// Array element at index idx (or -1).
+fn json_at(d: *Json, arr: i32, idx: i32) -> i32 {
+    if arr < 0 { return 0 - 1; }
+    if d.nodes[arr].kind != JSON_ARR { return 0 - 1; }
+    var k: i32 = 0;
+    var c: i32 = d.nodes[arr].first_child;
+    while c != 0 - 1 {
+        if k == idx { return c; }
+        k = k + 1;
+        c = d.nodes[c].next_sibling;
+    }
+    return 0 - 1;
+}

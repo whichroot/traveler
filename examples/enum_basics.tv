@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// enum_basics.tv — enum types with match: the tagged unions self-hosting needs
+// (the compiler's AST, Token, OpKind, and TypeKind are all enum-shaped).
+//
+// Expected output: 5 30 0
+
+enum Shape {
+    Circle(i32),
+    Rect(i32, i32),
+    Empty,
+}
+
+fn main() {
+    // Construct a variant with payload
+    let c: Shape = Shape::Circle(5);
+    match c {
+        Shape::Circle(r) => {
+            print(r);
+        },
+        Shape::Rect(w, h) => {
+            print(w);
+        },
+        Shape::Empty => {
+            print(0);
+        },
+    }
+
+    // Construct a variant with two fields
+    let r: Shape = Shape::Rect(10, 20);
+    match r {
+        Shape::Circle(r) => {
+            print(r);
+        },
+        Shape::Rect(w, h) => {
+            let sum: i32 = w + h;
+            print(sum);
+        },
+        Shape::Empty => {
+            print(0);
+        },
+    }
+
+    // Unit variant
+    let e: Shape = Shape::Empty;
+    match e {
+        Shape::Circle(r) => {
+            print(r);
+        },
+        Shape::Rect(w, h) => {
+            print(w);
+        },
+        Shape::Empty => {
+            print(0);
+        },
+    }
+}

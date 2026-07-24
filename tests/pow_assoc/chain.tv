@@ -1,0 +1,17 @@
+// chain.tv — associativity probe for ** (spec 2.10: ** is RIGHT-associative).
+//
+// `**` cannot be CHAINED in runnable code: the base is a field element but the
+// exponent is forced to an integer, and there is no integer-base `**`, so
+// `a ** b ** c` never type-checks for codegen. Associativity is therefore only
+// observable at the PARSE layer (the AST shape), which is exactly where it is
+// decided. This file is dumped to its S-expression AST (no -o flag) and the
+// gate (run.sh) asserts the tree nests on the RIGHT:
+//
+//   right-assoc (correct): (** a (** b c))   == a ** (b ** c)
+//   left-assoc  (the bug): (** (** a b) c)   == (a ** b) ** c
+//
+// Both tvc_self and the C seed must agree (the seed has always been right-assoc;
+// this file is the regression that pins tvc_self to match it).
+fn f() {
+    let x: i32 = a ** b ** c;
+}

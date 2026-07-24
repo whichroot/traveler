@@ -1,0 +1,53 @@
+// Same soundness bug, engineered so the race actually MANIFESTS on 1 core.
+//
+// The unsound dispatch is on:   acc[0] = acc[0] + slow(data[i]);
+// 'slow' is a PURE function (so the analyzer still parallelizes), but it
+// stretches the time between LOAD acc[0] and STORE acc[0] to microseconds.
+// With many threads, one thread holds a stale acc[0] across the whole window
+// while others update the cell -> their updates get clobbered -> lost adds.
+//
+// slow(x) returns x unchanged, so the SERIAL sum is exactly n.
+
+field F = Field<2013265921>;
+
+extern "C" fn malloc(n: usize) -> *u8;
+
+// Pure busy-work that returns its input untouched.
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 4000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+fn fill_ones(data: *F, n: i32) {
+    for i in 0..n {
+        data[i] = 1;
+    }
+}
+
+// RACE: reduction into one cell, but now with a wide RMW window.
+fn sum_cell(acc: *F, data: *F, n: i32) {
+    for i in 0..n {
+        acc[0] = acc[0] + slow(data[i]);
+    }
+}
+
+fn main() -> i32 {
+    let n: i32 = 200000;
+
+    let data_raw: *u8 = malloc(1600000 as usize);
+    let data: *F = data_raw as *F;
+    let acc_raw: *u8 = malloc(8 as usize);
+    let acc: *F = acc_raw as *F;
+
+    acc[0] = 0;
+    fill_ones(data, n);
+    sum_cell(acc, data, n);
+
+    print(acc[0]);   // serial answer = 200000
+    return 0;
+}

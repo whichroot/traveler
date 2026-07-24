@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_classifier.tv — Phase 2: nearest-signature MNIST classifier (13-int
+// L1+L3 feature vector); each inference emits a ZK argmin certificate (a chain
+// of leq dominance proofs, zk_range.tv, over the runtime prime).
+// @internal-design: genus
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+// leq certificate machinery (zk_range.tv + plonk_dyn.tv)
+extern "C" fn fill_rc(rc_init: *i64, rc_term: *i64, rc_int: *i64);
+extern "C" fn poseidon2_diag_dyn(f: Field, diag: *i64);
+extern "C" fn fadd_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn rc_range_gates(nbits: i32) -> i32;
+extern "C" fn rc_range_pow2(x: i32) -> i32;
+extern "C" fn rc_range_ilog2(n: i32) -> i32;
+extern "C" fn rc_range_build(
+    f: Field, x: i64, nbits: i32, padded_n: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64);
+extern "C" fn plonk_prove_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+extern "C" fn plonk_verify_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_n_rounds: i32,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+
+// ===== Feature extraction (L1 multi-angle counts + L3 turning number) =====
+
+fn sign_i64(v: i64) -> i64 {
+    if v > 0 { return 1; }
+    if v < 0 { return 0 - 1; }
+    return 0;
+}
+fn ssum(t: *i64, a: i32, b: i32) -> i64 {
+    var s: i64 = 0;
+    var i: i32 = a;
+    while i < b { s = s + t[i]; i = i + 1; }
+    return s;
+}
+
+// Assemble the 13-int feature vector from a contour (cx,cy length n) into out.
+// out[0..7]  = nseg(d1),nseg(d2) for x, y, x+y, x-y
+// out[8..12] = turning signed profile: asym (half-asymmetry) + 4 quartile sums
+#[export]
+fn gc_features(
+    f: Field, cx: *i64, cy: *i64, n: i32,
+    vbuf: *i64, t: *i64, cert: *i64, work: *i64, out: *i64
+) -> i32 {
+    if n < 8 { return 0; }
+    // view 0: x
+    var i: i32 = 0;
+    while i < n { vbuf[i] = cx[i]; i = i + 1; }
+    out[0] = regime_prove_dyn(f, vbuf, n, 1, cert, work) as i64;
+    out[1] = regime_prove_dyn(f, vbuf, n, 2, cert, work) as i64;
+    // view 1: y
+    i = 0;
+    while i < n { vbuf[i] = cy[i]; i = i + 1; }
+    out[2] = regime_prove_dyn(f, vbuf, n, 1, cert, work) as i64;
+    out[3] = regime_prove_dyn(f, vbuf, n, 2, cert, work) as i64;
+    // view 2: x+y
+    i = 0;
+    while i < n { vbuf[i] = cx[i] + cy[i]; i = i + 1; }
+    out[4] = regime_prove_dyn(f, vbuf, n, 1, cert, work) as i64;
+    out[5] = regime_prove_dyn(f, vbuf, n, 2, cert, work) as i64;
+    // view 3: x-y, shifted +28 (non-negative, field-safe; nseg unchanged for
+    // d>=1 — segmentation is shift-invariant).
+    i = 0;
+    while i < n { vbuf[i] = cx[i] - cy[i] + 28; i = i + 1; }
+    out[6] = regime_prove_dyn(f, vbuf, n, 1, cert, work) as i64;
+    out[7] = regime_prove_dyn(f, vbuf, n, 2, cert, work) as i64;
+    // turning: per-vertex signed turn, then signed profile
+    i = 0;
+    while i < n {
+        let pi: i32 = (i + n - 1) % n;
+        let ni: i32 = (i + 1) % n;
+        let ax: i64 = cx[i] - cx[pi];
+        let ay: i64 = cy[i] - cy[pi];
+        let bx: i64 = cx[ni] - cx[i];
+        let by: i64 = cy[ni] - cy[i];
+        t[i] = sign_i64(ax * by - ay * bx);
+        i = i + 1;
+    }
+    let h: i32 = n / 2;
+    out[8] = ssum(t, 0, h) - ssum(t, h, n);     // asym
+    let q: i32 = n / 4;
+    out[9]  = ssum(t, 0, q);
+    out[10] = ssum(t, q, 2 * q);
+    out[11] = ssum(t, 2 * q, 3 * q);
+    out[12] = ssum(t, 3 * q, n);
+    return 13;
+}
+
+// ===== Nearest-signature decision (weighted L1) =====
+
+// Weighted L1 distance between feature vector fv and reference row ref (dim 13).
+#[export]
+fn gc_wdist(fv: *i64, ref: *i64, w: *i64) -> i64 {
+    var dist: i64 = 0;
+    var j: i32 = 0;
+    while j < 13 {
+        let d: i64 = fv[j] - ref[j];
+        if d < 0 { dist = dist - w[j] * d; } else { dist = dist + w[j] * d; }
+        j = j + 1;
+    }
+    return dist;
+}
+
+// Classify fv against a 10x13 reference table (flat row-major) with weights w.
+// Writes the 10 per-class weighted distances into dists; returns the argmin class.
+#[export]
+fn gc_classify(fv: *i64, ref_tbl: *i64, w: *i64, dists: *i64) -> i32 {
+    var best: i64 = 0;
+    var bc: i32 = 0;
+    var c: i32 = 0;
+    while c < 10 {
+        let dd: i64 = gc_wdist(fv, &ref_tbl[c * 13], w);
+        dists[c] = dd;
+        if c == 0 { best = dd; bc = 0; }
+        else { if dd < best { best = dd; bc = c; } }
+        c = c + 1;
+    }
+    return bc;
+}
+
+// ===== The argmin DOMINANCE certificate (a chain of ZK leq proofs) =====
+
+// One ZK leq proof: prove (b - a) is a non-negative nbits integer. Returns the
+// PLONK verify result (1 accept / 0 reject); tamper != 0 corrupts an opening.
+fn gc_leq(
+    f: Field, a: i64, b: i64, nbits: i32, tamper: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) -> i32 {
+    if a > b { return 0; }    // a > b: underflows the field, no honest witness
+    let x: i64 = b - a;
+    let n_real: i32 = rc_range_gates(nbits);
+    let padded_n: i32 = rc_range_pow2(n_real);
+    let log_n: i32 = rc_range_ilog2(padded_n);
+
+    let q_L: *i64 = alloc(padded_n); let q_R: *i64 = alloc(padded_n);
+    let q_O: *i64 = alloc(padded_n); let q_M: *i64 = alloc(padded_n);
+    let q_C: *i64 = alloc(padded_n);
+    let wa: *i64 = alloc(padded_n); let wb: *i64 = alloc(padded_n);
+    let wc: *i64 = alloc(padded_n);
+    let sa: *i64 = alloc(padded_n); let sb: *i64 = alloc(padded_n);
+    let sc: *i64 = alloc(padded_n);
+    rc_range_build(f, x, nbits, padded_n, log_n,
+        q_L, q_R, q_O, q_M, q_C, wa, wb, wc, sa, sb, sc);
+
+    let num_queries: i32 = 3;
+    let eval_out: *i64 = alloc(16);
+    let fri_roots: *i64 = alloc(128);
+    let fri_challenges: *i64 = alloc(32);
+    let fri_final_poly: *i64 = alloc(4);
+    let fri_query_values: *i64 = alloc(512);
+    let fri_query_paths: *i64 = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    plonk_prove_dyn(f, padded_n, log_n, q_L, q_R, q_O, q_M, q_C,
+        wa, wb, wc, sa, sb, sc,
+        eval_out, fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        fri_n_rounds, num_queries, rc_init, rc_term, rc_int, diag);
+    let nr: i32 = fri_n_rounds[0];
+
+    if tamper != 0 { eval_out[2] = fadd_dyn(f, eval_out[2], 1); }
+
+    let v: i32 = plonk_verify_dyn(f, padded_n, log_n,
+        q_L, q_R, q_O, q_M, q_C, sa, sb, sc,
+        eval_out, nr,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        num_queries, rc_init, rc_term, rc_int, diag);
+
+    free(q_L); free(q_R); free(q_O); free(q_M); free(q_C);
+    free(wa); free(wb); free(wc); free(sa); free(sb); free(sc);
+    free(eval_out); free(fri_roots); free(fri_challenges); free(fri_final_poly);
+    free(fri_query_values); free(fri_query_paths); free(fri_query_indices);
+    free(fri_n_rounds);
+    return v;
+}
+
+// Prove `claim` is the argmin over dists[0..9]: a chain of 9 leq proofs
+// dist[claim] <= dist[c] for every c != claim. Returns 1 iff ALL verify.
+#[export]
+fn gc_certify_argmin(
+    p: i64, dists: *i64, claim: i32, nbits: i32
+) -> i32 {
+    let f: Field = field(p);
+    let rc_init: *i64 = alloc(32);
+    let rc_term: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let diag: *i64 = alloc(8);
+    fill_rc(rc_init, rc_term, rc_int);
+    poseidon2_diag_dyn(f, diag);
+
+    var all_ok: i32 = 1;
+    var c: i32 = 0;
+    while c < 10 {
+        if c != claim {
+            // prove dist[claim] <= dist[c]
+            let v: i32 = gc_leq(f, dists[claim], dists[c], nbits, 0,
+                rc_init, rc_term, rc_int, diag);
+            if v != 1 { all_ok = 0; }
+        }
+        c = c + 1;
+    }
+
+    free(rc_init); free(rc_term); free(rc_int); free(diag);
+    return all_ok;
+}

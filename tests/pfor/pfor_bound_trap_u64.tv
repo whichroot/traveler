@@ -1,0 +1,14 @@
+// #54 residue trap: a u64/usize bound >= 2^63 has no home in the signed-i64
+// iteration space — the loop entry guard aborts (SIGABRT) rather than
+// silently misreading the bound as negative. Trap parity: same status at
+// every thread count (the guard runs in the enclosing fn, before dispatch).
+
+fn main() -> i32 {
+    var n: u64 = (1 as u64) << (63 as u64);
+    var c: i64 = 0;
+    for i in 0..n {
+        c = c + 1;
+    }
+    print(c);
+    return 0;
+}

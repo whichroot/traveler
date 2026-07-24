@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// result_basics.tv — the shared Result<T,E> decl consumed via import: struct T
+// + enum E payloads through a fn return, matched and nested-matched (#31 surface).
+// tvc_self ONLY. Design: @internal-design: fs (the error model).
+//
+// Expected output:
+//   7     Ok arm, struct payload field .a
+//   3     struct payload field .b
+//   404   Err arm, enum payload nested-matched
+
+import "../src/lib/core/result.tv";
+
+enum ParseError {
+    Empty,
+    BadDigit,
+}
+
+struct Pair {
+    a: i32,
+    b: i32,
+}
+
+fn parse_pair(ok: i32) -> Result<Pair, ParseError> {
+    if ok == 1 {
+        return Result::Ok(Pair { a: 7, b: 3 });
+    }
+    return Result::Err(ParseError::Empty);
+}
+
+fn main() -> i32 {
+    let r1: Result<Pair, ParseError> = parse_pair(1);
+    match r1 {
+        Result::Ok(p) => { print(p.a); print(p.b); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    let r2: Result<Pair, ParseError> = parse_pair(0);
+    match r2 {
+        Result::Ok(p) => { print(0 - 2); }
+        Result::Err(e) => {
+            match e {
+                ParseError::Empty => { print(404); }
+                ParseError::BadDigit => { print(0 - 3); }
+            }
+        }
+    }
+    return 0;
+}

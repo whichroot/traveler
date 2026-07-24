@@ -1,0 +1,50 @@
+// pfor_race_global_assign.tv — HOLE 7: "pure" function assigns a global
+//
+// stmt_is_pure checks only the RHS of AST_ASSIGN, never the target.
+// fn bump_global(v) { g_acc = g_acc + v; } is classified pure and its
+// call admitted into a parallel loop: a multi-thread RMW race on the
+// global.  Found during Phase 4 by probing the purity matrix (the
+// documented "no global writes" rule was never actually implemented).
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.  Expected output: 50000.
+
+field F = Field<2013265921>;
+
+let mut g_acc: i32 = 0;
+
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+// Assigns a global — must NOT be classified pure.
+fn bump_global(v: i32) -> i32 {
+    g_acc = g_acc + v;
+    return 0;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        w = w + 1;
+    }
+
+    // RACE: bump_global hides a global RMW inside a "pure" call
+    for i in 0..n {
+        out[i] = slow(a[i]);
+        let dummy: i32 = bump_global(1);
+    }
+
+    print(g_acc);
+    return 0;
+}

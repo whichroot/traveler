@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// compare_let.tv — regression: a comparison result stored into an integer let
+// must widen i1 with zext, not sext (sext of true gave -1, flipping branches).
+// @internal-design: examples (compare_let).
+fn main() -> i32 {
+    let x: i32 = 5;
+    let y: i32 = 5;
+    let z: i32 = 7;
+
+    // == : true then false
+    let a: i32 = (x == y);
+    let b: i32 = (x == z);
+    print(a);              // 1
+    print(b);              // 0
+
+    // the original failure mode: branch on a stored comparison
+    if a == 1 { print(11); } else { print(99); }   // 11
+    if b == 1 { print(11); } else { print(99); }   // 99
+
+    // != , < , > also flow through the same widen
+    let c: i32 = (x != z);
+    let d: i32 = (x < z);
+    let e: i32 = (x > z);
+    print(c);              // 1
+    print(d);              // 1
+    print(e);              // 0
+
+    // narrower target: i1 -> i8 must also zext
+    let f: u8 = (x == y);
+    print(f as i32);       // 1
+
+    return 0;
+}

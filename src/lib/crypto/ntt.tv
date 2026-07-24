@@ -1,0 +1,224 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ntt.tv — Number Theoretic Transform (generic over F: Field, Layer 0).
+// DIT Cooley-Tukey, natural order in and out; NTT-friendly fields only.
+// @internal-design: crypto
+
+// ===== BIT-REVERSAL =====
+
+// Reverse the low `bits` bits of `x`.
+// Pure integer function, not field-generic.
+fn bit_rev(x: i32, bits: i32) -> i32 {
+    var r: i32 = 0;
+    var v: i32 = x;
+    for i in 0..bits {
+        r = (r << 1) | (v & 1);
+        v = v >> 1;
+    }
+    return r;
+}
+
+// In-place bit-reversal permutation of data[0..2^log_n - 1].
+// Swaps data[i] and data[bit_rev(i)] for all i < bit_rev(i).
+fn bit_reverse_swap<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    for i in 0..n {
+        let j: i32 = bit_rev(i, log_n);
+        if i < j {
+            let tmp: F = data[i];
+            data[i] = data[j];
+            data[j] = tmp;
+        }
+    }
+}
+
+// ===== FORWARD NTT (Cooley-Tukey, decimation in time) =====
+
+// In-place forward DIT NTT on data[0..2^log_n - 1]; natural order in and out:
+// output[k] = f(omega^k). Stage s: group size 2^(s+1), twiddle root __ntt_root(s).
+fn ntt_forward<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+
+    // Bit-reversal permutation
+    bit_reverse_swap(data, log_n);
+
+    // Twiddle factor array (reused across stages, max size n/2)
+    let tw: *F = alloc(n / 2);
+
+    // Butterfly stages
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_root(s);
+
+        // Precompute twiddle factors: tw[j] = omega_m^j
+        // Serial, O(half) — dominated by parallel butterfly work
+        tw[0] = 1;
+        for j in 1..half {
+            tw[j] = tw[j - 1] * omega_m;
+        }
+
+        var k: i32 = 0;
+        while k < n {
+            // Butterfly: independent across j (no loop-carried state)
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = tw[j] * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+            }
+            k = k + m;
+        }
+    }
+
+    free(tw);
+}
+
+// ===== INVERSE NTT =====
+
+// In-place inverse NTT on data[0..2^log_n - 1]: natural-order input
+// (ntt_forward output) -> natural-order coefficients (1/n scaling applied).
+fn ntt_inverse<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+
+    // Bit-reversal permutation
+    bit_reverse_swap(data, log_n);
+
+    // Twiddle factor array (reused across stages)
+    let tw: *F = alloc(n / 2);
+
+    // Butterfly stages with inverse roots
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_inv_root(s);
+
+        // Precompute inverse twiddle factors: tw[j] = omega_inv^j
+        tw[0] = 1;
+        for j in 1..half {
+            tw[j] = tw[j - 1] * omega_m;
+        }
+
+        var k: i32 = 0;
+        while k < n {
+            // Butterfly: independent across j
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = tw[j] * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+            }
+            k = k + m;
+        }
+    }
+
+    free(tw);
+
+    // Scale by 1/n
+    let scale: F = __ntt_n_inv(log_n - 1);
+    for i in 0..n {
+        data[i] = data[i] * scale;
+    }
+}
+
+// ===== POLYNOMIAL MULTIPLICATION VIA NTT =====
+
+// Multiply polynomials a[0..n-1] * b[0..n-1] -> out[0..2n-1]; n = 2^log_n,
+// out must hold 2n elements (both inputs zero-padded to 2n internally).
+fn poly_mul_ntt<F: Field>(a: *F, b: *F, out: *F, n: i32, log_n: i32) {
+    let nn: i32 = n + n;      // 2n
+    let log_nn: i32 = log_n + 1;
+
+    // Copy a and b into out-sized buffers, zero-padded
+    let fa: *F = alloc(nn);
+    let fb: *F = alloc(nn);
+    for i in 0..n {
+        fa[i] = a[i];
+        fb[i] = b[i];
+    }
+    let zero: F = 0;
+    for i in n..nn {
+        fa[i] = zero;
+        fb[i] = zero;
+    }
+
+    // Forward NTT both
+    ntt_forward(fa, log_nn);
+    ntt_forward(fb, log_nn);
+
+    // Pointwise multiply
+    for i in 0..nn {
+        fa[i] = fa[i] * fb[i];
+    }
+
+    // Inverse NTT
+    ntt_inverse(fa, log_nn);
+
+    // Copy to output
+    for i in 0..nn {
+        out[i] = fa[i];
+    }
+
+    free(fa);
+    free(fb);
+}
+
+// ===== COSET NTT (for FRI: evaluation on coset shift * H) =====
+
+// In-place coset NTT: natural-order coefficients -> natural-order evaluations
+// on the coset shift * H, |H| = 2^log_n (scale coeffs by shift^j, then NTT).
+fn ntt_coset_forward<F: Field>(data: *F, log_n: i32, shift: F) {
+    let n: i32 = 1 << log_n;
+    // Precompute shift powers: sp[i] = shift^i
+    let sp: *F = alloc(n);
+    sp[0] = 1;
+    for i in 1..n {
+        sp[i] = sp[i - 1] * shift;
+    }
+    // Apply coset shift (independent across i)
+    for i in 0..n {
+        data[i] = data[i] * sp[i];
+    }
+    free(sp);
+    ntt_forward(data, log_n);
+}
+
+// In-place inverse coset NTT: natural-order coset evaluations
+// (ntt_coset_forward output) -> natural-order polynomial coefficients.
+fn ntt_coset_inverse<F: Field>(data: *F, log_n: i32, shift: F) {
+    ntt_inverse(data, log_n);
+    let shift_inv: F = 1 / shift;
+    let n: i32 = 1 << log_n;
+    // Precompute inverse shift powers: sp[i] = shift_inv^i
+    let sp: *F = alloc(n);
+    sp[0] = 1;
+    for i in 1..n {
+        sp[i] = sp[i - 1] * shift_inv;
+    }
+    // Apply inverse coset shift (independent across i)
+    for i in 0..n {
+        data[i] = data[i] * sp[i];
+    }
+    free(sp);
+}
+
+// ===== EXPLICIT INSTANTIATIONS (Goldilocks) =====
+
+type Goldilocks = Field<18446744069414584321>;
+
+instantiate ntt_forward<Field<18446744069414584321>>;
+instantiate ntt_inverse<Field<18446744069414584321>>;
+instantiate poly_mul_ntt<Field<18446744069414584321>>;
+instantiate bit_reverse_swap<Field<18446744069414584321>>;
+instantiate ntt_coset_forward<Field<18446744069414584321>>;
+instantiate ntt_coset_inverse<Field<18446744069414584321>>;
+
+// ===== EXPLICIT INSTANTIATIONS (Fermat prime, 2-adic val = 16) =====
+
+type Fermat16 = Field<65537>;
+
+instantiate ntt_forward<Field<65537>>;
+instantiate ntt_inverse<Field<65537>>;
+
+// Dyn NTT (`instantiate ntt_*<dyn>`) is deliberately NOT here: this shared
+// module is also compiled by the frozen C seed. See @internal-design: crypto.

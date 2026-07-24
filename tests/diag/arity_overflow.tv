@@ -1,0 +1,11 @@
+// arity_overflow.tv — #26 negative gate. A direct call with MORE arguments than
+// the callee's parameter count is refused. Before #26 the extra arguments were
+// silently discarded; the '!=' check rejects both directions, since a surplus
+// argument is as much a programmer error as a missing one.
+fn takes6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
+    return a + b + c + d + e + f;
+}
+fn main() {
+    let r: i32 = takes6(1, 2, 3, 4, 5, 6, 7);   // 7 args, 6 params: refused
+    print(r);
+}

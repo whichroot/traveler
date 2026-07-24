@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_fri_test.tv — the SAME canonical-segmentation primitive over TWO
+// domains: (A) real MES futures bars, (B) synthetic piecewise-linear signal.
+// @internal-design: regime (regime_fri: domain-agnostic)
+//
+// Per domain: prove order-1 segmentation, verify, then SOUNDNESS-tamper
+// (extend a segment past its forced boundary) and confirm rejection.
+//
+// Expected output (per domain: nseg, verify=1, tamper=0):
+//   <nsegA> 1 0   <nsegB> 1 0
+
+extern "C" fn regime_prove_dyn(f: Field, data: *i64, n: i32, d: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn regime_verify_dyn(f: Field, data: *i64, n: i32, cert: *i64, nseg: i32, work: *i64) -> i32;
+
+fn run_domain(f: Field, data: *i64, n: i32) {
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+
+    // Prove: canonical order-1 (piecewise-linear) segmentation.
+    let nseg: i32 = regime_prove_dyn(f, data, n, 1, cert, work);
+    print(nseg);
+
+    // Verify the honest certificate.
+    let ok: i32 = regime_verify_dyn(f, data, n, cert, nseg, work);
+    print(ok);
+
+    // SOUNDNESS: extend the first segment one sample past its forced boundary
+    // (shrink the next) — the grown segment's fit fails, verify must reject.
+    if nseg >= 2 {
+        let len0: i32 = cert[1] as i32;
+        cert[1] = (len0 + 1) as i64;          // first segment grows by 1
+        let s1: i32 = cert[3] as i32;
+        cert[3] = (s1 + 1) as i64;            // second segment starts 1 later
+        let l1: i32 = cert[4] as i32;
+        cert[4] = (l1 - 1) as i64;            // and is 1 shorter
+        let bad: i32 = regime_verify_dyn(f, data, n, cert, nseg, work);
+        print(bad);
+    } else {
+        print(0);
+    }
+
+    free(cert);
+    free(work);
+}
+
+fn main() -> i32 {
+    let f: Field = field(18446744069414584321);
+
+    // (A) Real cascade-v4 MES futures path: 2026-03-10, first 32 minute bars,
+    //     close prices in quarter-point ticks, rebased to start at 0.
+    let nA: i32 = 32;
+    let candle: *i64 = alloc(nA);
+    candle[0] = 0;   candle[1] = 9;   candle[2] = 21;  candle[3] = 20;
+    candle[4] = 35;  candle[5] = 28;  candle[6] = 25;  candle[7] = 38;
+    candle[8] = 31;  candle[9] = 38;  candle[10] = 39; candle[11] = 46;
+    candle[12] = 46; candle[13] = 44; candle[14] = 51; candle[15] = 62;
+    candle[16] = 56; candle[17] = 54; candle[18] = 70; candle[19] = 65;
+    candle[20] = 57; candle[21] = 57; candle[22] = 77; candle[23] = 74;
+    candle[24] = 79; candle[25] = 66; candle[26] = 56; candle[27] = 53;
+    candle[28] = 54; candle[29] = 69; candle[30] = 56; candle[31] = 66;
+    run_domain(f, candle, nA);
+    free(candle);
+
+    // (B) Synthetic piecewise-linear signal (WAV/sensor stand-in): three
+    //     clean linear runs with sharp breaks — canonical segmentation should
+    //     find exactly the three runs.
+    let nB: i32 = 12;
+    let sig: *i64 = alloc(nB);
+    // run 1: slope +5 from 0   -> 0,5,10,15
+    sig[0] = 0;  sig[1] = 5;  sig[2] = 10; sig[3] = 15;
+    // run 2: slope -2 from 40  -> 40,38,36,34
+    sig[4] = 40; sig[5] = 38; sig[6] = 36; sig[7] = 34;
+    // run 3: slope +7 from 100 -> 100,107,114,121
+    sig[8] = 100; sig[9] = 107; sig[10] = 114; sig[11] = 121;
+    run_domain(f, sig, nB);
+    free(sig);
+
+    return 0;
+}

@@ -1,0 +1,409 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_intersect_test.tv — boundary INTERSECTION via the even-odd rule:
+// cell (r,c) is ENCLOSED iff row boundaries <= c and col boundaries <= r are
+// both odd; enclosed area = count of such cells. Extends regime_2d_test.tv.
+// @internal-design: regime (even-odd rule + key finding)
+//
+// Links with poly_core.tv (two-file link).
+//
+// Signals (16x16 grid, same as regime_2d_test):
+//   1. Solid: f(r,c) = 10 + 2c + c(c-1)/2 + r. Enclosed = 0.
+//   2. Annulus: hole at rows 5-10 cols 5-10. Enclosed = 36 (the hole).
+//   3. Checkerboard: ((r+c)%2)*40+10. Enclosed > 0, not topological.
+//
+// Test groups:
+//   1. Topology: 3 signals × 3 primes (9 tests)
+//   2. Enclosed persistence: annulus at 4 thresholds × 3 primes (12 tests)
+//   3. Comparison: enclosed vs boundary count at t=30 × 3 primes (3 tests)
+//
+// Expected output: 24 tests, 24 passed
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// Import kernel function (linked from poly_core.o)
+extern "C" fn regime_detect(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32;
+
+// Collect ALL regime boundary positions in a 1D signal.
+// Writes positions to out[0..return-1]. Returns the count.
+fn collect_boundaries(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32, out: *i32) -> i32 {
+    var count: i32 = 0;
+    var offset: i32 = 0;
+    while n - offset > order + 1 {
+        let rem: i32 = n - offset;
+        let b: i32 = regime_detect(&data[offset], rem, order, threshold, p, reg);
+        if b >= rem { break; }
+        out[count] = offset + b;
+        count = count + 1;
+        offset = offset + b;
+    }
+    return count;
+}
+
+// Count total boundaries across all rows (for comparison with enclosed).
+fn count_all_boundaries(data: *i32, order: i32, threshold: i32, p: i32, reg: *i32, col_buf: *i32) -> i32 {
+    var total: i32 = 0;
+    var scratch: [i32; 14] = 0;
+
+    // Rows
+    var r: i32 = 0;
+    while r < 16 {
+        let c: i32 = collect_boundaries(&data[r * 16], 16, order, threshold, p, reg, &scratch[0]);
+        total = total + c;
+        r = r + 1;
+    }
+    // Columns
+    var c2: i32 = 0;
+    while c2 < 16 {
+        var r2: i32 = 0;
+        while r2 < 16 {
+            col_buf[r2] = data[r2 * 16 + c2];
+            r2 = r2 + 1;
+        }
+        let cnt: i32 = collect_boundaries(col_buf, 16, order, threshold, p, reg, &scratch[0]);
+        total = total + cnt;
+        c2 = c2 + 1;
+    }
+    return total;
+}
+
+// Collect boundary positions for all 16 rows into row_bounds/row_bcnt.
+// row_bounds is [16 * 14] = [224], row_bcnt is [16].
+fn collect_row_bounds(data: *i32, order: i32, threshold: i32, p: i32, reg: *i32,
+    row_bounds: *i32, row_bcnt: *i32) {
+    var r: i32 = 0;
+    while r < 16 {
+        let cnt: i32 = collect_boundaries(&data[r * 16], 16, order, threshold, p, reg,
+            &row_bounds[r * 14]);
+        row_bcnt[r] = cnt;
+        r = r + 1;
+    }
+}
+
+// Collect boundary positions for all 16 columns into col_bounds/col_bcnt.
+fn collect_col_bounds(data: *i32, col_buf: *i32, order: i32, threshold: i32, p: i32, reg: *i32,
+    col_bounds: *i32, col_bcnt: *i32) {
+    var c: i32 = 0;
+    while c < 16 {
+        var r: i32 = 0;
+        while r < 16 {
+            col_buf[r] = data[r * 16 + c];
+            r = r + 1;
+        }
+        let cnt: i32 = collect_boundaries(col_buf, 16, order, threshold, p, reg,
+            &col_bounds[c * 14]);
+        col_bcnt[c] = cnt;
+        c = c + 1;
+    }
+}
+
+// Compute enclosed area via even-odd rule.
+// A cell (r, c) is enclosed if:
+//   (number of row boundaries in row r at positions <= c) is odd, AND
+//   (number of col boundaries in col c at positions <= r) is odd.
+fn compute_enclosed(row_bounds: *i32, row_bcnt: *i32,
+    col_bounds: *i32, col_bcnt: *i32) -> i32 {
+    var enclosed: i32 = 0;
+    var r: i32 = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            // Count row boundaries at positions <= c
+            var left: i32 = 0;
+            var i: i32 = 0;
+            while i < row_bcnt[r] {
+                if row_bounds[r * 14 + i] <= c {
+                    left = left + 1;
+                }
+                i = i + 1;
+            }
+            // Count col boundaries at positions <= r
+            var above: i32 = 0;
+            i = 0;
+            while i < col_bcnt[c] {
+                if col_bounds[c * 14 + i] <= r {
+                    above = above + 1;
+                }
+                i = i + 1;
+            }
+            // Enclosed if both odd
+            if left % 2 == 1 {
+                if above % 2 == 1 {
+                    enclosed = enclosed + 1;
+                }
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    return enclosed;
+}
+
+fn main() {
+    var tests: i32 = 0;
+    var passed: i32 = 0;
+
+    var primes: [i32; 3] = 0;
+    primes[0] = 251;
+    primes[1] = 65521;
+    primes[2] = 65537;
+
+    // Shared buffers
+    var reg: [i32; 3] = 0;
+    var col_buf: [i32; 16] = 0;
+    var row_bounds: [i32; 224] = 0;
+    var row_bcnt: [i32; 16] = 0;
+    var col_bounds: [i32; 224] = 0;
+    var col_bcnt: [i32; 16] = 0;
+
+    // ============================================================
+    //  SIGNAL CONSTRUCTION (same as regime_2d_test.tv)
+    // ============================================================
+
+    // Signal 1: Solid
+    var solid: [i32; 256] = 0;
+    var r: i32 = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            solid[r * 16 + c] = 10 + 2 * c + (c * (c - 1)) / 2 + r;
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Signal 2: Annulus
+    var annulus: [i32; 256] = 0;
+    r = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            let bg: i32 = 10 + 2 * c + (c * (c - 1)) / 2 + r;
+            if r >= 5 {
+                if r <= 10 {
+                    if c >= 5 {
+                        if c <= 10 {
+                            annulus[r * 16 + c] = 80 + 3 * c + r;
+                        } else {
+                            annulus[r * 16 + c] = bg;
+                        }
+                    } else {
+                        annulus[r * 16 + c] = bg;
+                    }
+                } else {
+                    annulus[r * 16 + c] = bg;
+                }
+            } else {
+                annulus[r * 16 + c] = bg;
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Signal 3: Checkerboard
+    var checker: [i32; 256] = 0;
+    r = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            checker[r * 16 + c] = ((r + c) % 2) * 40 + 10;
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // ============================================================
+    //  GROUP 1: Topology Detection (threshold=0)
+    //
+    //  Solid: enclosed=0 (no boundaries, no holes)
+    //  Annulus: enclosed=36 (6x6 hole, even-odd parity exact)
+    //  Checker: enclosed>0, field-invariant (parity artifacts)
+    // ============================================================
+
+    var pi: i32 = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        collect_row_bounds(&solid[0], 2, 0, p, &reg[0], &row_bounds[0], &row_bcnt[0]);
+        collect_col_bounds(&solid[0], &col_buf[0], 2, 0, p, &reg[0], &col_bounds[0], &col_bcnt[0]);
+        let enc: i32 = compute_enclosed(&row_bounds[0], &row_bcnt[0], &col_bounds[0], &col_bcnt[0]);
+        tests = tests + 1;
+        wr(1, "intersect_solid enc=");
+        wr_int(1, enc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        if enc == 0 {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        collect_row_bounds(&annulus[0], 2, 0, p, &reg[0], &row_bounds[0], &row_bcnt[0]);
+        collect_col_bounds(&annulus[0], &col_buf[0], 2, 0, p, &reg[0], &col_bounds[0], &col_bcnt[0]);
+        let enc: i32 = compute_enclosed(&row_bounds[0], &row_bcnt[0], &col_bounds[0], &col_bcnt[0]);
+        tests = tests + 1;
+        wr(1, "intersect_annulus enc=");
+        wr_int(1, enc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        if enc == 36 {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // Checkerboard: field-invariant, nonzero
+    var checker_ref: i32 = 0 - 1;
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        collect_row_bounds(&checker[0], 2, 0, p, &reg[0], &row_bounds[0], &row_bcnt[0]);
+        collect_col_bounds(&checker[0], &col_buf[0], 2, 0, p, &reg[0], &col_bounds[0], &col_bcnt[0]);
+        let enc: i32 = compute_enclosed(&row_bounds[0], &row_bcnt[0], &col_bounds[0], &col_bcnt[0]);
+        if pi == 0 { checker_ref = enc; }
+        tests = tests + 1;
+        wr(1, "intersect_checker enc=");
+        wr_int(1, enc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        if enc > 0 {
+            if enc == checker_ref {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 2: Enclosed Persistence (annulus threshold sweep)
+    //
+    //  Enclosed area plateau: [0, 64].
+    //  At t=30, boundary count drops from 24 to 18, but enclosed
+    //  stays at 36 — column boundaries contain the parity leak.
+    //  At t=65, entering boundary (residual 65) dies. Enclosed = 0.
+    //
+    //  The enclosed area is discovered from the algebra. We check
+    //  field-invariance and record what comes out.
+    // ============================================================
+
+    var thresholds: [i32; 4] = 0;
+    thresholds[0] = 0;
+    thresholds[1] = 30;
+    thresholds[2] = 64;
+    thresholds[3] = 65;
+
+    var ti: i32 = 0;
+    while ti < 4 {
+        let threshold: i32 = thresholds[ti];
+        var first_enc: i32 = 0 - 1;
+
+        pi = 0;
+        while pi < 3 {
+            let p: i32 = primes[pi];
+            collect_row_bounds(&annulus[0], 2, threshold, p, &reg[0], &row_bounds[0], &row_bcnt[0]);
+            collect_col_bounds(&annulus[0], &col_buf[0], 2, threshold, p, &reg[0],
+                &col_bounds[0], &col_bcnt[0]);
+            let enc: i32 = compute_enclosed(&row_bounds[0], &row_bcnt[0],
+                &col_bounds[0], &col_bcnt[0]);
+            if pi == 0 { first_enc = enc; }
+
+            tests = tests + 1;
+            wr(1, "persist_enc t=");
+            wr_int(1, threshold as i64);
+            wr(1, " enc=");
+            wr_int(1, enc as i64);
+            wr(1, " p=");
+            wr_int(1, p as i64);
+            if enc == first_enc {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+
+            pi = pi + 1;
+        }
+        ti = ti + 1;
+    }
+
+    // ============================================================
+    //  GROUP 3: Comparison — enclosed vs boundary count at t=30
+    //
+    //  At threshold=30, boundary count drops to 18 (row leaving
+    //  boundary dies). If enclosed area remains at 36, the
+    //  intersection pattern is a stronger invariant than the count.
+    //  We report both and check field-invariance.
+    // ============================================================
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        // Boundary count at t=30
+        let bnd: i32 = count_all_boundaries(&annulus[0], 2, 30, p, &reg[0], &col_buf[0]);
+        // Enclosed at t=30
+        collect_row_bounds(&annulus[0], 2, 30, p, &reg[0], &row_bounds[0], &row_bcnt[0]);
+        collect_col_bounds(&annulus[0], &col_buf[0], 2, 30, p, &reg[0],
+            &col_bounds[0], &col_bcnt[0]);
+        let enc: i32 = compute_enclosed(&row_bounds[0], &row_bcnt[0],
+            &col_bounds[0], &col_bcnt[0]);
+
+        tests = tests + 1;
+        wr(1, "compare t=30 bnd=");
+        wr_int(1, bnd as i64);
+        wr(1, " enc=");
+        wr_int(1, enc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        // Enclosed > boundary count demonstrates stronger persistence
+        if enc > bnd {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  Summary
+    // ============================================================
+    wr_int(1, tests as i64);
+    wr(1, " tests, ");
+    wr_int(1, passed as i64);
+    wr(1, " passed\n");
+}

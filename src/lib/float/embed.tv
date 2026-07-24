@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// embed.tv — exact dyadic embedding of a finite float into Z/pZ (no main):
+// embed(sign, M, E) = (-1)^sign * M * 2^E (mod p); non-finite (classes 3/4)
+// have no field image — caller screens first. Prime travels in `f: Field`.
+// @internal-design: float
+
+// --- generic field ops, instantiated <dyn> -> *_g_dyn(f, a, b) ---
+fn fmul_g<F: Field>(a: F, b: F) -> F { return a * b; }
+fn fadd_g<F: Field>(a: F, b: F) -> F { return a + b; }
+fn fsub_g<F: Field>(a: F, b: F) -> F { return a - b; }
+fn finv2_g<F: Field>() -> F { return 1 / 2; }   // (p+1)/2, exact in any odd field
+instantiate fmul_g<dyn>;
+instantiate fadd_g<dyn>;
+instantiate fsub_g<dyn>;
+instantiate finv2_g<dyn>;
+
+// Map a signed integer into the canonical residue [0, p).
+fn canon(v: i64, f: Field) -> i64 {
+    if f.p <= 0 { return v; }      // wide prime (>2^63): carrier holds truth
+    let r: i64 = v % f.p;
+    if r < 0 { return r + f.p; }
+    return r;
+}
+
+// pow2(f, k): 2^k in the field for k >= 0 (repeated field doubling).
+#[export]
+fn pow2_field(f: Field, k: i64) -> i64 {
+    var acc: i64 = 1;
+    var i: i64 = 0;
+    while i < k {
+        acc = fadd_g_dyn(f, acc, acc);   // acc + acc = 2*acc, in field
+        i = i + 1;
+    }
+    return acc;
+}
+
+// invpow2(f, k): inv(2)^k = (1/2)^k in the field for k >= 0.
+#[export]
+fn invpow2_field(f: Field, k: i64) -> i64 {
+    let half: i64 = finv2_g_dyn(f);      // (p+1)/2
+    var acc: i64 = 1;
+    var i: i64 = 0;
+    while i < k {
+        acc = fmul_g_dyn(f, acc, half);
+        i = i + 1;
+    }
+    return acc;
+}
+
+// embed(f, sign, M, E): the dyadic rational (-1)^sign * M * 2^E as a field
+// residue in [0, p). E may be negative (the common case for |value| < 1).
+#[export]
+fn embed_dyadic(f: Field, sign: i64, M: i64, E: i64) -> i64 {
+    let mf: i64 = canon(M, f);
+    var scale: i64 = 1;
+    if E >= 0 {
+        scale = pow2_field(f, E);
+    } else {
+        scale = invpow2_field(f, 0 - E);
+    }
+    var v: i64 = fmul_g_dyn(f, mf, scale);
+    if sign == 1 {
+        v = fsub_g_dyn(f, 0, v);         // field negation: 0 - v
+    }
+    return v;
+}
+
+// Lossless-at-rest certificate, computed entirely in the field: scale the
+// embedding back by 2^(-E) and recover M. Returns 1 iff recovery == canon(M).
+// E<0: embed = M*inv(2)^|E| -> multiply by 2^|E|; E>=0: multiply by inv(2)^E.
+#[export]
+fn embed_recovers_M(f: Field, M: i64, E: i64) -> i32 {
+    let emb: i64 = embed_dyadic(f, 0, M, E);
+    var back: i64 = emb;
+    if E >= 0 {
+        back = fmul_g_dyn(f, back, invpow2_field(f, E));
+    } else {
+        back = fmul_g_dyn(f, back, pow2_field(f, 0 - E));
+    }
+    if back == canon(M, f) { return 1; }
+    return 0;
+}
+
+// ctypes entry: embedded residue in [0, p) of (-1)^sign * M * 2^E.
+#[export]
+fn embed_residue(p: i64, sign: i64, M: i64, E: i64) -> i64 {
+    let f: Field = field(p);
+    return embed_dyadic(f, sign, M, E);
+}

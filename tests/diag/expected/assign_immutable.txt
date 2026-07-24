@@ -1,0 +1,3 @@
+cannot assign to immutable binding 'x'
+declare with 'var' or 'let mut'
+assign_immutable.tv:7:5

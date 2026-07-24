@@ -1,0 +1,23 @@
+// #36 regression: a generic fn called from inside an auto-parallelized `for`
+// loop must be EMITTED (the deferred-emitter fixed point). Before the fix,
+// emit_pfor_workers ran after emit_monomorphized_fns had drained its worklist,
+// so the worker body's `call @sq_G` had no `define @sq_G` -> llc: use of
+// undefined value. The loop is proven independent (dispatched, 1 worker); the
+// gate is that it ALSO passes llc, links, and runs. Found by the Wanderer chess
+// engine (a BinField<13> syndrome-key table filled in a pfor loop). tvc_self-
+// only: the frozen C seed shares the deferred-emitter pass shape.
+binfield G = BinField<13, 0x201B>;
+
+fn sq<F: Field>(x: F) -> F { return x * x; }
+
+fn fill(out: *G, n: i32) {
+    for j in 0..n {          // proven independent -> dispatched to pthreads
+        out[j] = sq(j as G);
+    }
+}
+
+fn main() {
+    let a: *G = alloc(64);
+    fill(a, 64);
+    print(a[3] as i32);      // 3*3 in GF(2^13): (x+1)^2 = x^2+1 = 0b101 = 5
+}

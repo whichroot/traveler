@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// generic_struct.tv — generic structs (B-paramtypes Slice 2): Box<T>, Vec<T>,
+// Pair<A,B>, method dispatch, heap arrays. tvc_self ONLY (tests/dynfield/run.sh).
+// @internal-design: examples (generic_struct).
+//
+// Expected output:
+//   42
+//   7
+//   2 4 100 200
+//   1000 5
+//   2
+//   30 40
+
+struct Box<T> {
+    val: T,
+}
+
+struct Vec<T> {
+    data: *T,
+    len: i32,
+    cap: i32,
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B,
+}
+
+// Method on a concrete instance: v.len_of() desugars to len_of(&v).
+fn len_of(v: *Vec<i32>) -> i32 {
+    return v.len;
+}
+
+fn main() -> i32 {
+    // 1. single-param value field, two distinct instances
+    let b: Box<i32> = Box { val: 42 };
+    print(b.val);              // 42
+    let c: Box<u8> = Box { val: 7 };
+    print(c.val as i32);       // 7
+
+    // 2. pointer field + multiple fields
+    let buf: *i32 = alloc(8);
+    buf[0] = 100;
+    buf[1] = 200;
+    let v: Vec<i32> = Vec { data: buf, len: 2, cap: 4 };
+    print(v.len);              // 2
+    print(v.cap);              // 4
+    print(v.data[0]);          // 100
+    print(v.data[1]);          // 200
+
+    // 3. multi-param generic struct, distinct field types
+    let p: Pair<i32, u8> = Pair { first: 1000, second: 5 };
+    print(p.first);            // 1000
+    print(p.second as i32);    // 5
+
+    // 4. method dispatch on a generic instance
+    print(v.len_of());         // 2
+
+    // 5. heap array of generic-struct instances (layout-correct alloc)
+    let arr: *Pair<i32, i32> = alloc(4);
+    arr[0].first = 30;
+    arr[1].second = 40;
+    print(arr[0].first);       // 30
+    print(arr[1].second);      // 40
+
+    free(buf);
+    free(arr);
+    return 0;
+}

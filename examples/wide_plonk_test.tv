@@ -1,0 +1,1362 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_plonk_test.tv — WPLONK gate: the full PLONK stack (coset NTT, Poseidon2
+// t=3, Merkle, transcript, FRI, permutation + gate + 4n-coset quotient) over
+// BN254 Fr on field_wide_* — the summit of the wide-field tower.
+// @internal-design: crypto
+//
+// Circuit: the plonk_dyn 8-gate cubic topology (x^3 + x + 5 = OUT) with a
+// genuine ~200-bit BN254 witness x (impossible in any i64 field).
+//
+// Cross-checked by @internal-oracle: wide_plonk. Tests (like plonk_dyn):
+//   1. valid proof          -> 1
+//   2. tampered evaluation  -> 2 (gate equation check fails)
+//
+// Expected output: 1 2
+//
+// Link: wide_plonk_test.o only (field_wide_* emitted into every module).
+
+extern "C" fn field_wide_add(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_sub(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_mul(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_pow(dst: *i64, base: *i64, exp: *i64, f: *i64);
+extern "C" fn field_wide_inv(dst: *i64, a: *i64, f: *i64);
+extern "C" fn field_wide_div(dst: *i64, a: *i64, b: *i64, f: *i64);
+
+// ============================================================
+//  4-limb element helpers
+// ============================================================
+
+fn cp4(dst: *i64, src: *i64) {
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+}
+fn eq4(x: *i64, y: *i64) -> i32 {
+    if x[0] != y[0] { return 0; }
+    if x[1] != y[1] { return 0; }
+    if x[2] != y[2] { return 0; }
+    if x[3] != y[3] { return 0; }
+    return 1;
+}
+fn set_small(buf: *i64, v: i64) {
+    buf[0] = v; buf[1] = 0; buf[2] = 0; buf[3] = 0;
+}
+fn elem(a: *i64, i: i32) -> *i64 {
+    return &a[i * 4];
+}
+
+// logical right shift of a 4-limb little-endian buffer by `bits` (1..63), in place
+fn shr_limbs(b: *i64, bits: i32) {
+    let sh: u64 = bits as u64;
+    let inv: u64 = (64 - bits) as u64;
+    let l0: u64 = b[0] as u64;
+    let l1: u64 = b[1] as u64;
+    let l2: u64 = b[2] as u64;
+    let l3: u64 = b[3] as u64;
+    b[0] = ((l0 >> sh) | (l1 << inv)) as i64;
+    b[1] = ((l1 >> sh) | (l2 << inv)) as i64;
+    b[2] = ((l2 >> sh) | (l3 << inv)) as i64;
+    b[3] = (l3 >> sh) as i64;
+}
+
+// ============================================================
+//  GENERIC WIDE ROOT-CHAIN (runtime, reads p from the carrier)
+// ============================================================
+
+// primitive 2^ln-th root of unity: c^((p-1)/2^ln) for the first c whose
+// 2^(ln-1) power is p-1 (Euler primitivity test, no factoring).
+fn wide_root(omega_out: *i64, ln: i32, f: *i64) {
+    let zero: *i64 = alloc(4); set_small(zero, 0);
+    let one: *i64 = alloc(4); set_small(one, 1);
+    let pm1: *i64 = alloc(4);
+    field_wide_sub(pm1, zero, one, f);          // p-1 == -1
+
+    let e: *i64 = alloc(4);
+    cp4(e, pm1);
+    shr_limbs(e, ln);                            // e = (p-1) / 2^ln
+
+    let nhalf: *i64 = alloc(4);
+    let one_i: i64 = 1;
+    set_small(nhalf, one_i << (ln - 1));         // 2^(ln-1)
+
+    let c: *i64 = alloc(4);
+    let chk: *i64 = alloc(4);
+    var cv: i64 = 2;
+    var found: i32 = 0;
+    while found == 0 {
+        set_small(c, cv);
+        field_wide_pow(omega_out, c, e, f);
+        field_wide_pow(chk, omega_out, nhalf, f);
+        if eq4(chk, pm1) == 1 { found = 1; }
+        cv = cv + 1;
+    }
+    free(zero); free(one); free(pm1); free(e);
+    free(nhalf); free(c); free(chk);
+}
+
+// n_inv = inverse of n (n a small power of 2) as a field element
+fn wide_n_inv(out: *i64, n: i32, f: *i64) {
+    let nb: *i64 = alloc(4); set_small(nb, n as i64);
+    field_wide_inv(out, nb, f);
+    free(nb);
+}
+
+// ============================================================
+//  WIDE POSEIDON2 t=3 (permutation + 2-to-1 compress)
+// ============================================================
+
+fn ext_linear(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+fn int_linear(s0: *i64, s1: *i64, s2: *i64, d0: *i64, d1: *i64, d2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_mul(s0, s0, d0, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_mul(s1, s1, d1, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_mul(s2, s2, d2, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+fn cube_seed(dst: *i64, seed: i64, e3: *i64, f: *i64) {
+    let sb: *i64 = alloc(4);
+    set_small(sb, seed);
+    field_wide_pow(dst, sb, e3, f);
+    free(sb);
+}
+
+fn wp2_permute(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let e3: *i64 = alloc(4); set_small(e3, 3);
+    let e5: *i64 = alloc(4); set_small(e5, 5);
+    let d0: *i64 = alloc(4); set_small(d0, 2);
+    let d1: *i64 = alloc(4); set_small(d1, 3);
+    let d2: *i64 = alloc(4); set_small(d2, 4);
+    let tmp: *i64 = alloc(4);
+    let rc: *i64 = alloc(4);
+
+    ext_linear(s0, s1, s2, f);
+    var r: i32 = 0;
+    while r < 4 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        field_wide_pow(tmp, s1, e5, f); cp4(s1, tmp);
+        field_wide_pow(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+    var pr: i32 = 0;
+    while pr < 56 {
+        cube_seed(rc, (1000 + pr) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        int_linear(s0, s1, s2, d0, d1, d2, f);
+        pr = pr + 1;
+    }
+    r = 4;
+    while r < 8 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        field_wide_pow(tmp, s1, e5, f); cp4(s1, tmp);
+        field_wide_pow(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+    free(e3); free(e5); free(d0); free(d1); free(d2); free(tmp); free(rc);
+}
+
+// 2-to-1 compression: out = permute([left, right, 0])[0]. Single-element digest.
+fn wp2_compress(out: *i64, left: *i64, right: *i64, f: *i64) {
+    let s0: *i64 = alloc(4);
+    let s1: *i64 = alloc(4);
+    let s2: *i64 = alloc(4);
+    cp4(s0, left); cp4(s1, right); set_small(s2, 0);
+    wp2_permute(s0, s1, s2, f);
+    cp4(out, s0);
+    free(s0); free(s1); free(s2);
+}
+
+// ============================================================
+//  WIDE NTT (forward + inverse, coset variants)
+// ============================================================
+
+fn bit_reverse(a: *i64, n: i32) {
+    let tmp: *i64 = alloc(4);
+    var i: i32 = 1;
+    var j: i32 = 0;
+    while i < n {
+        var bit: i32 = n / 2;
+        while (j & bit) != 0 {
+            j = j ^ bit;
+            bit = bit / 2;
+        }
+        j = j | bit;
+        if i < j {
+            cp4(tmp, elem(a, i));
+            cp4(elem(a, i), elem(a, j));
+            cp4(elem(a, j), tmp);
+        }
+        i = i + 1;
+    }
+    free(tmp);
+}
+
+// DIT NTT over a flat n*4 buffer with explicit root omega (forward or inverse).
+fn wide_ntt_core(a: *i64, n: i32, omega: *i64, f: *i64) {
+    bit_reverse(a, n);
+    let wlen: *i64 = alloc(4);
+    let wj: *i64 = alloc(4);
+    let texp: *i64 = alloc(4);
+    let u: *i64 = alloc(4);
+    let v: *i64 = alloc(4);
+    var length: i32 = 2;
+    while length <= n {
+        set_small(texp, (n / length) as i64);
+        field_wide_pow(wlen, omega, texp, f);
+        var i: i32 = 0;
+        while i < n {
+            set_small(wj, 1);
+            var j: i32 = 0;
+            let half: i32 = length / 2;
+            while j < half {
+                cp4(u, elem(a, i + j));
+                field_wide_mul(v, elem(a, i + j + half), wj, f);
+                field_wide_add(elem(a, i + j), u, v, f);
+                field_wide_sub(elem(a, i + j + half), u, v, f);
+                field_wide_mul(wj, wj, wlen, f);
+                j = j + 1;
+            }
+            i = i + length;
+        }
+        length = length * 2;
+    }
+    free(wlen); free(wj); free(texp); free(u); free(v);
+}
+
+// forward NTT: omega = primitive n-th root
+fn wide_ntt_forward(a: *i64, n: i32, omega: *i64, f: *i64) {
+    wide_ntt_core(a, n, omega, f);
+}
+
+// inverse NTT: transform with omega^(p-2), then scale by n_inv
+fn wide_ntt_inverse(a: *i64, n: i32, omega: *i64, n_inv: *i64, f: *i64) {
+    let omega_inv: *i64 = alloc(4);
+    field_wide_inv(omega_inv, omega, f);
+    wide_ntt_core(a, n, omega_inv, f);
+    var i: i32 = 0;
+    while i < n {
+        field_wide_mul(elem(a, i), elem(a, i), n_inv, f);
+        i = i + 1;
+    }
+    free(omega_inv);
+}
+
+// coset forward LDE: a[i] *= shift^i, then forward NTT.
+fn wide_coset_forward(a: *i64, n: i32, omega: *i64, shift: *i64, f: *i64) {
+    let sp: *i64 = alloc(4); set_small(sp, 1);
+    let tmp: *i64 = alloc(4);
+    var i: i32 = 0;
+    while i < n {
+        field_wide_mul(elem(a, i), elem(a, i), sp, f);
+        field_wide_mul(tmp, sp, shift, f); cp4(sp, tmp);
+        i = i + 1;
+    }
+    free(sp); free(tmp);
+    wide_ntt_forward(a, n, omega, f);
+}
+
+// coset inverse: inverse NTT, then a[i] *= shift_inv^i.
+fn wide_coset_inverse(a: *i64, n: i32, omega: *i64, n_inv: *i64, shift: *i64, f: *i64) {
+    wide_ntt_inverse(a, n, omega, n_inv, f);
+    let shift_inv: *i64 = alloc(4); field_wide_inv(shift_inv, shift, f);
+    let sp: *i64 = alloc(4); set_small(sp, 1);
+    let tmp: *i64 = alloc(4);
+    var i: i32 = 0;
+    while i < n {
+        field_wide_mul(elem(a, i), elem(a, i), sp, f);
+        field_wide_mul(tmp, sp, shift_inv, f); cp4(sp, tmp);
+        i = i + 1;
+    }
+    free(shift_inv); free(sp); free(tmp);
+}
+
+// ============================================================
+//  WIDE MERKLE (single-element nodes)
+// ============================================================
+
+fn merkle_build(leaves: *i64, n_leaves: i32, tree: *i64, f: *i64) {
+    var i: i32 = 0;
+    while i < n_leaves {
+        cp4(elem(tree, n_leaves + i), elem(leaves, i));
+        i = i + 1;
+    }
+    var k: i32 = n_leaves - 1;
+    while k >= 1 {
+        wp2_compress(elem(tree, k), elem(tree, 2 * k), elem(tree, 2 * k + 1), f);
+        k = k - 1;
+    }
+}
+
+fn merkle_open(tree: *i64, n_leaves: i32, idx: i32, path: *i64) -> i32 {
+    var pos: i32 = n_leaves + idx;
+    var depth: i32 = 0;
+    while pos > 1 {
+        cp4(elem(path, depth), elem(tree, pos ^ 1));
+        pos = pos / 2;
+        depth = depth + 1;
+    }
+    return depth;
+}
+
+fn merkle_verify(root: *i64, leaf: *i64, idx: i32, n_leaves: i32,
+    path: *i64, path_len: i32, f: *i64) -> i32 {
+    let cur: *i64 = alloc(4);
+    let tmp: *i64 = alloc(4);
+    cp4(cur, leaf);
+    var pos: i32 = n_leaves + idx;
+    var d: i32 = 0;
+    while d < path_len {
+        let sib: *i64 = elem(path, d);
+        if (pos & 1) == 0 {
+            wp2_compress(tmp, cur, sib, f);
+        } else {
+            wp2_compress(tmp, sib, cur, f);
+        }
+        cp4(cur, tmp);
+        pos = pos / 2;
+        d = d + 1;
+    }
+    let ok: i32 = eq4(cur, root);
+    free(cur); free(tmp);
+    return ok;
+}
+
+// ============================================================
+//  FIAT-SHAMIR TRANSCRIPT (t=3 sponge, rate 2, capacity 1)
+// ============================================================
+
+fn transcript_init(state: *i64) {
+    set_small(elem(state, 0), 0);
+    set_small(elem(state, 1), 0);
+    set_small(elem(state, 2), 0);
+}
+
+fn transcript_absorb(state: *i64, pos: *i32, x: *i64, f: *i64) {
+    let lane: i32 = pos[0];
+    field_wide_add(elem(state, lane), elem(state, lane), x, f);
+    pos[0] = lane + 1;
+    if pos[0] == 2 {
+        wp2_permute(elem(state, 0), elem(state, 1), elem(state, 2), f);
+        pos[0] = 0;
+    }
+}
+
+// absorb an n-element array
+fn transcript_absorb_arr(state: *i64, pos: *i32, arr: *i64, n: i32, f: *i64) {
+    var i: i32 = 0;
+    while i < n {
+        transcript_absorb(state, pos, elem(arr, i), f);
+        i = i + 1;
+    }
+}
+
+// squeeze one element: permute, reset, read lane 0.
+fn transcript_squeeze(state: *i64, pos: *i32, out: *i64, f: *i64) {
+    wp2_permute(elem(state, 0), elem(state, 1), elem(state, 2), f);
+    pos[0] = 0;
+    cp4(out, elem(state, 0));
+}
+
+// ============================================================
+//  FRI FOLD + PROVE + VERIFY
+// ============================================================
+
+fn fri_fold_layer(evals: *i64, log_n: i32, beta: *i64,
+    shift: *i64, omega: *i64, folded: *i64, f: *i64) {
+    let n: i32 = 1 << log_n;
+    let half: i32 = n / 2;
+
+    let two: *i64 = alloc(4); set_small(two, 2);
+    let inv2: *i64 = alloc(4); field_wide_inv(inv2, two, f);
+
+    let half_root: *i64 = alloc(4); field_wide_mul(half_root, omega, omega, f);
+    let inv_omega: *i64 = alloc(4); field_wide_inv(inv_omega, half_root, f);
+    let inv_shift: *i64 = alloc(4); field_wide_inv(inv_shift, shift, f);
+
+    let inv_tw: *i64 = alloc(half * 4);
+    cp4(elem(inv_tw, 0), inv_shift);
+    var i: i32 = 1;
+    while i < half {
+        field_wide_mul(elem(inv_tw, i), elem(inv_tw, i - 1), inv_omega, f);
+        i = i + 1;
+    }
+
+    let sum: *i64 = alloc(4);
+    let diff: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    i = 0;
+    while i < half {
+        field_wide_add(sum, elem(evals, i), elem(evals, i + half), f);
+        field_wide_sub(diff, elem(evals, i), elem(evals, i + half), f);
+        field_wide_mul(t, beta, diff, f);
+        field_wide_mul(t, t, elem(inv_tw, i), f);
+        field_wide_add(t, sum, t, f);
+        field_wide_mul(elem(folded, i), t, inv2, f);
+        i = i + 1;
+    }
+    free(two); free(inv2); free(half_root); free(inv_omega); free(inv_shift);
+    free(inv_tw); free(sum); free(diff); free(t);
+}
+
+fn log2_of(x: i32) -> i32 {
+    var l: i32 = 0;
+    var t: i32 = x;
+    while t > 0 {
+        l = l + 1;
+        t = t >> 1;
+    }
+    return l;
+}
+
+// FRI prove. omega_n = primitive 2^log_n-th root for the FULL (blown-up) domain.
+fn fri_prove(coeffs: *i64, degree: i32, log_blowup: i32, shift: *i64,
+    omega_n: *i64, num_queries: i32,
+    roots: *i64, challenges: *i64, final_poly: *i64,
+    query_values: *i64, query_paths: *i64, query_indices: *i32,
+    f: *i64) -> i32 {
+    let log_n: i32 = log2_of(degree) + log_blowup;
+    let n: i32 = 1 << log_n;
+    let max_total: i32 = 2 * n;
+    let max_depth: i32 = log_n;
+
+    let all_evals: *i64 = alloc(max_total * 4);
+    var i: i32 = 0;
+    while i < (degree + 1) { cp4(elem(all_evals, i), elem(coeffs, i)); i = i + 1; }
+    while i < n { set_small(elem(all_evals, i), 0); i = i + 1; }
+    wide_coset_forward(all_evals, n, omega_n, shift, f);
+
+    let ts: *i64 = alloc(12);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let digests: *i64 = alloc((n / 2) * 4);
+    let tree: *i64 = alloc(n * 4);
+    let challenge: *i64 = alloc(4);
+
+    var cur_off: i32 = 0;
+    var cur_log: i32 = log_n;
+    var n_rounds: i32 = 0;
+    let cur_shift: *i64 = alloc(4); cp4(cur_shift, shift);
+    let cur_omega: *i64 = alloc(4); cp4(cur_omega, omega_n);
+    let sq: *i64 = alloc(4);
+
+    while (1 << cur_log) > 1 {
+        let cur_n: i32 = 1 << cur_log;
+        let n_leaves: i32 = cur_n / 2;
+        let half: i32 = cur_n / 2;
+        let cur_evals: *i64 = elem(all_evals, cur_off);
+
+        var h: i32 = 0;
+        while h < half {
+            wp2_compress(elem(digests, h), elem(cur_evals, h), elem(cur_evals, h + half), f);
+            h = h + 1;
+        }
+        merkle_build(digests, n_leaves, tree, f);
+        cp4(elem(roots, n_rounds), elem(tree, 1));
+
+        transcript_absorb(ts, ts_pos, elem(tree, 1), f);
+        transcript_squeeze(ts, ts_pos, challenge, f);
+        cp4(elem(challenges, n_rounds), challenge);
+
+        if (1 << (cur_log - 1)) > 1 {
+            let next_off: i32 = cur_off + cur_n;
+            fri_fold_layer(cur_evals, cur_log, challenge, cur_shift, cur_omega,
+                elem(all_evals, next_off), f);
+            cur_off = next_off;
+        } else {
+            fri_fold_layer(cur_evals, cur_log, challenge, cur_shift, cur_omega,
+                final_poly, f);
+        }
+
+        field_wide_mul(sq, cur_shift, cur_shift, f); cp4(cur_shift, sq);
+        field_wide_mul(sq, cur_omega, cur_omega, f); cp4(cur_omega, sq);
+        cur_log = cur_log - 1;
+        n_rounds = n_rounds + 1;
+    }
+
+    let mask: i32 = (1 << log_n) - 1;
+    let qe: *i64 = alloc(4);
+    var q: i32 = 0;
+    while q < num_queries {
+        transcript_squeeze(ts, ts_pos, qe, f);
+        query_indices[q] = (qe[0] as i32) & mask;
+        q = q + 1;
+    }
+
+    var rnd_off: i32 = 0;
+    var rnd_log: i32 = log_n;
+    var r: i32 = 0;
+    while r < n_rounds {
+        let rnd_n: i32 = 1 << rnd_log;
+        let rnd_leaves: i32 = rnd_n / 2;
+        let rnd_half: i32 = rnd_n / 2;
+        let rnd_evals: *i64 = elem(all_evals, rnd_off);
+
+        var h2: i32 = 0;
+        while h2 < rnd_half {
+            wp2_compress(elem(digests, h2), elem(rnd_evals, h2), elem(rnd_evals, h2 + rnd_half), f);
+            h2 = h2 + 1;
+        }
+        merkle_build(digests, rnd_leaves, tree, f);
+
+        q = 0;
+        while q < num_queries {
+            let qi: i32 = query_indices[q];
+            let pair_idx: i32 = qi & (rnd_half - 1);
+            let v_off: i32 = (q * n_rounds + r) * 2;
+            cp4(elem(query_values, v_off), elem(rnd_evals, pair_idx));
+            cp4(elem(query_values, v_off + 1), elem(rnd_evals, pair_idx + rnd_half));
+            let path_off: i32 = (q * n_rounds + r) * max_depth;
+            merkle_open(tree, rnd_leaves, pair_idx, elem(query_paths, path_off));
+            q = q + 1;
+        }
+        rnd_off = rnd_off + rnd_n;
+        rnd_log = rnd_log - 1;
+        r = r + 1;
+    }
+
+    free(all_evals); free(ts); free(ts_pos); free(digests); free(tree);
+    free(challenge); free(cur_shift); free(cur_omega); free(sq); free(qe);
+    return n_rounds;
+}
+
+fn fri_verify(degree: i32, log_blowup: i32, shift: *i64, omega_n: *i64,
+    num_queries: i32, n_rounds: i32,
+    roots: *i64, challenges: *i64, final_poly: *i64,
+    query_values: *i64, query_paths: *i64, query_indices: *i32,
+    f: *i64) -> i32 {
+    let log_n: i32 = log2_of(degree) + log_blowup;
+    let max_depth: i32 = log_n;
+
+    let ts: *i64 = alloc(12);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let cc: *i64 = alloc(4);
+    var r: i32 = 0;
+    while r < n_rounds {
+        transcript_absorb(ts, ts_pos, elem(roots, r), f);
+        transcript_squeeze(ts, ts_pos, cc, f);
+        if eq4(cc, elem(challenges, r)) == 0 {
+            free(ts); free(ts_pos); free(cc);
+            return 0;
+        }
+        r = r + 1;
+    }
+
+    let mask: i32 = (1 << log_n) - 1;
+    var q: i32 = 0;
+    while q < num_queries {
+        transcript_squeeze(ts, ts_pos, cc, f);
+        let expected_idx: i32 = (cc[0] as i32) & mask;
+        if expected_idx != query_indices[q] {
+            free(ts); free(ts_pos); free(cc);
+            return 0;
+        }
+        q = q + 1;
+    }
+    free(ts); free(ts_pos); free(cc);
+
+    let two: *i64 = alloc(4); set_small(two, 2);
+    let inv2: *i64 = alloc(4); field_wide_inv(inv2, two, f);
+    let leaf_digest: *i64 = alloc(4);
+    let cur_shift: *i64 = alloc(4);
+    let cur_omega: *i64 = alloc(4);
+    let half_root: *i64 = alloc(4);
+    let pe: *i64 = alloc(4);
+    let hp: *i64 = alloc(4);
+    let tw: *i64 = alloc(4);
+    let inv_tw: *i64 = alloc(4);
+    let sum: *i64 = alloc(4);
+    let diff: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    let expected: *i64 = alloc(4);
+    let sq: *i64 = alloc(4);
+
+    var verdict: i32 = 1;
+    q = 0;
+    while q < num_queries {
+        if verdict == 1 {
+            let qi: i32 = query_indices[q];
+            cp4(cur_shift, shift);
+            cp4(cur_omega, omega_n);
+            var cur_log: i32 = log_n;
+
+            r = 0;
+            while r < n_rounds {
+                if verdict == 1 {
+                    let cur_half: i32 = (1 << cur_log) / 2;
+                    let pair_idx: i32 = qi & (cur_half - 1);
+                    let v_off: i32 = (q * n_rounds + r) * 2;
+                    let v_left: *i64 = elem(query_values, v_off);
+                    let v_right: *i64 = elem(query_values, v_off + 1);
+
+                    wp2_compress(leaf_digest, v_left, v_right, f);
+
+                    let rnd_n: i32 = 1 << cur_log;
+                    let rnd_leaves: i32 = rnd_n / 2;
+                    let path_off: i32 = (q * n_rounds + r) * max_depth;
+
+                    var path_len: i32 = 0;
+                    var pl_tmp: i32 = rnd_leaves;
+                    while pl_tmp > 1 {
+                        path_len = path_len + 1;
+                        pl_tmp = pl_tmp / 2;
+                    }
+
+                    let mk_ok: i32 = merkle_verify(elem(roots, r), leaf_digest, pair_idx,
+                        rnd_leaves, elem(query_paths, path_off),
+                        path_len, f);
+                    if mk_ok != 1 {
+                        verdict = 0;
+                    } else {
+                        field_wide_mul(half_root, cur_omega, cur_omega, f);
+                        set_small(pe, pair_idx as i64);
+                        field_wide_pow(hp, half_root, pe, f);
+                        field_wide_mul(tw, cur_shift, hp, f);
+                        field_wide_inv(inv_tw, tw, f);
+
+                        field_wide_add(sum, v_left, v_right, f);
+                        field_wide_sub(diff, v_left, v_right, f);
+                        field_wide_mul(t, elem(challenges, r), diff, f);
+                        field_wide_mul(t, t, inv_tw, f);
+                        field_wide_add(t, sum, t, f);
+                        field_wide_mul(expected, t, inv2, f);
+
+                        if r < n_rounds - 1 {
+                            let next_half: i32 = cur_half / 2;
+                            let next_v_off: i32 = (q * n_rounds + (r + 1)) * 2;
+                            if pair_idx < next_half {
+                                if eq4(expected, elem(query_values, next_v_off)) == 0 { verdict = 0; }
+                            } else {
+                                if eq4(expected, elem(query_values, next_v_off + 1)) == 0 { verdict = 0; }
+                            }
+                        } else {
+                            if eq4(expected, final_poly) == 0 { verdict = 0; }
+                        }
+
+                        field_wide_mul(sq, cur_shift, cur_shift, f); cp4(cur_shift, sq);
+                        field_wide_mul(sq, cur_omega, cur_omega, f); cp4(cur_omega, sq);
+                        cur_log = cur_log - 1;
+                    }
+                }
+                r = r + 1;
+            }
+        }
+        q = q + 1;
+    }
+
+    free(two); free(inv2); free(leaf_digest); free(cur_shift); free(cur_omega);
+    free(half_root); free(pe); free(hp); free(tw); free(inv_tw);
+    free(sum); free(diff); free(t); free(expected); free(sq);
+    return verdict;
+}
+
+// ============================================================
+//  PLONK HELPERS
+// ============================================================
+
+// Horner evaluation of a degree-`degree` polynomial at x.
+fn poly_eval(coeffs: *i64, degree: i32, x: *i64, out: *i64, f: *i64) {
+    cp4(out, elem(coeffs, degree));
+    let tmp: *i64 = alloc(4);
+    var i: i32 = degree - 1;
+    while i >= 0 {
+        field_wide_mul(tmp, out, x, f);
+        field_wide_add(out, tmp, elem(coeffs, i), f);
+        i = i - 1;
+    }
+    free(tmp);
+}
+
+// pow with i32 exponent (for zeta^n)
+fn pow_i32(out: *i64, base: *i64, exp: i32, f: *i64) {
+    set_small(out, 1);
+    let b: *i64 = alloc(4); cp4(b, base);
+    let tmp: *i64 = alloc(4);
+    var e: i32 = exp;
+    while e > 0 {
+        if (e & 1) == 1 {
+            field_wide_mul(tmp, out, b, f); cp4(out, tmp);
+        }
+        field_wide_mul(tmp, b, b, f); cp4(b, tmp);
+        e = e >> 1;
+    }
+    free(b); free(tmp);
+}
+
+fn copy_n(dst: *i64, src: *i64, n: i32) {
+    var i: i32 = 0;
+    while i < n { cp4(elem(dst, i), elem(src, i)); i = i + 1; }
+}
+
+fn pad_to(dst: *i64, src: *i64, n_src: i32, n_dst: i32) {
+    var i: i32 = 0;
+    while i < n_src { cp4(elem(dst, i), elem(src, i)); i = i + 1; }
+    while i < n_dst { set_small(elem(dst, i), 0); i = i + 1; }
+}
+
+// hash an n-element array -> single element
+fn plonk_hash(out: *i64, data: *i64, n: i32, f: *i64) {
+    let st: *i64 = alloc(12);
+    let pos: *i32 = alloc(1);
+    transcript_init(st);
+    pos[0] = 0;
+    transcript_absorb_arr(st, pos, data, n, f);
+    transcript_squeeze(st, pos, out, f);
+    free(st); free(pos);
+}
+
+// hash circuit description (selectors + sigma) -> single element
+fn plonk_circuit_commit(out: *i64, n: i32,
+    qL: *i64, qR: *i64, qO: *i64, qM: *i64, qC: *i64,
+    sa: *i64, sb: *i64, sc: *i64, f: *i64) {
+    let st: *i64 = alloc(12);
+    let pos: *i32 = alloc(1);
+    transcript_init(st);
+    pos[0] = 0;
+    transcript_absorb_arr(st, pos, qL, n, f);
+    transcript_absorb_arr(st, pos, qR, n, f);
+    transcript_absorb_arr(st, pos, qO, n, f);
+    transcript_absorb_arr(st, pos, qM, n, f);
+    transcript_absorb_arr(st, pos, qC, n, f);
+    transcript_absorb_arr(st, pos, sa, n, f);
+    transcript_absorb_arr(st, pos, sb, n, f);
+    transcript_absorb_arr(st, pos, sc, n, f);
+    transcript_squeeze(st, pos, out, f);
+    free(st); free(pos);
+}
+
+// derive beta,gamma,alpha,zeta (verifier side)
+fn plonk_derive_challenges(cc: *i64, w_commit: *i64, z_commit: *i64,
+    fri_root: *i64, out_ch: *i64, f: *i64) {
+    let st: *i64 = alloc(12);
+    let pos: *i32 = alloc(1);
+    transcript_init(st);
+    pos[0] = 0;
+    transcript_absorb(st, pos, cc, f);
+    transcript_absorb(st, pos, w_commit, f);
+    transcript_squeeze(st, pos, elem(out_ch, 0), f);   // beta
+    transcript_squeeze(st, pos, elem(out_ch, 1), f);   // gamma
+    transcript_absorb(st, pos, z_commit, f);
+    transcript_squeeze(st, pos, elem(out_ch, 2), f);   // alpha
+    transcript_absorb(st, pos, fri_root, f);
+    transcript_squeeze(st, pos, elem(out_ch, 3), f);   // zeta
+    free(st); free(pos);
+}
+
+// ============================================================
+//  PLONK PROVE
+// ============================================================
+
+fn plonk_prove(n: i32, log_n: i32,
+    qL: *i64, qR: *i64, qO: *i64, qM: *i64, qC: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sa: *i64, sb: *i64, sc: *i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32, f: *i64) -> i32 {
+    let n4: i32 = n * 4;
+    let log_n4: i32 = log_n + 2;
+
+    let coset_shift: *i64 = alloc(4); set_small(coset_shift, 7);
+    let k1: *i64 = alloc(4); set_small(k1, 13);
+    let k2: *i64 = alloc(4); set_small(k2, 17);
+    let one: *i64 = alloc(4); set_small(one, 1);
+
+    // roots / n_inv from the generic chain
+    let omega: *i64 = alloc(4); wide_root(omega, log_n, f);
+    let omega4n: *i64 = alloc(4); wide_root(omega4n, log_n4, f);
+    let n_inv: *i64 = alloc(4); wide_n_inv(n_inv, n, f);
+    let n4_inv: *i64 = alloc(4); wide_n_inv(n4_inv, n4, f);
+
+    let omega_pow: *i64 = alloc(n * 4);
+    set_small(elem(omega_pow, 0), 1);
+    var i: i32 = 1;
+    while i < n {
+        field_wide_mul(elem(omega_pow, i), elem(omega_pow, i - 1), omega, f);
+        i = i + 1;
+    }
+
+    // circuit commitment
+    let cc: *i64 = alloc(4);
+    plonk_circuit_commit(cc, n, qL, qR, qO, qM, qC, sa, sb, sc, f);
+
+    // witness commitment: hash(wa || wb || wc)
+    let wabc: *i64 = alloc(3 * n * 4);
+    copy_n(wabc, wa, n);
+    copy_n(elem(wabc, n), wb, n);
+    copy_n(elem(wabc, 2 * n), wc, n);
+    let w_commit: *i64 = alloc(4);
+    plonk_hash(w_commit, wabc, 3 * n, f);
+    free(wabc);
+    cp4(elem(eval_out, 0), w_commit);
+
+    // transcript up to beta,gamma
+    let ts: *i64 = alloc(12);
+    let tp: *i32 = alloc(1);
+    transcript_init(ts);
+    tp[0] = 0;
+    transcript_absorb(ts, tp, cc, f);
+    transcript_absorb(ts, tp, w_commit, f);
+    let beta: *i64 = alloc(4); transcript_squeeze(ts, tp, beta, f);
+    let gamma: *i64 = alloc(4); transcript_squeeze(ts, tp, gamma, f);
+
+    // grand product Z
+    let z_vals: *i64 = alloc(n * 4);
+    set_small(elem(z_vals, 0), 1);
+    let fi: *i64 = alloc(4);
+    let gi: *i64 = alloc(4);
+    let term: *i64 = alloc(4);
+    let acc: *i64 = alloc(4);
+    let bt: *i64 = alloc(4);
+    i = 0;
+    while i < (n - 1) {
+        // f_i = (wa+beta*op+gamma)(wb+beta*k1*op+gamma)(wc+beta*k2*op+gamma)
+        field_wide_mul(bt, beta, elem(omega_pow, i), f);
+        field_wide_add(term, elem(wa, i), bt, f);
+        field_wide_add(fi, term, gamma, f);
+
+        field_wide_mul(bt, beta, k1, f);
+        field_wide_mul(bt, bt, elem(omega_pow, i), f);
+        field_wide_add(term, elem(wb, i), bt, f);
+        field_wide_add(term, term, gamma, f);
+        field_wide_mul(fi, fi, term, f);
+
+        field_wide_mul(bt, beta, k2, f);
+        field_wide_mul(bt, bt, elem(omega_pow, i), f);
+        field_wide_add(term, elem(wc, i), bt, f);
+        field_wide_add(term, term, gamma, f);
+        field_wide_mul(fi, fi, term, f);
+
+        // g_i = (wa+beta*sa+gamma)(wb+beta*sb+gamma)(wc+beta*sc+gamma)
+        field_wide_mul(bt, beta, elem(sa, i), f);
+        field_wide_add(term, elem(wa, i), bt, f);
+        field_wide_add(gi, term, gamma, f);
+
+        field_wide_mul(bt, beta, elem(sb, i), f);
+        field_wide_add(term, elem(wb, i), bt, f);
+        field_wide_add(term, term, gamma, f);
+        field_wide_mul(gi, gi, term, f);
+
+        field_wide_mul(bt, beta, elem(sc, i), f);
+        field_wide_add(term, elem(wc, i), bt, f);
+        field_wide_add(term, term, gamma, f);
+        field_wide_mul(gi, gi, term, f);
+
+        // z[i+1] = z[i] * f_i / g_i
+        field_wide_mul(acc, elem(z_vals, i), fi, f);
+        field_wide_div(elem(z_vals, i + 1), acc, gi, f);
+        i = i + 1;
+    }
+    free(fi); free(gi); free(term); free(acc); free(bt);
+
+    let z_commit: *i64 = alloc(4);
+    plonk_hash(z_commit, z_vals, n, f);
+    cp4(elem(eval_out, 1), z_commit);
+
+    transcript_absorb(ts, tp, z_commit, f);
+    let alpha: *i64 = alloc(4); transcript_squeeze(ts, tp, alpha, f);
+
+    // interpolate to coefficient form
+    let a_co: *i64 = alloc(n * 4); copy_n(a_co, wa, n);
+    let b_co: *i64 = alloc(n * 4); copy_n(b_co, wb, n);
+    let c_co: *i64 = alloc(n * 4); copy_n(c_co, wc, n);
+    let qL_co: *i64 = alloc(n * 4); copy_n(qL_co, qL, n);
+    let qR_co: *i64 = alloc(n * 4); copy_n(qR_co, qR, n);
+    let qO_co: *i64 = alloc(n * 4); copy_n(qO_co, qO, n);
+    let qM_co: *i64 = alloc(n * 4); copy_n(qM_co, qM, n);
+    let qC_co: *i64 = alloc(n * 4); copy_n(qC_co, qC, n);
+    let sa_co: *i64 = alloc(n * 4); copy_n(sa_co, sa, n);
+    let sb_co: *i64 = alloc(n * 4); copy_n(sb_co, sb, n);
+    let sc_co: *i64 = alloc(n * 4); copy_n(sc_co, sc, n);
+    let z_co: *i64 = alloc(n * 4); copy_n(z_co, z_vals, n);
+
+    wide_ntt_inverse(a_co, n, omega, n_inv, f);
+    wide_ntt_inverse(b_co, n, omega, n_inv, f);
+    wide_ntt_inverse(c_co, n, omega, n_inv, f);
+    wide_ntt_inverse(qL_co, n, omega, n_inv, f);
+    wide_ntt_inverse(qR_co, n, omega, n_inv, f);
+    wide_ntt_inverse(qO_co, n, omega, n_inv, f);
+    wide_ntt_inverse(qM_co, n, omega, n_inv, f);
+    wide_ntt_inverse(qC_co, n, omega, n_inv, f);
+    wide_ntt_inverse(sa_co, n, omega, n_inv, f);
+    wide_ntt_inverse(sb_co, n, omega, n_inv, f);
+    wide_ntt_inverse(sc_co, n, omega, n_inv, f);
+    wide_ntt_inverse(z_co, n, omega, n_inv, f);
+
+    // extend to 4n coset domain
+    let a_ext: *i64 = alloc(n4 * 4); pad_to(a_ext, a_co, n, n4);
+    let b_ext: *i64 = alloc(n4 * 4); pad_to(b_ext, b_co, n, n4);
+    let c_ext: *i64 = alloc(n4 * 4); pad_to(c_ext, c_co, n, n4);
+    let qL_ext: *i64 = alloc(n4 * 4); pad_to(qL_ext, qL_co, n, n4);
+    let qR_ext: *i64 = alloc(n4 * 4); pad_to(qR_ext, qR_co, n, n4);
+    let qO_ext: *i64 = alloc(n4 * 4); pad_to(qO_ext, qO_co, n, n4);
+    let qM_ext: *i64 = alloc(n4 * 4); pad_to(qM_ext, qM_co, n, n4);
+    let qC_ext: *i64 = alloc(n4 * 4); pad_to(qC_ext, qC_co, n, n4);
+    let sa_ext: *i64 = alloc(n4 * 4); pad_to(sa_ext, sa_co, n, n4);
+    let sb_ext: *i64 = alloc(n4 * 4); pad_to(sb_ext, sb_co, n, n4);
+    let sc_ext: *i64 = alloc(n4 * 4); pad_to(sc_ext, sc_co, n, n4);
+    let z_ext: *i64 = alloc(n4 * 4); pad_to(z_ext, z_co, n, n4);
+
+    wide_coset_forward(a_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(b_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(c_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(qL_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(qR_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(qO_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(qM_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(qC_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(sa_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(sb_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(sc_ext, n4, omega4n, coset_shift, f);
+    wide_coset_forward(z_ext, n4, omega4n, coset_shift, f);
+
+    // Z(omega*x): shift coeffs by omega^k
+    let zs_ext: *i64 = alloc(n4 * 4);
+    let om: *i64 = alloc(4); set_small(om, 1);
+    let omt: *i64 = alloc(4);
+    var k: i32 = 0;
+    while k < n {
+        field_wide_mul(elem(zs_ext, k), elem(z_co, k), om, f);
+        field_wide_mul(omt, om, omega, f); cp4(om, omt);
+        k = k + 1;
+    }
+    while k < n4 { set_small(elem(zs_ext, k), 0); k = k + 1; }
+    wide_coset_forward(zs_ext, n4, omega4n, coset_shift, f);
+
+    // L1 = (1/n)(1 + x + ... + x^{n-1})
+    let l1_ext: *i64 = alloc(n4 * 4);
+    k = 0;
+    while k < n { cp4(elem(l1_ext, k), n_inv); k = k + 1; }
+    while k < n4 { set_small(elem(l1_ext, k), 0); k = k + 1; }
+    wide_coset_forward(l1_ext, n4, omega4n, coset_shift, f);
+
+    // coset points pts[j] = coset_shift * omega4n^j
+    let pts: *i64 = alloc(n4 * 4);
+    let cp: *i64 = alloc(4); cp4(cp, coset_shift);
+    let cpt: *i64 = alloc(4);
+    var j: i32 = 0;
+    while j < n4 {
+        cp4(elem(pts, j), cp);
+        field_wide_mul(cpt, cp, omega4n, f); cp4(cp, cpt);
+        j = j + 1;
+    }
+
+    // Z_H = x^n - 1
+    let zh_ext: *i64 = alloc(n4 * 4);
+    j = 0;
+    while j < n4 { set_small(elem(zh_ext, j), 0); j = j + 1; }
+    let neg1: *i64 = alloc(4);
+    field_wide_sub(neg1, elem(zh_ext, 0), one, f);   // 0 - 1
+    cp4(elem(zh_ext, 0), neg1);
+    set_small(elem(zh_ext, n), 1);
+    wide_coset_forward(zh_ext, n4, omega4n, coset_shift, f);
+
+    // quotient pointwise
+    let t_ext: *i64 = alloc(n4 * 4);
+    let gate: *i64 = alloc(4);
+    let fj: *i64 = alloc(4);
+    let gj: *i64 = alloc(4);
+    let perm: *i64 = alloc(4);
+    let bnd: *i64 = alloc(4);
+    let num: *i64 = alloc(4);
+    let tt: *i64 = alloc(4);
+    let bb: *i64 = alloc(4);
+    let a2: *i64 = alloc(4);
+    j = 0;
+    while j < n4 {
+        // gate = qL*a + qR*b + qO*c + qM*a*b + qC
+        field_wide_mul(gate, elem(qL_ext, j), elem(a_ext, j), f);
+        field_wide_mul(tt, elem(qR_ext, j), elem(b_ext, j), f);
+        field_wide_add(gate, gate, tt, f);
+        field_wide_mul(tt, elem(qO_ext, j), elem(c_ext, j), f);
+        field_wide_add(gate, gate, tt, f);
+        field_wide_mul(tt, elem(qM_ext, j), elem(a_ext, j), f);
+        field_wide_mul(tt, tt, elem(b_ext, j), f);
+        field_wide_add(gate, gate, tt, f);
+        field_wide_add(gate, gate, elem(qC_ext, j), f);
+
+        // f_j
+        field_wide_mul(bb, beta, elem(pts, j), f);
+        field_wide_add(tt, elem(a_ext, j), bb, f);
+        field_wide_add(fj, tt, gamma, f);
+        field_wide_mul(bb, beta, k1, f);
+        field_wide_mul(bb, bb, elem(pts, j), f);
+        field_wide_add(tt, elem(b_ext, j), bb, f);
+        field_wide_add(tt, tt, gamma, f);
+        field_wide_mul(fj, fj, tt, f);
+        field_wide_mul(bb, beta, k2, f);
+        field_wide_mul(bb, bb, elem(pts, j), f);
+        field_wide_add(tt, elem(c_ext, j), bb, f);
+        field_wide_add(tt, tt, gamma, f);
+        field_wide_mul(fj, fj, tt, f);
+
+        // g_j
+        field_wide_mul(bb, beta, elem(sa_ext, j), f);
+        field_wide_add(tt, elem(a_ext, j), bb, f);
+        field_wide_add(gj, tt, gamma, f);
+        field_wide_mul(bb, beta, elem(sb_ext, j), f);
+        field_wide_add(tt, elem(b_ext, j), bb, f);
+        field_wide_add(tt, tt, gamma, f);
+        field_wide_mul(gj, gj, tt, f);
+        field_wide_mul(bb, beta, elem(sc_ext, j), f);
+        field_wide_add(tt, elem(c_ext, j), bb, f);
+        field_wide_add(tt, tt, gamma, f);
+        field_wide_mul(gj, gj, tt, f);
+
+        // perm = zs*g - z*f
+        field_wide_mul(perm, elem(zs_ext, j), gj, f);
+        field_wide_mul(tt, elem(z_ext, j), fj, f);
+        field_wide_sub(perm, perm, tt, f);
+
+        // bnd = l1 * (z - 1)
+        field_wide_sub(tt, elem(z_ext, j), one, f);
+        field_wide_mul(bnd, elem(l1_ext, j), tt, f);
+
+        // num = gate + alpha*perm + alpha^2*bnd
+        field_wide_mul(tt, alpha, perm, f);
+        field_wide_add(num, gate, tt, f);
+        field_wide_mul(a2, alpha, alpha, f);
+        field_wide_mul(tt, a2, bnd, f);
+        field_wide_add(num, num, tt, f);
+
+        // t = num / zh
+        field_wide_div(elem(t_ext, j), num, elem(zh_ext, j), f);
+        j = j + 1;
+    }
+    free(gate); free(fj); free(gj); free(perm); free(bnd); free(num);
+    free(tt); free(bb); free(a2);
+
+    // inverse coset NTT -> quotient coefficients
+    wide_coset_inverse(t_ext, n4, omega4n, n4_inv, coset_shift, f);
+
+    free(a_ext); free(b_ext); free(c_ext);
+    free(qL_ext); free(qR_ext); free(qO_ext); free(qM_ext); free(qC_ext);
+    free(sa_ext); free(sb_ext); free(sc_ext);
+    free(z_ext); free(zs_ext); free(l1_ext); free(pts); free(zh_ext);
+    free(om); free(omt); free(cp); free(cpt); free(neg1);
+
+    // FRI on quotient
+    let t_degree: i32 = 3 * n - 4;
+    let omega_fri: *i64 = alloc(4);
+    let log_fri: i32 = log2_of(t_degree) + 1;
+    wide_root(omega_fri, log_fri, f);
+    fri_n_rounds[0] = fri_prove(t_ext, t_degree, 1, coset_shift, omega_fri, num_queries,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices, f);
+
+    // derive zeta
+    transcript_absorb(ts, tp, elem(fri_roots, 0), f);
+    let zeta: *i64 = alloc(4); transcript_squeeze(ts, tp, zeta, f);
+
+    // evaluate all polynomials at zeta
+    poly_eval(a_co, n - 1, zeta, elem(eval_out, 2), f);
+    poly_eval(b_co, n - 1, zeta, elem(eval_out, 3), f);
+    poly_eval(c_co, n - 1, zeta, elem(eval_out, 4), f);
+    poly_eval(qL_co, n - 1, zeta, elem(eval_out, 5), f);
+    poly_eval(qR_co, n - 1, zeta, elem(eval_out, 6), f);
+    poly_eval(qO_co, n - 1, zeta, elem(eval_out, 7), f);
+    poly_eval(qM_co, n - 1, zeta, elem(eval_out, 8), f);
+    poly_eval(qC_co, n - 1, zeta, elem(eval_out, 9), f);
+    poly_eval(z_co, n - 1, zeta, elem(eval_out, 10), f);
+    let wz: *i64 = alloc(4); field_wide_mul(wz, omega, zeta, f);
+    poly_eval(z_co, n - 1, wz, elem(eval_out, 11), f);
+    poly_eval(sa_co, n - 1, zeta, elem(eval_out, 12), f);
+    poly_eval(sb_co, n - 1, zeta, elem(eval_out, 13), f);
+    poly_eval(sc_co, n - 1, zeta, elem(eval_out, 14), f);
+    poly_eval(t_ext, t_degree, zeta, elem(eval_out, 15), f);
+    free(wz);
+
+    free(coset_shift); free(k1); free(k2); free(one);
+    free(omega); free(omega4n); free(n_inv); free(n4_inv); free(omega_pow);
+    free(cc); free(w_commit); free(ts); free(tp); free(beta); free(gamma);
+    free(z_vals); free(z_commit); free(alpha); free(zeta); free(omega_fri);
+    free(a_co); free(b_co); free(c_co);
+    free(qL_co); free(qR_co); free(qO_co); free(qM_co); free(qC_co);
+    free(sa_co); free(sb_co); free(sc_co); free(z_co); free(t_ext);
+    return 1;
+}
+
+// ============================================================
+//  PLONK VERIFY  (1 = valid, 2 = equation fails, 3 = FRI fails)
+// ============================================================
+
+fn plonk_verify(n: i32, log_n: i32,
+    qL: *i64, qR: *i64, qO: *i64, qM: *i64, qC: *i64,
+    sa: *i64, sb: *i64, sc: *i64,
+    eval_out: *i64,
+    fri_n_rounds: i32,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, num_queries: i32, f: *i64) -> i32 {
+    let coset_shift: *i64 = alloc(4); set_small(coset_shift, 7);
+    let k1: *i64 = alloc(4); set_small(k1, 13);
+    let k2: *i64 = alloc(4); set_small(k2, 17);
+    let one: *i64 = alloc(4); set_small(one, 1);
+
+    let cc: *i64 = alloc(4);
+    plonk_circuit_commit(cc, n, qL, qR, qO, qM, qC, sa, sb, sc, f);
+
+    let ch: *i64 = alloc(4 * 4);
+    plonk_derive_challenges(cc, elem(eval_out, 0), elem(eval_out, 1),
+        elem(fri_roots, 0), ch, f);
+    let beta: *i64 = elem(ch, 0);
+    let gamma: *i64 = elem(ch, 1);
+    let alpha: *i64 = elem(ch, 2);
+    let zeta: *i64 = elem(ch, 3);
+
+    let a_z: *i64 = elem(eval_out, 2);
+    let b_z: *i64 = elem(eval_out, 3);
+    let c_z: *i64 = elem(eval_out, 4);
+    let qL_z: *i64 = elem(eval_out, 5);
+    let qR_z: *i64 = elem(eval_out, 6);
+    let qO_z: *i64 = elem(eval_out, 7);
+    let qM_z: *i64 = elem(eval_out, 8);
+    let qC_z: *i64 = elem(eval_out, 9);
+    let z_z: *i64 = elem(eval_out, 10);
+    let z_wz: *i64 = elem(eval_out, 11);
+    let sa_z: *i64 = elem(eval_out, 12);
+    let sb_z: *i64 = elem(eval_out, 13);
+    let sc_z: *i64 = elem(eval_out, 14);
+    let t_z: *i64 = elem(eval_out, 15);
+
+    let gate: *i64 = alloc(4);
+    let tt: *i64 = alloc(4);
+    let bb: *i64 = alloc(4);
+    // gate = qL*a + qR*b + qO*c + qM*a*b + qC
+    field_wide_mul(gate, qL_z, a_z, f);
+    field_wide_mul(tt, qR_z, b_z, f); field_wide_add(gate, gate, tt, f);
+    field_wide_mul(tt, qO_z, c_z, f); field_wide_add(gate, gate, tt, f);
+    field_wide_mul(tt, qM_z, a_z, f); field_wide_mul(tt, tt, b_z, f);
+    field_wide_add(gate, gate, tt, f);
+    field_wide_add(gate, gate, qC_z, f);
+
+    // f_z, g_z
+    let fz: *i64 = alloc(4);
+    let gz: *i64 = alloc(4);
+    field_wide_mul(bb, beta, zeta, f);
+    field_wide_add(tt, a_z, bb, f); field_wide_add(fz, tt, gamma, f);
+    field_wide_mul(bb, beta, k1, f); field_wide_mul(bb, bb, zeta, f);
+    field_wide_add(tt, b_z, bb, f); field_wide_add(tt, tt, gamma, f);
+    field_wide_mul(fz, fz, tt, f);
+    field_wide_mul(bb, beta, k2, f); field_wide_mul(bb, bb, zeta, f);
+    field_wide_add(tt, c_z, bb, f); field_wide_add(tt, tt, gamma, f);
+    field_wide_mul(fz, fz, tt, f);
+
+    field_wide_mul(bb, beta, sa_z, f);
+    field_wide_add(tt, a_z, bb, f); field_wide_add(gz, tt, gamma, f);
+    field_wide_mul(bb, beta, sb_z, f);
+    field_wide_add(tt, b_z, bb, f); field_wide_add(tt, tt, gamma, f);
+    field_wide_mul(gz, gz, tt, f);
+    field_wide_mul(bb, beta, sc_z, f);
+    field_wide_add(tt, c_z, bb, f); field_wide_add(tt, tt, gamma, f);
+    field_wide_mul(gz, gz, tt, f);
+
+    // perm = z_wz*g_z - z_z*f_z
+    let perm: *i64 = alloc(4);
+    field_wide_mul(perm, z_wz, gz, f);
+    field_wide_mul(tt, z_z, fz, f);
+    field_wide_sub(perm, perm, tt, f);
+
+    // L1(zeta) = (zeta^n - 1) / (n * (zeta - 1))
+    let zeta_n: *i64 = alloc(4); pow_i32(zeta_n, zeta, n, f);
+    let nf: *i64 = alloc(4); set_small(nf, n as i64);
+    let zm1: *i64 = alloc(4); field_wide_sub(zm1, zeta, one, f);
+    let den: *i64 = alloc(4); field_wide_mul(den, nf, zm1, f);
+    let znm1: *i64 = alloc(4); field_wide_sub(znm1, zeta_n, one, f);
+    let l1z: *i64 = alloc(4); field_wide_div(l1z, znm1, den, f);
+    let bnd: *i64 = alloc(4);
+    field_wide_sub(tt, z_z, one, f);
+    field_wide_mul(bnd, l1z, tt, f);
+
+    // lhs = gate + alpha*perm + alpha^2*bnd
+    let lhs: *i64 = alloc(4);
+    let a2: *i64 = alloc(4);
+    field_wide_mul(tt, alpha, perm, f);
+    field_wide_add(lhs, gate, tt, f);
+    field_wide_mul(a2, alpha, alpha, f);
+    field_wide_mul(tt, a2, bnd, f);
+    field_wide_add(lhs, lhs, tt, f);
+
+    // rhs = t_z * (zeta^n - 1)
+    let rhs: *i64 = alloc(4);
+    field_wide_mul(rhs, t_z, znm1, f);
+
+    let eq_ok: i32 = eq4(lhs, rhs);
+
+    free(coset_shift); free(k1); free(k2); free(one); free(cc); free(ch);
+    free(gate); free(tt); free(bb); free(fz); free(gz); free(perm);
+    free(zeta_n); free(nf); free(zm1); free(den); free(znm1); free(l1z);
+    free(bnd); free(lhs); free(a2); free(rhs);
+
+    if eq_ok == 0 { return 2; }
+
+    // FRI verify
+    let t_degree: i32 = 3 * n - 4;
+    let cshift2: *i64 = alloc(4); set_small(cshift2, 7);
+    let omega_fri: *i64 = alloc(4);
+    let log_fri: i32 = log2_of(t_degree) + 1;
+    wide_root(omega_fri, log_fri, f);
+    let fri_ok: i32 = fri_verify(t_degree, 1, cshift2, omega_fri, num_queries, fri_n_rounds,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices, f);
+    free(cshift2); free(omega_fri);
+    if fri_ok != 1 { return 3; }
+    return 1;
+}
+
+// ============================================================
+//  MAIN — BN254-flavored cubic with a wide witness
+// ============================================================
+
+fn main() -> i32 {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+    let n: i32 = 8;
+    let log_n: i32 = 3;
+    let num_queries: i32 = 3;
+
+    let one: *i64 = alloc(4); set_small(one, 1);
+    let zero: *i64 = alloc(4); set_small(zero, 0);
+    let neg1: *i64 = alloc(4); field_wide_sub(neg1, zero, one, f);
+
+    // WIDE witness x (from wide_plonk_oracle.py): ~200-bit element.
+    let x: *i64 = alloc(4);
+    x[0] = 2464388554683811993; x[1] = 11868611023633711121;
+    x[2] = 4345233048204317331; x[3] = 6699;
+
+    // x2 = x*x, x3 = x2*x, x3px = x3 + x, OUT = x3px + 5
+    let x2: *i64 = alloc(4); field_wide_mul(x2, x, x, f);
+    let x3: *i64 = alloc(4); field_wide_mul(x3, x2, x, f);
+    let x3px: *i64 = alloc(4); field_wide_add(x3px, x3, x, f);
+    let five: *i64 = alloc(4); set_small(five, 5);
+    let out_val: *i64 = alloc(4); field_wide_add(out_val, x3px, five, f);
+
+    // selectors
+    let qL: *i64 = alloc(n * 4);
+    let qR: *i64 = alloc(n * 4);
+    let qO: *i64 = alloc(n * 4);
+    let qM: *i64 = alloc(n * 4);
+    let qC: *i64 = alloc(n * 4);
+    var i: i32 = 0;
+    while i < n {
+        set_small(elem(qL, i), 0); set_small(elem(qR, i), 0);
+        set_small(elem(qO, i), 0); set_small(elem(qM, i), 0);
+        set_small(elem(qC, i), 0);
+        i = i + 1;
+    }
+    cp4(elem(qO, 0), neg1); set_small(elem(qM, 0), 1);
+    cp4(elem(qO, 1), neg1); set_small(elem(qM, 1), 1);
+    set_small(elem(qL, 2), 1); set_small(elem(qR, 2), 1); cp4(elem(qO, 2), neg1);
+    set_small(elem(qL, 3), 1); cp4(elem(qO, 3), neg1); set_small(elem(qC, 3), 5);
+
+    // witness wires (wide)
+    let wa: *i64 = alloc(n * 4);
+    let wb: *i64 = alloc(n * 4);
+    let wc: *i64 = alloc(n * 4);
+    i = 0;
+    while i < n {
+        set_small(elem(wa, i), 0); set_small(elem(wb, i), 0); set_small(elem(wc, i), 0);
+        i = i + 1;
+    }
+    cp4(elem(wa, 0), x);    cp4(elem(wb, 0), x); cp4(elem(wc, 0), x2);
+    cp4(elem(wa, 1), x2);   cp4(elem(wb, 1), x); cp4(elem(wc, 1), x3);
+    cp4(elem(wa, 2), x3);   cp4(elem(wb, 2), x); cp4(elem(wc, 2), x3px);
+    cp4(elem(wa, 3), x3px); set_small(elem(wb, 3), 0); cp4(elem(wc, 3), out_val);
+
+    // omega powers + sigma wiring (topology identical to plonk_dyn)
+    let omega: *i64 = alloc(4); wide_root(omega, log_n, f);
+    let op: *i64 = alloc(n * 4);
+    set_small(elem(op, 0), 1);
+    i = 1;
+    while i < n { field_wide_mul(elem(op, i), elem(op, i - 1), omega, f); i = i + 1; }
+
+    let k1: *i64 = alloc(4); set_small(k1, 13);
+    let k2: *i64 = alloc(4); set_small(k2, 17);
+    let sa: *i64 = alloc(n * 4);
+    let sb: *i64 = alloc(n * 4);
+    let sc: *i64 = alloc(n * 4);
+    i = 0;
+    while i < n {
+        cp4(elem(sa, i), elem(op, i));
+        field_wide_mul(elem(sb, i), k1, elem(op, i), f);
+        field_wide_mul(elem(sc, i), k2, elem(op, i), f);
+        i = i + 1;
+    }
+    field_wide_mul(elem(sa, 0), k1, elem(op, 0), f);
+    field_wide_mul(elem(sb, 0), k1, elem(op, 1), f);
+    field_wide_mul(elem(sb, 1), k1, elem(op, 2), f);
+    cp4(elem(sb, 2), elem(op, 0));
+    cp4(elem(sc, 0), elem(op, 1));
+    field_wide_mul(elem(sa, 1), k2, elem(op, 0), f);
+    cp4(elem(sc, 1), elem(op, 2));
+    field_wide_mul(elem(sa, 2), k2, elem(op, 1), f);
+    cp4(elem(sc, 2), elem(op, 3));
+    field_wide_mul(elem(sa, 3), k2, elem(op, 2), f);
+
+    // proof buffers
+    let eval_out: *i64 = alloc(16 * 4);
+    let max_rounds: i32 = 8;
+    let max_depth: i32 = 8;
+    let fri_roots: *i64 = alloc(max_rounds * 4);
+    let fri_challenges: *i64 = alloc(max_rounds * 4);
+    let fri_final_poly: *i64 = alloc(4);
+    let fri_query_values: *i64 = alloc(num_queries * max_rounds * 2 * 4);
+    let fri_query_paths: *i64 = alloc(num_queries * max_rounds * max_depth * 4);
+    let fri_query_indices: *i32 = alloc(num_queries);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    plonk_prove(n, log_n, qL, qR, qO, qM, qC, wa, wb, wc, sa, sb, sc,
+        eval_out, fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        fri_n_rounds, num_queries, f);
+
+    // Test 1: valid proof -> 1
+    let v1: i32 = plonk_verify(n, log_n, qL, qR, qO, qM, qC, sa, sb, sc,
+        eval_out, fri_n_rounds[0],
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        num_queries, f);
+    print(v1);
+
+    // Test 2: tamper an evaluation -> 2 (gate equation fails)
+    let bumped: *i64 = alloc(4);
+    field_wide_add(bumped, elem(eval_out, 2), one, f);
+    cp4(elem(eval_out, 2), bumped);
+    let v2: i32 = plonk_verify(n, log_n, qL, qR, qO, qM, qC, sa, sb, sc,
+        eval_out, fri_n_rounds[0],
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        num_queries, f);
+    print(v2);
+
+    return 0;
+}

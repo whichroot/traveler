@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// syntax_shadow.tv — shadowing, the ergonomic complement to strict `let`: a
+// later `let`/`var` of the same name is a NEW binding (sym_find reverse scan).
+// @internal-design: examples (syntax twins).
+//
+// Expected output:
+//   11
+//   7
+//   100
+//   3
+
+fn main() -> i32 {
+    // 1. Same-scope shadow: the new binding reads the old, then replaces it.
+    let x: i32 = 1;
+    let x: i32 = x + 10;      // reads old x (1) -> new immutable x = 11
+    print(x);                 // 11
+
+    // 2. Shadow an immutable `let` with a mutable `var`, then mutate.
+    let y: i32 = 5;
+    var y: i32 = y;           // y is now mutable, seeded from the old y (5)
+    y = y + 2;                // 7 — proves the shadow binding is mutable
+    print(y);                 // 7
+
+    // 3. Nested-scope shadow: the inner block shadows; the outer is untouched.
+    let z: i32 = 3;
+    if z == 3 {
+        let z: i32 = 100;     // inner z shadows outer z
+        print(z);             // 100
+    }
+    print(z);                 // 3 — outer z unchanged by the inner shadow
+
+    return 0;
+}

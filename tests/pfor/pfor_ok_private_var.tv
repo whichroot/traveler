@@ -1,0 +1,36 @@
+// #43 positive control: workitem-private mutable vars.
+// `acc` and `scaled` are declared INSIDE the loop body — fresh cell per
+// iteration, never an array base (#46), never address-taken, never in a
+// write index — so multi-step assignment to them cannot race and the loop
+// MUST dispatch (1 worker). On the CPU each private var is a worker-local
+// alloca; on a GPU target this same verdict maps them to VGPRs (the
+// K-reduction-inside-the-workitem enabling primitive).
+//
+// out[j] = 9*a[j] + 2*j with a[j] = 3j+1  ->  out[j] = 29j + 9.
+// sum = 29*(4095*4096/2) + 9*4096 = 243247104.
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *i64 = alloc(n * 8);
+    let out: *i64 = alloc(n * 8);
+    var i: i32 = 0;
+    while i < n { a[i] = (i * 3 + 1) as i64; i = i + 1; }
+
+    for j in 0..4096 {
+        var acc: i64 = 0;
+        acc = acc + a[j];          // read enclosing array, own cell
+        acc = acc * 5;             // multi-step mutation of the private var
+        acc = acc + (j as i64);
+        var scaled: i64 = acc * 2; // second private var, initialized from the first
+        scaled = scaled - a[j];
+        out[j] = scaled;           // single stride-1 injective write
+    }
+
+    var s: i64 = 0;
+    i = 0;
+    while i < n { s = s + out[i]; i = i + 1; }
+    print(s);
+    print(out[0]);
+    print(out[7]);
+    print(out[4095]);
+    return 0;
+}

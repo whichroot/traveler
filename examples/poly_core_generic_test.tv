@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poly_core_generic_test.tv — Test driver for the generic polynomial kernel.
+//
+// Exercises all four kernel functions over Field<251> and Field<65521>.
+//
+// Expected output:
+//   10 13 17 22 73     forward_sum Field<251>
+//   10 3 1             forward_diff round-trip
+//   10 13 17 22 73     forward_sum Field<65521>
+//   10 3 1             forward_diff round-trip
+//   5                  regime_detect: boundary at sample 5
+//   73                 eval_at: f(9) = 73
+
+type F251 = Field<251>;
+type F65521 = Field<65521>;
+
+// ---- The agnostic kernel ----
+
+#[export]
+fn forward_sum<F: Field>(coeffs: *F, order: i32, out: *F, n: i32, reg: *F) {
+    for ki in 0..16 {
+        if ki <= order {
+            reg[ki] = coeffs[ki];
+        }
+    }
+    for i in 0..n {
+        out[i] = reg[0];
+        for j in 0..15 {
+            if j < order {
+                reg[j] = reg[j] + reg[j + 1];
+            }
+        }
+    }
+}
+
+#[export]
+fn forward_diff<F: Field>(data: *F, n: i32, coeffs: *F, max_order: i32, work: *F) -> i32 {
+    for i in 0..n {
+        work[i] = data[i];
+    }
+    var d: i32 = 0;
+    var remaining: i32 = n;
+    for level in 0..16 {
+        if d <= max_order && remaining > 0 {
+            coeffs[d] = work[0];
+            for j in 0..15 {
+                if j < remaining - 1 {
+                    work[j] = work[j + 1] - work[j];
+                }
+            }
+            remaining = remaining - 1;
+            d = d + 1;
+        }
+    }
+    return max_order;
+}
+
+#[export]
+fn regime_detect<F: Field>(data: *F, n: i32, order: i32, threshold: i32, reg: *F) -> i32 {
+    if n <= order { return n; }
+    // Initialize register from first order+1 samples
+    for k in 0..16 {
+        if k <= order { reg[k] = data[k]; }
+    }
+    // In-place forward difference
+    for d in 0..15 {
+        if d < order {
+            var j: i32 = order;
+            for jj in 0..15 {
+                if j > d {
+                    reg[j] = reg[j] - reg[j - 1];
+                    j = j - 1;
+                }
+            }
+        }
+    }
+    // Advance through initialization window
+    for adv in 0..15 {
+        if adv < order {
+            for j in 0..15 {
+                if j < order {
+                    reg[j] = reg[j] + reg[j + 1];
+                }
+            }
+        }
+    }
+    // Scan
+    for i in 0..n {
+        if i > order {
+            for j in 0..15 {
+                if j < order {
+                    reg[j] = reg[j] + reg[j + 1];
+                }
+            }
+            let predicted: F = reg[0];
+            let actual: F = data[i];
+            let residual: F = actual - predicted;
+            let s: i32 = signed(residual);
+            var abs_res: i32 = s;
+            if abs_res < 0 { abs_res = 0 - abs_res; }
+            if abs_res > threshold {
+                return i;
+            }
+            reg[0] = actual;
+        }
+    }
+    return n;
+}
+
+#[export]
+fn eval_at<F: Field>(coeffs: *F, order: i32, x: F) -> F {
+    let zero: F = 0;
+    if order < 0 { return zero; }
+    var result: F = coeffs[order];
+    var k: i32 = order - 1;
+    for step in 0..16 {
+        if k >= 0 {
+            let xmk: F = x - (k as F);
+            let kp1: F = (k + 1) as F;
+            let inv_kp1: F = 1 / kp1;
+            let factor: F = xmk * inv_kp1;
+            result = coeffs[k] + result * factor;
+            k = k - 1;
+        }
+    }
+    return result;
+}
+
+fn main() {
+    // === forward_sum over Field<251> ===
+    var c1: [F251; 3] = 0;
+    c1[0] = 10; c1[1] = 3; c1[2] = 1;
+    var out1: [F251; 10] = 0;
+    var reg1: [F251; 3] = 0;
+    forward_sum(&c1[0], 2, &out1[0], 10, &reg1[0]);
+    print(out1[0]); print(out1[1]); print(out1[2]); print(out1[3]); print(out1[9]);
+
+    // === forward_diff round-trip ===
+    var rec1: [F251; 3] = 0;
+    var wrk1: [F251; 10] = 0;
+    forward_diff(&out1[0], 3, &rec1[0], 2, &wrk1[0]);
+    print(rec1[0]); print(rec1[1]); print(rec1[2]);
+
+    // === forward_sum over Field<65521> ===
+    var c2: [F65521; 3] = 0;
+    c2[0] = 10; c2[1] = 3; c2[2] = 1;
+    var out2: [F65521; 10] = 0;
+    var reg2: [F65521; 3] = 0;
+    forward_sum(&c2[0], 2, &out2[0], 10, &reg2[0]);
+    print(out2[0]); print(out2[1]); print(out2[2]); print(out2[3]); print(out2[9]);
+
+    // === forward_diff round-trip ===
+    var rec2: [F65521; 3] = 0;
+    var wrk2: [F65521; 10] = 0;
+    forward_diff(&out2[0], 3, &rec2[0], 2, &wrk2[0]);
+    print(rec2[0]); print(rec2[1]); print(rec2[2]);
+
+    // === regime_detect: inject a break at sample 5 ===
+    var data_r: [F251; 8] = 0;
+    // First 5 samples follow quadratic [10,3,1]: 10, 13, 17, 22, 28
+    data_r[0] = 10; data_r[1] = 13; data_r[2] = 17; data_r[3] = 22; data_r[4] = 28;
+    // Sample 5 breaks the pattern (should be 35, inject 100)
+    data_r[5] = 100; data_r[6] = 50; data_r[7] = 60;
+    var reg_r: [F251; 3] = 0;
+    let boundary: i32 = regime_detect(&data_r[0], 8, 2, 5, &reg_r[0]);
+    print(boundary);
+
+    // === eval_at: f(9) should equal forward_sum's out[9] ===
+    let e: F251 = eval_at(&c1[0], 2, 9);
+    print(e);
+}

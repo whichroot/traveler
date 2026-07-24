@@ -1,0 +1,143 @@
+name: CI
+
+# Continuous integration for the Traveler compiler (roadmap A3, B4).
+#
+# Gates, in order of cost:
+#   1. bootstrap    — B4: Traveler builds ITSELF with no C in the trust chain,
+#                     from the committed bootstrap/tvc_self.boot.ll (a
+#                     Traveler-produced snapshot). Also asserts the C-free path
+#                     is byte-identical to the legacy C-seed path (proving the
+#                     seed is redundant). This is the primary build path.
+#   2. suites       — run_dual.sh, which transitively runs run.sh (regression
+#                     + pfor + dynfield + bootstrap) then Stage 1 build +
+#                     dual-compiler parity. One script, full coverage.
+#   3. fixed-point  — the load-bearing correctness signal: Stage 1 builds
+#                     tvc_self, Stage 2 = tvc_self compiling itself, Stage 3 =
+#                     Stage 2 compiling itself; assert Stage 2 == Stage 3
+#                     byte-identical. Few languages can offer this; it is a
+#                     first-class required check.
+#
+# The C seed (src-legacy/tvc.c) is no longer required to build Traveler; it remains in
+# the tree only as an optional provenance/audit path. run_dual.sh still builds
+# it (Stage 1 of the dual-parity reference), so the seed is exercised, but the
+# canonical build is now bootstrap/build.sh (no C source compiled).
+#
+# LLVM 21 is required. The test scripts auto-discover llc/opt from common
+# Homebrew/apt paths and honor $LLC/$OPT overrides, which we set per-OS.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + suites + fixed-point (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- LLVM 21 toolchain ----
+      - name: Install LLVM 21 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          echo "LLC=/usr/lib/llvm-21/bin/llc"   >> "$GITHUB_ENV"
+          echo "OPT=/usr/lib/llvm-21/bin/opt"   >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-21/bin"           >> "$GITHUB_PATH"
+
+      - name: Install LLVM 21 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@21
+          PREFIX="$(brew --prefix llvm@21)"
+          echo "LLC=$PREFIX/bin/llc" >> "$GITHUB_ENV"
+          echo "OPT=$PREFIX/bin/opt" >> "$GITHUB_ENV"
+          echo "$PREFIX/bin"         >> "$GITHUB_PATH"
+
+      - name: Toolchain versions
+        run: |
+          clang --version
+          "$LLC" --version | head -3
+
+      # ---- Module size gate (cheap, structural; fail fast) ----
+      # Every src/lib module <= 1500 lines; src/tvc_self.tv is the sole
+      # exemption and no new file may join it. The deliberate-monolith rule.
+      - name: Module size gate
+        run: ./tests/run_sizegate.sh
+
+      # ---- B4: Traveler builds itself with NO C in the trust chain ----
+      # The primary build path. Boots from the committed Traveler-produced IR
+      # (bootstrap/tvc_self.boot.ll), reaches the self-hosting fixed point, and
+      # proves the C-free path == the C-seed path (so the seed is redundant).
+      - name: Bootstrap — Traveler self-build (no C seed)
+        run: ./tests/run_bootstrap.sh
+
+      # ---- Provenance: the C seed still compiles (optional audit path) ----
+      # Not required to build Traveler; kept so the original genesis path stays
+      # exercised. run_dual.sh below also builds it for the dual-parity ref.
+      - name: Provenance — C seed builds (audit only)
+        working-directory: src-legacy
+        run: make tvc
+
+      # ---- Full suite: regression + pfor + dynfield + bootstrap + parity ----
+      # run_dual.sh invokes run.sh internally (which itself runs run_pfor.sh,
+      # dynfield/run.sh, and run_bootstrap.sh), then builds Stage 1 and runs
+      # dual-compiler parity.
+      - name: Test suites (regression, pfor, dynfield, bootstrap, parity)
+        run: ./tests/run_dual.sh
+
+      # ---- Stage 1 -> 2 -> 3 byte-identical fixed point (first-class gate) ----
+      - name: Self-hosting fixed point (Stage 2 == Stage 3)
+        run: |
+          set -euo pipefail
+          : "${LLC:?LLC must be set}"
+          TVC=src-legacy/tvc
+          WORK="$(mktemp -d)"
+
+          # Host retarget: emitted IR text carries the canonical triple on
+          # every host (the s2 == s3 byte-compare depends on that); codegen
+          # overrides with -mtriple, and Linux links need -no-pie.
+          case "$(uname -s)-$(uname -m)" in
+              Linux-x86_64)  LLC_TARGET="-mtriple=x86_64-linux-gnu";  LINK_PIE="-no-pie" ;;
+              Linux-aarch64) LLC_TARGET="-mtriple=aarch64-linux-gnu"; LINK_PIE="-no-pie" ;;
+              *)             LLC_TARGET="";                           LINK_PIE="" ;;
+          esac
+
+          echo "Stage 1: bootstrap compiles tvc_self"
+          "$TVC" src/tvc_self.tv -o "$WORK/s1.ll"
+          "$LLC" $LLC_TARGET -filetype=obj "$WORK/s1.ll" -o "$WORK/s1.o"
+          clang $LINK_PIE "$WORK/s1.o" -o "$WORK/tvc_self1"
+
+          echo "Stage 2: tvc_self compiles itself"
+          "$WORK/tvc_self1" src/tvc_self.tv -o "$WORK/s2.ll"
+          "$LLC" $LLC_TARGET -filetype=obj "$WORK/s2.ll" -o "$WORK/s2.o"
+          clang $LINK_PIE "$WORK/s2.o" -o "$WORK/tvc_self2"
+
+          echo "Stage 3: Stage 2 compiles itself"
+          "$WORK/tvc_self2" src/tvc_self.tv -o "$WORK/s3.ll"
+
+          echo "Asserting Stage 2 == Stage 3 (byte-identical IR)"
+          if diff -q "$WORK/s2.ll" "$WORK/s3.ll"; then
+            echo "FIXED POINT OK: Stage 2 == Stage 3 byte-identical"
+          else
+            echo "FIXED POINT BROKEN: Stage 2 != Stage 3" >&2
+            diff "$WORK/s2.ll" "$WORK/s3.ll" | head -40 >&2
+            exit 1
+          fi

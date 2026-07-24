@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_wire_audio.tv — corpus round-trip certificate for wire v2 (dyadic):
+// encode a WAV, decode, verify losslessness (all four streams) + bit parity.
+// @internal-design: observability (wire round-trip)
+//
+// Link: observe_wire_audio.o + wire.o (wire.tv imports learn.tv).
+// Usage: observe_wire_audio <file.wav>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn read(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+extern "C" fn codec_stereo_adaptive_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64;
+// v3: bw / bw_out (per-block depth). This lossless corpus cert passes bw all-zero.
+extern "C" fn wire_encode_stereo(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, bw: *i32, buf: *u8, out: *i64) -> i64;
+extern "C" fn wire_decode_stereo(buf: *u8, lf: *i32, rf: *i32, mf: *i32, sf: *i32, p_ch: i32, p_side: i32, max_fixed_order: i32, bw_out: *i32) -> i64;
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn read_bytes_all(fd: i32, buf: *u8, cap: i64) -> i64 {
+    var total: i64 = 0;
+    while total < cap {
+        let got: i64 = read(fd, (buf as i64 + total) as *u8, (cap - total) as usize);
+        if got <= 0 { return total; }
+        total = total + got;
+    }
+    return total;
+}
+
+fn read_le_u16(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256;
+}
+fn read_le_u32(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+    + (buf[pos + 2] as i32) * 65536 + (buf[pos + 3] as i32) * 16777216;
+}
+fn read_s16(buf: *u8, off: i32) -> i32 {
+    var val: i32 = buf[off] as i32 + (buf[off + 1] as i32) * 256;
+    if val >= 32768 { val = val - 65536; }
+    return val;
+}
+fn find_data_chunk(buf: *u8, file_size: i32, data_size_out: *i32) -> i32 {
+    var pos: i32 = 12;
+    while pos < file_size - 8 {
+        let c0: i32 = buf[pos] as i32;
+        let c1: i32 = buf[pos + 1] as i32;
+        let c2: i32 = buf[pos + 2] as i32;
+        let c3: i32 = buf[pos + 3] as i32;
+        let sz: i32 = read_le_u32(buf, pos + 4);
+        if c0 == 100 && c1 == 97 && c2 == 116 && c3 == 97 {
+            data_size_out[0] = sz;
+            return pos + 8;
+        }
+        pos = pos + 8 + sz + (sz % 2);
+    }
+    return 0;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc < 2 {
+        wr(2, "usage: observe_wire_audio <file.wav>\n");
+        exit(1);
+    }
+    let path: *u8 = argv[1];
+
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 { wr(2, "error: cannot open\n"); exit(1); }
+    let fbuf: *u8 = alloc(134217728);
+    let file_size: i64 = read_bytes_all(fd, fbuf, 134217728);
+    close(fd);
+
+    let num_channels: i32 = read_le_u16(fbuf, 22);
+    let bits16: i32 = read_le_u16(fbuf, 34);
+    if bits16 != 16 { wr(2, "error: 16-bit only\n"); exit(1); }
+
+    var data_size_arr: [i32; 1] = 0;
+    let data_offset: i32 = find_data_chunk(fbuf, file_size as i32, &data_size_arr[0]);
+    if data_offset == 0 { wr(2, "error: no data chunk\n"); exit(1); }
+    let n: i32 = data_size_arr[0] / (2 * num_channels);
+
+    wr(2, "FILE "); wr(2, path); wr(2, "  frames="); wr_int(2, n as i64); wr(2, "\n");
+
+    let lf: *i32 = alloc(n);
+    let rf: *i32 = alloc(n);
+    let mf: *i32 = alloc(n);
+    let sf: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        let base: i32 = data_offset + (i * num_channels) * 2;
+        let l: i32 = read_s16(fbuf, base);
+        var r: i32 = l;
+        if num_channels > 1 { r = read_s16(fbuf, base + 2); }
+        lf[i] = l + 32768;
+        rf[i] = r + 32768;
+        mf[i] = ((l + r) >> 1) + 32768;
+        sf[i] = (l - r) + 65535;
+        i = i + 1;
+    }
+    free(fbuf);
+
+    let sout: *i64 = alloc(4);
+    let cost: i64 = codec_stereo_adaptive_bits(lf, rf, mf, sf, n, 65537, 131071,
+        4, 8, 8, 17, sout);
+    wr(2, "  cost_model_bits="); wr_int(2, cost);
+    wr(2, "  ("); wr_int(2, cost / 8); wr(2, " bytes)\n");
+
+    let nblocks: i32 = (n + 4095) / 4096;
+    let bw: *i32 = alloc(nblocks);
+    let bwd: *i32 = alloc(nblocks);
+    var bi: i32 = 0;
+    while bi < nblocks { bw[bi] = 0; bi = bi + 1; }
+
+    let wbuf: *u8 = alloc(n * 6 + 4096);
+    let eout: *i64 = alloc(5);
+    let bits: i64 = wire_encode_stereo(lf, rf, mf, sf, n, 65537, 131071,
+        4, 8, 8, 17, bw, wbuf, eout);
+    let parity: i64 = bits - 32 - 5 * (nblocks as i64) - cost;
+    wr(2, "  wire_bits="); wr_int(2, bits);
+    wr(2, "  parity(wire-32-Bw-cost)="); wr_int(2, parity);
+    wr(2, "  enc_cost_delta="); wr_int(2, eout[4] - cost); wr(2, "\n");
+    wr(2, "  pair split: LR="); wr_int(2, eout[0]);
+    wr(2, " MS="); wr_int(2, eout[1]);
+    wr(2, " LS="); wr_int(2, eout[2]);
+    wr(2, " RS="); wr_int(2, eout[3]); wr(2, "\n");
+
+    let dl: *i32 = alloc(n);
+    let dr: *i32 = alloc(n);
+    let dm: *i32 = alloc(n);
+    let ds: *i32 = alloc(n);
+    wire_decode_stereo(wbuf, dl, dr, dm, ds, 65537, 131071, 4, bwd);
+
+    var mism: i64 = 0;
+    i = 0;
+    while i < n {
+        if dl[i] != lf[i] { mism = mism + 1; }
+        if dr[i] != rf[i] { mism = mism + 1; }
+        if dm[i] != mf[i] { mism = mism + 1; }
+        if ds[i] != sf[i] { mism = mism + 1; }
+        i = i + 1;
+    }
+    wr(2, "  mismatches="); wr_int(2, mism);
+    wr(2, "  wire_bytes="); wr_int(2, (bits + 7) / 8); wr(2, "\n");
+    if mism == 0 && parity == 0 {
+        wr(2, "  ROUNDTRIP OK\n");
+    } else {
+        wr(2, "  ROUNDTRIP FAIL\n");
+        exit(1);
+    }
+
+    free(ds); free(dm); free(dr); free(dl);
+    free(eout); free(wbuf); free(bwd); free(bw); free(sout);
+    free(sf); free(mf); free(rf); free(lf);
+    print(n as i64);
+    return 0;
+}

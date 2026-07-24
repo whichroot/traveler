@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dyn_mul_boundary_test.tv — via-negativa probe of the @field_dyn_mul
+// narrow-prime fast-path boundary: 2^32-5, Goldilocks, and codec primes,
+// each mul cross-validated against repeated dyn_add.
+// @internal-design: core
+
+extern "C" fn clock() -> i64;
+
+// generic mul/add we can instantiate <dyn>
+fn gmul<F: Field>(a: F, b: F) -> F { return a * b; }
+fn gadd<F: Field>(a: F, b: F) -> F { return a + b; }
+instantiate gmul<dyn>;
+instantiate gadd<dyn>;
+
+// a * b (mod p) computed ONLY through addition: sum a, b times.
+// Cross-validates mul against the untouched add path. b kept small.
+fn mul_via_add(f: Field, a: i64, b: i64) -> i64 {
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < b {
+        acc = gadd_dyn(f, acc, a);
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn main() -> i32 {
+    // ---- 1. Largest narrow prime: 2^32 - 5 (fast path, tightest square) ----
+    let fnar: Field = field(4294967291);
+    // a near the top of the field; b small enough for mul_via_add.
+    let a1: i64 = 4294967290;            // p-1, the max operand
+    let b1: i64 = 1000;
+    let viamul: i64 = gmul_dyn(fnar, a1, b1);
+    let viaadd: i64 = mul_via_add(fnar, a1, b1);
+    print(viamul);                        // must equal viaadd
+    print(viaadd);
+    // (p-1)*(p-1) mod p == 1  (since p-1 == -1, (-1)*(-1)=1) — the corner that
+    // overflows i64 product if the threshold were off by one.
+    print(gmul_dyn(fnar, 4294967290, 4294967290));   // expect 1
+
+    // ---- 2. Wide prime: Goldilocks 2^64-2^32+1 (i256 path) ----
+    let fwide: Field = field(18446744069414584321);
+    print(gmul_dyn(fwide, 18446744069414584320, 18446744069414584320)); // (-1)^2 = 1
+    let aw: i64 = 18446744069414584320;   // p-1
+    print(gmul_dyn(fwide, aw, 2));         // (p-1)*2 = p-2 = 18446744069414584319
+
+    // ---- 3. Hot codec primes (fast path) ----
+    let f251: Field = field(251);
+    print(gmul_dyn(f251, 200, 100));       // 20000 mod 251 = 171
+    let f16: Field = field(65537);
+    print(gmul_dyn(f16, 60000, 60000));    // 3.6e9 mod 65537
+
+    return 0;
+}

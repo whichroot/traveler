@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fs.tv — ergonomic file I/O over the buffered libc FILE* family (fopen-family
+// portable mode strings): Result at the membrane, kind-only FsError. tvc_self ONLY.
+// @internal-design: fs
+
+import "../core/result.tv";
+import "../collections/string.tv";
+
+extern "C" fn fopen(path: *u8, mode: *u8) -> *u8;
+extern "C" fn fread(buf: *u8, size: i64, count: i64, f: *u8) -> i64;
+extern "C" fn fwrite(buf: *u8, size: i64, count: i64, f: *u8) -> i64;
+extern "C" fn fclose(f: *u8) -> i32;
+extern "C" fn fseek(f: *u8, off: i64, whence: i32) -> i32;
+extern "C" fn ftell(f: *u8) -> i64;
+extern "C" fn ferror(f: *u8) -> i32;
+// Atomic-replace + directory primitives (the lab heartbeat contract): rename(2)
+// is atomic within a filesystem; mkdir(2) creates a run dir. Both -1 on failure.
+extern "C" fn rename(oldp: *u8, newp: *u8) -> i32;
+extern "C" fn mkdir(path: *u8, mode: i32) -> i32;
+
+enum FsError {
+    OpenFailed,
+    ReadFailed,
+    WriteFailed,
+    SeekFailed,
+    CloseFailed,
+    RenameFailed,
+    MkdirFailed,
+}
+
+struct File {
+    handle: *u8,
+}
+
+// Open a file with a C mode string ("rb", "wb", "ab", ...).
+fn fs_open(path: *u8, mode: *u8) -> Result<File, FsError> {
+    let h: *u8 = fopen(path, mode);
+    if h == null {
+        return Result::Err(FsError::OpenFailed);
+    }
+    return Result::Ok(File { handle: h });
+}
+
+// Read up to n bytes into buf. Ok(bytes_read); 0 at EOF. A short read at
+// end-of-file is NOT an error; a stream error (ferror) is.
+fn file_read(f: File, buf: *u8, n: i64) -> Result<i64, FsError> {
+    let got: i64 = fread(buf, 1, n, f.handle);
+    if got < n {
+        if ferror(f.handle) != 0 {
+            return Result::Err(FsError::ReadFailed);
+        }
+    }
+    return Result::Ok(got);
+}
+
+// Write exactly n bytes from buf. Ok(n) or Err(WriteFailed) on a short write.
+fn file_write(f: File, buf: *u8, n: i64) -> Result<i64, FsError> {
+    let put: i64 = fwrite(buf, 1, n, f.handle);
+    if put < n {
+        return Result::Err(FsError::WriteFailed);
+    }
+    return Result::Ok(put);
+}
+
+// Close (flushes buffered writes — a real failure point, hence Result).
+fn file_close(f: File) -> Result<i64, FsError> {
+    if fclose(f.handle) != 0 {
+        return Result::Err(FsError::CloseFailed);
+    }
+    return Result::Ok(0);
+}
+
+// Byte size via fseek(END)+ftell.
+fn fs_size(path: *u8) -> Result<i64, FsError> {
+    let f: File = fs_open(path, "rb")?;
+    if fseek(f.handle, 0, 2) != 0 {          // SEEK_END = 2 (POSIX, both OSes)
+        fclose(f.handle);
+        return Result::Err(FsError::SeekFailed);
+    }
+    let sz: i64 = ftell(f.handle);
+    if sz < 0 {
+        fclose(f.handle);
+        return Result::Err(FsError::SeekFailed);
+    }
+    file_close(f)?;
+    return Result::Ok(sz);
+}
+
+// 1 if the path opens for reading, else 0. A query, not a Result.
+fn fs_exists(path: *u8) -> i32 {
+    let h: *u8 = fopen(path, "rb");
+    if h == null {
+        return 0;
+    }
+    fclose(h);
+    return 1;
+}
+
+// Read a whole file into an owned Str (length-carrying; NUL is data).
+fn fs_read_to_string(path: *u8) -> Result<Str, FsError> {
+    let sz: i64 = fs_size(path)?;
+    if sz > 2147483647 {
+        return Result::Err(FsError::ReadFailed);   // Str.len is i32 (named limit)
+    }
+    let f: File = fs_open(path, "rb")?;
+    var cap: i64 = sz;
+    if cap < 8 { cap = 8; }
+    let buf: *u8 = alloc(cap);
+    let got: i64 = fread(buf, 1, sz, f.handle);
+    if got < sz {
+        free(buf);
+        fclose(f.handle);
+        return Result::Err(FsError::ReadFailed);
+    }
+    file_close(f)?;
+    return Result::Ok(Str { data: buf, len: sz as i32, cap: cap as i32 });
+}
+
+// Write (create/truncate) the whole Str to path.
+fn fs_write_string(path: *u8, s: *Str) -> Result<i64, FsError> {
+    let f: File = fs_open(path, "wb")?;
+    let n: i64 = s.len as i64;
+    let put: i64 = fwrite(s.data, 1, n, f.handle);
+    if put < n {
+        fclose(f.handle);
+        return Result::Err(FsError::WriteFailed);
+    }
+    file_close(f)?;
+    return Result::Ok(put);
+}
+
+// Append the whole Str to path (creates if missing).
+fn fs_append_string(path: *u8, s: *Str) -> Result<i64, FsError> {
+    let f: File = fs_open(path, "ab")?;
+    let n: i64 = s.len as i64;
+    let put: i64 = fwrite(s.data, 1, n, f.handle);
+    if put < n {
+        fclose(f.handle);
+        return Result::Err(FsError::WriteFailed);
+    }
+    file_close(f)?;
+    return Result::Ok(put);
+}
+
+// Rename oldp -> newp (atomic within a filesystem).
+fn fs_rename(oldp: *u8, newp: *u8) -> Result<i64, FsError> {
+    if rename(oldp, newp) != 0 {
+        return Result::Err(FsError::RenameFailed);
+    }
+    return Result::Ok(0);
+}
+
+// Create a directory (mode 0o755). EEXIST surfaces as Err(MkdirFailed) — callers
+// that want create-if-absent match and ignore it.
+fn fs_mkdir(path: *u8) -> Result<i64, FsError> {
+    if mkdir(path, 493) != 0 {
+        return Result::Err(FsError::MkdirFailed);
+    }
+    return Result::Ok(0);
+}
+
+// Atomically replace `path`: write the whole Str to `tmp_path`, flush+close it,
+// then rename it onto `path`. A reader ever sees either the old file or the fully
+// written new one, never a torn write — the heartbeat.json requirement. (rename
+// gives atomicity; fsync-for-durability across power loss is a follow-up.)
+fn fs_write_atomic(path: *u8, tmp_path: *u8, s: *Str) -> Result<i64, FsError> {
+    let put: i64 = fs_write_string(tmp_path, s)?;
+    fs_rename(tmp_path, path)?;
+    return Result::Ok(put);
+}

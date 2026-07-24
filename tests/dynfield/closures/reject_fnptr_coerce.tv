@@ -1,0 +1,7 @@
+// N6 (Rubicon): a capturing closure is not a function pointer.
+fn apply_fp(f: fn(i32)->i32, v: i32) -> i32 { return f(v); }
+fn main() {
+    let k: i32 = 1;
+    let g = |x: i32| x + k;
+    print(apply_fp(g, 41));
+}

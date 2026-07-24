@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_adaptive.tv — Phase Z.3 (a+b): MDL-optimal adaptive degree.
+// genus_mdl_segment (Z.3a) DP-segments into (start,len,degree) triples;
+// genus_local_stable (Z.3b) is the stability witness. Reuses seg_fits<dyn>.
+// @internal-design: genus
+
+extern "C" fn seg_fits_dyn(
+    f: Field, data: *i64, a: i32, len: i32, deg: i32, work: *i64) -> i32;
+
+// Minimal degree in 0..min(d_max, len-1) that EXACTLY fits the window [a, a+len),
+// or -1 if no such degree fits (the span is not degree-<=d_max polynomial).
+fn ga_mindeg(f: Field, data: *i64, a: i32, len: i32, d_max: i32, work: *i64) -> i32 {
+    var dlim: i32 = d_max;
+    if len - 1 < dlim { dlim = len - 1; }
+    for d in 0..(dlim + 1) {
+        if seg_fits_dyn(f, data, a, len, d, work) == 1 { return d; }
+    }
+    return 0 - 1;   // infeasible: no degree <= d_max fits this span
+}
+
+// Z.3a — MDL-optimal segmentation by DP. cost[e] = min total (deg+1) coefficients
+// to describe [0, e). Writes the reconstructed segments into cert as (start, len,
+// degree) triples and returns nseg. cert holds up to n triples; work is scratch.
+#[export]
+fn genus_mdl_segment(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64
+) -> i32 {
+    let big: i32 = 1000000;
+    let cost: *i32 = alloc(n + 1);
+    let par: *i32 = alloc(n + 1);      // predecessor start index
+    let pdeg: *i32 = alloc(n + 1);     // degree of the segment ending at e
+    cost[0] = 0;
+    for e in 1..(n + 1) { cost[e] = big; par[e] = 0; pdeg[e] = 0; }
+
+    for e in 1..(n + 1) {
+        for s in 0..e {
+            let len: i32 = e - s;
+            let md: i32 = ga_mindeg(f, data, s, len, d_max, work);
+            if md >= 0 {                          // skip infeasible spans
+                if cost[s] < big {                // and unreachable prefixes
+                    let c: i32 = cost[s] + (md + 1);
+                    if c < cost[e] {
+                        cost[e] = c;
+                        par[e] = s;
+                        pdeg[e] = md;
+                    }
+                }
+            }
+        }
+    }
+
+    // Reconstruct backwards into a temporary, then reverse into cert.
+    let tmp_s: *i32 = alloc(n);
+    let tmp_l: *i32 = alloc(n);
+    let tmp_d: *i32 = alloc(n);
+    var cnt: i32 = 0;
+    var e: i32 = n;
+    while e > 0 {
+        let s: i32 = par[e];
+        tmp_s[cnt] = s;
+        tmp_l[cnt] = e - s;
+        tmp_d[cnt] = pdeg[e];
+        cnt = cnt + 1;
+        e = s;
+    }
+    // reverse
+    for k in 0..cnt {
+        let src: i32 = cnt - 1 - k;
+        cert[k * 3 + 0] = tmp_s[src] as i64;
+        cert[k * 3 + 1] = tmp_l[src] as i64;
+        cert[k * 3 + 2] = tmp_d[src] as i64;
+    }
+
+    free(cost); free(par); free(pdeg);
+    free(tmp_s); free(tmp_l); free(tmp_d);
+    return cnt;
+}
+
+// Z.3b — local-stability (merge-inequality) witness. Returns 1 iff every interior
+// boundary is FORCED: merging segment i with i+1 costs strictly more than the two
+// kept separate. mindeg(merged)+1 > (d_i+1)+(d_{i+1}+1). Single-segment -> 1.
+#[export]
+fn genus_local_stable(
+    f: Field, data: *i64, n: i32, cert: *i64, nseg: i32, d_max: i32, work: *i64
+) -> i32 {
+    if nseg <= 1 { return 1; }   // no interior boundary; vacuously stable
+    for i in 0..(nseg - 1) {
+        let s1: i32 = cert[i * 3 + 0] as i32;
+        let l1: i32 = cert[i * 3 + 1] as i32;
+        let d1: i32 = cert[i * 3 + 2] as i32;
+        let l2: i32 = cert[(i + 1) * 3 + 1] as i32;
+        let d2: i32 = cert[(i + 1) * 3 + 2] as i32;
+        let merged_len: i32 = l1 + l2;
+        let md: i32 = ga_mindeg(f, data, s1, merged_len, d_max, work);
+        // md == -1 (merge infeasible) -> boundary trivially forced; else forced
+        // iff merging costs strictly more than the split.
+        if md >= 0 {
+            let merge_cost: i32 = md + 1;
+            let split_cost: i32 = (d1 + 1) + (d2 + 1);
+            if merge_cost <= split_cost { return 0; }   // not forced
+        }
+    }
+    return 1;
+}

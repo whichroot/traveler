@@ -1,0 +1,8 @@
+// arity_closure.tv — #26 negative gate. A call to a closure must match the
+// closure's parameter count. The closure-call path shared the unchecked-arity
+// gap; #26 closes it (the count is known from the lifted closure body).
+fn main() {
+    let g = |a: i32, b: i32| a + b;
+    let r: i32 = g(7);           // 1 arg, 2 params: refused
+    print(r);
+}

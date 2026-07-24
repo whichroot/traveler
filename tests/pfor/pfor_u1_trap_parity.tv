@@ -1,0 +1,44 @@
+// pfor_u1_trap_parity.tv — U1 (Stage D) trap-ordering gate.
+// Integer division is ADMITTED in dispatched bodies; its by-zero behavior is
+// platform semantics (AArch64: x/0 == 0, no trap; x86-64: SIGFPE aborts).
+// The SPEC this gate pins: the parallel OUTCOME equals the serial OUTCOME —
+// stdout AND exit status — at every thread count. Where the platform traps,
+// both runs trap (no output follows either trap, so results cannot diverge);
+// where it does not, the quotient lanes are per-element deterministic.
+// "Which worker trips first" is deliberately unspecified; observable results
+// are not. (@internal-note: plan-exact-arithmetic-arc Stage D acceptance + open question 2:
+// abort-is-abort — determinism of RESULTS is the contract.)
+//
+// MUST PARALLELIZE (division is admitted: refusing it would be lost
+// parallelism with no soundness gain). Expected workers: 1 (stage1).
+// The harness asserts (stdout, status)@T=1 == (stdout, status)@T=32 —
+// self-relative, no absolute baseline (the outcome is platform-split).
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *i64 = alloc(n);
+    let b: *i64 = alloc(n);
+    let q: *i64 = alloc(n);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = (w as i64) * 1000003;
+        b[w] = ((w as i64) % 97) + 1;   // nonzero...
+        w = w + 1;
+    }
+    b[2077] = 0;                         // ...except one poison lane
+
+    print(7777);                         // pre-loop marker: present in BOTH runs
+
+    for i in 0..n {
+        q[i] = a[i] / b[i];
+    }
+
+    let mut s: i64 = 0;
+    w = 0;
+    while w < n {
+        s = s + q[w];
+        w = w + 1;
+    }
+    print(s);                            // reached only where div-by-zero != trap
+    return 0;
+}

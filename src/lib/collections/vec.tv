@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// vec.tv — generic growable array Vec<T> (realloc-doubling). Free functions
+// are the canonical API; push/get/len forward v.push(x). tvc_self ONLY.
+// @internal-design: collections
+
+struct Vec<T> {
+    data: *T,
+    len: i32,
+    cap: i32,
+}
+
+// ---- Canonical free functions ----
+
+fn vec_new<T>() -> Vec<T> {
+    let buf: *T = alloc(4);
+    return Vec { data: buf, len: 0, cap: 4 };
+}
+
+fn vec_push<T>(v: *Vec<T>, x: T) {
+    if v.len == v.cap {
+        v.cap = v.cap * 2;
+        v.data = realloc(v.data, v.cap);
+    }
+    v.data[v.len] = x;
+    v.len = v.len + 1;
+}
+
+fn vec_pop<T>(v: *Vec<T>) -> T {
+    v.len = v.len - 1;
+    return v.data[v.len];
+}
+
+fn vec_len<T>(v: *Vec<T>) -> i32 {
+    return v.len;
+}
+
+fn vec_get<T>(v: *Vec<T>, i: i32) -> T {
+    return v.data[i];
+}
+
+fn vec_set<T>(v: *Vec<T>, i: i32, x: T) {
+    v.data[i] = x;
+}
+
+fn vec_free<T>(v: *Vec<T>) {
+    free(v.data);
+}
+
+// ---- Forwarding methods (human ergonomics; v.push(x) -> push(&v, x)) ----
+
+fn push<T>(v: *Vec<T>, x: T) {
+    vec_push(v, x);
+}
+
+fn get<T>(v: *Vec<T>, i: i32) -> T {
+    return vec_get(v, i);
+}
+
+fn len<T>(v: *Vec<T>) -> i32 {
+    return vec_len(v);
+}
+
+// ---- Explicit instantiation for cross-file linking (B1b precursor) ----
+// `instantiate` emits concrete dso_local instances (vec_new_i32, ...) that a
+// separate compilation unit links against via extern declarations.
+instantiate vec_new<i32>;
+instantiate vec_push<i32>;
+instantiate vec_get<i32>;
+instantiate vec_len<i32>;
+instantiate vec_free<i32>;

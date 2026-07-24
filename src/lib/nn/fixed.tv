@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// nn/fixed.tv — exact fixed-point NN primitives (exp / softmax / gelu / rsqrt).
+// Ported from gpt-2-research/tv/{fxp,softmax}.tv; mirrors field/fixed_point.py
+// bit-for-bit. All values signed i64 at scale S = 2^F (F=16); accumulators
+// stay < 63 bits so the integers ARE canonical Goldilocks residues (no wrap).
+// Import-merged (no extern linkage): softmax_fp calls fixed_exp directly.
+// Design/why: @internal-design: nn. tvc_self-only import.
+
+let F: i64 = 16;
+let S: i64 = 65536;            // 1 << 16
+let EXP_F: i64 = 16;
+let LN2_Q: i64 = 45426;        // round(ln2 * 2^16)
+let GELU_C0: i64 = 52290;      // round(sqrt(2/pi) * 2^16)
+let GELU_C1: i64 = 2930;       // round(0.044715 * 2^16)
+
+// round-to-nearest arithmetic right shift: (acc + 2^(bits-1)) >> bits.
+fn rshift_round(acc: i64, bits: i64) -> i64 {
+    let half: i64 = 1 << (bits - 1);
+    return (acc + half) >> bits;
+}
+
+// integer floor sqrt via Newton.
+fn isqrt_i64(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    var bl: i64 = 0;
+    var t: i64 = n;
+    while t > 0 { bl = bl + 1; t = t >> 1; }
+    var x: i64 = 1 << ((bl + 1) / 2);
+    while 1 == 1 {
+        let y: i64 = (x + n / x) >> 1;
+        if y >= x { return x; }
+        x = y;
+    }
+    return x;
+}
+
+// floor(2^e / d) without materializing 2^e (overflows i64 at e>=63).
+fn idiv_2pow(e: i64, d: i64) -> i64 {
+    if d <= 0 { return 0; }
+    if e <= 62 {
+        return (1 << e) / d;
+    }
+    let a: i64 = 1 << (e - 2);
+    let qa: i64 = a / d;
+    let ra: i64 = a - qa * d;
+    return 4 * qa + (4 * ra) / d;
+}
+
+// 1/sqrt(var_real), var_real = var_q2 / 2^in_bits; returns round(2^out_bits / sqrt).
+fn fixed_rsqrt(var_q2: i64, in_bits: i64, out_bits: i64) -> i64 {
+    if var_q2 <= 0 { return 0; }
+    return isqrt_i64(idiv_2pow(2 * out_bits + in_bits, var_q2));
+}
+
+// e^f for f = frac_q / 2^EXP_F, f in [0, ln2). Degree-5 Taylor. Scale 2^EXP_F.
+fn fixed_exp_frac(frac_q: i64) -> i64 {
+    let one: i64 = 1 << EXP_F;
+    var term: i64 = one;
+    var acc: i64 = one;
+    var k: i64 = 1;
+    while k <= 5 {
+        term = (term * frac_q) / (k << EXP_F);
+        acc = acc + term;
+        k = k + 1;
+    }
+    return acc;
+}
+
+// e^x for x = x_q / 2^scale_bits, x <= 0. Range-reduce -x = k*ln2 + r; e^x = e^-r >> k.
+fn fixed_exp(x_q: i64, scale_bits: i64) -> i64 {
+    var xe: i64 = x_q;
+    if scale_bits >= EXP_F {
+        xe = x_q >> (scale_bits - EXP_F);
+    } else {
+        xe = x_q << (EXP_F - scale_bits);
+    }
+    let one: i64 = 1 << EXP_F;
+    if xe >= 0 { return one; }
+    let m: i64 = 0 - xe;
+    let k: i64 = m / LN2_Q;
+    let r: i64 = m - k * LN2_Q;
+    let e_negr: i64 = (1 << (2 * EXP_F)) / fixed_exp_frac(r);
+    if k >= 62 { return 0; }
+    return e_negr >> k;
+}
+
+// pure-integer GELU on one fixed-point value (scale S).
+fn gelu_one(x: i64) -> i64 {
+    let x2: i64 = (x * x) >> F;
+    let x3: i64 = (x2 * x) >> F;
+    let inner_arg: i64 = x + ((GELU_C1 * x3) >> F);
+    let inner: i64 = (GELU_C0 * inner_arg) >> F;
+    var a: i64 = inner;
+    if inner < 0 { a = 0 - inner; }
+    let e2: i64 = fixed_exp(0 - 2 * a, F);
+    let one: i64 = 1 << EXP_F;
+    var t: i64 = ((one - e2) * one) / (one + e2);
+    if inner < 0 { t = 0 - t; }
+    let onepe: i64 = one + t;
+    return (x * onepe) >> (EXP_F + 1);
+}
+
+// fixed-point softmax over the last axis (per row of a [rows,n] buffer).
+// writes probabilities (scale S) into `out`. Temperature = scale_bits on inputs.
+fn softmax_fp(scores: *i64, out: *i64, rows: i32, n: i32, scale_bits: i64) {
+    var r: i32 = 0;
+    while r < rows {
+        let base: i32 = r * n;
+        var mx: i64 = scores[base];
+        var i: i32 = 1;
+        while i < n {
+            if scores[base + i] > mx { mx = scores[base + i]; }
+            i = i + 1;
+        }
+        var tot: i64 = 0;
+        i = 0;
+        while i < n {
+            let e: i64 = fixed_exp(scores[base + i] - mx, scale_bits);
+            out[base + i] = e;
+            tot = tot + e;
+            i = i + 1;
+        }
+        i = 0;
+        while i < n {
+            if tot == 0 {
+                out[base + i] = 0;
+            } else {
+                out[base + i] = (out[base + i] * S) / tot;
+            }
+            i = i + 1;
+        }
+        r = r + 1;
+    }
+}

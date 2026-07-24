@@ -1,0 +1,10 @@
+// Negative: taking the address of an immutable `let` scalar hands out a mutable
+// pointer to a binding the spec froze — refused (seed parity, tvc.c:5188).
+// Only scalar/global non-mut lets trip this; aggregate lets (Vec, structs) keep
+// the permissive default, so `&v` on `let v = ...` still works.
+// plan-syntax-modernization Phase 1 (strict `let`).
+fn main() -> i32 {
+    let x: i32 = 1;
+    let p: *i32 = &x;
+    return 0;
+}

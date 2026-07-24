@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// bitwise_ops.tv — all bitwise operators (& | ^ ~ << >>), the alignment idiom
+// (n + 7) & ~7, and precedence (& binds tighter than |).
+//
+// Expected output: 8 14 6 -13 40 3 16 24 0 7
+
+fn main() {
+    let a: i32 = 12;   // 0b1100
+    let b: i32 = 10;   // 0b1010
+
+    print(a & b);       // 0b1000 = 8
+    print(a | b);       // 0b1110 = 14
+    print(a ^ b);       // 0b0110 = 6
+    print(~a);          // NOT 12 = -13 (signed two's complement)
+
+    // Shifts
+    print(5 << 3);      // 5 * 8 = 40
+    print(a >> 2);      // 12 >> 2 = 3
+
+    // Alignment idiom: (n + 7) & ~7
+    print((13 + 7) & ~7);  // 16
+    print((24 + 7) & ~7);  // 24
+    print((0 + 7) & ~7);   // 0
+
+    // Precedence: 5 | 3 & 6 parses as 5 | (3 & 6) = 7;
+    // wrong precedence would give (5 | 3) & 6 = 6.
+    print(5 | 3 & 6);  // 7 if correct
+}

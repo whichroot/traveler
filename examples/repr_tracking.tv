@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// repr_tracking.tv — automatic Newton/Standard form conversion (Claim 16):
+// the compiler tracks poly repr and auto-inserts conversions at boundaries.
+//
+// Three auto-insertion points:
+//   1. eval(q, 3) where q is STANDARD → inserts standard_to_newton
+//   2. p + q where p is NEWTON → inserts newton_to_standard(p)
+//   3. eval(r, 3) where r is STANDARD (from addition) → inserts standard_to_newton
+//
+// Expected output: 10 14 28 10 38
+//
+// Hand-verified:
+//   analyze([10,14,20]) → Newton coeffs [10, 4, 2]
+//   eval([10,4,2], 0) = 10, eval([10,4,2], 1) = 14, eval([10,4,2], 3) = 28
+//   poly(1,0,1) → standard [1,0,1] (= 1 + t^2)
+//   eval(standard_to_newton([1,0,1]), 3) = eval([1,1,2], 3) = 10
+//   newton_to_standard([10,4,2]) = [10,3,1] (= 10 + 3t + t^2)
+//   [10,3,1] + [1,0,1] = [11,3,2]
+//   eval(standard_to_newton([11,3,2]), 3) = eval([11,5,4], 3) = 38
+
+type F = Field<251>;
+
+fn main() {
+    // Create data: f(t) = 10 + 3t + t^2 evaluated at t=0,1,2
+    var data: [F; 3] = 0;
+    data[0] = 10;
+    data[1] = 14;
+    data[2] = 20;
+
+    // analyze() → Newton form: N = [10, 4, 2]
+    // repr tag: NEWTON
+    let p: Poly<F, 2> = analyze(data, 3);
+
+    // eval() on Newton form — NO conversion needed
+    let v0: F = eval(p, 0);  print(v0);    // 10
+    let v1: F = eval(p, 1);  print(v1);    // 14
+    let v3: F = eval(p, 3);  print(v3);    // 28
+
+    // poly() → standard form: S = [1, 0, 1] = 1 + t^2
+    // repr tag: STANDARD
+    let q: Poly<F, 2> = poly(1, 0, 1);
+
+    // eval() on standard form:
+    // COMPILER AUTO-INSERTS standard_to_newton(q) here
+    let v4: F = eval(q, 3);  print(v4);    // 10  (= 1 + 0 + 9)
+
+    // p + q: p is NEWTON, q is STANDARD
+    // COMPILER AUTO-INSERTS newton_to_standard(p) here
+    let r: Poly<F, 2> = p + q;
+
+    // eval(r, 3): r is STANDARD (result of addition)
+    // COMPILER AUTO-INSERTS standard_to_newton(r) here
+    let v5: F = eval(r, 3);  print(v5);    // 38  (= 28 + 10)
+}

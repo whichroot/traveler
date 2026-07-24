@@ -1,0 +1,308 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dyn_kernel_test.tv — the four operations as generics instantiated <dyn>
+// (modulus late-bound via field(p)); dyn decode gated == codec pc_forward_sum.
+// @internal-design: core
+//
+// Expected output:
+//   10 13 17 22 73        forward_sum_dyn over field(251)
+//   73                    eval_at_dyn f(9) == forward_sum out[9]
+//   3 10 3 1              forward_diff_dyn order + Newton coeffs
+//   4                     regime_detect_dyn boundary at prediction failure
+//   1 1 1                 pc_sum_dyn == pc_forward_sum_ref (3 primes)
+//   54479                 dyn add over field(65521), 16-bit prime
+//   705032709             dyn add over field(4294967291), 32-bit prime
+
+// ============================================================
+//  The generic kernel (same shape as poly_core_generic.tv)
+// ============================================================
+
+fn forward_sum<F: Field>(coeffs: *F, order: i32, out: *F, n: i32, reg: *F) {
+    var k: i32 = 0;
+    while k <= order {
+        reg[k] = coeffs[k];
+        k = k + 1;
+    }
+    var i: i32 = 0;
+    while i < n {
+        out[i] = reg[0];
+        var j: i32 = 0;
+        while j < order {
+            reg[j] = reg[j] + reg[j + 1];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn forward_diff<F: Field>(data: *F, n: i32, coeffs: *F, max_order: i32, work: *F) -> i32 {
+    var i: i32 = 0;
+    while i < n {
+        work[i] = data[i];
+        i = i + 1;
+    }
+    var d: i32 = 0;
+    var remaining: i32 = n;
+    while d <= max_order && remaining > 0 {
+        coeffs[d] = work[0];
+        if d > 0 {
+            var all_zero: i32 = 1;
+            var ci: i32 = 0;
+            while ci < remaining {
+                let val: F = work[ci];
+                let zero: F = 0;
+                if val != zero {
+                    all_zero = 0;
+                }
+                ci = ci + 1;
+            }
+            if all_zero == 1 {
+                return d;
+            }
+        }
+        var j: i32 = 0;
+        while j < remaining - 1 {
+            work[j] = work[j + 1] - work[j];
+            j = j + 1;
+        }
+        remaining = remaining - 1;
+        d = d + 1;
+    }
+    return max_order;
+}
+
+fn regime_detect<F: Field>(data: *F, n: i32, order: i32, threshold: i32, reg: *F) -> i32 {
+    if n <= order { return n; }
+    var k: i32 = 0;
+    while k <= order {
+        reg[k] = data[k];
+        k = k + 1;
+    }
+    var d: i32 = 0;
+    while d < order {
+        var j: i32 = order;
+        while j > d {
+            reg[j] = reg[j] - reg[j - 1];
+            j = j - 1;
+        }
+        d = d + 1;
+    }
+    var adv: i32 = 0;
+    while adv < order {
+        var j: i32 = 0;
+        while j < order {
+            reg[j] = reg[j] + reg[j + 1];
+            j = j + 1;
+        }
+        adv = adv + 1;
+    }
+    var i: i32 = order + 1;
+    while i < n {
+        var j: i32 = 0;
+        while j < order {
+            reg[j] = reg[j] + reg[j + 1];
+            j = j + 1;
+        }
+        let predicted: F = reg[0];
+        let actual: F = data[i];
+        let residual: F = actual - predicted;
+        let s: i32 = signed(residual);
+        var abs_res: i32 = s;
+        if abs_res < 0 { abs_res = 0 - abs_res; }
+        if abs_res > threshold {
+            return i;
+        }
+        reg[0] = actual;
+        i = i + 1;
+    }
+    return n;
+}
+
+fn eval_at<F: Field>(coeffs: *F, order: i32, x: F) -> F {
+    let zero: F = 0;
+    if order < 0 { return zero; }
+    var result: F = coeffs[order];
+    var k: i32 = order - 1;
+    while k >= 0 {
+        let xmk: F = x - (k as F);
+        let kp1: F = (k + 1) as F;
+        let inv_kp1: F = 1 / kp1;
+        let factor: F = xmk * inv_kp1;
+        result = coeffs[k] + result * factor;
+        k = k - 1;
+    }
+    return result;
+}
+
+// ============================================================
+//  The codec decode, written generically — pc_forward_sum
+//  (piecewise_codec.tv:147-181) verbatim.
+// ============================================================
+
+fn pc_sum<F: Field>(headers: *F, order: i32,
+    residuals: *F, n_res: i32,
+    out: *F, n: i32, reg: *F) {
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    if n_res > 0 {
+        reg[order] = residuals[0];
+    }
+    out[0] = reg[0];
+    var i: i32 = 1;
+    while i < n {
+        k = 0;
+        while k < order {
+            reg[k] = reg[k] + reg[k + 1];
+            k = k + 1;
+        }
+        out[i] = reg[0];
+        if i < n_res {
+            reg[order] = residuals[i];
+        }
+        i = i + 1;
+    }
+}
+
+instantiate forward_sum<dyn>;
+instantiate forward_diff<dyn>;
+instantiate regime_detect<dyn>;
+instantiate eval_at<dyn>;
+instantiate pc_sum<dyn>;
+
+// ============================================================
+//  Reference: hand-rolled copy of the codec's i32 path — what the
+//  dyn instance must match byte-for-byte.
+// ============================================================
+
+fn ref_field_add(a: i32, b: i32, p: i32) -> i32 {
+    let s: i32 = a + b;
+    if s >= p { return s - p; }
+    return s;
+}
+
+fn pc_forward_sum_ref(headers: *i32, order: i32,
+    residuals: *i32, n_res: i32,
+    out: *i32, n: i32, p: i32) {
+    let reg: *i32 = alloc(order + 1);
+    var k: i32 = 0;
+    while k < order {
+        reg[k] = headers[k];
+        k = k + 1;
+    }
+    if n_res > 0 {
+        reg[order] = residuals[0];
+    }
+    out[0] = reg[0];
+    var i: i32 = 1;
+    while i < n {
+        k = 0;
+        while k < order {
+            reg[k] = ref_field_add(reg[k], reg[k + 1], p);
+            k = k + 1;
+        }
+        out[i] = reg[0];
+        if i < n_res {
+            reg[order] = residuals[i];
+        }
+        i = i + 1;
+    }
+    free(reg);
+}
+
+// Run the gate for one prime: dyn vs reference decode, 32 samples,
+// non-trivial residual stream. Returns 1 if all samples identical.
+fn gate_one_prime(p: i64) -> i32 {
+    let f: Field = field(p);
+    let order: i32 = 2;
+    let n: i32 = 32;
+    let n_res: i32 = 30;
+
+    // Headers and residuals (values < 251 so they fit every test prime)
+    let h64: *i64 = alloc(2);
+    let r64: *i64 = alloc(30);
+    let h32: *i32 = alloc(2);
+    let r32: *i32 = alloc(30);
+    h64[0] = 10; h64[1] = 3;
+    h32[0] = 10; h32[1] = 3;
+    var i: i32 = 0;
+    while i < n_res {
+        let v: i32 = (i * 7 + 3) % 19;   // varying residuals
+        r64[i] = v;
+        r32[i] = v;
+        i = i + 1;
+    }
+
+    let out64: *i64 = alloc(32);
+    let reg64: *i64 = alloc(3);
+    pc_sum_dyn(f, h64, order, r64, n_res, out64, n, reg64);
+
+    let out32: *i32 = alloc(32);
+    pc_forward_sum_ref(h32, order, r32, n_res, out32, n, p as i32);
+
+    var ok: i32 = 1;
+    i = 0;
+    while i < n {
+        let a: i64 = out64[i];
+        let b: i32 = out32[i];
+        if a != b as i64 {
+            ok = 0;
+        }
+        i = i + 1;
+    }
+    return ok;
+}
+
+fn add2<F: Field>(a: F, b: F) -> F {
+    return a + b;
+}
+
+instantiate add2<dyn>;
+
+fn main() {
+    let f: Field = field(251);
+
+    // --- forward_sum over field(251): coeffs [10,3,1] ---
+    let c: *i64 = alloc(3);
+    let out: *i64 = alloc(10);
+    let reg: *i64 = alloc(3);
+    c[0] = 10; c[1] = 3; c[2] = 1;
+    forward_sum_dyn(f, c, 2, out, 10, reg);
+    print(out[0]);   // 10
+    print(out[1]);   // 13
+    print(out[2]);   // 17
+    print(out[3]);   // 22
+    print(out[9]);   // 73
+
+    // --- eval_at: f(9) must equal forward_sum's out[9] ---
+    print(eval_at_dyn(f, c, 2, 9));   // 73
+
+    // --- forward_diff round trip: recover [10,3,1] from the data ---
+    let coeffs: *i64 = alloc(10);
+    let work: *i64 = alloc(10);
+    let ord: i32 = forward_diff_dyn(f, out, 6, coeffs, 5, work);
+    print(ord);        // 3 (level-3 differences vanish)
+    print(coeffs[0]);  // 10
+    print(coeffs[1]);  // 3
+    print(coeffs[2]);  // 1
+
+    // --- regime_detect: linear run, then jump at index 4 ---
+    let sig: *i64 = alloc(8);
+    sig[0] = 10; sig[1] = 12; sig[2] = 14; sig[3] = 16;
+    sig[4] = 60; sig[5] = 62; sig[6] = 64; sig[7] = 66;
+    let rreg: *i64 = alloc(2);
+    print(regime_detect_dyn(f, sig, 8, 1, 2, rreg));   // 4
+
+    // --- THE GATE: dyn decode == codec reference decode, 3 primes ---
+    print(gate_one_prime(251));         // 1
+    print(gate_one_prime(65521));       // 1
+    print(gate_one_prime(2013265921));  // 1
+
+    // --- width coverage: 16-bit and 32-bit primes through dyn add ---
+    let g16: Field = field(65521);
+    print(add2_dyn(g16, 60000, 60000));             // 54479
+    let g32: Field = field(4294967291);
+    print(add2_dyn(g32, 2500000000, 2500000000));   // 705032709
+}

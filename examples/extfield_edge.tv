@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// extfield_edge.tv — edge cases for ExtField<Field<251>, 2>: non-zero imaginary
+// parts, field axioms, boundary values, mixed ops. nr = 2 (2^125 mod 251 = p-1).
+//
+// Expected output computed with Python:
+//   from sympy import GF
+//   p = 251; nr = 2
+//   # (a+bi)(c+di) = (ac+bd*nr, ad+bc) mod p
+
+type F251 = Field<251>;
+type Ext = ExtField<Field<251>, 2>;
+
+fn main() -> i32 {
+    let i: Ext = Ext::IMAG;
+
+    // === NON-ZERO IMAGINARY PARTS ===
+
+    // Test 1: construct (3 + 7i) = 3 + 7*i
+    let a: Ext = 3;
+    let seven: Ext = 7;
+    let a_full: Ext = a + seven * i;     // (3, 7)
+    print(a_full);                        // expect: 3 7
+
+    // Test 2: construct (10 + 20i)
+    let b: Ext = 10;
+    let twenty: Ext = 20;
+    let b_full: Ext = b + twenty * i;    // (10, 20)
+    print(b_full);                        // expect: 10 20
+
+    // Test 3: add with imaginary parts
+    // (3+7i) + (10+20i) = (13, 27)
+    let r_add: Ext = a_full + b_full;
+    print(r_add);                         // expect: 13 27
+
+    // Test 4: sub with imaginary parts
+    // (3+7i) - (10+20i) = (-7, -13) = (244, 238) mod 251
+    let r_sub: Ext = a_full - b_full;
+    print(r_sub);                         // expect: 244 238
+
+    // Test 5: mul with imaginary parts
+    // (3+7i)(10+20i) = (3*10 + 7*20*2, 3*20 + 7*10)
+    //                = (30 + 280, 60 + 70) = (310, 130)
+    //                = (310 mod 251, 130) = (59, 130)
+    let r_mul: Ext = a_full * b_full;
+    print(r_mul);                         // expect: 59 130
+
+    // === ALGEBRAIC INVARIANTS ===
+
+    // Test 6: a * inv(a) = (1, 0) with non-zero imaginary
+    let inv_a: Ext = a_full ** -1;
+    let r_id: Ext = a_full * inv_a;
+    print(r_id);                          // expect: 1 0
+
+    // Test 7: (a * b) * inv(b) = a  (right cancellation)
+    let inv_b: Ext = b_full ** -1;
+    let r_cancel: Ext = r_mul * inv_b;
+    print(r_cancel);                      // expect: 3 7
+
+    // Test 8: a / b = a * inv(b)
+    let r_div: Ext = a_full / b_full;
+    let r_div2: Ext = a_full * inv_b;
+    // Both should be equal — print both, they should match
+    print(r_div);
+    print(r_div2);
+
+    // Test 9: (a + b) - b = a  (additive cancellation)
+    let r_addcancel: Ext = r_add - b_full;
+    print(r_addcancel);                   // expect: 3 7
+
+    // === BOUNDARY VALUES ===
+
+    // Test 10: zero element
+    let z: Ext = Ext::ZERO;
+    let r_addzero: Ext = a_full + z;
+    print(r_addzero);                     // expect: 3 7
+
+    // Test 11: one element
+    let one: Ext = Ext::ONE;
+    let r_mulone: Ext = a_full * one;
+    print(r_mulone);                      // expect: 3 7
+
+    // Test 12: i * i = (nr, 0) = (2, 0) for nr=2
+    let i_sq: Ext = i * i;
+    print(i_sq);                          // expect: 2 0
+
+    // Test 13: (p-1) + 1 = 0 (field wrap)
+    let pm1: Ext = 250;
+    let one2: Ext = 1;
+    let r_wrap: Ext = pm1 + one2;
+    print(r_wrap);                        // expect: 0 0
+
+    // Test 14: negation
+    let neg_a: Ext = Ext::ZERO - a_full;
+    let r_neg: Ext = a_full + neg_a;
+    print(r_neg);                         // expect: 0 0
+
+    return 0;
+}

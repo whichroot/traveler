@@ -1,0 +1,3 @@
+cannot take address of immutable binding 'x'
+declare with 'var' or 'let mut'
+addr_immutable.tv:8:19

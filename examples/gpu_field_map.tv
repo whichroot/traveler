@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// gpu_field_map.tv — Stage-0 GPU exhibit: the pfor-dispatched elementwise field
+// map out[j] = a[j]*a[j] + 3, re-emitted as an amdgpu_kernel under --emit-gpu
+// (CPU output is the correctness anchor; gate: llc lowers it for gfx1100).
+// @internal-note: plan-gpu-purity-runtime
+
+field F = Field<2147483647>;
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        a[i] = (i * 2 + 1) as F;
+        i = i + 1;
+    }
+
+    // The elementwise-map class: a single own-cell field write, no body-local
+    // lets (registers-only on the device — no addrspace(5) allocas needed).
+    for j in 0..4096 {
+        out[j] = a[j] * a[j] + 3;
+    }
+
+    print(out[0]);
+    print(out[7]);
+    print(out[4095]);
+    return 0;
+}

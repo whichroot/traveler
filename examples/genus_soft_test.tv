@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_soft_test.tv — Phase D.4: the filtration nseg(d) is order-independent
+// (line+parab == parab+line) and greedy == global (infix-closure).
+// @internal-design: genus (genus_profile: filtration + theorem)
+//
+// Expected output:
+//   12 4 2 2 2     filtration of line+parab
+//   12 4 2 2 2     filtration of parab+line (IDENTICAL -> order-independent)
+//   1              line+parab: greedy == global at every degree
+//   1              parab+line: greedy == global at every degree
+//
+// Link: regime_fri.o + genus_profile.o + genus_soft_test.o
+
+extern "C" fn genus_filtration(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+extern "C" fn genus_greedy_is_global(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64) -> i32;
+
+fn fill_line_parab(data: *i64, half: i32) {
+    for i in 0..half { data[i] = (3 * i) as i64; }
+    for i in 0..half { data[half + i] = (i * i) as i64; }
+}
+fn fill_parab_line(data: *i64, half: i32) {
+    for i in 0..half { data[i] = (i * i) as i64; }
+    for i in 0..half { data[half + i] = (3 * i) as i64; }
+}
+
+fn main() -> i32 {
+    let n: i32 = 12;
+    let half: i32 = 6;
+    let d_max: i32 = 4;
+    let f: Field = field(18446744069414584321);   // Goldilocks (safe prime)
+    let data: *i64 = alloc(n);
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let out: *i64 = alloc(d_max + 1);
+
+    // 1. filtration of line+parab
+    fill_line_parab(data, half);
+    genus_filtration(f, data, n, d_max, cert, work, out);
+    for d in 0..(d_max + 1) { print(out[d] as i32); }   // 12 4 2 2 2
+    let g1: i32 = genus_greedy_is_global(f, data, n, d_max, cert, work);
+
+    // 2. filtration of parab+line (must be identical -> order-independent)
+    fill_parab_line(data, half);
+    genus_filtration(f, data, n, d_max, cert, work, out);
+    for d in 0..(d_max + 1) { print(out[d] as i32); }   // 12 4 2 2 2
+    let g2: i32 = genus_greedy_is_global(f, data, n, d_max, cert, work);
+
+    print(g1);   // 1
+    print(g2);   // 1
+
+    free(data); free(cert); free(work); free(out);
+    return 0;
+}

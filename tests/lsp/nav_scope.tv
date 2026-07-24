@@ -1,0 +1,28 @@
+// nav_scope.tv — scope-aware navigation fixture for --references.
+//
+// Exercises shadowing, loop-variable scope, nested blocks, and parameter
+// binding so the resolver's scope discipline can be pinned. Compiles and runs
+// (prints a deterministic value) so it doubles as a normal program.
+
+fn helper(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn main() {
+    let x: i32 = 10;        // outer x  (line 12)
+    let y: i32 = 20;
+    let mut acc: i32 = 0;
+
+    // Loop variable i is scoped to the body only.
+    let mut i: i32 = 0;
+    while i < 3 {
+        let x: i32 = 100;   // inner x shadows outer (line 19)
+        acc = acc + x;      // resolves to inner x (line 19), NOT line 12
+        i = i + 1;
+    }
+
+    // Back in the outer scope: x resolves to line 12 again.
+    let z: i32 = helper(x, y);   // x -> line 12; helper -> line 7
+    print(acc);
+    print(z);
+}

@@ -1,0 +1,8 @@
+// N4 (Rubicon): a closure variable cannot be reassigned to a different identity.
+fn main() {
+    let a: i32 = 1;
+    let b: i32 = 2;
+    let mut c = |x: i32| x + a;
+    c = |x: i32| x * b;
+    print(c(10));
+}

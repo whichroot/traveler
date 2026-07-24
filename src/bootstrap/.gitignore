@@ -1,0 +1,3 @@
+# Build artifacts from build.sh / refresh.sh — regenerated, not committed.
+# The committed trust root is tvc_self.boot.ll only.
+out/

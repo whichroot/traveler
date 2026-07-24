@@ -1,0 +1,7 @@
+// Negative test: Field<0> is not a valid prime
+field F = Field<0>;
+
+fn main() {
+    let a: F = 1;
+    print(a);
+}

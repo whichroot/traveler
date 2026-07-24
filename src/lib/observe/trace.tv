@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// trace.tv — O0 of `observe`: caller-owned in-field Trace sink + exact reducers
+// (moments, histogram) + the regime decider. Concrete *i32 + runtime prime p (p=0 raw).
+// @internal-design: observability
+
+import "../core/poly_core.tv";   // forward_diff, regime_detect (concrete i32 + p)
+
+extern "C" fn exit(code: i32);
+
+// A caller-owned, bounded, own-cell trace: `cap` records of width `d`, laid flat
+// in `buf` (the caller allocates cap*d i32 slots). `d` is a runtime field.
+struct Trace {
+    buf: *i32,
+    cap: i32,
+    len: i32,
+    d: i32,
+}
+
+// Bind a Trace to a caller-owned buffer of cap*d i32 slots.
+fn trace_init(t: *Trace, buf: *i32, cap: i32, d: i32) {
+    t.buf = buf;
+    t.cap = cap;
+    t.len = 0;
+    t.d = d;
+}
+
+// Own-cell write: record i occupies buf[i*d .. i*d+d); the CALLER supplies i.
+// Loud-abort (exit 1) on out-of-range i.
+fn trace_at(t: *Trace, i: i32, rec: *i32) {
+    if i < 0 { exit(1); }
+    if i >= t.cap { exit(1); }
+    let base: i32 = i * t.d;
+    var k: i32 = 0;
+    while k < t.d {
+        t.buf[base + k] = rec[k];
+        k = k + 1;
+    }
+    if i + 1 > t.len { t.len = i + 1; }
+}
+
+fn trace_len(t: *Trace) -> i32 {
+    return t.len;
+}
+
+// observe_residual: exact forward-difference residual (Newton coefficients) of a
+// state sequence into a caller-owned buffer. p>0 field, p=0 raw; returns the order.
+fn observe_residual(state: *i32, n: i32, out: *i32, max_order: i32, p: i32, work: *i32) -> i32 {
+    return forward_diff(state, n, out, max_order, p, work);
+}
+
+// agg_moments (in-field REDUCE): exact integer moments M_1..M_k of a scalar (d=1)
+// trace, out[j] = sum_i v_i^(j+1). i64 accumulators; no division.
+fn agg_moments(t: *Trace, k: i32, out: *i64) {
+    var j: i32 = 0;
+    while j < k { out[j] = 0; j = j + 1; }
+    var i: i32 = 0;
+    while i < t.len {
+        let v: i64 = t.buf[i * t.d] as i64;
+        var pw: i64 = v;
+        j = 0;
+        while j < k {
+            out[j] = out[j] + pw;
+            pw = pw * v;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// agg_histogram (in-field REDUCE): exact value histogram of a scalar trace,
+// bin = v - lo into hist[0..nbins). Caller sizes hist, picks lo; out-of-window aborts.
+fn agg_histogram(t: *Trace, lo: i32, nbins: i32, hist: *i32) {
+    var i: i32 = 0;
+    while i < nbins { hist[i] = 0; i = i + 1; }
+    i = 0;
+    while i < t.len {
+        let v: i32 = t.buf[i * t.d];
+        let bin: i32 = v - lo;
+        if bin < 0 { exit(1); }
+        if bin >= nbins { exit(1); }
+        hist[bin] = hist[bin] + 1;
+        i = i + 1;
+    }
+}
+
+// agg_regime (in-field DECIDER): the first regime boundary in a scalar trace at
+// polynomial `order` (regime_detect). Returns the boundary, or len if one polynomial.
+fn agg_regime(t: *Trace, order: i32, threshold: i32, p: i32, reg: *i32) -> i32 {
+    return regime_detect(t.buf, t.len, order, threshold, p, reg);
+}

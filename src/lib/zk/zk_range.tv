@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_range.tv — ZK range / comparison gadget (no main): prove x in [0, 2^nbits)
+// by bit decomposition; leq(a,b) := range-prove(b-a). Hand-assembled PLONK gates
+// handed to the dyn prover. Link: plonk_dyn.o + zk_range.o + <driver>.o.
+// @internal-design: zk
+
+extern "C" fn fmul_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn fadd_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn fsub_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn plonk_omega_dyn(f: Field, log_n: i32) -> i64;
+extern "C" fn plonk_prove_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+extern "C" fn plonk_verify_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_n_rounds: i32,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+
+// ===== sizing =====
+
+// Gate count for an nbits range proof: nbits boolean + (1 seed + nbits-1 recon)
+// + 1 assertion = 2*nbits + 1.
+#[export]
+fn rc_range_gates(nbits: i32) -> i32 {
+    return 2 * nbits + 1;
+}
+
+#[export]
+fn rc_range_pow2(x: i32) -> i32 {
+    var p: i32 = 1;
+    while p < x { p = p * 2; }
+    return p;
+}
+
+#[export]
+fn rc_range_ilog2(n: i32) -> i32 {
+    var l: i32 = 0;
+    var v: i32 = n;
+    while v > 1 { v = v / 2; l = l + 1; }
+    return l;
+}
+
+// ===== union-find (port of runtime_circuit.tv) =====
+
+fn rr_uf_find(uf: *i32, x: i32) -> i32 {
+    var v: i32 = x;
+    while uf[v] != v {
+        uf[v] = uf[uf[v]];
+        v = uf[v];
+    }
+    return v;
+}
+
+fn rr_union(uf: *i32, a: i32, b: i32) {
+    let ra: i32 = rr_uf_find(uf, a);
+    let rb: i32 = rr_uf_find(uf, b);
+    if ra != rb { uf[ra] = rb; }
+}
+
+fn rr_wire_cell(uf: *i32, cell_first: *i32, cell: i32, slot: i32) {
+    if cell_first[cell] < 0 {
+        cell_first[cell] = slot;
+    } else {
+        rr_union(uf, slot, cell_first[cell]);
+    }
+}
+
+fn rr_sigma_val(f: Field, op: *i64, g: i32, pos: i32, k1: i64, k2: i64) -> i64 {
+    let base: i64 = op[g];
+    if pos == 1 { return fmul_dyn(f, k1, base); }
+    if pos == 2 { return fmul_dyn(f, k2, base); }
+    return base;
+}
+
+// ===== the range circuit builder =====
+
+// Fills q_*, wa/wb/wc, sigma_* (caller-allocated, length padded_n) proving that
+// the integer `x` lies in [0, 2^nbits). The witness bits are the true bits of x.
+#[export]
+fn rc_range_build(
+    f: Field, x: i64, nbits: i32, padded_n: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64,
+    sigma_a: *i64, sigma_b: *i64, sigma_c: *i64
+) {
+    let neg1: i64 = fsub_dyn(f, 0, 1);
+
+    for i in 0..padded_n {
+        q_L[i] = 0; q_R[i] = 0; q_O[i] = 0; q_M[i] = 0; q_C[i] = 0;
+        wa[i] = 0; wb[i] = 0; wc[i] = 0;
+    }
+
+    // extract bits of x
+    let bits: *i64 = alloc(nbits);
+    for j in 0..nbits {
+        bits[j] = (x >> j) & 1;
+    }
+
+    let total_cells: i32 = padded_n * 3;
+    let uf: *i32 = alloc(total_cells);
+    for i in 0..total_cells { uf[i] = i; }
+
+    // cell ids: bit_j -> cell j (nbits cells); acc_j -> cell nbits+j (nbits cells)
+    let max_cells: i32 = 2 * nbits + 4;
+    let cell_first: *i32 = alloc(max_cells);
+    for i in 0..max_cells { cell_first[i] = 0 - 1; }
+    let cell_bit: i32 = 0;        // bit_j  at cell_bit + j
+    let cell_acc: i32 = nbits;    // acc_j  at cell_acc + j
+
+    var gi: i32 = 0;
+
+    // ---- boolean gates: b_j*(b_j-1) = 0  (qM=1, qL=-1) ----
+    // wa=bit, wb=bit, wc=0.  field: bit*bit + (-1)*bit = 0.
+    for j in 0..nbits {
+        let g: i32 = gi;
+        wa[g] = bits[j];
+        wb[g] = bits[j];
+        wc[g] = 0;
+        q_M[g] = 1; q_L[g] = neg1;
+        // both a and b carry bit_j
+        rr_wire_cell(uf, cell_first, cell_bit + j, g * 3 + 0);
+        rr_wire_cell(uf, cell_first, cell_bit + j, g * 3 + 1);
+        gi = gi + 1;
+    }
+
+    // ---- seed gate: b_0 - acc_0 = 0  (qL=1, qO=-1); acc_0 = b_0 ----
+    let acc0_g: i32 = gi;
+    wa[acc0_g] = bits[0];
+    wc[acc0_g] = bits[0];          // acc_0
+    q_L[acc0_g] = 1; q_O[acc0_g] = neg1;
+    rr_wire_cell(uf, cell_first, cell_bit + 0, acc0_g * 3 + 0);   // a == bit_0
+    rr_wire_cell(uf, cell_first, cell_acc + 0, acc0_g * 3 + 2);   // c == acc_0
+    gi = gi + 1;
+
+    // ---- recon gates: acc_{j-1} + 2^j*b_j - acc_j = 0 ----
+    var acc: i64 = bits[0];
+    for j in 1..nbits {
+        let g: i32 = gi;
+        // 2^j mod p via repeated doubling in-field
+        var pw: i64 = 1;
+        for kk in 0..j { pw = fadd_dyn(f, pw, pw); }   // pw = 2^j
+        let nacc: i64 = fadd_dyn(f, acc, fmul_dyn(f, pw, bits[j]));
+        wa[g] = acc;
+        wb[g] = bits[j];
+        wc[g] = nacc;
+        q_L[g] = 1; q_R[g] = pw; q_O[g] = neg1;
+        rr_wire_cell(uf, cell_first, cell_acc + (j - 1), g * 3 + 0);  // a == acc_{j-1}
+        rr_wire_cell(uf, cell_first, cell_bit + j,       g * 3 + 1);  // b == bit_j
+        rr_wire_cell(uf, cell_first, cell_acc + j,       g * 3 + 2);  // c == acc_j
+        acc = nacc;
+        gi = gi + 1;
+    }
+
+    // ---- assertion gate: acc_last - x = 0  (qL=1, qC=-x) ----
+    let as_g: i32 = gi;
+    let xr: i64 = fadd_dyn(f, x, 0);     // x reduced into field
+    wa[as_g] = acc;
+    q_L[as_g] = 1;
+    q_C[as_g] = fsub_dyn(f, 0, xr);      // -x
+    rr_wire_cell(uf, cell_first, cell_acc + (nbits - 1), as_g * 3 + 0);  // a == acc_last
+    gi = gi + 1;
+
+    free(cell_first);
+    free(bits);
+
+    // ---- omega powers ----
+    let omega: i64 = plonk_omega_dyn(f, log_n);
+    let op: *i64 = alloc(padded_n);
+    op[0] = 1;
+    for i in 1..padded_n { op[i] = fmul_dyn(f, op[i - 1], omega); }
+
+    // ---- permutation: identity, then close each class as a cycle ----
+    let pa_g: *i32 = alloc(padded_n); let pa_p: *i32 = alloc(padded_n);
+    let pb_g: *i32 = alloc(padded_n); let pb_p: *i32 = alloc(padded_n);
+    let pc_g: *i32 = alloc(padded_n); let pc_p: *i32 = alloc(padded_n);
+    for i in 0..padded_n {
+        pa_g[i] = i; pa_p[i] = 0;
+        pb_g[i] = i; pb_p[i] = 1;
+        pc_g[i] = i; pc_p[i] = 2;
+    }
+
+    let members: *i32 = alloc(total_cells);
+    let visited: *i32 = alloc(total_cells);
+    for i in 0..total_cells { visited[i] = 0; }
+
+    for i in 0..total_cells {
+        let root: i32 = rr_uf_find(uf, i);
+        if visited[root] == 0 {
+            visited[root] = 1;
+            var nm: i32 = 0;
+            for j in 0..total_cells {
+                if rr_uf_find(uf, j) == root {
+                    members[nm] = j;
+                    nm = nm + 1;
+                }
+            }
+            if nm > 1 {
+                for k in 0..nm {
+                    let src: i32 = members[k];
+                    let dst: i32 = members[(k + 1) % nm];
+                    let sg: i32 = src / 3;
+                    let sp: i32 = src % 3;
+                    let dg: i32 = dst / 3;
+                    let dp: i32 = dst % 3;
+                    if sp == 0 { pa_g[sg] = dg; pa_p[sg] = dp; }
+                    if sp == 1 { pb_g[sg] = dg; pb_p[sg] = dp; }
+                    if sp == 2 { pc_g[sg] = dg; pc_p[sg] = dp; }
+                }
+            }
+        }
+    }
+
+    let k1: i64 = 13;
+    let k2: i64 = 17;
+    for i in 0..padded_n {
+        sigma_a[i] = rr_sigma_val(f, op, pa_g[i], pa_p[i], k1, k2);
+        sigma_b[i] = rr_sigma_val(f, op, pb_g[i], pb_p[i], k1, k2);
+        sigma_c[i] = rr_sigma_val(f, op, pc_g[i], pc_p[i], k1, k2);
+    }
+
+    free(uf); free(op);
+    free(pa_g); free(pa_p); free(pb_g); free(pb_p); free(pc_g); free(pc_p);
+    free(members); free(visited);
+}

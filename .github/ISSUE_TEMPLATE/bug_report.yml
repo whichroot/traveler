@@ -1,0 +1,120 @@
+name: Bug report
+description: Report a miscompilation, crash, incorrect result, or spec mismatch
+title: "fix: <short description>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug in Traveler.
+
+        Please reproduce against the latest `main` first, and include a
+        **minimal `.tv` program**. Small, self-contained repros get fixed
+        fastest.
+
+        For a **security vulnerability**, do not file here — see
+        [SECURITY.md](https://github.com/explorerlabs/traveler/security/policy).
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I reproduced this on the latest `main`.
+          required: true
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction (.tv)
+      description: The smallest Traveler program that triggers the bug.
+      render: rust
+      placeholder: |
+        field F = Field<251>;
+        fn main() {
+            let a: F = 200;
+            print(a + a);   // observed: ... , expected: ...
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands and output
+      description: The exact commands you ran and the output/error (including which gate or stage failed).
+      render: shell
+      placeholder: |
+        $ src/bootstrap/out/stage1 repro.tv -o /tmp/r.ll
+        $ llc -filetype=obj /tmp/r.ll -o /tmp/r.o && cc /tmp/r.o -o /tmp/r
+        $ /tmp/r
+        ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Best guess is fine.
+      options:
+        - Compiler (src/tvc_self.tv)
+        - Codegen / LLVM IR
+        - Auto-parallelization (pfor)
+        - Dynamic field / traits / closures
+        - Standard library (src/lib/**)
+        - Crypto / ZK
+        - Bootstrap / build
+        - Tooling (formatter, LSP, doc)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Traveler version / commit
+      description: Output of `git rev-parse --short HEAD`.
+      placeholder: "e.g. f8b83c1"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / architecture
+      placeholder: "e.g. macOS 14 (arm64), Ubuntu 24.04 (x86_64)"
+    validations:
+      required: true
+
+  - type: input
+    id: llvm
+    attributes:
+      label: LLVM version
+      description: Output of `llc --version | head -3`. LLVM 21 is required.
+      placeholder: "e.g. LLVM 21.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: IR snippets, stack traces, or a hypothesis about the cause.
+    validations:
+      required: false

@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// extfield_goldilocks.tv — ExtField over the Goldilocks prime p =
+// 18446744069414584321: Barrett underneath, non-zero imaginary at 64-bit width.
+//
+// Expected output:
+//   3 0         <- add: (1,0) + (2,0)
+//   p-1 0       <- sub: (1,0) - (2,0) wraps
+//   6 0         <- mul: (2,0) * (3,0)
+//   1 0         <- inv: a * inv(a) = identity
+//   1 0         <- div: a / a = identity
+//   5 7         <- construct (5+7i) via IMAG
+//   1 0         <- (5+7i) * inv(5+7i) = identity (non-zero imaginary inv)
+//   nr 0        <- i*i = (nr, 0) — verify non-residue
+
+type Goldilocks = Field<18446744069414584321>;
+type ExtGold = ExtField<Field<18446744069414584321>, 2>;
+
+fn main() -> i32 {
+    let i: ExtGold = ExtGold::IMAG;
+
+    // Test 1: add
+    let a: ExtGold = 1;
+    let b: ExtGold = 2;
+    let r_add: ExtGold = a + b;
+    print(r_add);
+
+    // Test 2: sub (wraps)
+    let r_sub: ExtGold = a - b;
+    print(r_sub);
+
+    // Test 3: mul
+    let c: ExtGold = 2;
+    let d: ExtGold = 3;
+    let r_mul: ExtGold = c * d;
+    print(r_mul);
+
+    // Test 4: inverse
+    let inv_c: ExtGold = c ** -1;
+    let r_inv: ExtGold = c * inv_c;
+    print(r_inv);
+
+    // Test 5: division
+    let r_div: ExtGold = c / c;
+    print(r_div);
+
+    // Test 6: non-zero imaginary construction
+    let five: ExtGold = 5;
+    let seven: ExtGold = 7;
+    let e: ExtGold = five + seven * i;
+    print(e);
+
+    // Test 7: inverse with non-zero imaginary (the critical test)
+    let inv_e: ExtGold = e ** -1;
+    let r_inv2: ExtGold = e * inv_e;
+    print(r_inv2);
+
+    // Test 8: i^2 = (nr, 0) — verify non-residue
+    let i_sq: ExtGold = i * i;
+    print(i_sq);
+
+    return 0;
+}

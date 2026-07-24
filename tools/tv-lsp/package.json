@@ -1,0 +1,13 @@
+{
+  "name": "tv-lsp",
+  "version": "0.1.0",
+  "description": "Language Server for Traveler (.tv) — diagnostics, hover, go-to-def. The language intelligence lives in the tvc_self compiler (--diagnostics/--symbols/--references); this server is a thin JSON-RPC transport over that engine.",
+  "type": "module",
+  "bin": {
+    "tv-lsp": "src/server.js"
+  },
+  "scripts": {
+    "test": "node test/engine.test.js"
+  },
+  "license": "SEE spec/traveler_license_terms_v03.md"
+}

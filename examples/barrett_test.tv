@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// barrett_test.tv — Barrett reduction check for 64-bit field mul over
+// Field<18446744073709551557> (2^64 - 59, largest 64-bit prime) at boundary values.
+//
+// Expected output:
+//   (p-1)*(p-1) mod p = 1: PASS
+//   2*2 mod p = 4: PASS
+//   (p-1)*2 mod p = p-2: PASS
+//   0*anything = 0: PASS
+//   1*x = x: PASS
+//   inv(2)*2 = 1: PASS
+//   Barrett 64-bit: 6/6 correct
+
+type G = Field<18446744073709551557>;
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn wr_u64(fd: i32, val: u64) {
+    if val >= 10 {
+        wr_u64(fd, val / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((val % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn main() {
+    var ok: i32 = 0;
+
+    // Test 1: (p-1) * (p-1) mod p = 1
+    // Because (p-1) = -1 mod p, and (-1)*(-1) = 1.
+    let a: G = 18446744073709551556;  // p - 1
+    let b: G = 18446744073709551556;  // p - 1
+    let c: G = a * b;
+    wr(1, "(p-1)*(p-1) mod p = ");
+    print(c);
+    if c == 1 { ok = ok + 1; wr(1, "PASS\n"); } else { wr(1, "FAIL\n"); }
+
+    // Test 2: 2 * 2 = 4
+    let d: G = 2;
+    let e: G = d * d;
+    wr(1, "2*2 mod p = ");
+    print(e);
+    if e == 4 { ok = ok + 1; wr(1, "PASS\n"); } else { wr(1, "FAIL\n"); }
+
+    // Test 3: (p-1) * 2 mod p = p - 2
+    // (-1) * 2 = -2 = p - 2
+    let f: G = a * d;
+    wr(1, "(p-1)*2 mod p = ");
+    print(f);
+    let expected_pm2: G = 18446744073709551555;  // p - 2
+    if f == expected_pm2 { ok = ok + 1; wr(1, "PASS\n"); } else { wr(1, "FAIL\n"); }
+
+    // Test 4: 0 * anything = 0
+    let z: G = 0;
+    let g: G = z * a;
+    wr(1, "0*anything = ");
+    print(g);
+    if g == 0 { ok = ok + 1; wr(1, "PASS\n"); } else { wr(1, "FAIL\n"); }
+
+    // Test 5: 1 * x = x
+    let one: G = 1;
+    let h: G = one * a;
+    wr(1, "1*x = ");
+    print(h);
+    if h == a { ok = ok + 1; wr(1, "PASS\n"); } else { wr(1, "FAIL\n"); }
+
+    // Test 6: inv(2) * 2 = 1 (tests pow + mul chain)
+    let inv2: G = 1 / d;
+    let check: G = inv2 * d;
+    wr(1, "inv(2)*2 = ");
+    print(check);
+    if check == 1 { ok = ok + 1; wr(1, "PASS\n"); } else { wr(1, "FAIL\n"); }
+
+    wr(1, "Barrett 64-bit: ");
+    wr_int(1, ok as i64);
+    wr(1, "/6 correct\n");
+}

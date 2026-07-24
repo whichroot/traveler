@@ -1,0 +1,80 @@
+// pfor_dispatch_edges.tv — A3: dispatch runtime edge arithmetic
+//
+// Pins the __parallel_for chunk math for awkward (lo, hi) shapes:
+//   chunk = rng / nthr, last thread absorbs the remainder,
+//   per-thread range offset by lo.
+//
+// Loop 1: lo=5, hi=1030      (nonzero start, rng=1025, just over threshold)
+// Loop 2: lo=0, hi=1025      (rng = threshold+1, minimal dispatch)
+// Loop 3: lo=0, hi=4099      (prime trip count, never divides evenly)
+// Loop 4: lo=3, hi=3+4096    (nonzero start, power-of-two range)
+//
+// Each loop writes out[i] = i+1 (as field element); checksum is the
+// sum over the written range.  Any chunk-boundary error (skipped or
+// double-written cell) shifts the checksum.
+//
+// The runner sweeps TRAVELER_THREADS over garbage and extreme values;
+// output must equal the serial baseline for every setting.
+//
+// Expected workers: 4.
+// Expected output: 530950 525825 8402950 8402944
+//   L1: sum(i+1, i=5..1029) = sum(6..1030) = (6+1030)*1025/2 = 530950
+//   L2: sum(i+1, i=0..1024) = sum(1..1025) = 525825
+//   L3: sum(i+1, i=0..4098) = sum(1..4099) = 8402950
+//   L4: sum(i+1, i=3..4098) = sum(4..4099) = 8402944
+// (all below the modulus; printed exactly)
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let out1: *F = alloc(1030);
+    let out2: *F = alloc(1025);
+    let out3: *F = alloc(4099);
+    let out4: *F = alloc(4099);
+
+    let mut w: i32 = 0;
+    while w < 1030 { out1[w] = 0; w = w + 1; }
+    w = 0;
+    while w < 1025 { out2[w] = 0; w = w + 1; }
+    w = 0;
+    while w < 4099 { out3[w] = 0; out4[w] = 0; w = w + 1; }
+
+    // Loop 1: nonzero lo, rng just over threshold
+    for i in 5..1030 {
+        out1[i] = (i + 1) as F;
+    }
+    // Loop 2: minimal dispatch range
+    for i in 0..1025 {
+        out2[i] = (i + 1) as F;
+    }
+    // Loop 3: prime trip count
+    for i in 0..4099 {
+        out3[i] = (i + 1) as F;
+    }
+    // Loop 4: nonzero lo, power-of-two range
+    for i in 3..4099 {
+        out4[i] = (i + 1) as F;
+    }
+
+    let mut s1: F = 0;
+    w = 0;
+    while w < 1030 { s1 = s1 + out1[w]; w = w + 1; }
+    print(s1);
+
+    let mut s2: F = 0;
+    w = 0;
+    while w < 1025 { s2 = s2 + out2[w]; w = w + 1; }
+    print(s2);
+
+    let mut s3: F = 0;
+    w = 0;
+    while w < 4099 { s3 = s3 + out3[w]; w = w + 1; }
+    print(s3);
+
+    let mut s4: F = 0;
+    w = 0;
+    while w < 4099 { s4 = s4 + out4[w]; w = w + 1; }
+    print(s4);
+
+    return 0;
+}

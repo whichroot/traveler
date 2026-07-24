@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// convergence_test.tv — the finite<->continuous convergence experiment: circle
+// arc vs polynomial controls at r=8..256, exact vs threshold segmenters, 3 fields.
+// @internal-design: examples (convergence_test).
+//
+// Contrast table to stderr; the qualitative LAW asserted to stdout as pass flags:
+//   1. parabola exact-nseg==1 at d=2 for all r (already polynomial)        -> 1
+//   2. line exact-nseg==1 at d=1 for all r                                  -> 1
+//   3. circle exact-nseg(d2) STRICTLY INCREASES over the ladder (shatter)   -> 1
+//   4. circle threshold nseg/r fraction is NON-INCREASING (converge)        -> 1
+//   5. exact path is field-invariant (3 primes identical) on every curve/r  -> 1
+//   6. exact > threshold for circle at top resolution (the measured GAP)    -> 1
+//
+// Expected output: 1 1 1 1 1 1
+//
+// Multi-file link: regime_fri.o + poly_core.o + convergence_test.o (tvc_self).
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn regime_detect(
+    data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+fn wr_pad(fd: i32, n: i64, w: i32) {
+    var tmp: i64 = n; if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = w - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+
+// integer sqrt (Newton on integers) — must match the oracle bit-for-bit.
+fn isqrt(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    var x: i64 = n;
+    var y: i64 = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+// renderers into an i64 buffer (length r). circle is the transcendental star.
+fn render_circle(buf: *i64, r: i32) {
+    let rr: i64 = (r as i64) * (r as i64);
+    var x: i32 = 0;
+    while x < r {
+        let xv: i64 = x as i64;
+        buf[x] = isqrt(rr - xv * xv);
+        x = x + 1;
+    }
+}
+fn render_parabola(buf: *i64, r: i32) {
+    let c: i32 = r / 2;
+    var x: i32 = 0;
+    while x < r {
+        let u: i64 = (x - c) as i64;
+        buf[x] = u * u;
+        x = x + 1;
+    }
+}
+fn render_line(buf: *i64, r: i32) {
+    var x: i32 = 0;
+    while x < r {
+        buf[x] = (3 * x + 5) as i64;
+        x = x + 1;
+    }
+}
+
+// threshold-segmenter segment count: repeatedly detect boundaries, advance.
+// Mirrors mnist_topology.tv collect_boundaries + a final tail segment.
+fn threshold_nseg(data: *i32, n: i32, order: i32, eps: i32, reg: *i32) -> i32 {
+    var count: i32 = 0;
+    var offset: i32 = 0;
+    while (n - offset) > (order + 1) {
+        let rem: i32 = n - offset;
+        let b: i32 = regime_detect(&data[offset], rem, order, eps, 0, reg);
+        if b >= rem { break; }
+        count = count + 1;
+        offset = offset + b;
+    }
+    return count + 1;
+}
+
+// exact-segmenter nseg over a given field.
+fn exact_nseg(f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32 {
+    return regime_prove_dyn(f, data, n, deg, cert, work);
+}
+
+fn main() -> i32 {
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let small: Field = field(65537);
+    let eps: i32 = 1;
+
+    let cap: i32 = 256;
+    let buf: *i64 = alloc(cap);          // i64 signal for exact path
+    let ibuf: *i32 = alloc(cap);         // i32 copy for threshold path
+    let cert: *i64 = alloc(cap * 3);
+    let work: *i64 = alloc(cap);
+    let reg: *i32 = alloc(8);
+
+    // resolution ladder
+    var res: [i32; 6] = 0;
+    res[0]=8; res[1]=16; res[2]=32; res[3]=64; res[4]=128; res[5]=256;
+
+    // ---- aggregate facts for the law assertions ----
+    var parab_ok: i32 = 1;       // test 1
+    var line_ok: i32 = 1;        // test 2
+    var field_ok: i32 = 1;       // test 5
+    // for shatter / converge we track circle d=2 ladders
+    var circ_ex: [i32; 6] = 0;   // exact nseg(d2)
+    var circ_th: [i32; 6] = 0;   // threshold nseg(d2)
+
+    wr(2, "=== Finite<->Continuous Convergence (Traveler) ===\n");
+    wr(2, "curve     r   exact-d2  thresh-d2  fieldOK\n");
+
+    var ci: i32 = 0;
+    while ci < 3 {
+        // ci: 0=circle, 1=parabola, 2=line
+        var k: i32 = 0;
+        while k < 6 {
+            let r: i32 = res[k];
+            if ci == 0 { render_circle(buf, r); }
+            if ci == 1 { render_parabola(buf, r); }
+            if ci == 2 { render_line(buf, r); }
+            // i32 copy for threshold path
+            var t: i32 = 0;
+            while t < r { ibuf[t] = buf[t] as i32; t = t + 1; }
+
+            // exact nseg over 3 fields at d=2 (and d=1 for line control)
+            let eg2: i32 = exact_nseg(gold,  buf, r, 2, cert, work);
+            let eb2: i32 = exact_nseg(baby,  buf, r, 2, cert, work);
+            let es2: i32 = exact_nseg(small, buf, r, 2, cert, work);
+            if eg2 != eb2 { field_ok = 0; }
+            if eg2 != es2 { field_ok = 0; }
+
+            let th2: i32 = threshold_nseg(ibuf, r, 2, eps, reg);
+
+            // controls
+            if ci == 1 {
+                if eg2 != 1 { parab_ok = 0; }     // parabola exact d2 == 1
+            }
+            if ci == 2 {
+                let eg1: i32 = exact_nseg(gold, buf, r, 1, cert, work);
+                if eg1 != 1 { line_ok = 0; }      // line exact d1 == 1
+            }
+            if ci == 0 {
+                circ_ex[k] = eg2;
+                circ_th[k] = th2;
+            }
+
+            // contrast row
+            if ci == 0 { wr(2, "circle  "); }
+            if ci == 1 { wr(2, "parab   "); }
+            if ci == 2 { wr(2, "line    "); }
+            wr_pad(2, r as i64, 5);
+            wr_pad(2, eg2 as i64, 10);
+            wr_pad(2, th2 as i64, 11);
+            wr_pad(2, field_ok as i64, 9);
+            wr(2, "\n");
+            k = k + 1;
+        }
+        ci = ci + 1;
+    }
+
+    // ---- Test 3: circle exact SHATTERS (strictly increasing) ----
+    var shatter_ok: i32 = 1;
+    var k2: i32 = 1;
+    while k2 < 6 {
+        if circ_ex[k2] <= circ_ex[k2 - 1] { shatter_ok = 0; }
+        k2 = k2 + 1;
+    }
+
+    // ---- Test 4: circle threshold CONVERGES (nseg/r fraction non-increasing) ----
+    // compare th[k]/r[k] vs th[k-1]/r[k-1] via cross-multiplication:
+    //   th[k]*r[k-1] <= th[k-1]*r[k]
+    var converge_ok: i32 = 1;
+    k2 = 1;
+    while k2 < 6 {
+        let lhs: i64 = (circ_th[k2] as i64) * (res[k2 - 1] as i64);
+        let rhs: i64 = (circ_th[k2 - 1] as i64) * (res[k2] as i64);
+        if lhs > rhs { converge_ok = 0; }
+        k2 = k2 + 1;
+    }
+
+    // ---- Test 6: the measured GAP — exact > threshold for circle at top res ----
+    var gap_ok: i32 = 0;
+    if circ_ex[5] > circ_th[5] { gap_ok = 1; }
+
+    // ---- emit the LAW as pass flags (the gate) ----
+    print(parab_ok);     // 1
+    print(line_ok);      // 1
+    print(shatter_ok);   // 1
+    print(converge_ok);  // 1
+    print(field_ok);     // 1
+    print(gap_ok);       // 1
+
+    return 0;
+}

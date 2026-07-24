@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// import_vec_test.tv — B1b Slice 2: consume the Vec<T> stdlib via `import` —
+// one unit, generics monomorphize in-place, zero ceremony. tvc_self ONLY.
+// @internal-design: collections.
+//
+// Expected output:
+//   3      (len after 3 pushes)
+//   20     (vec_get idx 2)
+//   20     (vec_pop)
+//   2      (len after pop)
+//   100    (Vec<i32> #2: independent instance, get idx 0)
+
+import "../src/lib/collections/vec.tv";
+
+fn main() -> i32 {
+    var v: Vec<i32> = vec_new();
+    vec_push(&v, 0);
+    vec_push(&v, 10);
+    vec_push(&v, 20);
+    print(vec_len(&v));     // 3
+    print(vec_get(&v, 2));  // 20
+    print(vec_pop(&v));     // 20
+    print(vec_len(&v));     // 2
+
+    // A second, independent Vec<i32> instance in the same unit.
+    var w: Vec<i32> = vec_new();
+    vec_push(&w, 100);
+    print(vec_get(&w, 0));  // 100
+
+    vec_free(&v);
+    vec_free(&w);
+    return 0;
+}

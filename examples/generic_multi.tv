@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// generic_multi.tv — multi-parameter generics: <A, B> bound independently to
+// two DISTINCT field types; swapping order mints a second mangled instance.
+// @internal-design: examples (generic_multi).
+//
+// Expected output:
+//   200
+//   54479
+//   300
+//   149
+
+type F251 = Field<251>;
+type F65521 = Field<65521>;
+
+// Return type names the FIRST param: instance specialized on A.
+fn pick_first<A: Field, B: Field>(a: A, b: B) -> A {
+    return a + a;
+}
+
+// Return type names the SECOND param: instance specialized on B.
+fn pick_second<A: Field, B: Field>(a: A, b: B) -> B {
+    return b + b;
+}
+
+fn main() {
+    let x: F251 = 100;
+    let y: F65521 = 60000;
+
+    // pick_first<F251, F65521>: A == F251, 100 + 100 = 200 mod 251 = 200
+    let r1: F251 = pick_first(x, y);
+    print(r1);
+
+    // pick_second<F251, F65521>: B == F65521, 60000+60000 mod 65521 = 54479
+    let r2: F65521 = pick_second(x, y);
+    print(r2);
+
+    // Swapped order forces a SECOND, distinct instance pair:
+    //   pick_first<F65521, F251> and pick_second<F65521, F251>.
+    let p: F65521 = 150;
+    let q: F251 = 200;
+
+    // pick_first<F65521, F251>: A == F65521, 150 + 150 = 300 mod 65521 = 300
+    let r3: F65521 = pick_first(p, q);
+    print(r3);
+
+    // pick_second<F65521, F251>: B == F251, 200 + 200 = 400 mod 251 = 149
+    let r4: F251 = pick_second(p, q);
+    print(r4);
+}

@@ -1,0 +1,313 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_classify.tv — polynomial discriminant classifier on MNIST: histogram
+// counting -> integer lookup tables -> argmax. All integer ALU, no floats.
+// @internal-design: genus (MNIST examples)
+//
+// Usage: mnist_classify <data_directory>
+// Expected: ~719 permille (71.9%) with 60000 training images (baseline 692
+// permille with 84 features, 10000 images).
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+// ============================================================
+//  WRITE HELPERS
+// ============================================================
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// ============================================================
+//  FILE AND PATH HELPERS
+// ============================================================
+
+// Read big-endian 32-bit integer from buffer at offset.
+// MNIST IDX format uses big-endian headers.
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216
+    + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256
+    + (buf[off + 3] as i32);
+}
+
+// Build path: copies dir, appends '/', appends file, NUL-terminates.
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 {
+        dst[i] = dir[i];
+        i = i + 1;
+    }
+    dst[i] = 47;
+    i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 {
+        dst[i] = file[j];
+        i = i + 1;
+        j = j + 1;
+    }
+    dst[i] = 0;
+}
+
+// Note: file reading is inlined in main() (wav_analyze.tv pattern) — see
+// @internal-design: genus for the historical read_bytes/param constraint that shaped this.
+
+// ============================================================
+//  FEATURE EXTRACTION
+// ============================================================
+
+// Extract 84 features from a 28x28 image (784 raw pixel bytes).
+//
+//   Features  0-27: Grid density (4 row-bands x 7 col-bands)
+//   Features 28-55: Row sums (28 rows)
+//   Features 56-83: Column sums (28 columns)
+//
+// Pixels are binarized: > 128 counts as ON.
+// All feature values in {0, ..., 28}.
+fn extract_features(pixels: *u8, features: *i32) {
+    // Grid features: divide 28x28 into 4x7 blocks of 7x4 pixels each
+    var rb: i32 = 0;
+    while rb < 4 {
+        var cb: i32 = 0;
+        while cb < 7 {
+            var count: i32 = 0;
+            var r: i32 = 0;
+            while r < 7 {
+                var c: i32 = 0;
+                while c < 4 {
+                    let px: i32 = pixels[(rb * 7 + r) * 28 + cb * 4 + c] as i32;
+                    if px > 128 {
+                        count = count + 1;
+                    }
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            features[rb * 7 + cb] = count;
+            cb = cb + 1;
+        }
+        rb = rb + 1;
+    }
+
+    // Row sums: for each row, count ON pixels across 28 columns
+    var row: i32 = 0;
+    while row < 28 {
+        var sum: i32 = 0;
+        var col: i32 = 0;
+        while col < 28 {
+            let px: i32 = pixels[row * 28 + col] as i32;
+            if px > 128 {
+                sum = sum + 1;
+            }
+            col = col + 1;
+        }
+        features[28 + row] = sum;
+        row = row + 1;
+    }
+
+    // Column sums: for each column, count ON pixels across 28 rows
+    var col2: i32 = 0;
+    while col2 < 28 {
+        var sum2: i32 = 0;
+        var row2: i32 = 0;
+        while row2 < 28 {
+            let px: i32 = pixels[row2 * 28 + col2] as i32;
+            if px > 128 {
+                sum2 = sum2 + 1;
+            }
+            row2 = row2 + 1;
+        }
+        features[56 + col2] = sum2;
+        col2 = col2 + 1;
+    }
+}
+
+// ============================================================
+//  MAIN
+// ============================================================
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: mnist_classify <data_directory>\n");
+        exit(1);
+    }
+
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    // --- Configuration ---
+    let n_train: i32 = 60000;
+    let n_feat: i32 = 84;
+    let n_vals: i32 = 29;
+    let n_classes: i32 = 10;
+    let feat_stride: i32 = n_feat * n_vals;
+
+    // --- Read training images (IDX format: 16-byte header + 60000*784 pixels) ---
+    wr(2, "Reading training images...\n");
+    let train_img: *u8 = alloc(47040016);
+    path_build(&path_buf[0], dir, "train-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open train images\n"); exit(1); }
+    read_bytes(fd, train_img, 47040016);
+    close(fd);
+
+    let train_count: i32 = read_be_i32(train_img, 4);
+    let train_rows: i32 = read_be_i32(train_img, 8);
+    let train_cols: i32 = read_be_i32(train_img, 12);
+
+    wr(2, "  count="); wr_int(2, train_count as i64);
+    wr(2, " rows="); wr_int(2, train_rows as i64);
+    wr(2, " cols="); wr_int(2, train_cols as i64);
+    wr(2, "\n");
+
+    // --- Read training labels (IDX format: 8-byte header + 60000 labels) ---
+    let train_lbl: *u8 = alloc(60008);
+    path_build(&path_buf[0], dir, "train-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open train labels\n"); exit(1); }
+    read_bytes(fd, train_lbl, 60008);
+    close(fd);
+
+    // --- Read test images ---
+    wr(2, "Reading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+
+    let test_count: i32 = read_be_i32(test_img, 4);
+
+    // --- Read test labels ---
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+
+    let n_test: i32 = test_count;
+
+    wr(2, "Training: "); wr_int(2, n_train as i64);
+    wr(2, " images  Test: "); wr_int(2, n_test as i64);
+    wr(2, " images  Features: "); wr_int(2, n_feat as i64);
+    wr(2, "\n");
+
+    // --- Build per-class histograms (the training step: counting) ---
+    // hist[class * feat_stride + feat * n_vals + val] = count of class-k
+    // training images where feature j has value v.
+    wr(2, "Building histograms...\n");
+    let hist: *i32 = alloc(n_classes * feat_stride);
+    let total: *i32 = alloc(feat_stride);
+    let features: *i32 = alloc(n_feat);
+
+    var i: i32 = 0;
+    while i < n_train {
+        extract_features(&train_img[16 + i * 784], features);
+        let label: i32 = train_lbl[8 + i] as i32;
+
+        var j: i32 = 0;
+        while j < n_feat {
+            let v: i32 = features[j];
+            hist[label * feat_stride + j * n_vals + v] = hist[label * feat_stride + j * n_vals + v] + 1;
+            total[j * n_vals + v] = total[j * n_vals + v] + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // --- Build discriminant lookup tables ---
+    // lookup[class][feat][val] = P(class | feature=val) * 100, integer scores
+    // over feature values {0..28}. Polynomial reading: @internal-design: genus.
+    wr(2, "Building lookup tables...\n");
+    let lookup: *i32 = alloc(n_classes * feat_stride);
+
+    var k: i32 = 0;
+    while k < n_classes {
+        var j: i32 = 0;
+        while j < n_feat {
+            var v: i32 = 0;
+            while v < n_vals {
+                let idx: i32 = k * feat_stride + j * n_vals + v;
+                let t: i32 = total[j * n_vals + v];
+                if t > 0 {
+                    lookup[idx] = (hist[idx] * 100) / t;
+                }
+                v = v + 1;
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    // --- Classify: per class score = sum of lookup[class][feat][value],
+    // predict argmax. Max score 84*100 = 8400, bounded — no overflow. ---
+    wr(2, "Classifying...\n");
+    var correct: i32 = 0;
+
+    var ti: i32 = 0;
+    while ti < n_test {
+        extract_features(&test_img[16 + ti * 784], features);
+        let actual: i32 = test_lbl[8 + ti] as i32;
+
+        var best_score: i32 = 0 - 1;
+        var best_class: i32 = 0;
+
+        var kk: i32 = 0;
+        while kk < n_classes {
+            var score: i32 = 0;
+            var jj: i32 = 0;
+            while jj < n_feat {
+                let fv: i32 = features[jj];
+                score = score + lookup[kk * feat_stride + jj * n_vals + fv];
+                jj = jj + 1;
+            }
+            if score > best_score {
+                best_score = score;
+                best_class = kk;
+            }
+            kk = kk + 1;
+        }
+
+        if best_class == actual {
+            correct = correct + 1;
+        }
+        ti = ti + 1;
+    }
+
+    // --- Report ---
+    wr(1, "Correct: "); wr_int(1, correct as i64);
+    wr(1, " / "); wr_int(1, n_test as i64);
+    wr(1, "\nPermille: "); wr_int(1, ((correct as i64) * 1000) / (n_test as i64));
+    wr(1, "\n");
+
+    // Cleanup
+    free(train_img);
+    free(train_lbl);
+    free(test_img);
+    free(test_lbl);
+    free(hist);
+    free(total);
+    free(features);
+    free(lookup);
+}

@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zeta_classical_edge.tv — THE FINALE: the same BM pointed at both sides of Weil's
+// correspondence — finite order on the function field, unbounded on mu(n).
+// @internal-design: nt (+ @internal-design: field-domains-boundary invariant #2)
+//
+// Output, in order:
+//   Part A: BM order of the elliptic (order-2) sequence at m = 4,8,12,16,20,24  -> 2 x6
+//   Part B: BM order of mu(1..m)                    at m = 4,8,12,16,20,24  -> climbs
+//   Part C: mismatch of sum_{d|n} mu(d) == [n==1] over n=1..64              -> 0 (exact)
+// @internal-oracle: zeta_classical_edge (bit-for-bit).
+
+import "../src/lib/nt/linrec.tv";    // bm_l (BM as detector), mobius, F_L machinery
+
+let LIFT: i64 = 65537;   // lifting prime for the recovery field
+
+fn main() -> i32 {
+    let nmax: i32 = 24;
+
+    // ---- Part A: the function-field side — a FINITE spectrum, order locks -----------
+    // y^2=x^3+2x+1 / F_13 (a_p = 6, from weil_zeta_ec): s_n = a_p*s_{n-1} - p*s_{n-2}
+    // is an order-2 LRS; BM returns 2 at EVERY length.
+    let ap: i64 = 6;
+    let pp: i64 = 13;
+    let se: *i64 = alloc(nmax);
+    se[0] = 2;
+    se[1] = ap;
+    var i: i32 = 2;
+    while i < nmax {
+        se[i] = ap * se[i - 1] - pp * se[i - 2];
+        i = i + 1;
+    }
+
+    // ---- Part B: the number-field side — mu(n), the 1/zeta coefficients ------------
+    let mu: *i64 = alloc(nmax + 1);
+    i = 1;
+    while i <= nmax {
+        mu[i - 1] = mobius(i) as i64;       // mu(1..nmax) at indices 0..nmax-1
+        i = i + 1;
+    }
+
+    // Feed both to BM at growing lengths m = 4,8,12,16,20,24 and print the orders
+    // (the DETECTOR reading: finite = a finite spectrum, growing = none).
+    let Cscratch: *i64 = alloc(nmax + 1);
+    var m: i32 = 4;
+    while m <= nmax {
+        print(bm_l(se, m, LIFT, Cscratch));    // A: stays 2
+        m = m + 4;
+    }
+    m = 4;
+    while m <= nmax {
+        print(bm_l(mu, m, LIFT, Cscratch));     // B: climbs ~m/2, never locks
+        m = m + 4;
+    }
+    free(Cscratch);
+
+    // ---- Part C: what SURVIVES the crossing — Mobius inversion is exact over Z ------
+    // sum_{d|n} mu(d) = [n==1]: pure combinatorics, no scale, no field. The skeleton
+    // crosses the membrane; the finite algebraic spectrum does not.
+    var mismatch: i32 = 0;
+    var nn: i32 = 1;
+    while nn <= 64 {
+        var sdiv: i32 = 0;
+        var d: i32 = 1;
+        while d <= nn {
+            if nn % d == 0 { sdiv = sdiv + mobius(d); }
+            d = d + 1;
+        }
+        var want: i32 = 0;
+        if nn == 1 { want = 1; }
+        if sdiv != want { mismatch = mismatch + 1; }
+        nn = nn + 1;
+    }
+    print(mismatch);                              // 0 (exact, every n)
+
+    free(se);
+    free(mu);
+    return 0;
+}

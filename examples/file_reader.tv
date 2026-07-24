@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// file_reader.tv — Read a file via POSIX syscalls.
+//
+// Proof of concept for self-hosting I/O: open a .tv file passed as
+// argv[1], read it into a heap buffer, print byte count and first line.
+//
+// Usage: ./file_reader examples/field_basics.tv
+// Expected: prints byte count then first line of the file.
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn putchar(c: i32) -> i32;
+extern "C" fn exit(code: i32);
+
+// O_RDONLY = 0 on macOS and Linux
+let O_RDONLY: i32 = 0;
+
+fn write_str(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn write_int(fd: i32, n: i64) {
+    // Handle negative
+    if n < 0 {
+        write(fd, "-", 1);
+        write_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        write_int(fd, n / 10);
+    }
+    var digit: [u8; 1] = 0;
+    let d: i32 = (n % 10) as i32;
+    digit[0] = (d + 48) as u8;   // '0' = 48
+    write(fd, &digit[0], 1);
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        write_str(2, "usage: file_reader <path>\n");
+        exit(1);
+    }
+
+    let path: *u8 = argv[1];
+
+    // Open file
+    let fd: i32 = open(path, O_RDONLY, 0);
+    if fd < 0 {
+        write_str(2, "error: cannot open file\n");
+        exit(1);
+    }
+
+    // Read into heap buffer (max 64 KB)
+    let buf: *u8 = alloc(65536);
+    let n: i64 = read_bytes(fd, buf, 65536);
+    close(fd);
+
+    // Print byte count
+    write_str(1, "bytes: ");
+    write_int(1, n);
+    write(1, "\n", 1);
+
+    // Print first line (up to first newline)
+    // Use write() consistently — no putchar (which is buffered stdio)
+    write_str(1, "first: ");
+    var i: i32 = 0;
+    while i < n as i32 {
+        let ch: i32 = buf[i];
+        if ch == 10 { break; }  // '\n'
+        write(1, &buf[i], 1);
+        i = i + 1;
+    }
+    write(1, "\n", 1);
+
+    free(buf);
+}

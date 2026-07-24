@@ -1,0 +1,16 @@
+// wide_div_refused.tv — Slice 5 negative gate. Division and modulo on a wide
+// (i128/i256) integer are REFUSED: udiv/urem i128 lowers to the __udivti3 /
+// __umodti3 C division libcall, the one wide op that breaches the no-C-libcall
+// trust line. The refusal IS the feature boundary. Every other wide op still
+// compiles (see examples/wide_i128_add.tv). This file must FAIL to compile.
+fn main() {
+    let a: i128 = 100 as i128;
+    let b: i128 = 7 as i128;
+    let q: i128 = a / b;       // refused (line 9): __udivti3
+    let r: i128 = a % b;       // refused (line 10): __umodti3
+    let c: i64 = 5;
+    let w: i128 = a / c;       // refused (line 12): wide / i64 after harmonization
+    print(q as i64);
+    print(r as i64);
+    print(w as i64);
+}

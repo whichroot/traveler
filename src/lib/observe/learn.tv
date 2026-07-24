@@ -1,0 +1,1026 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// learn.tv — observe-learn: per-window/per-bucket code fitting and scoring for
+// the audio codec (exact integer bits): momentum-conditional Rice, multi-order
+// fixed-Δ, integer LPC, the fixed-vs-LPC fold, stereo ensemble, dyadic windows.
+// @internal-design: util (the observe-learn arc, Phases 1–2c + v2)
+//
+// learn_momentum_bits out layout (i64):
+//   out[0] = marginal_bits    (best single global Rice k)
+//   out[1] = conditional_bits (learned per-momentum-bucket best k)
+//   out[2] = floor_bits       (per-sample optimal k = the theoretical floor)
+//   out[3] = best_global_k
+//   out[4] = n_samples
+//
+// NB momentum buckets (floor(log2(|d|+1))), NK candidate Rice parameters.
+
+fn lrn_rice_bits(v: i32, k: i32) -> i32 {
+    return (v >> k) + 1 + k;
+}
+
+// field subtract on [0,p) representatives
+fn lrn_fsub(a: i32, b: i32, p: i32) -> i32 {
+    var r: i32 = a - b;
+    if r < 0 { r = r + p; }
+    return r;
+}
+
+// center a field residual to signed, then zigzag to unsigned (Rice input)
+fn lrn_zz(res_field: i32, p: i32) -> i32 {
+    var c: i32 = res_field;
+    if c > p / 2 { c = c - p; }
+    if c >= 0 { return c * 2; }
+    return (0 - c) * 2 - 1;
+}
+
+// momentum bucket = floor(log2(|d| + 1))
+fn lrn_bucket(m: i32) -> i32 {
+    var b: i32 = 0;
+    var v: i32 = m + 1;
+    while v > 1 { v = v >> 1; b = b + 1; }
+    if b > 17 { b = 17; }
+    return b;
+}
+
+// Fit a momentum-conditional Rice code over the (residual, momentum) trace and
+// score it vs the marginal code and the per-sample floor (out layout above).
+#[export]
+fn learn_momentum_bits(residual: *i32, momentum: *i32, n: i32, p: i32, out: *i64) {
+    let nb: i32 = 18;
+    let nk: i32 = 17;
+
+    // bucket_k[b*nk + k] = total Rice bits for samples in bucket b at parameter k
+    let bucket_k: *i64 = alloc(nb * nk);
+    let global_k: *i64 = alloc(nk);
+    var i: i32 = 0;
+    while i < nb * nk { bucket_k[i] = 0; i = i + 1; }
+    i = 0;
+    while i < nk { global_k[i] = 0; i = i + 1; }
+
+    var floor_bits: i64 = 0;
+
+    i = 0;
+    while i < n {
+        let zz: i32 = lrn_zz(residual[i], p);
+        let b: i32 = lrn_bucket(momentum[i]);
+
+        var best: i32 = 2000000000;
+        var k: i32 = 0;
+        while k < nk {
+            let rb: i32 = lrn_rice_bits(zz, k);
+            let idx: i32 = b * nk + k;
+            bucket_k[idx] = bucket_k[idx] + rb as i64;
+            global_k[k] = global_k[k] + rb as i64;
+            if rb < best { best = rb; }
+            k = k + 1;
+        }
+        floor_bits = floor_bits + best as i64;
+        i = i + 1;
+    }
+
+    // marginal: best single global k
+    var marginal: i64 = global_k[0];
+    var best_k: i32 = 0;
+    var k2: i32 = 1;
+    while k2 < nk {
+        if global_k[k2] < marginal {
+            marginal = global_k[k2];
+            best_k = k2;
+        }
+        k2 = k2 + 1;
+    }
+
+    // learned conditional: per bucket, the best k (fit from the data)
+    var conditional: i64 = 0;
+    var bb: i32 = 0;
+    while bb < nb {
+        var bmin: i64 = bucket_k[bb * nk + 0];
+        var kk: i32 = 1;
+        while kk < nk {
+            let v: i64 = bucket_k[bb * nk + kk];
+            if v < bmin { bmin = v; }
+            kk = kk + 1;
+        }
+        conditional = conditional + bmin;
+        bb = bb + 1;
+    }
+
+    out[0] = marginal;
+    out[1] = conditional;
+    out[2] = floor_bits;
+    out[3] = best_k as i64;
+    out[4] = n as i64;
+
+    free(global_k);
+    free(bucket_k);
+}
+
+// ===== TRANSFER — scoring a learned momentum map on another signal =====
+//
+// `fit` exposes the learned per-bucket map (kmap[18]; unseen buckets fall back to
+// the global best k); `apply` scores ANY signal under a given map. See
+// @internal-design: util Phase 2b (the transfer question, gate anchor 8).
+
+#[export]
+fn learn_momentum_fit(residual: *i32, momentum: *i32, n: i32, p: i32, kmap: *i64) {
+    let nb: i32 = 18;
+    let nk: i32 = 17;
+    let bucket_k: *i64 = alloc(nb * nk);
+    let global_k: *i64 = alloc(nk);
+    let seen: *i32 = alloc(nb);
+    var i: i32 = 0;
+    while i < nb * nk { bucket_k[i] = 0; i = i + 1; }
+    i = 0;
+    while i < nk { global_k[i] = 0; i = i + 1; }
+    i = 0;
+    while i < nb { seen[i] = 0; i = i + 1; }
+
+    i = 0;
+    while i < n {
+        let zz: i32 = lrn_zz(residual[i], p);
+        let b: i32 = lrn_bucket(momentum[i]);
+        seen[b] = 1;
+        var k: i32 = 0;
+        while k < nk {
+            let rb: i64 = lrn_rice_bits(zz, k) as i64;
+            bucket_k[b * nk + k] = bucket_k[b * nk + k] + rb;
+            global_k[k] = global_k[k] + rb;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+
+    // global best k = the fallback for unseen buckets
+    var gbest: i32 = 0;
+    var k2: i32 = 1;
+    while k2 < nk {
+        if global_k[k2] < global_k[gbest] { gbest = k2; }
+        k2 = k2 + 1;
+    }
+
+    var b: i32 = 0;
+    while b < nb {
+        if seen[b] == 1 {
+            var kb: i32 = 0;
+            var kk: i32 = 1;
+            while kk < nk {
+                if bucket_k[b * nk + kk] < bucket_k[b * nk + kb] { kb = kk; }
+                kk = kk + 1;
+            }
+            kmap[b] = kb as i64;
+        } else {
+            kmap[b] = gbest as i64;
+        }
+        b = b + 1;
+    }
+
+    free(seen); free(global_k); free(bucket_k);
+}
+
+#[export]
+fn learn_momentum_apply(residual: *i32, momentum: *i32, n: i32, p: i32,
+    kmap: *i64) -> i64 {
+    var total: i64 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let zz: i32 = lrn_zz(residual[i], p);
+        let b: i32 = lrn_bucket(momentum[i]);
+        total = total + lrn_rice_bits(zz, kmap[b] as i32) as i64;
+        i = i + 1;
+    }
+    return total;
+}
+
+// ===== MULTI-SCALE MIDDLE — per-window adaptive Rice =====
+
+// learn_windowed_bits: one best Rice k per window of `window` samples.
+// Returns total bits incl. per-window hdr_bits headers. (@internal-design: util Phase 1.)
+#[export]
+fn learn_windowed_bits(residual: *i32, n: i32, p: i32, window: i32, hdr_bits: i32) -> i64 {
+    let nk: i32 = 17;
+    var total: i64 = 0;
+    var w0: i32 = 0;
+    while w0 < n {
+        var w1: i32 = w0 + window;
+        if w1 > n { w1 = n; }
+
+        var best: i64 = 9000000000000000000;
+        var k: i32 = 0;
+        while k < nk {
+            var s: i64 = 0;
+            var i: i32 = w0;
+            while i < w1 {
+                s = s + lrn_rice_bits(lrn_zz(residual[i], p), k) as i64;
+                i = i + 1;
+            }
+            if s < best { best = s; }
+            k = k + 1;
+        }
+        total = total + best + hdr_bits as i64;
+        w0 = w1;
+    }
+    return total;
+}
+
+// Per-window adaptive k, chosen MOMENTUM-conditionally WITHIN the window (a small
+// bucket->k map per window). Header cost approximated as hdr_bits per used bucket.
+#[export]
+fn learn_window_momentum_bits(residual: *i32, momentum: *i32, n: i32, p: i32,
+    window: i32, hdr_bits: i32) -> i64 {
+    let nb: i32 = 18;
+    let nk: i32 = 17;
+    let bucket_k: *i64 = alloc(nb * nk);
+    let seen: *i32 = alloc(nb);
+
+    var total: i64 = 0;
+    var w0: i32 = 0;
+    while w0 < n {
+        var w1: i32 = w0 + window;
+        if w1 > n { w1 = n; }
+
+        var j: i32 = 0;
+        while j < nb * nk { bucket_k[j] = 0; j = j + 1; }
+        j = 0;
+        while j < nb { seen[j] = 0; j = j + 1; }
+
+        // accumulate per (bucket,k) within this window
+        var i: i32 = w0;
+        while i < w1 {
+            let zz: i32 = lrn_zz(residual[i], p);
+            let b: i32 = lrn_bucket(momentum[i]);
+            seen[b] = 1;
+            var k: i32 = 0;
+            while k < nk {
+                let idx: i32 = b * nk + k;
+                bucket_k[idx] = bucket_k[idx] + lrn_rice_bits(zz, k) as i64;
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+
+        // best k per used bucket + header per used bucket
+        var bb: i32 = 0;
+        while bb < nb {
+            if seen[bb] == 1 {
+                var bmin: i64 = bucket_k[bb * nk + 0];
+                var kk: i32 = 1;
+                while kk < nk {
+                    let v: i64 = bucket_k[bb * nk + kk];
+                    if v < bmin { bmin = v; }
+                    kk = kk + 1;
+                }
+                total = total + bmin + hdr_bits as i64;
+            }
+            bb = bb + 1;
+        }
+
+        w0 = w1;
+    }
+
+    free(seen);
+    free(bucket_k);
+    return total;
+}
+
+// ===== SHARED PER-WINDOW SCORERS — one decision procedure, three entry points =====
+//
+// multiorder/lpc/codec_windowed_bits all score windows through these two helpers,
+// so the Phase-3 decoder replays exactly the emitter's decision (@internal-design: util).
+
+// Precompute forward-difference planes Δ^0..Δ^max_order of x into
+// d_arr[(max_order+1) * n]; plane ord at d_arr[ord*n ..].
+// Virtual zero history: plane[-1] = 0, so every stored value is a true field
+// difference the decoder can forward-sum back (the Phase-3 invertibility fix).
+fn lrn_diff_planes(x: *i32, n: i32, p: i32, d_arr: *i32, max_order: i32) {
+    // order 0 = the raw (field) sample
+    var i: i32 = 0;
+    while i < n { d_arr[i] = x[i]; i = i + 1; }
+
+    // successive forward differences against virtual zero at index -1
+    var ord: i32 = 1;
+    while ord <= max_order {
+        let base: i32 = ord * n;
+        let pbase: i32 = (ord - 1) * n;
+        d_arr[base] = d_arr[pbase];
+        i = 1;
+        while i < n {
+            d_arr[base + i] = lrn_fsub(d_arr[pbase + i], d_arr[pbase + i - 1], p);
+            i = i + 1;
+        }
+        ord = ord + 1;
+    }
+}
+
+// Partitioned-Rice selection: gk4[part*17 + k] = Rice bits of quarter `part` at
+// parameter k. Returns min over depth r in {0,1,2} (1/2/4 parts, own k per part)
+// of residual bits + partition header. Wire/decoder contract:
+//   r tag prefix code: r=0 -> '0' (1 bit), r=1 -> '10', r=2 -> '11' (2 bits);
+//   +5 bits per k beyond the first (the first k lives in the caller's window
+//   header: fixed arm hdr_bits, LPC arm the 24); quarters = len/4 int division;
+//   sel out (the argmin the Phase-3 writer ships): sel[0] = r, sel[1..4] =
+//   per-part ks (unused slots zeroed); ties strict < — lowest k, smallest r win.
+fn lrn_part_best(gk4: *i64, sel: *i64) -> i64 {
+    let nk: i32 = 17;
+    var b0: i64 = 9000000000000000000;   // r=0: one k for the window
+    var h0: i64 = 9000000000000000000;   // r=1: one k per half
+    var h1: i64 = 9000000000000000000;
+    var q0: i64 = 9000000000000000000;   // r=2: one k per quarter
+    var q1: i64 = 9000000000000000000;
+    var q2: i64 = 9000000000000000000;
+    var q3: i64 = 9000000000000000000;
+    var kb0: i64 = 0;
+    var kh0: i64 = 0;
+    var kh1: i64 = 0;
+    var kq0: i64 = 0;
+    var kq1: i64 = 0;
+    var kq2: i64 = 0;
+    var kq3: i64 = 0;
+    var k: i32 = 0;
+    while k < nk {
+        let g0: i64 = gk4[k];
+        let g1: i64 = gk4[nk + k];
+        let g2: i64 = gk4[2 * nk + k];
+        let g3: i64 = gk4[3 * nk + k];
+        let s: i64 = g0 + g1 + g2 + g3;
+        if s < b0 { b0 = s; kb0 = k as i64; }
+        let sh0: i64 = g0 + g1;
+        let sh1: i64 = g2 + g3;
+        if sh0 < h0 { h0 = sh0; kh0 = k as i64; }
+        if sh1 < h1 { h1 = sh1; kh1 = k as i64; }
+        if g0 < q0 { q0 = g0; kq0 = k as i64; }
+        if g1 < q1 { q1 = g1; kq1 = k as i64; }
+        if g2 < q2 { q2 = g2; kq2 = k as i64; }
+        if g3 < q3 { q3 = g3; kq3 = k as i64; }
+        k = k + 1;
+    }
+    var best: i64 = b0 + 1;               // '0' + no extra k
+    sel[0] = 0; sel[1] = kb0; sel[2] = 0; sel[3] = 0; sel[4] = 0;
+    let c1: i64 = h0 + h1 + 7;                // '10' + one extra 5-bit k
+    if c1 < best {
+        best = c1;
+        sel[0] = 1; sel[1] = kh0; sel[2] = kh1; sel[3] = 0; sel[4] = 0;
+    }
+    let c2: i64 = q0 + q1 + q2 + q3 + 17;     // '11' + three extra 5-bit k
+    if c2 < best {
+        best = c2;
+        sel[0] = 2; sel[1] = kq0; sel[2] = kq1; sel[3] = kq2; sel[4] = kq3;
+    }
+    return best;
+}
+
+// Best fixed-predictor bits for window [w0,w1): min over order 0..max_order,
+// partitioned Rice per order. INCLUDES the partition header, EXCLUDES the
+// per-window header (callers charge hdr_bits: order tag + first k).
+// gk4 = caller scratch 4*17; psel = 5-slot scratch. sel out (>= 6): sel[0] =
+// order, sel[1..5] = partition sel (r, k0..k3). Order ties: lowest wins.
+fn lrn_fixed_best(d_arr: *i32, n: i32, p: i32, w0: i32, w1: i32, max_order: i32,
+    gk4: *i64, sel: *i64, psel: *i64) -> i64 {
+    let nk: i32 = 17;
+    let len: i32 = w1 - w0;
+    let q1: i32 = w0 + len / 4;
+    let q2: i32 = w0 + len / 2;
+    let q3: i32 = w0 + (3 * len) / 4;
+    var wbest: i64 = 9000000000000000000;
+    var ord: i32 = 0;
+    while ord <= max_order {
+        let base: i32 = ord * n;
+        var j: i32 = 0;
+        while j < 4 * nk { gk4[j] = 0; j = j + 1; }
+        var i: i32 = w0;
+        while i < w1 {
+            let zz: i32 = lrn_zz(d_arr[base + i], p);
+            var part: i32 = 3;
+            if i < q1 { part = 0; }
+            else { if i < q2 { part = 1; } else { if i < q3 { part = 2; } } }
+            let pb: i32 = part * nk;
+            var k: i32 = 0;
+            while k < nk {
+                gk4[pb + k] = gk4[pb + k] + lrn_rice_bits(zz, k) as i64;
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        let c: i64 = lrn_part_best(gk4, psel);
+        if c < wbest {
+            wbest = c;
+            sel[0] = ord as i64;
+            j = 0;
+            while j < 5 { sel[1 + j] = psel[j]; j = j + 1; }
+        }
+        ord = ord + 1;
+    }
+    return wbest;
+}
+
+// ===== MULTI-ORDER PREDICTOR — forward differences 0..max_order, per window =====
+
+// Precompute Δ^0..Δ^max_order over the whole signal, then per window pick the
+// (order, k) minimizing bits. Header per window = hdr_bits. x in [0,p).
+#[export]
+fn multiorder_windowed_bits(x: *i32, n: i32, p: i32,
+    window: i32, max_order: i32, hdr_bits: i32) -> i64 {
+    let norders: i32 = max_order + 1;
+    let d_arr: *i32 = alloc(norders * n);
+    lrn_diff_planes(x, n, p, d_arr, max_order);
+    let gk4: *i64 = alloc(4 * 17);
+    let sel: *i64 = alloc(6);
+    let psel: *i64 = alloc(5);
+
+    var total: i64 = 0;
+    var w0: i32 = 0;
+    while w0 < n {
+        var w1: i32 = w0 + window;
+        if w1 > n { w1 = n; }
+        total = total + lrn_fixed_best(d_arr, n, p, w0, w1, max_order, gk4, sel, psel)
+        + hdr_bits as i64;
+        w0 = w1;
+    }
+
+    free(psel);
+    free(sel);
+    free(gk4);
+    free(d_arr);
+    return total;
+}
+
+// ===== EXACT INTEGER LPC — FLAC-style adaptive linear prediction =====
+//
+// The coefficient solve (integer fixed-point Levinson) is a HINT; the coded
+// residual is the EXACT integer difference from the transmitted quantized coeffs:
+//   res[i] = s[i] - ( (Σ_j qa[j]·s[i-1-j]) >> QS )
+// Prediction is causal across window boundaries (idx>=0); DC mean per window,
+// coded as side info. Precondition: x is a CONTIGUOUS integer code, no field
+// wrap (offset-binary s+2^15 is fine). Why this is lossless while field-domain
+// Levinson is not, and the lrn_center encoding bug: @internal-design: util Phase 1c.
+
+// Best LPC bits for window [w0,w1): min over the order ladder (1,2,4,..<=
+// max_order), incl. each order's 24 + order*coef_bits header and partitioned
+// Rice. Scratch (r,a,tmp,qa,xw,gk) is caller-provided (allocation-free per
+// window); s = the WHOLE signal (causal history crosses window boundaries).
+// Apodization is analysis-only (Welch Q15 parabola, Q7 residue): @internal-design: util Phase 2c.
+// sel out (>= 15 — the argmin the Phase-3 writer ships): sel[0] = order,
+// sel[1] = DC mean m, sel[2..6] = partition sel (r, k0..k3),
+// sel[7..7+order) = quantized coeffs. The analysis window (rect/welch) is
+// NOT in sel — it never reaches the wire. psel = 5-slot partition scratch.
+fn lrn_lpc_best(s: *i32, w0: i32, w1: i32, max_order: i32, coef_bits: i32,
+    r: *i64, a: *i64, tmp: *i64, qa: *i64, xw: *i64, gk: *i64,
+    sel: *i64, psel: *i64) -> i64 {
+    // QS = coefficient fixed-point shift; 15 gives ~1-unit quantization noise at
+    // 16-bit amplitude (the noise floor — @internal-design: util Phase 1c).
+    let QS: i32 = 15;
+    let nk: i32 = 17;
+    let lim: i64 = (1 as i64) << (coef_bits - 1);   // i64 shift (coef_bits may exceed 31)
+    let nw: i64 = (w1 - w0) as i64;
+    let len: i32 = w1 - w0;
+    let pq1: i32 = w0 + len / 4;                    // partition quarters (decoder formula)
+    let pq2: i32 = w0 + len / 2;
+    let pq3: i32 = w0 + (3 * len) / 4;
+    var i: i32 = 0;
+
+    // per-window DC mean (zero-mean input for the autocorrelation solve)
+    var msum: i64 = 0;
+    i = w0;
+    while i < w1 { msum = msum + (s[i] as i64); i = i + 1; }
+    let m: i32 = (msum / nw) as i32;
+
+    let lm1: i32 = len - 1;
+    let den: i64 = (lm1 as i64) * (lm1 as i64);
+    var wbest: i64 = 9000000000000000000;
+
+    // Two analysis candidates per window: rectangular (wm 0) and Welch (wm 1);
+    // try both, keep min — the analysis window never reaches the decoder.
+    var wm: i32 = 0;
+    var nz: i32 = 0;
+    while wm < 2 {
+        // analysis samples (once per candidate). nz counts RAW nonzero (s-m) —
+        // the silent-window shortcut judges the raw signal, not the windowed one.
+        nz = 0;
+        var t: i32 = 0;
+        while t < len {
+            let xc: i64 = (s[w0 + t] - m) as i64;
+            if xc != 0 { nz = nz + 1; }
+            if wm == 0 {
+                xw[t] = xc;
+            } else {
+                var wq: i64 = 32767;
+                if lm1 >= 2 {
+                    let c: i64 = (2 * t - lm1) as i64;
+                    wq = 32767 - (32767 * c * c) / den;
+                }
+                xw[t] = (xc * wq) >> 8;
+            }
+            t = t + 1;
+        }
+
+        var order: i32 = 1;
+        while order <= max_order {
+            // --- autocorrelation over the windowed samples ---
+            var lag: i32 = 0;
+            while lag <= order {
+                var acc: i64 = 0;
+                t = lag;
+                while t < len {
+                    acc = acc + xw[t] * xw[t - lag];
+                    t = t + 1;
+                }
+                r[lag] = acc;
+                lag = lag + 1;
+            }
+
+            // header: order tag(2) + first k(5) + DC mean(17) + quantized coeffs
+            // = 24 + order*coef_bits (wire.tv writes exactly these fields).
+            let hdr: i64 = 24 + (order * coef_bits) as i64;
+
+            if nz == 0 {
+                // silent window: residual all zero -> 1 bit/sample at k=0, r=0
+                // (the 1-bit '0' partition tag is still carried)
+                if nw + hdr + 1 < wbest {
+                    wbest = nw + hdr + 1;
+                    sel[0] = order as i64;
+                    sel[1] = m as i64;
+                    sel[2] = 0; sel[3] = 0; sel[4] = 0; sel[5] = 0; sel[6] = 0;
+                    var cj: i32 = 0;
+                    while cj < order { sel[7 + cj] = 0; cj = cj + 1; }
+                }
+            } else {
+                // Normalize autocorrelation so r[0] < 2^31 (Levinson depends only on
+                // ratios). NB: threshold MUST be an i64 literal — `1 << 31` wraps i32.
+                let norm_thresh: i64 = 2147483648;
+                var sr: i32 = 0;
+                while (r[0] >> sr) >= norm_thresh { sr = sr + 1; }
+                if sr > 0 {
+                    lag = 0;
+                    while lag <= order { r[lag] = r[lag] >> sr; lag = lag + 1; }
+                }
+                // --- integer Levinson-Durbin (Q(QS) fixed point) ---
+                var err: i64 = r[0];
+                var j: i32 = 0;
+                while j < order { a[j] = 0; j = j + 1; }
+                var ii: i32 = 1;
+                while ii <= order {
+                    var acc2: i64 = r[ii] << QS;
+                    var jj: i32 = 1;
+                    while jj < ii {
+                        acc2 = acc2 - a[jj - 1] * r[ii - jj];
+                        jj = jj + 1;
+                    }
+                    var k: i64 = 0;
+                    if err != 0 {
+                        // symmetric rounding (division truncates toward zero)
+                        if acc2 >= 0 { k = (acc2 + err / 2) / err; }
+                        else { k = (acc2 - err / 2) / err; }
+                    }
+                    jj = 1;
+                    while jj < ii {
+                        tmp[jj - 1] = a[jj - 1] - ((k * a[ii - jj - 1]) >> QS);
+                        jj = jj + 1;
+                    }
+                    jj = 1;
+                    while jj < ii { a[jj - 1] = tmp[jj - 1]; jj = jj + 1; }
+                    a[ii - 1] = k;
+                    let k2: i64 = (k * k) >> QS;
+                    err = err - ((k2 * err) >> QS);
+                    if err < 1 { err = 1; }
+                    ii = ii + 1;
+                }
+
+                // --- clamp/quantize coeffs to the transmitted precision ---
+                j = 0;
+                while j < order {
+                    var c: i64 = a[j];
+                    if c > lim - 1 { c = lim - 1; }
+                    if c < 0 - lim { c = 0 - lim; }
+                    qa[j] = c;
+                    j = j + 1;
+                }
+
+                // --- EXACT integer residual, accumulate bits per (quarter, Rice k) ---
+                var kz: i32 = 0;
+                while kz < 4 * nk { gk[kz] = 0; kz = kz + 1; }
+                i = w0;
+                while i < w1 {
+                    // predict the DC-removed sample from DC-removed causal history
+                    var pr: i64 = 0;
+                    j = 0;
+                    while j < order {
+                        let idx: i32 = i - 1 - j;
+                        if idx >= 0 { pr = pr + qa[j] * ((s[idx] - m) as i64); }
+                        j = j + 1;
+                    }
+                    pr = pr >> QS;
+                    let res: i64 = ((s[i] - m) as i64) - pr;
+                    var zz: i64 = res * 2;
+                    if res < 0 { zz = (0 - res) * 2 - 1; }
+                    var part: i32 = 3;
+                    if i < pq1 { part = 0; }
+                    else { if i < pq2 { part = 1; } else { if i < pq3 { part = 2; } } }
+                    let pb: i32 = part * nk;
+                    kz = 0;
+                    while kz < nk {
+                        gk[pb + kz] = gk[pb + kz] + (zz >> kz) + 1 + (kz as i64);
+                        kz = kz + 1;
+                    }
+                    i = i + 1;
+                }
+                let kbest: i64 = lrn_part_best(gk, psel);
+                if kbest + hdr < wbest {
+                    wbest = kbest + hdr;
+                    sel[0] = order as i64;
+                    sel[1] = m as i64;
+                    var cj: i32 = 0;
+                    while cj < 5 { sel[2 + cj] = psel[cj]; cj = cj + 1; }
+                    cj = 0;
+                    while cj < order { sel[7 + cj] = qa[cj]; cj = cj + 1; }
+                }
+            }
+
+            // ladder 1,2,4,8 (doubling); rungs above 8 measured and killed twice
+            // at w1024 (@internal-design: util Phases 2a/2c).
+            order = order * 2;
+        }
+        wm = wm + 1;
+    }
+
+    return wbest;
+}
+
+#[export]
+fn lpc_windowed_bits(x: *i32, n: i32, p: i32, window: i32,
+    max_order: i32, coef_bits: i32) -> i64 {
+    let r: *i64 = alloc(max_order + 1);     // autocorrelation
+    let a: *i64 = alloc(max_order);         // Q(QS) LPC coeffs (working)
+    let tmp: *i64 = alloc(max_order);       // Levinson update scratch
+    let qa: *i64 = alloc(max_order);        // clamped/quantized coeffs (transmitted)
+    let xw: *i64 = alloc(window);           // Welch-windowed analysis samples
+    let gk: *i64 = alloc(4 * 17);           // per-(quarter, Rice-k) residual bits
+    let sel: *i64 = alloc(7 + max_order);   // argmin surface (unused here)
+    let psel: *i64 = alloc(5);
+
+    var total: i64 = 0;
+    var w0: i32 = 0;
+    while w0 < n {
+        var w1: i32 = w0 + window;
+        if w1 > n { w1 = n; }
+        total = total + lrn_lpc_best(x, w0, w1, max_order, coef_bits, r, a, tmp, qa, xw, gk, sel, psel);
+        w0 = w1;
+    }
+
+    free(psel); free(sel);
+    free(gk); free(xw); free(qa); free(tmp); free(a); free(r);
+    return total;
+}
+
+// ===== THE FOLD — one emitter, per-window mode decision (fixed-Δ vs LPC) =====
+//
+// Per window:
+//   cost_fixed = lrn_fixed_best (order 0..max_fixed_order, Rice k) + fixed_hdr_bits
+//   cost_lpc   = lrn_lpc_best   (order ladder, incl 24 + order*coef_bits header)
+//   window cost = 1 (the mode bit) + min(cost_fixed, cost_lpc)
+// The fixed/LPC boundary rationale: @internal-design: util Phase 1d.
+// Precondition: x is a CONTIGUOUS integer code in [0,p), no field wrap
+// (offset-binary s+2^15 satisfies both arms for 16-bit audio).
+// out[0] = windows coded fixed, out[1] = windows coded LPC.
+
+// The per-channel decision for ONE window: 1 mode bit + min(fixed, LPC), ties to
+// fixed. THE single decision procedure (all fold/wire callers route through here).
+// selF (>=6) / selL (>=15) receive both arms' argmin surfaces;
+// mode_out[0] <- 0 fixed / 1 LPC says which one is on the wire.
+fn lrn_channel_best(x: *i32, d_arr: *i32, n: i32, p: i32, w0: i32, w1: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    r: *i64, a: *i64, tmp: *i64, qa: *i64, xw: *i64, gk: *i64,
+    selF: *i64, selL: *i64, psel: *i64,
+    mode_out: *i64) -> i64 {
+    // the arms run sequentially, so the 4*17 gk table serves both
+    let cf: i64 = lrn_fixed_best(d_arr, n, p, w0, w1, max_fixed_order, gk, selF, psel)
+    + fixed_hdr_bits as i64;
+    let cl: i64 = lrn_lpc_best(x, w0, w1, max_lpc_order, coef_bits, r, a, tmp, qa, xw, gk, selL, psel);
+    if cf <= cl {
+        mode_out[0] = 0;
+        return cf + 1;
+    }
+    mode_out[0] = 1;
+    return cl + 1;
+}
+
+#[export]
+fn codec_windowed_bits(x: *i32, n: i32, p: i32, window: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64 {
+    let d_arr: *i32 = alloc((max_fixed_order + 1) * n);
+    lrn_diff_planes(x, n, p, d_arr, max_fixed_order);
+
+    let r: *i64 = alloc(max_lpc_order + 1);
+    let a: *i64 = alloc(max_lpc_order);
+    let tmp: *i64 = alloc(max_lpc_order);
+    let qa: *i64 = alloc(max_lpc_order);
+    let xw: *i64 = alloc(window);
+    let gk: *i64 = alloc(4 * 17);
+    let selF: *i64 = alloc(6);
+    let selL: *i64 = alloc(7 + max_lpc_order);
+    let psel: *i64 = alloc(5);
+    let mout: *i64 = alloc(1);
+
+    out[0] = 0;
+    out[1] = 0;
+    var total: i64 = 0;
+    var w0: i32 = 0;
+    while w0 < n {
+        var w1: i32 = w0 + window;
+        if w1 > n { w1 = n; }
+        total = total + lrn_channel_best(x, d_arr, n, p, w0, w1,
+            max_fixed_order, fixed_hdr_bits,
+            max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk,
+            selF, selL, psel, mout);
+        if mout[0] == 0 { out[0] = out[0] + 1; }
+        else { out[1] = out[1] + 1; }
+        w0 = w1;
+    }
+
+    free(mout); free(psel); free(selL); free(selF);
+    free(gk); free(xw); free(qa); free(tmp); free(a); free(r); free(d_arr);
+    return total;
+}
+
+// ===== STEREO FOLD — per-window stereo-mode decision (cross-channel ensemble) =====
+//
+// The four invertible framings, mid = (l+r)>>1 (16-bit), side = l-r (17-bit):
+//   LR (tag 0): l, r                     trivial
+//   MS (tag 1): mid, side                l = mid + ((side + (side & 1)) >> 1),
+//                                        r = l - side
+//   LS (tag 2): l, side                  r = l - side
+//   RS (tag 3): r, side                  l = r + side
+// Per window: each coded channel pays its own fold decision, the window pays a
+// 2-bit pair tag. Tie precedence LOCKED (decoder contract): LR, MS, LS, RS.
+// Preconditions: lf/rf/mf contiguous in [0,p_ch); sf in [0,p_side) with
+// p_side >= 2^17 - 1 (offset +65535; p = 131071 works).
+// Two-pass, memory-lean (one diff-plane set live); out[0..3] = pair-tag counts.
+// Why these pairs (the Phase-1 halved mid/side was NOT invertible): @internal-design: util Phase 2a.
+
+fn lrn_scan_channel(x: *i32, n: i32, p: i32, window: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32, wcost: *i64) {
+    let d_arr: *i32 = alloc((max_fixed_order + 1) * n);
+    lrn_diff_planes(x, n, p, d_arr, max_fixed_order);
+
+    let r: *i64 = alloc(max_lpc_order + 1);
+    let a: *i64 = alloc(max_lpc_order);
+    let tmp: *i64 = alloc(max_lpc_order);
+    let qa: *i64 = alloc(max_lpc_order);
+    let xw: *i64 = alloc(window);
+    let gk: *i64 = alloc(4 * 17);
+    let selF: *i64 = alloc(6);
+    let selL: *i64 = alloc(7 + max_lpc_order);
+    let psel: *i64 = alloc(5);
+    let mout: *i64 = alloc(1);
+
+    var w: i32 = 0;
+    var w0: i32 = 0;
+    while w0 < n {
+        var w1: i32 = w0 + window;
+        if w1 > n { w1 = n; }
+        wcost[w] = lrn_channel_best(x, d_arr, n, p, w0, w1,
+            max_fixed_order, fixed_hdr_bits,
+            max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk,
+            selF, selL, psel, mout);
+        w = w + 1;
+        w0 = w1;
+    }
+
+    free(mout); free(psel); free(selL); free(selF);
+    free(gk); free(xw); free(qa); free(tmp); free(a); free(r); free(d_arr);
+}
+
+#[export]
+fn codec_stereo_windowed_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32,
+    p_ch: i32, p_side: i32, window: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    out: *i64) -> i64 {
+    var nwin: i32 = 0;
+    var w0: i32 = 0;
+    while w0 < n { nwin = nwin + 1; w0 = w0 + window; }
+
+    let wl: *i64 = alloc(nwin);
+    let wr_: *i64 = alloc(nwin);
+    let wm: *i64 = alloc(nwin);
+    let ws: *i64 = alloc(nwin);
+    lrn_scan_channel(lf, n, p_ch, window, max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits, wl);
+    lrn_scan_channel(rf, n, p_ch, window, max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits, wr_);
+    lrn_scan_channel(mf, n, p_ch, window, max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits, wm);
+    lrn_scan_channel(sf, n, p_side, window, max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits, ws);
+
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    var total: i64 = 0;
+    var w: i32 = 0;
+    let tago: *i64 = alloc(1);
+    while w < nwin {
+        let best: i64 = lrn_pair_best(wl[w], wr_[w], wm[w], ws[w], tago);
+        total = total + best + 2;             // 2-bit pair tag per window
+        let tg: i32 = tago[0] as i32;
+        out[tg] = out[tg] + 1;
+        w = w + 1;
+    }
+    free(tago);
+
+    free(ws); free(wm); free(wr_); free(wl);
+    return total;
+}
+
+// ===== ADAPTIVE WINDOWS — the dyadic multi-scale fold (v2) =====
+//
+// Dyadic binary-split windowing, 4096 -> 256. Wire-contract cost accounting:
+// every node of nominal size > 256 pays exactly 1 split bit ('0' leaf /
+// '1' split), incl. unsplittable tail nodes; forced 256 leaves pay nothing;
+// boundaries nominal-dyadic clamped at n. Window-major memory (~20n i32).
+// Why adaptive (the S4 oracle probe, -266KB corpus): @internal-design: util wire v2.
+
+// THE pair decision (LR/MS/LS/RS, strict <, tie precedence LR,MS,LS,RS) — the
+// single procedure; uniform fold, adaptive fold, and the wire encoder all
+// route through here. tag_out[0] <- 0..3.
+fn lrn_pair_best(cl: i64, cr: i64, cm: i64, cs: i64, tag_out: *i64) -> i64 {
+    var best: i64 = cl + cr;              // LR, tag 0 (the tie default)
+    var tag: i64 = 0;
+    let cms: i64 = cm + cs;
+    if cms < best { best = cms; tag = 1; }
+    let cls: i64 = cl + cs;
+    if cls < best { best = cls; tag = 2; }
+    let crs: i64 = cr + cs;
+    if crs < best { best = crs; tag = 3; }
+    tag_out[0] = tag;
+    return best;
+}
+
+// Cost of ONE stereo window [w0,w1): 4 channels (global history) + pair decision
+// + 2-bit pair tag. Argmin surfaces for ALL FOUR streams land in the caller's
+// sel/mode arrays (the wire writer needs the two the pair picked; cost-only
+// callers pass scratch). Scratch r..psel as in lrn_channel_best.
+fn lrn_stereo_window_best(lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    dl: *i32, dr: *i32, dm: *i32, ds: *i32,
+    n: i32, p_ch: i32, p_side: i32, w0: i32, w1: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    r: *i64, a: *i64, tmp: *i64, qa: *i64, xw: *i64,
+    gk: *i64, psel: *i64,
+    sfL: *i64, slL: *i64, sfR: *i64, slR: *i64,
+    sfM: *i64, slM: *i64, sfS: *i64, slS: *i64,
+    modes: *i64, tag_out: *i64) -> i64 {
+    let cl: i64 = lrn_channel_best(lf, dl, n, p_ch, w0, w1,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, sfL, slL, psel, modes);
+    let ml: i64 = modes[0];
+    let cr: i64 = lrn_channel_best(rf, dr, n, p_ch, w0, w1,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, sfR, slR, psel, modes);
+    let mr: i64 = modes[0];
+    let cm: i64 = lrn_channel_best(mf, dm, n, p_ch, w0, w1,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, sfM, slM, psel, modes);
+    let mm: i64 = modes[0];
+    let cs: i64 = lrn_channel_best(sf, ds, n, p_side, w0, w1,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, sfS, slS, psel, modes);
+    let ms: i64 = modes[0];
+    modes[0] = ml; modes[1] = mr; modes[2] = mm; modes[3] = ms;
+    return lrn_pair_best(cl, cr, cm, cs, tag_out) + 2;
+}
+
+// Dyadic node cost: nominal `size` at w0, clamped at n. Decoder contract:
+// nodes > 256 pay the 1 split bit both ways; empty children (w0 >= n) cost and
+// emit nothing (decoder knows n — a clamped tail still descends its populated
+// side); split_out = heap-indexed decisions (root 0, children 2i+1/2i+2, 31
+// slots, 1 = split; stale slots under a leaf-resolved parent are never read);
+// ties leaf wins (strict <). THE single recursion — cost fn and wire encoder
+// both call this, so the decisions cannot diverge.
+fn lrn_dyadic_cost(lf: *i32, rf: *i32, mf: *i32, sf: *i32,
+    dl: *i32, dr: *i32, dm: *i32, ds: *i32,
+    n: i32, p_ch: i32, p_side: i32, w0: i32, size: i32,
+    node: i32, split_out: *i64,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    r: *i64, a: *i64, tmp: *i64, qa: *i64, xw: *i64,
+    gk: *i64, psel: *i64,
+    sfL: *i64, slL: *i64, sfR: *i64, slR: *i64,
+    sfM: *i64, slM: *i64, sfS: *i64, slS: *i64,
+    modes: *i64, tag_out: *i64) -> i64 {
+    var w1: i32 = w0 + size;
+    if w1 > n { w1 = n; }
+    let leaf: i64 = lrn_stereo_window_best(lf, rf, mf, sf, dl, dr, dm, ds,
+        n, p_ch, p_side, w0, w1,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, psel,
+        sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+        modes, tag_out);
+    if size <= 256 { return leaf; }
+    split_out[node] = 0;
+    let mid: i32 = w0 + size / 2;
+    let half: i32 = size / 2;
+    let sl_cost: i64 = lrn_dyadic_cost(lf, rf, mf, sf, dl, dr, dm, ds,
+        n, p_ch, p_side, w0, half,
+        2 * node + 1, split_out,
+        max_fixed_order, fixed_hdr_bits,
+        max_lpc_order, coef_bits,
+        r, a, tmp, qa, xw, gk, psel,
+        sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+        modes, tag_out);
+    var sr_cost: i64 = 0;                 // empty right child: 0 bits
+    if mid < n {
+        sr_cost = lrn_dyadic_cost(lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, mid, half,
+            2 * node + 2, split_out,
+            max_fixed_order, fixed_hdr_bits,
+            max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+            modes, tag_out);
+    }
+    let split: i64 = sl_cost + sr_cost;
+    if leaf < split { return leaf + 1; }
+    split_out[node] = 1;
+    return split + 1;
+}
+
+// Count CHOSEN split nodes by walking the decision tree exactly as the wire does
+// (children of a leaf-resolved node are unreachable; size <= 256 never written).
+fn lrn_split_count(split: *i64, node: i32, size: i32) -> i64 {
+    if size <= 256 { return 0; }
+    if split[node] == 0 { return 0; }
+    return 1 + lrn_split_count(split, 2 * node + 1, size / 2)
+    + lrn_split_count(split, 2 * node + 2, size / 2);
+}
+
+// Adaptive-window stereo cost (the v2 wire's cost model): dyadic blocks of
+// nominal 4096. out[0] = block count; out[1] = CHOSEN split-node count
+// (reachable-walk exact). Returns total bits (excl. any stream header).
+#[export]
+fn codec_stereo_adaptive_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32,
+    p_ch: i32, p_side: i32,
+    max_fixed_order: i32, fixed_hdr_bits: i32,
+    max_lpc_order: i32, coef_bits: i32,
+    out: *i64) -> i64 {
+    let norders: i32 = max_fixed_order + 1;
+    let dl: *i32 = alloc(norders * n);
+    let dr: *i32 = alloc(norders * n);
+    let dm: *i32 = alloc(norders * n);
+    let ds: *i32 = alloc(norders * n);
+    lrn_diff_planes(lf, n, p_ch, dl, max_fixed_order);
+    lrn_diff_planes(rf, n, p_ch, dr, max_fixed_order);
+    lrn_diff_planes(mf, n, p_ch, dm, max_fixed_order);
+    lrn_diff_planes(sf, n, p_side, ds, max_fixed_order);
+
+    let r: *i64 = alloc(max_lpc_order + 1);
+    let a: *i64 = alloc(max_lpc_order);
+    let tmp: *i64 = alloc(max_lpc_order);
+    let qa: *i64 = alloc(max_lpc_order);
+    let xw: *i64 = alloc(4096);
+    let gk: *i64 = alloc(4 * 17);
+    let psel: *i64 = alloc(5);
+    let sfL: *i64 = alloc(6);   let slL: *i64 = alloc(7 + max_lpc_order);
+    let sfR: *i64 = alloc(6);   let slR: *i64 = alloc(7 + max_lpc_order);
+    let sfM: *i64 = alloc(6);   let slM: *i64 = alloc(7 + max_lpc_order);
+    let sfS: *i64 = alloc(6);   let slS: *i64 = alloc(7 + max_lpc_order);
+    let modes: *i64 = alloc(4);
+    let tago: *i64 = alloc(1);
+    let split: *i64 = alloc(31);
+
+    out[0] = 0;
+    out[1] = 0;
+    var total: i64 = 0;
+    var b0: i32 = 0;
+    while b0 < n {
+        var z: i32 = 0;
+        while z < 31 { split[z] = 0; z = z + 1; }
+        total = total + lrn_dyadic_cost(lf, rf, mf, sf, dl, dr, dm, ds,
+            n, p_ch, p_side, b0, 4096,
+            0, split,
+            max_fixed_order, fixed_hdr_bits,
+            max_lpc_order, coef_bits,
+            r, a, tmp, qa, xw, gk, psel,
+            sfL, slL, sfR, slR, sfM, slM, sfS, slS,
+            modes, tago);
+        out[0] = out[0] + 1;
+        out[1] = out[1] + lrn_split_count(split, 0, 4096);
+        b0 = b0 + 4096;
+    }
+
+    free(split); free(tago); free(modes);
+    free(slS); free(sfS); free(slM); free(sfM);
+    free(slR); free(sfR); free(slL); free(sfL);
+    free(psel); free(gk); free(xw); free(qa); free(tmp); free(a); free(r);
+    free(ds); free(dm); free(dr); free(dl);
+    return total;
+}

@@ -1,0 +1,74 @@
+// pfor_alias_eq.tv — HOLE 9: aliased captured pointers (base equality)
+//
+// fn shift_sum(src, dst, n) { for i in 0..n { dst[i] = src[i+1] + 1 } }
+//
+// The analysis proves the loop safe for DISTINCT src/dst: dst written
+// at [i], src read at [i+1], different arrays, assumed non-aliasing.
+// Called as shift_sum(buf, buf, n) the assumption is false and the loop
+// is the cross-iteration RAW race (hole 4) reborn through arguments:
+// chunk leaders read cells the previous chunk just wrote.
+// Demonstrated: serial 1250075000, parallel 1250075062 @ 32 threads.
+//
+// Fix: runtime aliasing guard at the dispatch site.  The compiler knows
+// which captures are written arrays; it emits base-pointer equality
+// checks (icmp eq ptr) between every written array and every other
+// captured pointer.  Any hit branches to a direct serial worker call
+// instead of __parallel_for.  Zero cost when no aliases (a handful of
+// compares), zero new syntax.
+//
+// RESIDUAL (documented, not covered): PARTIAL overlap via offset
+// aliasing — shift_sum(buf, &buf[100], n) — passes the base-equality
+// check and still races.  Catching it needs allocation extents at
+// runtime, out of scope.  The model assumption narrows from "captured
+// pointers don't alias" to "captured pointers don't PARTIALLY overlap".
+//
+// Expected workers: 1 (the worker is still emitted — the guard is a
+// runtime branch, not an eligibility rejection).  Output must equal
+// the serial baseline at every thread count: 1250075000 1250075000.
+
+field F = Field<2013265921>;
+
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+fn shift_sum(src: *F, dst: *F, n: i32) {
+    for i in 0..n {
+        dst[i] = slow(src[i + 1]) + 1;
+    }
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+
+    // Aliased call: src == dst — guard must force the serial path
+    let buf: *F = alloc(n + 1);
+    let mut w: i32 = 0;
+    while w < n + 1 { buf[w] = w as F; w = w + 1; }
+    shift_sum(buf, buf, n);
+    // Serial semantics: buf[i] = (i+1) + 1 = i+2 for i < n
+    let mut s1: F = 0;
+    w = 0;
+    while w < n { s1 = s1 + buf[w]; w = w + 1; }
+    print(s1);
+
+    // Non-aliased call (positive control): distinct buffers, the guard
+    // must NOT serialize this — same checksum, parallel execution
+    let src2: *F = alloc(n + 1);
+    let dst2: *F = alloc(n);
+    w = 0;
+    while w < n + 1 { src2[w] = w as F; w = w + 1; }
+    shift_sum(src2, dst2, n);
+    let mut s2: F = 0;
+    w = 0;
+    while w < n { s2 = s2 + dst2[w]; w = w + 1; }
+    print(s2);
+
+    return 0;
+}

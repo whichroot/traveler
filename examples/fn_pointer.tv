@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fn_pointer.tv — function pointers: the language's first code pointer, passed
+// as a value (B2a Slice 1). tvc_self ONLY (gated in tests/dynfield/run.sh).
+// @internal-design: examples (fn_pointer).
+//
+// Expected output:
+//   42     g(41) via a fn-pointer variable bound to &add1
+//   42     apply(&double, 21) — strategy passed as a value
+//   10     apply(&add1, 9)
+//   30     dispatch(0, 10, 20) selects &add  -> 10+20
+//   200    dispatch(1, 10, 20) selects &mul  -> 10*20
+//   10     dispatch(2, 10, 20) selects &sub  -> 20-10
+
+fn add1(x: i32) -> i32 { return x + 1; }
+fn double(x: i32) -> i32 { return x * 2; }
+
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn mul(a: i32, b: i32) -> i32 { return a * b; }
+fn sub(a: i32, b: i32) -> i32 { return b - a; }
+
+// Strategy as a first-class value (the predictive layer).
+fn apply(f: fn(i32) -> i32, v: i32) -> i32 {
+    return f(v);
+}
+
+// Runtime strategy selection: the DECISION of which predictor to run is
+// data-driven; the strategies themselves are values.
+fn dispatch(which: i32, a: i32, b: i32) -> i32 {
+    var op: fn(i32, i32) -> i32 = &add;
+    if which == 1 { op = &mul; }
+    if which == 2 { op = &sub; }
+    return op(a, b);
+}
+
+fn main() -> i32 {
+    let g: fn(i32) -> i32 = &add1;
+    print(g(41));                  // 42
+    print(apply(&double, 21));     // 42
+    print(apply(&add1, 9));        // 10
+
+    print(dispatch(0, 10, 20));    // 30  (add)
+    print(dispatch(1, 10, 20));    // 200 (mul)
+    print(dispatch(2, 10, 20));    // 10  (sub: b-a)
+    return 0;
+}

@@ -1,0 +1,922 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// piecewise_segment_b.tv — codec split module imported by piecewise_codec.tv:
+// gated segmenter + phase-space/particle mechanics + particle segmenter.
+// @internal-design: codec
+
+// ===== Gated segmenter — margin-aware, trend-tracking, incremental =====
+// Gate params integer-scaled x1000 (no floats): GATE_FLOOR = min margin to keep
+// extending; GATE_RATE = max margin degradation per step before cut.
+let GATE_FLOOR: i32 = 200;
+let GATE_RATE: i32 = 50;
+
+#[export]
+fn pc_segment_gated(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+    let tmp_res: *i32 = alloc(MAX_SEGMENT);
+    var cursor: i32 = 0;
+    var seg_idx: i32 = 0;
+    var res_offset: i32 = 0;
+
+    // Incremental forward difference state (same technique as DP segmenter)
+    let prev: *i32 = alloc(MAX_ORDER + 1);
+    let sum_abs: *i64 = alloc(MAX_ORDER + 1);
+    let count: *i32 = alloc(MAX_ORDER + 1);
+
+    // Continuation state
+    let cont_reg: *i32 = alloc(MAX_ORDER + 1);
+    var cont_degree: i32 = 0;
+    var cont_active: i32 = 0;
+
+    while cursor < n {
+        if seg_idx >= max_segments { break; }
+
+        let remaining: i32 = n - cursor;
+        if remaining < MIN_SEGMENT {
+            // Tail: store as literal
+            segments[seg_idx].start = cursor;
+            segments[seg_idx].length = remaining;
+            segments[seg_idx].order = 0 - 1;
+            segments[seg_idx].n_headers = 0;
+            segments[seg_idx].is_cont = 0;
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = remaining;
+            var r: i32 = 0;
+            while r < remaining {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = samples[cursor + r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + remaining;
+            segments[seg_idx].encoded_bits = literal_cost(remaining, f);
+            cont_active = 0;
+            seg_idx = seg_idx + 1;
+            break;
+        }
+
+        // --- Continuation check ---
+        if cont_active == 1 {
+            var cont_len: i32 = remaining;
+            if cont_len > MAX_SEGMENT { cont_len = MAX_SEGMENT; }
+            let matched: i32 = check_continuation(cont_reg, cont_degree,
+                &samples[cursor], cont_len, f);
+            if matched >= MIN_SEGMENT {
+                segments[seg_idx].start = cursor;
+                segments[seg_idx].length = matched;
+                segments[seg_idx].order = cont_degree;
+                segments[seg_idx].n_headers = 0;
+                segments[seg_idx].is_cont = 1;
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = 0;
+                segments[seg_idx].encoded_bits = CONT_COST_BITS;
+                advance_register(cont_reg, cont_degree, matched, f);
+                cursor = cursor + matched;
+                seg_idx = seg_idx + 1;
+                continue;
+            }
+        }
+
+        // --- Gated incremental extension ---
+        // Initialize incremental state
+        var k: i32 = 0;
+        while k <= MAX_ORDER {
+            prev[k] = 0;
+            sum_abs[k] = 0;
+            count[k] = 0;
+            k = k + 1;
+        }
+        prev[0] = samples[cursor];
+
+        var best_cost: i64 = 9223372036854775807;
+        var best_len: i32 = MIN_SEGMENT;
+        var best_order: i32 = 1;
+        var prev_margin: i32 = 0;
+        var cut: i32 = 0;
+
+        var j_end: i32 = cursor + MAX_SEGMENT;
+        if j_end > n { j_end = n; }
+
+        var j: i32 = cursor + 1;
+        while j <= j_end {
+            // Incremental forward difference: O(MAX_ORDER) per sample
+            var new_val: i32 = samples[j - 1];
+            k = 1;
+            while k <= MAX_ORDER {
+                let diff: i32 = field_sub(new_val, prev[k - 1], f);
+                prev[k - 1] = new_val;
+                new_val = diff;
+                let c: i32 = center(diff, f);
+                var abs_c: i32 = c;
+                if abs_c < 0 { abs_c = 0 - abs_c; }
+                sum_abs[k] = sum_abs[k] + abs_c as i64;
+                count[k] = count[k] + 1;
+                k = k + 1;
+            }
+            prev[MAX_ORDER] = new_val;
+
+            let seg_len: i32 = j - cursor;
+
+            // Only evaluate once we have enough samples
+            if seg_len >= MIN_SEGMENT {
+                // Find best order from running stats (same estimator as DP)
+                var best_order_cost: i64 = 9223372036854775807;
+                var best_order_here: i32 = 1;
+
+                var order: i32 = 1;
+                while order <= MAX_ORDER {
+                    if count[order] < 1 {
+                        order = order + 1;
+                        continue;
+                    }
+                    let mean_abs: i64 = sum_abs[order] / count[order] as i64;
+                    var est_k: i32 = 0;
+                    var m: i64 = mean_abs;
+                    while m > 1 {
+                        m = m >> 1;
+                        est_k = est_k + 1;
+                    }
+                    var rice_per: i64 = 1 + est_k as i64;
+                    if est_k < 20 {
+                        rice_per = rice_per + mean_abs / (1 << est_k) as i64;
+                    }
+                    let header_bits: i64 = (SEGMENT_OVERHEAD_BYTES + order * 4) as i64 * 8;
+                    let est_cost: i64 = header_bits + rice_per * count[order] as i64;
+
+                    if est_cost < best_order_cost {
+                        best_order_cost = est_cost;
+                        best_order_here = order;
+                    }
+                    order = order + 1;
+                }
+
+                // Track global best (length, order) seen so far
+                let bps_here: i64 = best_order_cost * 1000 / seg_len as i64;
+                if best_order_cost < best_cost || bps_here * seg_len as i64 < best_cost * 1000 / best_len as i64 * seg_len as i64 {
+                    // Use bps comparison: does this length have lower per-sample cost?
+                    let prev_bps: i64 = best_cost * 1000 / best_len as i64;
+                    if bps_here <= prev_bps || best_cost == 9223372036854775807 {
+                        best_cost = best_order_cost;
+                        best_len = seg_len;
+                        best_order = best_order_here;
+                    }
+                }
+
+                // --- Margin + Trend (gate_d1 pattern) ---
+                // margin = (literal_bps - poly_bps) scaled x1000
+                let lit_bps: i64 = literal_cost(seg_len, f) * 1000 / seg_len as i64;
+                let poly_bps: i64 = best_order_cost * 1000 / seg_len as i64;
+                let margin: i32 = (lit_bps - poly_bps) as i32;
+                let trend: i32 = margin - prev_margin;
+                prev_margin = margin;
+
+                // Gate decision
+                if margin < GATE_FLOOR && seg_len > MIN_SEGMENT {
+                    // Polynomial barely better than literal — cut
+                    cut = 1;
+                    break;
+                }
+                if trend < (0 - GATE_RATE) && margin < GATE_FLOOR * 3 && seg_len > MIN_SEGMENT * 2 {
+                    // Margin collapsing and not deep enough in body — cut
+                    cut = 1;
+                    break;
+                }
+            }
+
+            j = j + 1;
+        }
+
+        // --- Final order selection at the chosen length ---
+        // The incremental estimator found the boundary. Now use the full
+        // segment_cost() (with Rice partition search) to pick the true best order.
+        var final_best_cost: i64 = 9223372036854775807;
+        var final_best_order: i32 = 1;
+        var final_order: i32 = 1;
+        while final_order <= MAX_ORDER {
+            if best_len >= final_order + 1 {
+                let fc: i64 = segment_cost(&samples[cursor], best_len, final_order, f);
+                if fc < final_best_cost {
+                    final_best_cost = fc;
+                    final_best_order = final_order;
+                }
+            }
+            final_order = final_order + 1;
+        }
+        // Also check literal
+        let lit_c: i64 = literal_cost(best_len, f);
+        if lit_c < final_best_cost {
+            final_best_order = 0 - 1;
+        }
+        best_order = final_best_order;
+
+        // --- Emit the segment ---
+        segments[seg_idx].start = cursor;
+        segments[seg_idx].length = best_len;
+        segments[seg_idx].order = best_order;
+        segments[seg_idx].is_cont = 0;
+
+        if best_order >= 1 {
+            let n_res: i32 = pc_forward_diff(&samples[cursor], best_len, best_order, headers, tmp_res, f);
+            segments[seg_idx].n_headers = best_order;
+            k = 0;
+            while k < best_order {
+                seg_set_header(&segments[seg_idx], k, headers[k]);
+                k = k + 1;
+            }
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = n_res;
+
+            var r: i32 = 0;
+            while r < n_res {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = tmp_res[r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + n_res;
+            segments[seg_idx].encoded_bits = segment_cost(&samples[cursor], best_len, best_order, f);
+
+            // Save register state for continuation
+            build_register_state(headers, best_order, tmp_res, n_res, best_len, cont_reg, f);
+            cont_degree = best_order;
+            cont_active = 1;
+        } else {
+            segments[seg_idx].n_headers = 0;
+            segments[seg_idx].res_offset = res_offset;
+            segments[seg_idx].res_count = best_len;
+            var r: i32 = 0;
+            while r < best_len {
+                if res_offset + r < max_residuals {
+                    residuals_buf[res_offset + r] = samples[cursor + r];
+                }
+                r = r + 1;
+            }
+            res_offset = res_offset + best_len;
+            segments[seg_idx].encoded_bits = literal_cost(best_len, f);
+            cont_active = 0;
+        }
+
+        cursor = cursor + best_len;
+        seg_idx = seg_idx + 1;
+    }
+
+    free(cont_reg);
+    free(count);
+    free(sum_abs);
+    free(prev);
+    free(tmp_res);
+    free(headers);
+    return seg_idx;
+}
+
+// ===== Phase-space distance =====
+// Weighted squared residual across derivative orders:
+//   d^2 = sum_k (delta^k obs - reg[k])^2 / C(2k,k)
+// Weights are LCM-normalized inverse central-binomials (zero-parameter, derived
+// from the forward-difference operator). See @internal-design: codec.
+
+fn phase_weight(k: i32) -> i64 {
+    // 13860 / C(2k, k), k=0..6
+    if k == 0 { return 13860; }
+    if k == 1 { return 6930; }
+    if k == 2 { return 2310; }
+    if k == 3 { return 693; }
+    if k == 4 { return 198; }
+    if k == 5 { return 55; }
+    return 15;  // k == 6
+}
+
+// Phase-space distance between a particle's register and the signal at idx.
+// Pure; observed differences computed on the fly. Returns squared distance
+// (larger = worse prediction).
+fn phase_distance(p_reg: *i32, base: i32, order: i32,
+    samples: *i32, idx: i32,
+    f: Field) -> i64 {
+    var dist: i64 = 0;
+    // Order 0: displacement. Always available.
+    let r0: i32 = field_sub(samples[idx], p_reg[base], f);
+    let c0: i32 = center(r0, f);
+    dist = (c0 as i64) * (c0 as i64) * phase_weight(0);
+
+    // Higher orders: compute observed differences on the fly.
+    // Δ^k obs[idx] requires samples[idx-k..idx], so skip if idx < k.
+    var k: i32 = 1;
+    while k <= order && k <= idx {
+        // Compute Δ^k obs[idx] via iterated differencing of samples[idx-k..idx]
+        // in a small scratch buffer (max 7 values for order 6).
+        let buf: *i32 = alloc(k + 1);
+        var bi: i32 = 0;
+        while bi <= k {
+            buf[bi] = samples[idx - k + bi];
+            bi = bi + 1;
+        }
+        var lev: i32 = 0;
+        while lev < k {
+            var di: i32 = 0;
+            while di < k - lev {
+                buf[di] = field_sub(buf[di + 1], buf[di], f);
+                di = di + 1;
+            }
+            lev = lev + 1;
+        }
+        // buf[0] is now Δ^k obs[idx]
+        let rk: i32 = field_sub(buf[0], p_reg[base + k], f);
+        let ck: i32 = center(rk, f);
+        dist = dist + (ck as i64) * (ck as i64) * phase_weight(k);
+        free(buf);
+        k = k + 1;
+    }
+    return dist;
+}
+
+// ===== Particle filter — continuous regime tracking =====
+// Each particle is a live self-correcting register; particles never
+// reinitialize, state flows through boundaries. Emit when phase-distance trend
+// diverges. Cut geometry + decoupled resample/emit: @internal-design: codec.
+
+let N_PARTICLES: i32 = 30;     // 5 per order, orders 1-6
+let N_PER_ORDER: i32 = 5;
+let WEIGHT_SCALE: i64 = 1048576;  // 2^20 — precision constant, not tunable
+
+// ===== Shared particle mechanics — pure functions on explicit state =====
+
+// Initialize N_PARTICLES across orders 1..MAX_ORDER.
+fn particle_init(p_order: *i32, p_reg: *i32, p_weight: *i64,
+    p_cost: *i64, p_steps: *i32, first_sample: i32) {
+    var pi: i32 = 0;
+    var init_order: i32 = 1;
+    while init_order <= MAX_ORDER {
+        var k: i32 = 0;
+        while k < N_PER_ORDER {
+            if pi < N_PARTICLES {
+                p_order[pi] = init_order;
+                p_weight[pi] = WEIGHT_SCALE / 2;
+                p_cost[pi] = 0;
+                p_steps[pi] = 0;
+                var r: i32 = 0;
+                while r <= MAX_ORDER {
+                    if r == 0 {
+                        p_reg[pi * 7 + r] = first_sample;
+                    } else {
+                        p_reg[pi * 7 + r] = 0;
+                    }
+                    r = r + 1;
+                }
+            }
+            pi = pi + 1;
+            k = k + 1;
+        }
+        init_order = init_order + 1;
+    }
+}
+
+// Per-sample particle update: predict, observe, weight, correct for all particles.
+// Writes ESS to out_ess, mean weight to out_mean_weight, weight sum to out_weight_sum.
+fn particle_step_all(p_order: *i32, p_reg: *i32, p_weight: *i64,
+    p_cost: *i64, p_steps: *i32,
+    samples: *i32, j: i32,
+    out_ess: *i32, out_mean_weight: *i64,
+    out_weight_sum: *i64,
+    f: Field) {
+    let observed: i32 = samples[j];
+    var weight_sum: i64 = 0;
+    var weight_sq_sum: i64 = 0;
+
+    var pi: i32 = 0;
+    while pi < N_PARTICLES {
+        let ord: i32 = p_order[pi];
+        let base: i32 = pi * 7;
+
+        // 1. PREDICT: advance register
+        var k: i32 = 0;
+        while k < ord {
+            p_reg[base + k] = field_add(p_reg[base + k], p_reg[base + k + 1], f);
+            k = k + 1;
+        }
+
+        // 2. OBSERVE: residual
+        let residual: i32 = field_sub(observed, p_reg[base], f);
+        let c: i32 = center(residual, f);
+        var abs_c: i32 = c;
+        if abs_c < 0 { abs_c = 0 - abs_c; }
+
+        // 3. UPDATE WEIGHT: phase-space distance
+        let dist: i64 = phase_distance(p_reg, base, ord, samples, j, f);
+        p_weight[pi] = WEIGHT_SCALE / (1 + dist);
+
+        // 4. SELF-CORRECT
+        p_reg[base + ord] = residual;
+
+        // 5. ACCUMULATE COST
+        p_cost[pi] = p_cost[pi] + abs_c as i64;
+        p_steps[pi] = p_steps[pi] + 1;
+
+        weight_sum = weight_sum + p_weight[pi];
+        weight_sq_sum = weight_sq_sum + (p_weight[pi] / 256) * (p_weight[pi] / 256);
+
+        pi = pi + 1;
+    }
+
+    // ESS
+    var ess: i32 = N_PARTICLES;
+    if weight_sq_sum > 0 {
+        let ws_scaled: i64 = weight_sum / 256;
+        ess = (ws_scaled * ws_scaled / weight_sq_sum) as i32;
+        if ess > N_PARTICLES { ess = N_PARTICLES; }
+        if ess < 1 { ess = 1; }
+    }
+
+    out_ess[0] = ess;
+    out_mean_weight[0] = weight_sum / N_PARTICLES as i64;
+    out_weight_sum[0] = weight_sum;
+}
+
+// Systematic resampling when one particle dominates (max > 4x mean).
+// Only call when do_emit == 0 and seg_len >= MIN_SEGMENT / 2.
+fn particle_maybe_resample(p_order: *i32, p_reg: *i32, p_weight: *i64,
+    p_order_tmp: *i32, p_reg_tmp: *i32, p_weight_tmp: *i64,
+    weight_sum: i64, mean_weight: i64) {
+    let resample_thresh: i64 = mean_weight * 4;
+    var max_w: i64 = 0;
+    var pi: i32 = 0;
+    while pi < N_PARTICLES {
+        if p_weight[pi] > max_w { max_w = p_weight[pi]; }
+        pi = pi + 1;
+    }
+    if max_w <= resample_thresh { return; }
+
+    // Copy to temp
+    var ci: i32 = 0;
+    while ci < N_PARTICLES {
+        p_order_tmp[ci] = p_order[ci];
+        p_weight_tmp[ci] = p_weight[ci];
+        var cr: i32 = 0;
+        while cr <= MAX_ORDER {
+            p_reg_tmp[ci * 7 + cr] = p_reg[ci * 7 + cr];
+            cr = cr + 1;
+        }
+        ci = ci + 1;
+    }
+
+    // Systematic resampling
+    let step: i64 = weight_sum / N_PARTICLES as i64;
+    if step <= 0 { return; }
+    var target: i64 = step / 2;
+    var cumul: i64 = 0;
+    var src: i32 = 0;
+    var dst: i32 = 0;
+    while dst < N_PARTICLES {
+        while src < N_PARTICLES - 1 && cumul + p_weight_tmp[src] < target {
+            cumul = cumul + p_weight_tmp[src];
+            src = src + 1;
+        }
+        p_order[dst] = p_order_tmp[src];
+        p_weight[dst] = WEIGHT_SCALE / 2;
+        var cr: i32 = 0;
+        while cr <= MAX_ORDER {
+            p_reg[dst * 7 + cr] = p_reg_tmp[src * 7 + cr];
+            cr = cr + 1;
+        }
+        target = target + step;
+        dst = dst + 1;
+    }
+}
+
+// Winning order from particle weight distribution.
+fn particle_winning_order(p_order: *i32, p_weight: *i64) -> i32 {
+    let order_weights: *i64 = alloc(MAX_ORDER + 1);
+    var ow: i32 = 0;
+    while ow <= MAX_ORDER {
+        order_weights[ow] = 0;
+        ow = ow + 1;
+    }
+    var pi: i32 = 0;
+    while pi < N_PARTICLES {
+        order_weights[p_order[pi]] = order_weights[p_order[pi]] + p_weight[pi];
+        pi = pi + 1;
+    }
+    var best_order: i32 = 1;
+    var best_ow: i64 = 0;
+    ow = 1;
+    while ow <= MAX_ORDER {
+        if order_weights[ow] > best_ow {
+            best_ow = order_weights[ow];
+            best_order = ow;
+        }
+        ow = ow + 1;
+    }
+    free(order_weights);
+    return best_order;
+}
+
+// ===== Particle filter segmenter =====
+
+// Particle state: parallel arrays (Traveler has no nested array types).
+// p_order[i]:     polynomial degree for particle i
+// p_reg[i * 7 + k]: register value at level k for particle i
+// p_weight[i]:    accumulated prediction quality
+// p_cost[i]:      running sum of |centered residual|
+// p_steps[i]:     samples since last resample
+
+#[export]
+fn pc_segment_particle(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    // Allocate particle state
+    let p_order: *i32 = alloc(N_PARTICLES);
+    let p_reg: *i32 = alloc(N_PARTICLES * (MAX_ORDER + 1));
+    let p_weight: *i64 = alloc(N_PARTICLES);
+    let p_cost: *i64 = alloc(N_PARTICLES);
+    let p_steps: *i32 = alloc(N_PARTICLES);
+
+    // Resampling workspace
+    let p_reg_tmp: *i32 = alloc(N_PARTICLES * (MAX_ORDER + 1));
+    let p_order_tmp: *i32 = alloc(N_PARTICLES);
+    let p_weight_tmp: *i64 = alloc(N_PARTICLES);
+
+    // Segment emission workspace
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+    let tmp_res: *i32 = alloc(MAX_SEGMENT);
+
+    // Local retracement tracking: phase-distance well geometry.
+    // initial_dist: mean_dist at segment warmup (the "entry level")
+    // floor_dist: minimum mean_dist since warmup (well center)
+    // Cut when mean_dist retraces to initial_dist (@internal-design: codec).
+    var initial_dist: i64 = WEIGHT_SCALE;
+    var floor_dist: i64 = WEIGHT_SCALE;
+    var retrace_warm: i32 = 0;
+
+    // Initialize particles: distribute across orders 1..MAX_ORDER
+    var pi: i32 = 0;
+    var init_order: i32 = 1;
+    while init_order <= MAX_ORDER {
+        var k: i32 = 0;
+        while k < N_PER_ORDER {
+            if pi < N_PARTICLES {
+                p_order[pi] = init_order;
+                p_weight[pi] = WEIGHT_SCALE / 2;
+                p_cost[pi] = 0;
+                p_steps[pi] = 0;
+                // Initialize register: first sample, rest zero
+                var r: i32 = 0;
+                while r <= MAX_ORDER {
+                    if r == 0 && n > 0 {
+                        p_reg[pi * 7 + r] = samples[0];
+                    } else {
+                        p_reg[pi * 7 + r] = 0;
+                    }
+                    r = r + 1;
+                }
+            }
+            pi = pi + 1;
+            k = k + 1;
+        }
+        init_order = init_order + 1;
+    }
+
+    var cursor: i32 = 0;      // start of current segment
+    var seg_idx: i32 = 0;
+    var res_offset: i32 = 0;
+    var j: i32 = 1;           // current sample position (start at 1, sample 0 is in registers)
+
+    while j < n {
+        if seg_idx >= max_segments { break; }
+
+        // --- Per-sample: predict, observe, update, self-correct ---
+        let observed: i32 = samples[j];
+        var weight_sum: i64 = 0;
+        var weight_sq_sum: i64 = 0;
+
+        pi = 0;
+        while pi < N_PARTICLES {
+            let ord: i32 = p_order[pi];
+            let base: i32 = pi * 7;
+
+            // 1. PREDICT: advance register (forward summation step)
+            var k: i32 = 0;
+            while k < ord {
+                p_reg[base + k] = field_add(p_reg[base + k], p_reg[base + k + 1], f);
+                k = k + 1;
+            }
+            let predicted: i32 = p_reg[base];
+
+            // 2. OBSERVE: compute residual
+            let residual: i32 = field_sub(observed, predicted, f);
+            let c: i32 = center(residual, f);
+            var abs_c: i32 = c;
+            if abs_c < 0 { abs_c = 0 - abs_c; }
+
+            // 3. UPDATE WEIGHT: phase-space distance (zero free parameters)
+            let dist: i64 = phase_distance(p_reg, base, ord, samples, j, f);
+            p_weight[pi] = WEIGHT_SCALE / (1 + dist);
+
+            // 4. SELF-CORRECT: feed residual into deepest register level
+            p_reg[base + ord] = residual;
+
+            // 5. ACCUMULATE COST
+            p_cost[pi] = p_cost[pi] + abs_c as i64;
+            p_steps[pi] = p_steps[pi] + 1;
+
+            weight_sum = weight_sum + p_weight[pi];
+            weight_sq_sum = weight_sq_sum + (p_weight[pi] / 256) * (p_weight[pi] / 256);
+
+            pi = pi + 1;
+        }
+
+        // 6. COMPUTE ESS and mean distance for trend tracking
+        var ess: i32 = N_PARTICLES;
+        if weight_sq_sum > 0 {
+            let ws_scaled: i64 = weight_sum / 256;
+            ess = (ws_scaled * ws_scaled / weight_sq_sum) as i32;
+            if ess > N_PARTICLES { ess = N_PARTICLES; }
+            if ess < 1 { ess = 1; }
+        }
+
+        let mean_weight: i64 = weight_sum / N_PARTICLES as i64;
+
+        let seg_len: i32 = j - cursor + 1;
+
+        // 7. SEGMENT DECISION: local retracement critical-point detection —
+        // cut when mean_dist has retraced to its entry level.
+        let mean_dist: i64 = WEIGHT_SCALE - mean_weight;
+
+        // Warmup: set initial measurement after MIN_SEGMENT samples
+        if retrace_warm == 0 && seg_len >= MIN_SEGMENT {
+            initial_dist = mean_dist;
+            floor_dist = mean_dist;
+            retrace_warm = 1;
+        }
+        // Track well floor (best prediction quality in this segment)
+        if retrace_warm == 1 && mean_dist < floor_dist {
+            floor_dist = mean_dist;
+        }
+
+        var do_emit: i32 = 0;
+        if seg_len >= MAX_SEGMENT { do_emit = 1; }
+
+        // Full retracement to entry = cut.
+        if do_emit == 0 && retrace_warm == 1 && seg_len >= MIN_SEGMENT * 2 {
+            if mean_dist > initial_dist { do_emit = 1; }
+        }
+
+        // ESS collapse: particles fundamentally disagree — hard cut
+        if ess <= N_PARTICLES / 5 && seg_len >= MIN_SEGMENT { do_emit = 1; }
+
+        // Handle remaining samples at end of signal
+        if j == n - 1 { do_emit = 1; }
+
+        if do_emit == 1 {
+            // Find winning order: sum weights per order group
+            let order_weights: *i64 = alloc(MAX_ORDER + 1);
+            var ow: i32 = 0;
+            while ow <= MAX_ORDER {
+                order_weights[ow] = 0;
+                ow = ow + 1;
+            }
+            pi = 0;
+            while pi < N_PARTICLES {
+                order_weights[p_order[pi]] = order_weights[p_order[pi]] + p_weight[pi];
+                pi = pi + 1;
+            }
+            var best_order: i32 = 1;
+            var best_ow: i64 = 0;
+            ow = 1;
+            while ow <= MAX_ORDER {
+                if order_weights[ow] > best_ow {
+                    best_ow = order_weights[ow];
+                    best_order = ow;
+                }
+                ow = ow + 1;
+            }
+            free(order_weights);
+
+            // Final order selection: verify with actual segment_cost
+            var final_order: i32 = best_order;
+            var final_cost: i64 = segment_cost(&samples[cursor], seg_len, best_order, f);
+            var try_order: i32 = 1;
+            while try_order <= MAX_ORDER {
+                if try_order != best_order && seg_len >= try_order + 1 {
+                    let tc: i64 = segment_cost(&samples[cursor], seg_len, try_order, f);
+                    if tc < final_cost {
+                        final_cost = tc;
+                        final_order = try_order;
+                    }
+                }
+                try_order = try_order + 1;
+            }
+            // Check literal
+            let lit_c: i64 = literal_cost(seg_len, f);
+            if lit_c < final_cost {
+                final_order = 0 - 1;
+                final_cost = lit_c;
+            }
+
+            // Emit the segment
+            segments[seg_idx].start = cursor;
+            segments[seg_idx].length = seg_len;
+            segments[seg_idx].order = final_order;
+            segments[seg_idx].is_cont = 0;
+
+            if final_order >= 1 {
+                // Newton encoding (default)
+                let n_res: i32 = pc_forward_diff(&samples[cursor], seg_len, final_order,
+                    headers, tmp_res, f);
+                segments[seg_idx].is_predictive = 0;
+
+                // Cost-gated predictive protocol trial:
+                // Compute mean |centered residual| from Newton residuals.
+                // If > 1 (above noise floor), try predictive and pick cheaper.
+                var sum_abs: i64 = 0;
+                var ri: i32 = 0;
+                while ri < n_res {
+                    let c: i32 = center(tmp_res[ri], f);
+                    if c < 0 { sum_abs = sum_abs + (0 - c) as i64; }
+                    else { sum_abs = sum_abs + c as i64; }
+                    ri = ri + 1;
+                }
+                let mean_abs: i64 = sum_abs / (n_res as i64 + 1);
+
+                if mean_abs > 1 && seg_len >= final_order + 1 {
+                    // Newton residuals above noise floor — try predictive
+                    let pred_headers: *i32 = alloc(MAX_ORDER + 1);
+                    let pred_res: *i32 = alloc(seg_len);
+                    let pred_n: i32 = predictive_diff(&samples[cursor], seg_len,
+                        final_order, pred_headers, pred_res, f);
+                    let pred_bits: i64 = (SEGMENT_OVERHEAD_BYTES + final_order * 4) as i64 * 8
+                    + rice_partitioned_bits(pred_res, pred_n, MAX_PART_ORDER, f);
+
+                    if pred_bits < final_cost {
+                        // Predictive wins — use it
+                        segments[seg_idx].is_predictive = 1;
+                        final_cost = pred_bits;
+                        // Copy predictive headers and residuals
+                        var hk: i32 = 0;
+                        while hk < final_order {
+                            headers[hk] = pred_headers[hk];
+                            hk = hk + 1;
+                        }
+                        var pr: i32 = 0;
+                        while pr < pred_n {
+                            tmp_res[pr] = pred_res[pr];
+                            pr = pr + 1;
+                        }
+                        // Update n_res to predictive count (seg_len, not seg_len-order)
+                        segments[seg_idx].n_headers = final_order;
+                        var hk2: i32 = 0;
+                        while hk2 < final_order {
+                            seg_set_header(&segments[seg_idx], hk2, headers[hk2]);
+                            hk2 = hk2 + 1;
+                        }
+                        segments[seg_idx].res_offset = res_offset;
+                        segments[seg_idx].res_count = pred_n;
+                        var r: i32 = 0;
+                        while r < pred_n {
+                            if res_offset + r < max_residuals {
+                                residuals_buf[res_offset + r] = tmp_res[r];
+                            }
+                            r = r + 1;
+                        }
+                        res_offset = res_offset + pred_n;
+                        segments[seg_idx].encoded_bits = final_cost;
+                        free(pred_res);
+                        free(pred_headers);
+                        // Skip the Newton emit path below
+                        cursor = j + 1;
+                        seg_idx = seg_idx + 1;
+                        pi = 0;
+                        while pi < N_PARTICLES {
+                            p_cost[pi] = 0;
+                            p_steps[pi] = 0;
+                            pi = pi + 1;
+                        }
+                        initial_dist = WEIGHT_SCALE;
+                        floor_dist = WEIGHT_SCALE;
+                        retrace_warm = 0;
+                        j = j + 1;
+                        continue;
+                    }
+                    free(pred_res);
+                    free(pred_headers);
+                }
+
+                // Newton emit path
+                segments[seg_idx].n_headers = final_order;
+                var hk: i32 = 0;
+                while hk < final_order {
+                    seg_set_header(&segments[seg_idx], hk, headers[hk]);
+                    hk = hk + 1;
+                }
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = n_res;
+                var r: i32 = 0;
+                while r < n_res {
+                    if res_offset + r < max_residuals {
+                        residuals_buf[res_offset + r] = tmp_res[r];
+                    }
+                    r = r + 1;
+                }
+                res_offset = res_offset + n_res;
+                segments[seg_idx].encoded_bits = final_cost;
+            } else {
+                // Literal
+                segments[seg_idx].n_headers = 0;
+                segments[seg_idx].res_offset = res_offset;
+                segments[seg_idx].res_count = seg_len;
+                var r: i32 = 0;
+                while r < seg_len {
+                    if res_offset + r < max_residuals {
+                        residuals_buf[res_offset + r] = samples[cursor + r];
+                    }
+                    r = r + 1;
+                }
+                res_offset = res_offset + seg_len;
+                segments[seg_idx].encoded_bits = final_cost;
+            }
+
+            cursor = j + 1;
+            seg_idx = seg_idx + 1;
+
+            // Reset per-segment state (but NOT registers or weights)
+            pi = 0;
+            while pi < N_PARTICLES {
+                p_cost[pi] = 0;
+                p_steps[pi] = 0;
+                pi = pi + 1;
+            }
+            // Reset retracement tracking for next segment
+            initial_dist = WEIGHT_SCALE;
+            floor_dist = WEIGHT_SCALE;
+            retrace_warm = 0;
+        }
+
+        // 8. RESAMPLE: when max weight > 4x mean (one particle dominates)
+        let resample_thresh: i64 = mean_weight * 4;
+        var max_w: i64 = 0;
+        pi = 0;
+        while pi < N_PARTICLES {
+            if p_weight[pi] > max_w { max_w = p_weight[pi]; }
+            pi = pi + 1;
+        }
+        if do_emit == 0 && max_w > resample_thresh && seg_len >= MIN_SEGMENT / 2 {
+            // Systematic resampling: deterministic, reproducible
+            // Copy current state to tmp
+            var ci: i32 = 0;
+            while ci < N_PARTICLES {
+                p_order_tmp[ci] = p_order[ci];
+                p_weight_tmp[ci] = p_weight[ci];
+                var cr: i32 = 0;
+                while cr <= MAX_ORDER {
+                    p_reg_tmp[ci * 7 + cr] = p_reg[ci * 7 + cr];
+                    cr = cr + 1;
+                }
+                ci = ci + 1;
+            }
+
+            // Systematic resampling
+            let step: i64 = weight_sum / N_PARTICLES as i64;
+            if step > 0 {
+                var target: i64 = step / 2;
+                var cumul: i64 = 0;
+                var src: i32 = 0;
+                var dst: i32 = 0;
+                while dst < N_PARTICLES {
+                    while src < N_PARTICLES - 1 && cumul + p_weight_tmp[src] < target {
+                        cumul = cumul + p_weight_tmp[src];
+                        src = src + 1;
+                    }
+                    // Copy particle src -> dst
+                    p_order[dst] = p_order_tmp[src];
+                    p_weight[dst] = WEIGHT_SCALE / 2;  // reset weight after resample
+                    var cr: i32 = 0;
+                    while cr <= MAX_ORDER {
+                        p_reg[dst * 7 + cr] = p_reg_tmp[src * 7 + cr];
+                        cr = cr + 1;
+                    }
+                    target = target + step;
+                    dst = dst + 1;
+                }
+            }
+        }
+
+        j = j + 1;
+    }
+
+    free(tmp_res);
+    free(headers);
+    free(p_weight_tmp);
+    free(p_order_tmp);
+    free(p_reg_tmp);
+    free(p_steps);
+    free(p_cost);
+    free(p_weight);
+    free(p_reg);
+    free(p_order);
+    return seg_idx;
+}
+

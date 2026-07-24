@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// lab_emit.tv — the self-improving lab's tmp-output contract, emitted from
+// Traveler: an append-only JSONL event stream (output.jsonl), an ATOMIC
+// heartbeat.json (write-tmp + rename), and final.json. The proof that the
+// harness itself can be written in Traveler (fmt + json + fs/atomic), not just
+// the compute kernel. tvc_self ONLY. design: @internal-note: plan-self-improving-lab
+//
+// Expected output:
+//   3     3 JSONL events appended to output.jsonl (newline count)
+//   0     heartbeat .tmp consumed by the atomic rename (no torn file left)
+//   1     heartbeat.json present
+//   1     final.json present
+//   700   the ? pipeline completed
+
+import "../src/lib/fs/fs.tv";
+import "../src/lib/json/json.tv";        // pulls fmt/ + collections/ transitively
+
+// One JSONL event line: {"run_id":"…","sequence":N,"kind":"…","message":"…"}\n
+fn event(seq: i64, kind: *u8, msg: *u8) -> Str {
+    var s: Str = str_new();
+    json_obj_open(&s);
+    json_field_str(&s, "run_id", "run-000001"); json_comma(&s);
+    json_field_int(&s, "sequence", seq);        json_comma(&s);
+    json_field_str(&s, "kind", kind);           json_comma(&s);
+    json_field_str(&s, "message", msg);
+    json_obj_close(&s);
+    str_push(&s, 10);                            // '\n' (JSONL framing)
+    return s;
+}
+
+fn count_nl(s: *Str) -> i32 {
+    var n: i32 = 0;
+    var i: i32 = 0;
+    while i < str_len(s) {
+        if str_byte(s, i) == 10 { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn run() -> Result<i64, FsError> {
+    let out: *u8 = "/tmp/traveler_lab_output.jsonl";
+    let hb: *u8 = "/tmp/traveler_lab_heartbeat.json";
+    let hbt: *u8 = "/tmp/traveler_lab_heartbeat.json.tmp";
+    let fin: *u8 = "/tmp/traveler_lab_final.json";
+
+    // A run directory, idempotently (fine if it already exists from a prior run).
+    match fs_mkdir("/tmp/traveler_lab_run") {
+        Result::Ok(v) => {}
+        Result::Err(e) => {}
+    }
+
+    // 1. output.jsonl — started / measurement / completed (truncate, then append).
+    var e0: Str = event(0, "started", "run begins");
+    fs_write_string(out, &e0)?;
+    var e1: Str = event(1, "measurement", "batch 400/2000 games");
+    fs_append_string(out, &e1)?;
+    var e2: Str = event(2, "completed", "done");
+    fs_append_string(out, &e2)?;
+
+    // 2. heartbeat.json — written ATOMICALLY (tmp + rename), the watcher's poll target.
+    var h: Str = str_new();
+    json_obj_open(&h);
+    json_field_int(&h, "sequence", 2); json_comma(&h);
+    json_field_str(&h, "phase", "benchmark");
+    json_obj_close(&h);
+    fs_write_atomic(hb, hbt, &h)?;
+
+    // 3. final.json — the run's normalized result.
+    var f: Str = str_new();
+    json_obj_open(&f);
+    json_field_str(&f, "status", "completed"); json_comma(&f);
+    json_field_str(&f, "outcome", "inconclusive");
+    json_obj_close(&f);
+    fs_write_string(fin, &f)?;
+
+    // Verify the contract mechanics.
+    let back: Str = fs_read_to_string(out)?;
+    print(count_nl(&back));          // 3 — three events framed
+    print(fs_exists(hbt));           // 0 — the tmp was consumed by rename
+    print(fs_exists(hb));            // 1 — heartbeat present
+    print(fs_exists(fin));           // 1 — final present
+
+    str_free(&e0); str_free(&e1); str_free(&e2);
+    str_free(&h); str_free(&f); str_free(&back);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

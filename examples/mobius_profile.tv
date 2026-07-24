@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_profile.tv — linear-complexity profiles of mu/lambda via bm_profile_l
+// (nt/linrec.tv); the Grunberger-Winterhof band is the PROVEN acceptance check.
+// @internal-design: nt
+// Output (all integers): N ; Liouville-F_2 {dmin, dmax, in-GW-band flag=1} ;
+// mu mod {2,3,5,7} max|2L(n)-n| (four values) ; lambda mod 3 {dmin, dmax}.
+
+import "../src/lib/nt/linrec.tv";
+
+fn main() -> i32 {
+    let N: i32 = 10000;
+    let s: *i64 = alloc(N);
+    let out: *i64 = alloc(2);
+
+    print(N);
+
+    // (1) Liouville {0,1}-encoding over F_2: s_n = (1 - lambda(n))/2 in {0,1}
+    //     (+1 -> 0, -1 -> 1). The GW theorem bounds its profile exactly.
+    var i: i32 = 0;
+    while i < N {
+        s[i] = ((1 - liouville(i + 1)) / 2) as i64;
+        i = i + 1;
+    }
+    bm_profile_l(s, N, 2, out);
+    let ldmin: i64 = out[0];
+    let ldmax: i64 = out[1];
+    print(ldmin as i32);                 // expect -1
+    print(ldmax as i32);                 // expect  2
+    var inband: i32 = 0;
+    if ldmin >= (0 - 1) && ldmax <= 2 { inband = 1; }
+    print(inband);                       // 1 : GW theorem reproduced (floor(N/2)<=L<=+1)
+
+    // (2) mu mod p, p in {2,3,5,7}: s_n = mobius(n) reduced into [0,L). Report the
+    //     doubled max absolute deviation max|2L(n)-n| (the paper's max|L-n/2|, x2).
+    let ps: *i64 = alloc(4);
+    ps[0] = 2; ps[1] = 3; ps[2] = 5; ps[3] = 7;
+    var pi: i32 = 0;
+    while pi < 4 {
+        let L: i64 = ps[pi];
+        i = 0;
+        while i < N {
+            s[i] = mod_l(mobius(i + 1) as i64, L);
+            i = i + 1;
+        }
+        bm_profile_l(s, N, L, out);
+        var a0: i64 = out[0];
+        if a0 < 0 { a0 = 0 - a0; }
+        var a1: i64 = out[1];
+        if a1 < 0 { a1 = 0 - a1; }
+        var mx: i64 = a0;
+        if a1 > mx { mx = a1; }
+        print(mx as i32);                // max|2L(n)-n| for mu mod p
+        pi = pi + 1;
+    }
+    free(ps);
+
+    // (3) lambda mod 3: the +-1 sequence reduced mod 3 (+1 -> 1, -1 -> 2). Paper
+    //     band [-4, 4.5] (doubled [-8, 9]); reported here at N = 10^4.
+    i = 0;
+    while i < N {
+        s[i] = mod_l(liouville(i + 1) as i64, 3);
+        i = i + 1;
+    }
+    bm_profile_l(s, N, 3, out);
+    print(out[0] as i32);                // lambda mod 3 dmin (expect >= -8)
+    print(out[1] as i32);                // lambda mod 3 dmax (expect <=  9)
+
+    free(s);
+    free(out);
+    return 0;
+}

@@ -1,0 +1,2 @@
+`?` requires the enclosing function to return Result<_, E>
+qmark_fn_not_result.tv:7

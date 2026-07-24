@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_forward_sum_test.tv — Theorem test: the kernel is provable
+//
+// Newton coefficients [10, 3, 1] → polynomial f(x) = 10 + 3x + x(x-1)/2
+// Evaluated at x = 0,1,2,3: f(0)=10, f(1)=13, f(2)=17, f(3)=22
+// Sum = 10 + 13 + 17 + 22 = 62
+//
+// Expected output: 62 1
+//   62 = native forward_sum_check(10, 3, 1)
+//   1  = ZK proof valid (plonk_prove succeeded)
+//
+// Linking: ntt.o + poseidon2.o + merkle.o + fri.o + plonk.o + zk_forward_sum.o + this.o
+
+type Goldilocks = Field<18446744069414584321>;
+
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+extern "C" fn forward_sum_check(
+    c0: Goldilocks, c1: Goldilocks, c2: Goldilocks) -> Goldilocks;
+
+extern "C" fn forward_sum_check_zk_prove(
+    c0: Goldilocks, c1: Goldilocks, c2: Goldilocks,
+    eval_out: *Goldilocks,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+
+fn main() -> i32 {
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    // Test 1: Native execution
+    let result: Goldilocks = forward_sum_check(10, 3, 1);
+    print(result);  // Expected: 62
+
+    // Test 2: ZK proof
+    let num_queries: i32 = 3;
+    let eval_out: *Goldilocks = alloc(16);
+    let fri_roots: *Goldilocks = alloc(128);
+    let fri_challenges: *Goldilocks = alloc(32);
+    let fri_final_poly: *Goldilocks = alloc(4);
+    let fri_query_values: *Goldilocks = alloc(512);
+    let fri_query_paths: *Goldilocks = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    let ok: i32 = forward_sum_check_zk_prove(10, 3, 1,
+        eval_out,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths,
+        fri_query_indices, fri_n_rounds, num_queries,
+        rc_init, rc_term, rc_int, diag);
+    print(ok);  // Expected: 1
+
+    return 0;
+}

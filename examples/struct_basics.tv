@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// struct_basics.tv — Struct types: declaration, construction, field access, mutation.
+//
+// First step toward self-hosting: the compiler's AST, Token, Type, FieldInfo,
+// Symbol, and FuncInfo are all structs. This example proves they can be
+// represented in the language.
+//
+// Expected output: 10 20 100 120 0
+
+type F = Field<65521>;
+
+struct Point {
+    x: F,
+    y: F,
+}
+
+fn main() {
+    // Construct a struct literal
+    var p: Point = Point { x: 10, y: 20 };
+
+    // Field read
+    print(p.x);   // 10
+    print(p.y);   // 20
+
+    // Field write
+    p.x = 100;
+    print(p.x);   // 100
+
+    // Field arithmetic on struct fields
+    let sum: F = p.x + p.y;
+    print(sum);    // 120
+
+    // Modular arithmetic through struct fields
+    var q: Point = Point { x: 65520, y: 1 };
+    let d: F = q.x + q.y;
+    print(d);      // 0 (65520 + 1 = 65521 mod 65521 = 0)
+}

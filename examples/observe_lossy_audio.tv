@@ -1,0 +1,225 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// observe_lossy_audio.tv — lossy corpus RD tool (Stage A): encode a WAV via
+// the v3 lossy layer under a depth policy, verify certificate, report bytes.
+// @internal-design: observability (lossy RD tool)
+//
+// Usage: observe_lossy_audio <file.wav> <mode> <param>
+//   mode 0 = uniform   : every block s = param
+//   mode 1 = adaptive  : s_b = max(0, bitlen(peak_b) - param)   (constant-SNR)
+//   mode 2 = adaptive+slew : mode 1 then |s_{b+1}-s_b| clamped to 1 (smoothing)
+// Link: observe_lossy_audio.o + wire.o (wire.tv imports learn.tv).
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn read(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn exit(code: i32);
+
+// local int parse (avoid an atoi extern — the compiler already declares it)
+fn parse_int(s: *u8) -> i32 {
+    var i: i32 = 0;
+    var neg: i32 = 0;
+    if s[0] == 45 { neg = 1; i = 1; }
+    var v: i32 = 0;
+    while s[i] >= 48 && s[i] <= 57 { v = v * 10 + (s[i] as i32 - 48); i = i + 1; }
+    if neg == 1 { return 0 - v; }
+    return v;
+}
+
+extern "C" fn codec_stereo_adaptive_bits(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, out: *i64) -> i64;
+extern "C" fn wire_encode_stereo(lf: *i32, rf: *i32, mf: *i32, sf: *i32, n: i32, p_ch: i32, p_side: i32, max_fixed_order: i32, fixed_hdr_bits: i32, max_lpc_order: i32, coef_bits: i32, bw: *i32, buf: *u8, out: *i64) -> i64;
+extern "C" fn wire_decode_stereo(buf: *u8, lf: *i32, rf: *i32, mf: *i32, sf: *i32, p_ch: i32, p_side: i32, max_fixed_order: i32, bw_out: *i32) -> i64;
+extern "C" fn wio_quant(x: i32, s: i32) -> i32;
+extern "C" fn wio_dequant(q: i32, s: i32) -> i32;
+
+fn wr(fd: i32, s: *u8) { let n: usize = strlen(s); write(fd, s, n); }
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 { write(fd, "-", 1); wr_int(fd, 0 - n); return; }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+fn read_bytes_all(fd: i32, buf: *u8, cap: i64) -> i64 {
+    var total: i64 = 0;
+    while total < cap {
+        let got: i64 = read(fd, (buf as i64 + total) as *u8, (cap - total) as usize);
+        if got <= 0 { return total; }
+        total = total + got;
+    }
+    return total;
+}
+fn read_le_u16(buf: *u8, pos: i32) -> i32 { return buf[pos] as i32 + (buf[pos + 1] as i32) * 256; }
+fn read_le_u32(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+    + (buf[pos + 2] as i32) * 65536 + (buf[pos + 3] as i32) * 16777216;
+}
+fn read_s16(buf: *u8, off: i32) -> i32 {
+    var val: i32 = buf[off] as i32 + (buf[off + 1] as i32) * 256;
+    if val >= 32768 { val = val - 65536; }
+    return val;
+}
+fn find_data_chunk(buf: *u8, file_size: i32, data_size_out: *i32) -> i32 {
+    var pos: i32 = 12;
+    while pos < file_size - 8 {
+        let c0: i32 = buf[pos] as i32; let c1: i32 = buf[pos + 1] as i32;
+        let c2: i32 = buf[pos + 2] as i32; let c3: i32 = buf[pos + 3] as i32;
+        let sz: i32 = read_le_u32(buf, pos + 4);
+        if c0 == 100 && c1 == 97 && c2 == 116 && c3 == 97 { data_size_out[0] = sz; return pos + 8; }
+        pos = pos + 8 + sz + (sz % 2);
+    }
+    return 0;
+}
+
+// bit length of a non-negative i32 (0 -> 0, 1 -> 1, 255 -> 8, ...)
+fn bitlen(x: i32) -> i32 {
+    var v: i32 = x;
+    var n: i32 = 0;
+    while v > 0 { v = v >> 1; n = n + 1; }
+    return n;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc < 4 { wr(2, "usage: observe_lossy_audio <file.wav> <mode> <param>\n"); exit(1); }
+    let path: *u8 = argv[1];
+    let mode: i32 = parse_int(argv[2]);
+    let param: i32 = parse_int(argv[3]);
+
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 { wr(2, "error: cannot open\n"); exit(1); }
+    let fbuf: *u8 = alloc(134217728);
+    let file_size: i64 = read_bytes_all(fd, fbuf, 134217728);
+    close(fd);
+
+    let num_channels: i32 = read_le_u16(fbuf, 22);
+    let bits16: i32 = read_le_u16(fbuf, 34);
+    if bits16 != 16 { wr(2, "error: 16-bit only\n"); exit(1); }
+    var data_size_arr: [i32; 1] = 0;
+    let data_offset: i32 = find_data_chunk(fbuf, file_size as i32, &data_size_arr[0]);
+    if data_offset == 0 { wr(2, "error: no data chunk\n"); exit(1); }
+    let n: i32 = data_size_arr[0] / (2 * num_channels);
+
+    // raw signed L/R
+    let l: *i32 = alloc(n);
+    let r: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        let base: i32 = data_offset + (i * num_channels) * 2;
+        let lv: i32 = read_s16(fbuf, base);
+        var rv: i32 = lv;
+        if num_channels > 1 { rv = read_s16(fbuf, base + 2); }
+        l[i] = lv; r[i] = rv;
+        i = i + 1;
+    }
+    free(fbuf);
+
+    let nblocks: i32 = (n + 4095) / 4096;
+    let bw: *i32 = alloc(nblocks);
+
+    // ---- choose per-block depth by policy ----
+    var b: i32 = 0;
+    while b < nblocks {
+        let w0: i32 = b * 4096;
+        var w1: i32 = w0 + 4096;
+        if w1 > n { w1 = n; }
+        var s: i32 = param;                 // mode 0: uniform
+        if mode >= 1 {
+            var peak: i32 = 0;
+            var j: i32 = w0;
+            while j < w1 {
+                var al: i32 = l[j]; if al < 0 { al = 0 - al; }
+                var ar: i32 = r[j]; if ar < 0 { ar = 0 - ar; }
+                if al > peak { peak = al; }
+                if ar > peak { peak = ar; }
+                j = j + 1;
+            }
+            s = bitlen(peak) - param;           // keep `param` significant bits
+            if s < 0 { s = 0; }
+        }
+        bw[b] = s;
+        b = b + 1;
+    }
+    if mode == 2 {                              // slew-limit |Δs| <= 1 (smoothing)
+        b = 1;
+        while b < nblocks {
+            if bw[b] > bw[b - 1] + 1 { bw[b] = bw[b - 1] + 1; }
+            b = b + 1;
+        }
+    }
+
+    // worst-case absolute bound = 2^(max s); count magnitude-reduced blocks
+    var smax: i32 = 0;
+    b = 0;
+    while b < nblocks { if bw[b] > smax { smax = bw[b]; } b = b + 1; }
+
+    // ---- quantize per block, build Q-streams ----
+    let lf: *i32 = alloc(n);
+    let rf: *i32 = alloc(n);
+    let mf: *i32 = alloc(n);
+    let sf: *i32 = alloc(n);
+    i = 0;
+    while i < n {
+        let s: i32 = bw[i / 4096];
+        let ql: i32 = wio_quant(l[i], s);
+        let qr: i32 = wio_quant(r[i], s);
+        lf[i] = ql + 32768; rf[i] = qr + 32768;
+        mf[i] = ((ql + qr) >> 1) + 32768;
+        sf[i] = (ql - qr) + 65535;
+        i = i + 1;
+    }
+
+    let sout: *i64 = alloc(4);
+    let cost: i64 = codec_stereo_adaptive_bits(lf, rf, mf, sf, n, 65537, 131071, 4, 8, 8, 17, sout);
+    let wbuf: *u8 = alloc(n * 6 + 4096);
+    let eout: *i64 = alloc(5);
+    let bits: i64 = wire_encode_stereo(lf, rf, mf, sf, n, 65537, 131071, 4, 8, 8, 17, bw, wbuf, eout);
+    let parity: i64 = bits - 32 - 5 * (nblocks as i64) - cost;
+
+    let dl: *i32 = alloc(n); let dr: *i32 = alloc(n);
+    let dm: *i32 = alloc(n); let ds: *i32 = alloc(n);
+    let bwd: *i32 = alloc(nblocks);
+    wire_decode_stereo(wbuf, dl, dr, dm, ds, 65537, 131071, 4, bwd);
+
+    var mism: i64 = 0;
+    var maxerr: i32 = 0;
+    var bound_ok: i32 = 1;
+    i = 0;
+    while i < n {
+        if dl[i] != lf[i] { mism = mism + 1; }
+        if dr[i] != rf[i] { mism = mism + 1; }
+        if dm[i] != mf[i] { mism = mism + 1; }
+        if ds[i] != sf[i] { mism = mism + 1; }
+        let s: i32 = bwd[i / 4096];
+        let xl: i32 = wio_dequant(dl[i] - 32768, s);
+        let xr: i32 = wio_dequant(dr[i] - 32768, s);
+        var el: i32 = l[i] - xl; if el < 0 { el = 0 - el; }
+        var er: i32 = r[i] - xr; if er < 0 { er = 0 - er; }
+        if el > maxerr { maxerr = el; }
+        if er > maxerr { maxerr = er; }
+        let bnd: i32 = 1 << s;
+        if el > bnd { bound_ok = 0; }
+        if er > bnd { bound_ok = 0; }
+        i = i + 1;
+    }
+
+    wr(2, "FILE "); wr(2, path); wr(2, "  frames="); wr_int(2, n as i64);
+    wr(2, "  mode="); wr_int(2, mode as i64); wr(2, "  param="); wr_int(2, param as i64); wr(2, "\n");
+    wr(2, "  wire_bytes="); wr_int(2, (bits + 7) / 8);
+    wr(2, "  worst_abs_bound=2^"); wr_int(2, smax as i64);
+    wr(2, "  maxerr="); wr_int(2, maxerr as i64);
+    wr(2, "  parity="); wr_int(2, parity);
+    wr(2, "  mism="); wr_int(2, mism);
+    wr(2, "  bound_ok="); wr_int(2, bound_ok as i64); wr(2, "\n");
+    if parity != 0 || mism != 0 || bound_ok != 1 { wr(2, "  CERT FAIL\n"); exit(1); }
+    wr(2, "  CERT OK\n");
+
+    // machine-readable line for the RD tabulator: mode param bytes smax maxerr
+    print(mode as i64);
+    print(param as i64);
+    print((bits + 7) / 8);
+    print(smax as i64);
+    print(maxerr as i64);
+    return 0;
+}

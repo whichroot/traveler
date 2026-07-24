@@ -1,0 +1,699 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_fri_test.tv — WFRI gate: full FRI (coset NTT LDE, Poseidon2 t=3, Merkle,
+// transcript, fold, query/verify) over BN254 Fr on the field_wide_* ABI, with
+// a generic runtime wide root chain. Zero compiler change.
+// @internal-design: crypto
+//
+// Cross-checked by @internal-oracle: wide_fri (BN254 Fr, t=3 sponge,
+// single-element digests, same generic root method). Tests:
+//   1. commit to f(x) = 1 + 2x + 3x^2 + 4x^3, prove + verify -> 1
+//   2. tamper with the final folded value -> verify fails    -> 0
+//
+// Expected output: 1 0
+//
+// Link: wide_fri_test.o only (field_wide_* emitted into every module).
+
+extern "C" fn field_wide_add(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_sub(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_mul(dst: *i64, a: *i64, b: *i64, f: *i64);
+extern "C" fn field_wide_pow(dst: *i64, base: *i64, exp: *i64, f: *i64);
+extern "C" fn field_wide_inv(dst: *i64, a: *i64, f: *i64);
+
+// ============================================================
+//  4-limb element helpers
+// ============================================================
+
+fn cp4(dst: *i64, src: *i64) {
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+}
+fn eq4(x: *i64, y: *i64) -> i32 {
+    if x[0] != y[0] { return 0; }
+    if x[1] != y[1] { return 0; }
+    if x[2] != y[2] { return 0; }
+    if x[3] != y[3] { return 0; }
+    return 1;
+}
+fn set_small(buf: *i64, v: i64) {
+    buf[0] = v; buf[1] = 0; buf[2] = 0; buf[3] = 0;
+}
+// element i of a flat n*4 limb buffer
+fn elem(a: *i64, i: i32) -> *i64 {
+    return &a[i * 4];
+}
+
+// logical right shift of a 4-limb little-endian buffer by `bits` (1..63), in place
+fn shr_limbs(b: *i64, bits: i32) {
+    let sh: u64 = bits as u64;
+    let inv: u64 = (64 - bits) as u64;
+    let l0: u64 = b[0] as u64;
+    let l1: u64 = b[1] as u64;
+    let l2: u64 = b[2] as u64;
+    let l3: u64 = b[3] as u64;
+    b[0] = ((l0 >> sh) | (l1 << inv)) as i64;
+    b[1] = ((l1 >> sh) | (l2 << inv)) as i64;
+    b[2] = ((l2 >> sh) | (l3 << inv)) as i64;
+    b[3] = (l3 >> sh) as i64;
+}
+
+// ============================================================
+//  GENERIC WIDE ROOT-CHAIN (runtime, reads p from the carrier)
+// ============================================================
+
+// Fill omega_out with a primitive 2^ln-th root of unity, derived generically:
+//   p-1 = field_wide_sub(0, 1)              (= -1, the integer p-1 since p-1 < p)
+//   e   = (p-1) >> ln                       (= (p-1)/2^ln, exact: 2-adicity >> ln)
+//   for c = 2,3,...: omega = c^e; accept if omega^(2^(ln-1)) == p-1.
+fn wide_root(omega_out: *i64, ln: i32, f: *i64) {
+    let zero: *i64 = alloc(4); set_small(zero, 0);
+    let one: *i64 = alloc(4); set_small(one, 1);
+    let pm1: *i64 = alloc(4);
+    field_wide_sub(pm1, zero, one, f);          // p-1 == -1
+
+    let e: *i64 = alloc(4);
+    cp4(e, pm1);
+    shr_limbs(e, ln);                            // e = (p-1) / 2^ln
+
+    let nhalf: *i64 = alloc(4);
+    let half_order: i64 = 1;
+    set_small(nhalf, half_order << (ln - 1));    // 2^(ln-1)
+
+    let c: *i64 = alloc(4);
+    let chk: *i64 = alloc(4);
+    var cv: i64 = 2;
+    var found: i32 = 0;
+    while found == 0 {
+        set_small(c, cv);
+        field_wide_pow(omega_out, c, e, f);      // candidate = c^e
+        field_wide_pow(chk, omega_out, nhalf, f);// candidate^(2^(ln-1))
+        if eq4(chk, pm1) == 1 { found = 1; }
+        cv = cv + 1;
+    }
+
+    free(zero); free(one); free(pm1); free(e);
+    free(nhalf); free(c); free(chk);
+}
+
+// ============================================================
+//  WIDE POSEIDON2 t=3 (permutation + 2-to-1 compress)
+// ============================================================
+
+fn ext_linear(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+fn int_linear(s0: *i64, s1: *i64, s2: *i64, d0: *i64, d1: *i64, d2: *i64, f: *i64) {
+    let sum: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    field_wide_add(t, s0, s1, f);
+    field_wide_add(sum, t, s2, f);
+    field_wide_mul(s0, s0, d0, f);
+    field_wide_add(s0, s0, sum, f);
+    field_wide_mul(s1, s1, d1, f);
+    field_wide_add(s1, s1, sum, f);
+    field_wide_mul(s2, s2, d2, f);
+    field_wide_add(s2, s2, sum, f);
+    free(sum); free(t);
+}
+
+fn cube_seed(dst: *i64, seed: i64, e3: *i64, f: *i64) {
+    let sb: *i64 = alloc(4);
+    set_small(sb, seed);
+    field_wide_pow(dst, sb, e3, f);
+    free(sb);
+}
+
+// BN254 Poseidon2 (t=3, alpha=5, R_F=8, R_P=56) on lanes s0,s1,s2 in place.
+// Identical config to wide_poseidon2_test / wide_merkle_test.
+fn wp2_permute(s0: *i64, s1: *i64, s2: *i64, f: *i64) {
+    let e3: *i64 = alloc(4); set_small(e3, 3);
+    let e5: *i64 = alloc(4); set_small(e5, 5);
+    let d0: *i64 = alloc(4); set_small(d0, 2);
+    let d1: *i64 = alloc(4); set_small(d1, 3);
+    let d2: *i64 = alloc(4); set_small(d2, 4);
+    let tmp: *i64 = alloc(4);
+    let rc: *i64 = alloc(4);
+
+    ext_linear(s0, s1, s2, f);
+    var r: i32 = 0;
+    while r < 4 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        field_wide_pow(tmp, s1, e5, f); cp4(s1, tmp);
+        field_wide_pow(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+    var pr: i32 = 0;
+    while pr < 56 {
+        cube_seed(rc, (1000 + pr) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        int_linear(s0, s1, s2, d0, d1, d2, f);
+        pr = pr + 1;
+    }
+    r = 4;
+    while r < 8 {
+        cube_seed(rc, (r * 3 + 1) as i64, e3, f); field_wide_add(s0, s0, rc, f);
+        cube_seed(rc, (r * 3 + 2) as i64, e3, f); field_wide_add(s1, s1, rc, f);
+        cube_seed(rc, (r * 3 + 3) as i64, e3, f); field_wide_add(s2, s2, rc, f);
+        field_wide_pow(tmp, s0, e5, f); cp4(s0, tmp);
+        field_wide_pow(tmp, s1, e5, f); cp4(s1, tmp);
+        field_wide_pow(tmp, s2, e5, f); cp4(s2, tmp);
+        ext_linear(s0, s1, s2, f);
+        r = r + 1;
+    }
+    free(e3); free(e5); free(d0); free(d1); free(d2); free(tmp); free(rc);
+}
+
+// 2-to-1 compression: out = permute([left, right, 0])[0]. Single-element digest.
+fn wp2_compress(out: *i64, left: *i64, right: *i64, f: *i64) {
+    let s0: *i64 = alloc(4);
+    let s1: *i64 = alloc(4);
+    let s2: *i64 = alloc(4);
+    cp4(s0, left); cp4(s1, right); set_small(s2, 0);
+    wp2_permute(s0, s1, s2, f);
+    cp4(out, s0);
+    free(s0); free(s1); free(s2);
+}
+
+// ============================================================
+//  WIDE NTT (coset forward, supplied root)
+// ============================================================
+
+fn bit_reverse(a: *i64, n: i32) {
+    let tmp: *i64 = alloc(4);
+    var i: i32 = 1;
+    var j: i32 = 0;
+    while i < n {
+        var bit: i32 = n / 2;
+        while (j & bit) != 0 {
+            j = j ^ bit;
+            bit = bit / 2;
+        }
+        j = j | bit;
+        if i < j {
+            cp4(tmp, elem(a, i));
+            cp4(elem(a, i), elem(a, j));
+            cp4(elem(a, j), tmp);
+        }
+        i = i + 1;
+    }
+    free(tmp);
+}
+
+fn wide_ntt(a: *i64, n: i32, omega: *i64, f: *i64) {
+    bit_reverse(a, n);
+    let wlen: *i64 = alloc(4);
+    let wj: *i64 = alloc(4);
+    let texp: *i64 = alloc(4);
+    let u: *i64 = alloc(4);
+    let v: *i64 = alloc(4);
+    var length: i32 = 2;
+    while length <= n {
+        set_small(texp, (n / length) as i64);
+        field_wide_pow(wlen, omega, texp, f);
+        var i: i32 = 0;
+        while i < n {
+            set_small(wj, 1);
+            var j: i32 = 0;
+            let half: i32 = length / 2;
+            while j < half {
+                cp4(u, elem(a, i + j));
+                field_wide_mul(v, elem(a, i + j + half), wj, f);
+                field_wide_add(elem(a, i + j), u, v, f);
+                field_wide_sub(elem(a, i + j + half), u, v, f);
+                field_wide_mul(wj, wj, wlen, f);
+                j = j + 1;
+            }
+            i = i + length;
+        }
+        length = length * 2;
+    }
+    free(wlen); free(wj); free(texp); free(u); free(v);
+}
+
+// coset LDE: a[i] *= shift^i, then NTT.
+fn wide_coset_ntt(a: *i64, n: i32, omega: *i64, shift: *i64, f: *i64) {
+    let sp: *i64 = alloc(4); set_small(sp, 1);
+    let tmp: *i64 = alloc(4);
+    var i: i32 = 0;
+    while i < n {
+        field_wide_mul(elem(a, i), elem(a, i), sp, f);
+        field_wide_mul(tmp, sp, shift, f); cp4(sp, tmp);
+        i = i + 1;
+    }
+    free(sp); free(tmp);
+    wide_ntt(a, n, omega, f);
+}
+
+// ============================================================
+//  WIDE MERKLE (single-element nodes)
+// ============================================================
+
+fn merkle_build(leaves: *i64, n_leaves: i32, tree: *i64, f: *i64) {
+    var i: i32 = 0;
+    while i < n_leaves {
+        cp4(elem(tree, n_leaves + i), elem(leaves, i));
+        i = i + 1;
+    }
+    var k: i32 = n_leaves - 1;
+    while k >= 1 {
+        wp2_compress(elem(tree, k), elem(tree, 2 * k), elem(tree, 2 * k + 1), f);
+        k = k - 1;
+    }
+}
+
+fn merkle_open(tree: *i64, n_leaves: i32, idx: i32, path: *i64) -> i32 {
+    var pos: i32 = n_leaves + idx;
+    var depth: i32 = 0;
+    while pos > 1 {
+        cp4(elem(path, depth), elem(tree, pos ^ 1));
+        pos = pos / 2;
+        depth = depth + 1;
+    }
+    return depth;
+}
+
+fn merkle_verify(root: *i64, leaf: *i64, idx: i32, n_leaves: i32,
+    path: *i64, path_len: i32, f: *i64) -> i32 {
+    let cur: *i64 = alloc(4);
+    let tmp: *i64 = alloc(4);
+    cp4(cur, leaf);
+    var pos: i32 = n_leaves + idx;
+    var d: i32 = 0;
+    while d < path_len {
+        let sib: *i64 = elem(path, d);
+        if (pos & 1) == 0 {
+            wp2_compress(tmp, cur, sib, f);
+        } else {
+            wp2_compress(tmp, sib, cur, f);
+        }
+        cp4(cur, tmp);
+        pos = pos / 2;
+        d = d + 1;
+    }
+    let ok: i32 = eq4(cur, root);
+    free(cur); free(tmp);
+    return ok;
+}
+
+// ============================================================
+//  FIAT-SHAMIR TRANSCRIPT (t=3 sponge, rate 2, capacity 1)
+// ============================================================
+
+fn transcript_init(state: *i64) {
+    set_small(elem(state, 0), 0);
+    set_small(elem(state, 1), 0);
+    set_small(elem(state, 2), 0);
+}
+
+fn transcript_absorb(state: *i64, pos: *i32, x: *i64, f: *i64) {
+    let lane: i32 = pos[0];
+    field_wide_add(elem(state, lane), elem(state, lane), x, f);
+    pos[0] = lane + 1;
+    if pos[0] == 2 {
+        wp2_permute(elem(state, 0), elem(state, 1), elem(state, 2), f);
+        pos[0] = 0;
+    }
+}
+
+// squeeze one element: permute, reset, read lane 0.
+fn transcript_squeeze(state: *i64, pos: *i32, out: *i64, f: *i64) {
+    wp2_permute(elem(state, 0), elem(state, 1), elem(state, 2), f);
+    pos[0] = 0;
+    cp4(out, elem(state, 0));
+}
+
+// ============================================================
+//  FRI FOLD
+// ============================================================
+
+fn fri_fold_layer(evals: *i64, log_n: i32, beta: *i64,
+    shift: *i64, omega: *i64, folded: *i64, f: *i64) {
+    let n: i32 = 1 << log_n;
+    let half: i32 = n / 2;
+
+    let two: *i64 = alloc(4); set_small(two, 2);
+    let inv2: *i64 = alloc(4); field_wide_inv(inv2, two, f);
+
+    let half_root: *i64 = alloc(4); field_wide_mul(half_root, omega, omega, f);
+    let inv_omega: *i64 = alloc(4); field_wide_inv(inv_omega, half_root, f);
+    let inv_shift: *i64 = alloc(4); field_wide_inv(inv_shift, shift, f);
+
+    let inv_tw: *i64 = alloc(half * 4);
+    cp4(elem(inv_tw, 0), inv_shift);
+    var i: i32 = 1;
+    while i < half {
+        field_wide_mul(elem(inv_tw, i), elem(inv_tw, i - 1), inv_omega, f);
+        i = i + 1;
+    }
+
+    let sum: *i64 = alloc(4);
+    let diff: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    i = 0;
+    while i < half {
+        field_wide_add(sum, elem(evals, i), elem(evals, i + half), f);
+        field_wide_sub(diff, elem(evals, i), elem(evals, i + half), f);
+        field_wide_mul(t, beta, diff, f);
+        field_wide_mul(t, t, elem(inv_tw, i), f);
+        field_wide_add(t, sum, t, f);
+        field_wide_mul(elem(folded, i), t, inv2, f);
+        i = i + 1;
+    }
+
+    free(two); free(inv2); free(half_root); free(inv_omega); free(inv_shift);
+    free(inv_tw); free(sum); free(diff); free(t);
+}
+
+// ============================================================
+//  FRI PROVE
+// ============================================================
+
+fn log2_of(x: i32) -> i32 {
+    var l: i32 = 0;
+    var t: i32 = x;
+    while t > 0 {
+        l = l + 1;
+        t = t >> 1;
+    }
+    return l;
+}
+
+fn fri_prove(coeffs: *i64, degree: i32, log_blowup: i32, shift: *i64,
+    omega_n: *i64, num_queries: i32,
+    roots: *i64, challenges: *i64, final_poly: *i64,
+    query_values: *i64, query_paths: *i64, query_indices: *i32,
+    f: *i64) -> i32 {
+    let log_n: i32 = log2_of(degree) + log_blowup;
+    let n: i32 = 1 << log_n;
+    let max_total: i32 = 2 * n;
+    let max_depth: i32 = log_n;
+
+    let all_evals: *i64 = alloc(max_total * 4);
+    var i: i32 = 0;
+    while i < (degree + 1) { cp4(elem(all_evals, i), elem(coeffs, i)); i = i + 1; }
+    while i < n { set_small(elem(all_evals, i), 0); i = i + 1; }
+    wide_coset_ntt(all_evals, n, omega_n, shift, f);
+
+    let ts: *i64 = alloc(12);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let digests: *i64 = alloc((n / 2) * 4);
+    let tree: *i64 = alloc(n * 4);
+    let challenge: *i64 = alloc(4);
+
+    var cur_off: i32 = 0;
+    var cur_log: i32 = log_n;
+    var n_rounds: i32 = 0;
+    let cur_shift: *i64 = alloc(4); cp4(cur_shift, shift);
+    let cur_omega: *i64 = alloc(4); cp4(cur_omega, omega_n);
+    let sq: *i64 = alloc(4);
+
+    while (1 << cur_log) > 1 {
+        let cur_n: i32 = 1 << cur_log;
+        let n_leaves: i32 = cur_n / 2;
+        let half: i32 = cur_n / 2;
+        let cur_evals: *i64 = elem(all_evals, cur_off);
+
+        var h: i32 = 0;
+        while h < half {
+            wp2_compress(elem(digests, h), elem(cur_evals, h), elem(cur_evals, h + half), f);
+            h = h + 1;
+        }
+        merkle_build(digests, n_leaves, tree, f);
+        cp4(elem(roots, n_rounds), elem(tree, 1));
+
+        transcript_absorb(ts, ts_pos, elem(tree, 1), f);
+        transcript_squeeze(ts, ts_pos, challenge, f);
+        cp4(elem(challenges, n_rounds), challenge);
+
+        if (1 << (cur_log - 1)) > 1 {
+            let next_off: i32 = cur_off + cur_n;
+            fri_fold_layer(cur_evals, cur_log, challenge, cur_shift, cur_omega,
+                elem(all_evals, next_off), f);
+            cur_off = next_off;
+        } else {
+            fri_fold_layer(cur_evals, cur_log, challenge, cur_shift, cur_omega,
+                final_poly, f);
+        }
+
+        field_wide_mul(sq, cur_shift, cur_shift, f); cp4(cur_shift, sq);
+        field_wide_mul(sq, cur_omega, cur_omega, f); cp4(cur_omega, sq);
+        cur_log = cur_log - 1;
+        n_rounds = n_rounds + 1;
+    }
+
+    // query indices from the transcript
+    let mask: i32 = (1 << log_n) - 1;
+    let qe: *i64 = alloc(4);
+    var q: i32 = 0;
+    while q < num_queries {
+        transcript_squeeze(ts, ts_pos, qe, f);
+        query_indices[q] = (qe[0] as i32) & mask;
+        q = q + 1;
+    }
+
+    // openings: regenerate each layer's tree, record values + paths
+    var rnd_off: i32 = 0;
+    var rnd_log: i32 = log_n;
+    var r: i32 = 0;
+    while r < n_rounds {
+        let rnd_n: i32 = 1 << rnd_log;
+        let rnd_leaves: i32 = rnd_n / 2;
+        let rnd_half: i32 = rnd_n / 2;
+        let rnd_evals: *i64 = elem(all_evals, rnd_off);
+
+        var h2: i32 = 0;
+        while h2 < rnd_half {
+            wp2_compress(elem(digests, h2), elem(rnd_evals, h2), elem(rnd_evals, h2 + rnd_half), f);
+            h2 = h2 + 1;
+        }
+        merkle_build(digests, rnd_leaves, tree, f);
+
+        q = 0;
+        while q < num_queries {
+            let qi: i32 = query_indices[q];
+            let pair_idx: i32 = qi & (rnd_half - 1);
+            let v_off: i32 = (q * n_rounds + r) * 2;
+            cp4(elem(query_values, v_off), elem(rnd_evals, pair_idx));
+            cp4(elem(query_values, v_off + 1), elem(rnd_evals, pair_idx + rnd_half));
+            let path_off: i32 = (q * n_rounds + r) * max_depth;
+            merkle_open(tree, rnd_leaves, pair_idx, elem(query_paths, path_off));
+            q = q + 1;
+        }
+
+        rnd_off = rnd_off + rnd_n;
+        rnd_log = rnd_log - 1;
+        r = r + 1;
+    }
+
+    free(all_evals); free(ts); free(ts_pos); free(digests); free(tree);
+    free(challenge); free(cur_shift); free(cur_omega); free(sq); free(qe);
+    return n_rounds;
+}
+
+// ============================================================
+//  FRI VERIFY
+// ============================================================
+
+fn fri_verify(degree: i32, log_blowup: i32, shift: *i64, omega_n: *i64,
+    num_queries: i32, n_rounds: i32,
+    roots: *i64, challenges: *i64, final_poly: *i64,
+    query_values: *i64, query_paths: *i64, query_indices: *i32,
+    f: *i64) -> i32 {
+    let log_n: i32 = log2_of(degree) + log_blowup;
+    let max_depth: i32 = log_n;
+
+    let ts: *i64 = alloc(12);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let cc: *i64 = alloc(4);
+    var r: i32 = 0;
+    while r < n_rounds {
+        transcript_absorb(ts, ts_pos, elem(roots, r), f);
+        transcript_squeeze(ts, ts_pos, cc, f);
+        if eq4(cc, elem(challenges, r)) == 0 {
+            free(ts); free(ts_pos); free(cc);
+            return 0;
+        }
+        r = r + 1;
+    }
+
+    let mask: i32 = (1 << log_n) - 1;
+    var q: i32 = 0;
+    while q < num_queries {
+        transcript_squeeze(ts, ts_pos, cc, f);
+        let expected_idx: i32 = (cc[0] as i32) & mask;
+        if expected_idx != query_indices[q] {
+            free(ts); free(ts_pos); free(cc);
+            return 0;
+        }
+        q = q + 1;
+    }
+    free(ts); free(ts_pos); free(cc);
+
+    let two: *i64 = alloc(4); set_small(two, 2);
+    let inv2: *i64 = alloc(4); field_wide_inv(inv2, two, f);
+    let leaf_digest: *i64 = alloc(4);
+    let cur_shift: *i64 = alloc(4);
+    let cur_omega: *i64 = alloc(4);
+    let half_root: *i64 = alloc(4);
+    let pe: *i64 = alloc(4);
+    let hp: *i64 = alloc(4);
+    let tw: *i64 = alloc(4);
+    let inv_tw: *i64 = alloc(4);
+    let sum: *i64 = alloc(4);
+    let diff: *i64 = alloc(4);
+    let t: *i64 = alloc(4);
+    let expected: *i64 = alloc(4);
+    let sq: *i64 = alloc(4);
+
+    var verdict: i32 = 1;
+    q = 0;
+    while q < num_queries {
+        if verdict == 1 {
+            let qi: i32 = query_indices[q];
+            cp4(cur_shift, shift);
+            cp4(cur_omega, omega_n);
+            var cur_log: i32 = log_n;
+
+            r = 0;
+            while r < n_rounds {
+                if verdict == 1 {
+                    let cur_half: i32 = (1 << cur_log) / 2;
+                    let pair_idx: i32 = qi & (cur_half - 1);
+                    let v_off: i32 = (q * n_rounds + r) * 2;
+                    let v_left: *i64 = elem(query_values, v_off);
+                    let v_right: *i64 = elem(query_values, v_off + 1);
+
+                    wp2_compress(leaf_digest, v_left, v_right, f);
+
+                    let rnd_n: i32 = 1 << cur_log;
+                    let rnd_leaves: i32 = rnd_n / 2;
+                    let path_off: i32 = (q * n_rounds + r) * max_depth;
+
+                    var path_len: i32 = 0;
+                    var pl_tmp: i32 = rnd_leaves;
+                    while pl_tmp > 1 {
+                        path_len = path_len + 1;
+                        pl_tmp = pl_tmp / 2;
+                    }
+
+                    let mk_ok: i32 = merkle_verify(elem(roots, r), leaf_digest, pair_idx,
+                        rnd_leaves, elem(query_paths, path_off),
+                        path_len, f);
+                    if mk_ok != 1 {
+                        verdict = 0;
+                    } else {
+                        // twiddle: half_root = cur_omega^2; tw = cur_shift * half_root^pair_idx
+                        field_wide_mul(half_root, cur_omega, cur_omega, f);
+                        set_small(pe, pair_idx as i64);
+                        field_wide_pow(hp, half_root, pe, f);
+                        field_wide_mul(tw, cur_shift, hp, f);
+                        field_wide_inv(inv_tw, tw, f);
+
+                        field_wide_add(sum, v_left, v_right, f);
+                        field_wide_sub(diff, v_left, v_right, f);
+                        field_wide_mul(t, elem(challenges, r), diff, f);
+                        field_wide_mul(t, t, inv_tw, f);
+                        field_wide_add(t, sum, t, f);
+                        field_wide_mul(expected, t, inv2, f);
+
+                        if r < n_rounds - 1 {
+                            let next_half: i32 = cur_half / 2;
+                            let next_v_off: i32 = (q * n_rounds + (r + 1)) * 2;
+                            if pair_idx < next_half {
+                                if eq4(expected, elem(query_values, next_v_off)) == 0 { verdict = 0; }
+                            } else {
+                                if eq4(expected, elem(query_values, next_v_off + 1)) == 0 { verdict = 0; }
+                            }
+                        } else {
+                            if eq4(expected, final_poly) == 0 { verdict = 0; }
+                        }
+
+                        field_wide_mul(sq, cur_shift, cur_shift, f); cp4(cur_shift, sq);
+                        field_wide_mul(sq, cur_omega, cur_omega, f); cp4(cur_omega, sq);
+                        cur_log = cur_log - 1;
+                    }
+                }
+                r = r + 1;
+            }
+        }
+        q = q + 1;
+    }
+
+    free(two); free(inv2); free(leaf_digest); free(cur_shift); free(cur_omega);
+    free(half_root); free(pe); free(hp); free(tw); free(inv_tw);
+    free(sum); free(diff); free(t); free(expected); free(sq);
+    return verdict;
+}
+
+// ============================================================
+//  MAIN
+// ============================================================
+
+fn main() -> i32 {
+    let f: *i64 = field_wide("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+    // f(x) = 1 + 2x + 3x^2 + 4x^3
+    let degree: i32 = 3;
+    let coeffs: *i64 = alloc(4 * 4);
+    set_small(elem(coeffs, 0), 1);
+    set_small(elem(coeffs, 1), 2);
+    set_small(elem(coeffs, 2), 3);
+    set_small(elem(coeffs, 3), 4);
+
+    let log_blowup: i32 = 1;
+    let num_queries: i32 = 3;
+    let max_rounds: i32 = 4;
+    let max_depth: i32 = 4;
+
+    let log_n: i32 = log2_of(degree) + log_blowup;
+
+    // coset shift = 7
+    let shift: *i64 = alloc(4); set_small(shift, 7);
+
+    // GENERIC runtime root chain: primitive 2^log_n-th root, derived from p.
+    let omega_n: *i64 = alloc(4);
+    wide_root(omega_n, log_n, f);
+
+    let roots: *i64 = alloc(max_rounds * 4);
+    let challenges: *i64 = alloc(max_rounds * 4);
+    let final_poly: *i64 = alloc(4);
+    let query_values: *i64 = alloc(num_queries * max_rounds * 2 * 4);
+    let query_paths: *i64 = alloc(num_queries * max_rounds * max_depth * 4);
+    let query_indices: *i32 = alloc(num_queries);
+
+    // Test 1: prove + verify -> 1
+    let n_rounds: i32 = fri_prove(coeffs, degree, log_blowup, shift, omega_n, num_queries,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices, f);
+
+    let ok: i32 = fri_verify(degree, log_blowup, shift, omega_n, num_queries, n_rounds,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices, f);
+    print(ok);
+
+    // Test 2: tamper final folded value -> verify fails -> 0
+    final_poly[0] = final_poly[0] + 1;
+    let bad: i32 = fri_verify(degree, log_blowup, shift, omega_n, num_queries, n_rounds,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices, f);
+    print(bad);
+
+    return 0;
+}

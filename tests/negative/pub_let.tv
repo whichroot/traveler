@@ -1,0 +1,8 @@
+// Negative test: pub let should parse correctly (not crash)
+field F = Field<251>;
+
+pub let X: F = 42;
+
+fn main() {
+    print(X);
+}

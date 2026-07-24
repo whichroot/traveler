@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// merkle_test.tv — Merkle tree test suite
+//
+// Tests: 8-leaf tree, all authentication paths, tamper detection.
+// Links against: poseidon2.o + merkle.o
+//
+// Expected output:
+//   1    (all 8 paths verified)
+//   0    (old leaf fails against new tree)
+//   1    (tampered leaf passes against new tree)
+
+type Goldilocks = Field<18446744069414584321>;
+
+// Poseidon2 constant initialization
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+);
+
+// Merkle tree functions from merkle.o
+extern "C" fn merkle_build(
+    leaves: *Goldilocks, n_leaves: i32, tree: *Goldilocks,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+);
+extern "C" fn merkle_open(
+    tree: *Goldilocks, n_leaves: i32, idx: i32, path: *Goldilocks
+) -> i32;
+extern "C" fn merkle_verify(
+    root: *Goldilocks, leaf: *Goldilocks, idx: i32, n_leaves: i32,
+    path: *Goldilocks, path_len: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32;
+
+fn main() -> i32 {
+    // Initialize Poseidon2 context
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    let n: i32 = 8;
+
+    // Create 8 leaf digests: leaf i = [i+1, 0, 0, 0]
+    let leaves: *Goldilocks = alloc(n * 4);
+    for i in 0..n {
+        leaves[i * 4] = (i + 1) as Goldilocks;
+        leaves[i * 4 + 1] = 0;
+        leaves[i * 4 + 2] = 0;
+        leaves[i * 4 + 3] = 0;
+    }
+
+    // Build tree: 2*n nodes, 4 elements each (node 0 unused)
+    let tree: *Goldilocks = alloc(2 * n * 4);
+    merkle_build(leaves, n, tree, rc_init, rc_term, rc_int, diag);
+
+    // Root digest is at tree[4..8] (node 1)
+    let root: *Goldilocks = &tree[4];
+
+    // Test 1: Verify all 8 authentication paths
+    let path: *Goldilocks = alloc(4 * 4);  // max depth 3, but alloc 4 for safety
+    var all_pass: i32 = 1;
+    for i in 0..n {
+        let leaf: *Goldilocks = &leaves[i * 4];
+        let depth: i32 = merkle_open(tree, n, i, path);
+        let ok: i32 = merkle_verify(
+            root, leaf, i, n, path, depth,
+            rc_init, rc_term, rc_int, diag
+        );
+        if ok != 1 {
+            all_pass = 0;
+        }
+    }
+    print(all_pass);  // expected: 1
+
+    // Test 2: Tamper with leaf 3 — old leaf should fail against new tree
+    // Save original leaf 3
+    let old_leaf: *Goldilocks = alloc(4);
+    for j in 0..4 {
+        old_leaf[j] = leaves[3 * 4 + j];
+    }
+
+    // Modify leaf 3 to [99, 0, 0, 0]
+    leaves[3 * 4] = 99;
+
+    // Rebuild tree with tampered leaf
+    merkle_build(leaves, n, tree, rc_init, rc_term, rc_int, diag);
+    let new_root: *Goldilocks = &tree[4];
+
+    // Open path for leaf 3 in new tree
+    let depth2: i32 = merkle_open(tree, n, 3, path);
+
+    // Old leaf against new tree = FAIL
+    let bad: i32 = merkle_verify(
+        new_root, old_leaf, 3, n, path, depth2,
+        rc_init, rc_term, rc_int, diag
+    );
+    print(bad);  // expected: 0
+
+    // Test 3: Tampered leaf against new tree = PASS
+    let tampered: *Goldilocks = &leaves[3 * 4];
+    let good: i32 = merkle_verify(
+        new_root, tampered, 3, n, path, depth2,
+        rc_init, rc_term, rc_int, diag
+    );
+    print(good);  // expected: 1
+
+    free(leaves);
+    free(tree);
+    free(path);
+    free(old_leaf);
+    free(rc_init);
+    free(rc_term);
+    free(rc_int);
+    free(diag);
+
+    return 0;
+}

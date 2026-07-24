@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_alias.tv — Phase D.2: the Newton-Degree Aliasing Theorem, certified
+// (d*_p <= d*_Z). genus_certify_crt2 detects an alias (two-prime disagreement);
+// genus_certify_crt3 resolves it (three-prime max).
+// @internal-design: genus
+
+extern "C" fn genus_onset(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64) -> i32;
+
+fn abs_i64(x: i64) -> i64 {
+    if x < 0 { return 0 - x; }
+    return x;
+}
+
+// Onset of the data REDUCED mod p (the field only sees residues): reduce a
+// working copy into red[0..n), then run genus_onset over field(p).
+fn genus_onset_modp(
+    p: i64, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, red: *i64
+) -> i32 {
+    let f: Field = field(p);
+    for i in 0..n {
+        let r: i64 = data[i] % p;
+        if r < 0 { red[i] = r + p; } else { red[i] = r; }
+    }
+    return genus_onset(f, red, n, d_max, cert, work);
+}
+
+// Integer (NOT field-reduced) max |Delta^k x| over k = 1..d_max — the magnitude
+// that bounds aliasing. Caller owns work (length n).
+#[export]
+fn genus_max_absdiff(data: *i64, n: i32, d_max: i32, work: *i64) -> i64 {
+    var mx: i64 = 0;
+    for k in 1..(d_max + 1) {
+        // recompute the k-th forward difference from scratch into work
+        for i in 0..n { work[i] = data[i]; }
+        var sz: i32 = n;
+        for lev in 0..k {
+            for i in 0..(sz - 1) { work[i] = work[i + 1] - work[i]; }
+            sz = sz - 1;
+        }
+        for i in 0..sz {
+            let a: i64 = abs_i64(work[i]);
+            if a > mx { mx = a; }
+        }
+    }
+    return mx;
+}
+
+// Safe-prime bound: any prime strictly greater than this measures the integer
+// Newton degree without aliasing. = 2 * max|Delta^k x| + 1.
+#[export]
+fn genus_safe_prime_bound(data: *i64, n: i32, d_max: i32, work: *i64) -> i64 {
+    let mx: i64 = genus_max_absdiff(data, n, d_max, work);
+    return mx * 2 + 1;
+}
+
+// SOUNDNESS certifier (detect): d* over p1 and p2; agreement certifies the
+// common value, disagreement returns -1 (alias DETECTED). cert/work: n*3, n.
+#[export]
+fn genus_certify_crt2(
+    p1: i64, p2: i64, data: *i64, n: i32, d_max: i32,
+    cert: *i64, work: *i64, red: *i64
+) -> i32 {
+    let d1: i32 = genus_onset_modp(p1, data, n, d_max, cert, work, red);
+    let d2: i32 = genus_onset_modp(p2, data, n, d_max, cert, work, red);
+    if d1 == d2 { return d1; }
+    return 0 - 1;   // alias detected
+}
+
+// COMPLETENESS certifier (resolve): d* over three primes, return the MAX
+// (aliasing only lowers d*, so the max recovers the integer truth).
+#[export]
+fn genus_certify_crt3(
+    p1: i64, p2: i64, p3: i64, data: *i64, n: i32, d_max: i32,
+    cert: *i64, work: *i64, red: *i64
+) -> i32 {
+    let d1: i32 = genus_onset_modp(p1, data, n, d_max, cert, work, red);
+    let d2: i32 = genus_onset_modp(p2, data, n, d_max, cert, work, red);
+    let d3: i32 = genus_onset_modp(p3, data, n, d_max, cert, work, red);
+    var mx: i32 = d1;
+    if d2 > mx { mx = d2; }
+    if d3 > mx { mx = d3; }
+    return mx;
+}

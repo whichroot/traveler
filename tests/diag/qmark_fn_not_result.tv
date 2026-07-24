@@ -1,0 +1,10 @@
+// qmark_fn_not_result.tv — `?` negative gate. The enclosing function must
+// return Result<_, E>: there is nowhere to propagate the Err arm otherwise.
+enum FsError { A, }
+enum Result<T, E> { Ok(T), Err(E), }
+fn g() -> Result<i32, FsError> { return Result::Ok(1); }
+fn f() -> i32 {
+    let y: i32 = g()?;
+    return y;
+}
+fn main() -> i32 { return 0; }

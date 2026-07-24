@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// frobenius_rmt.tv — Sato-Tate as SU(2) Haar equidistribution, per irrep: exact
+// integer Sym^k traces, the tensor-identity spine, leaves-field moment readout.
+// @internal-design: nt
+// Curve y^2 = x^3 + x + 1 (non-CM; bad primes {2, 31}); good primes p in [5, 2000).
+// Output, in order: M, mismatch, E[chi_2]*S, E[chi_1^2]*S, E[chi_2^2]*S, E[chi_3^2]*S.
+// (mismatch=0 exact; E[chi_2] near 0; the three E[chi_k^2] near S=1000000.)
+// @internal-oracle: frobenius_rmt (bit-for-bit).
+
+import "../src/lib/nt/curve.tv";     // is_prime, build_qr, ap_curve, rnd_div
+
+fn main() -> i32 {
+    let nlimit: i32 = 2000;
+    let s: i64 = 1000000;             // declared leaves-field scale
+
+    var mcount: i64 = 0;
+    var mismatch: i64 = 0;        // Sym1^2 == Sym2 + p  (exact, per prime)
+    var e_chi2: i64 = 0;          // sum round(S Sym2 / p)         -> 0
+    var e_c1sq: i64 = 0;          // sum round(S Sym1^2 / p)       -> S
+    var e_c2sq: i64 = 0;          // sum round(S Sym2^2 / p^2)     -> S
+    var e_c3sq: i64 = 0;          // sum round(S Sym3^2 / p^3)     -> S
+
+    var p: i32 = 5;
+    while p < nlimit {
+        var good: i32 = 0;
+        if is_prime(p) == 1 { good = 1; }
+        if p == 31 { good = 0; }      // bad reduction (31 | disc)
+        if good == 1 {
+            let sq: *i32 = alloc(p);
+            build_qr(p, sq);
+            let ap: i32 = ap_curve(p, sq);
+            free(sq);
+
+            let pl: i64 = p as i64;
+            let apl: i64 = ap as i64;
+            // symmetric-power traces (exact integers)
+            let sym1: i64 = apl;
+            let sym2: i64 = apl * apl - pl;
+            let sym3: i64 = apl * sym2 - pl * sym1;
+
+            mcount = mcount + 1;
+            // exact tensor certificate: std (x) std = Sym^2 (+) triv
+            if sym1 * sym1 != sym2 + pl { mismatch = mismatch + 1; }
+
+            let p2: i64 = pl * pl;
+            let p3: i64 = p2 * pl;
+            e_chi2 = e_chi2 + rnd_div(s * sym2, pl);
+            e_c1sq = e_c1sq + rnd_div(s * sym1 * sym1, pl);
+            e_c2sq = e_c2sq + rnd_div(s * sym2 * sym2, p2);
+            e_c3sq = e_c3sq + rnd_div(s * sym3 * sym3, p3);
+        }
+        p = p + 1;
+    }
+
+    print(mcount as i32);                        // M = number of good primes
+    print(mismatch as i32);                      // 0 (exact tensor identity)
+    print(rnd_div(e_chi2, mcount) as i32);       // E[chi_2]*S   -> ~0
+    print(rnd_div(e_c1sq, mcount) as i32);       // E[chi_1^2]*S -> ~S
+    print(rnd_div(e_c2sq, mcount) as i32);       // E[chi_2^2]*S -> ~S
+    print(rnd_div(e_c3sq, mcount) as i32);       // E[chi_3^2]*S -> ~S
+
+    return 0;
+}

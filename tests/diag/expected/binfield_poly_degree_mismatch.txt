@@ -1,0 +1,1 @@
+reduction polynomial must have degree exactly 16

@@ -1,0 +1,430 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// residual_cascade.tv — Register + NTT cascade decomposition KERNEL (no main /
+// no WAV I/O); drivers link its #[export] surface with piecewise_codec.o + ntt.o.
+// @internal-design: util
+
+type F = Field<65537>;
+
+// ===== CODEC + NTT externs (linked from piecewise_codec.o / ntt.o) =====
+
+extern "C" fn particle_scan(samples: *i32, n: i32,
+    boundaries: *i32, max_boundaries: i32,
+    p: i32) -> i32;
+extern "C" fn ntt_forward_Field65537(data: *F, log_n: i32);
+extern "C" fn ntt_inverse_Field65537(data: *F, log_n: i32);
+
+// ===== FIELD HELPERS =====
+//
+// P = 65537: the NTT-friendly Fermat prime, baked as Field<65537> (alias F). The
+// `p` parameter is retained for call-site compatibility (callers pass CASCADE_P).
+
+let CASCADE_P: i32 = 65537;
+
+fn fld_sub(a: i32, b: i32, p: i32) -> i32 {
+    return ((a as F) - (b as F)) as i32;
+}
+
+fn fld_add(a: i32, b: i32, p: i32) -> i32 {
+    return ((a as F) + (b as F)) as i32;
+}
+
+fn ctr(val: i32, p: i32) -> i32 {
+    if val > p / 2 { return val - p; }
+    return val;
+}
+
+fn fld_mag(val: i32, p: i32) -> i32 {
+    if val > p / 2 { return p - val; }
+    return val;
+}
+
+fn ceil_log2(n: i32) -> i32 {
+    var log: i32 = 0;
+    var pow: i32 = 1;
+    while pow < n { pow = pow * 2; log = log + 1; }
+    return log;
+}
+
+// ===== LAYER RESULT =====
+
+struct LayerInfo {
+    kind: i32,          // 0 = Register, 1 = NTT
+    n_regimes: i32,
+    res_max: i32,
+    res_mean: i32,
+    n_small: i32,       // |r| <= 100
+    n_medium: i32,      // 100 < |r| <= 1000
+    n_large: i32,       // |r| > 1000
+    ntt_kept: i32,
+    ntt_total: i32,
+}
+
+#[export]
+fn compute_stats(res: *i32, n: i32, p: i32, info: *LayerInfo) {
+    var max_abs: i32 = 0;
+    var sum_abs: i64 = 0;
+    var ns: i32 = 0;
+    var nm: i32 = 0;
+    var nl: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let a: i32 = fld_mag(res[i], p);
+        if a > max_abs { max_abs = a; }
+        sum_abs = sum_abs + a as i64;
+        if a <= 100 { ns = ns + 1; }
+        else if a <= 1000 { nm = nm + 1; }
+        else { nl = nl + 1; }
+        i = i + 1;
+    }
+    info.res_max = max_abs;
+    info.res_mean = (sum_abs / (n as i64 + 1)) as i32;
+    info.n_small = ns;
+    info.n_medium = nm;
+    info.n_large = nl;
+}
+
+// ===== REGISTER LAYER — order 1, full correction =====
+//
+// Predict/record/correct with a [value, delta] register, re-initialized at
+// particle_scan boundaries; residual[i] = actual[i] - (actual[i-1] + delta).
+
+#[export]
+fn register_layer(input: *i32, n: i32,
+    cascade_res: *i32,
+    info: *LayerInfo) -> i32 {
+    let p: i32 = CASCADE_P;
+    info.kind = 0;
+    info.ntt_kept = 0;
+    info.ntt_total = 0;
+
+    // Independent boundary discovery
+    let max_bounds: i32 = n / 16 + 2;
+    let boundaries: *i32 = alloc(max_bounds);
+    let n_bounds: i32 = particle_scan(input, n, boundaries, max_bounds, p);
+    info.n_regimes = n_bounds;
+
+    var cursor: i32 = 0;
+    var bi: i32 = 0;
+    while bi < n_bounds {
+        let regime_end: i32 = boundaries[bi];
+        let regime_len: i32 = regime_end - cursor;
+
+        if regime_len < 2 {
+            // Too short — pass through
+            var i: i32 = 0;
+            while i < regime_len {
+                cascade_res[cursor + i] = input[cursor + i];
+                i = i + 1;
+            }
+            cursor = regime_end;
+            bi = bi + 1;
+            continue;
+        }
+
+        // Initialize: reg[0] = data[0], reg[1] = data[1] - data[0]
+        var reg_val: i32 = input[cursor];
+        var reg_delta: i32 = fld_sub(input[cursor + 1], input[cursor], p);
+
+        // First two samples: initialization window, residual = 0
+        cascade_res[cursor] = 0;
+        cascade_res[cursor + 1] = 0;
+
+        // Advance register state to position 1
+        reg_val = input[cursor + 1];
+
+        // Scan: predict, record residual, correct
+        var i: i32 = 2;
+        while i < regime_len {
+            reg_val = fld_add(reg_val, reg_delta, p);
+            let predicted: i32 = reg_val;
+            let actual: i32 = input[cursor + i];
+
+            cascade_res[cursor + i] = fld_sub(actual, predicted, p);
+
+            reg_delta = fld_sub(actual, input[cursor + i - 1], p);
+            reg_val = actual;
+
+            i = i + 1;
+        }
+
+        cursor = regime_end;
+        bi = bi + 1;
+    }
+
+    compute_stats(cascade_res, n, p, info);
+
+    free(boundaries);
+
+    if info.res_mean == 0 { return 0; }
+    return 1;
+}
+
+// ===== REGISTER TRACE — residual + causal momentum (the observe trace) =====
+//
+// One order-1 Register pass emitting per sample the prediction residual (field
+// element in [0,p)) and the causal momentum |Delta| (magnitude in [0,p/2]);
+// re-inits at particle_scan boundaries.
+
+#[export]
+fn register_trace(input: *i32, n: i32,
+    residual_out: *i32, momentum_out: *i32) -> i32 {
+    let p: i32 = CASCADE_P;
+    let max_bounds: i32 = n / 16 + 2;
+    let boundaries: *i32 = alloc(max_bounds);
+    let n_bounds: i32 = particle_scan(input, n, boundaries, max_bounds, p);
+
+    var cursor: i32 = 0;
+    var bi: i32 = 0;
+    while bi < n_bounds {
+        let regime_end: i32 = boundaries[bi];
+        let regime_len: i32 = regime_end - cursor;
+
+        if regime_len < 2 {
+            var i: i32 = 0;
+            while i < regime_len {
+                residual_out[cursor + i] = 0;
+                momentum_out[cursor + i] = 0;
+                i = i + 1;
+            }
+            cursor = regime_end;
+            bi = bi + 1;
+            continue;
+        }
+
+        var reg_val: i32 = input[cursor];
+        var reg_delta: i32 = fld_sub(input[cursor + 1], input[cursor], p);
+
+        residual_out[cursor] = 0;
+        momentum_out[cursor] = 0;
+        residual_out[cursor + 1] = 0;
+        momentum_out[cursor + 1] = fld_mag(reg_delta, p);
+
+        reg_val = input[cursor + 1];
+
+        var i: i32 = 2;
+        while i < regime_len {
+            // momentum recorded BEFORE prediction = causal (decoder-known)
+            momentum_out[cursor + i] = fld_mag(reg_delta, p);
+
+            reg_val = fld_add(reg_val, reg_delta, p);
+            let predicted: i32 = reg_val;
+            let actual: i32 = input[cursor + i];
+
+            residual_out[cursor + i] = fld_sub(actual, predicted, p);
+
+            reg_delta = fld_sub(actual, input[cursor + i - 1], p);
+            reg_val = actual;
+
+            i = i + 1;
+        }
+
+        cursor = regime_end;
+        bi = bi + 1;
+    }
+
+    free(boundaries);
+    return n_bounds;
+}
+
+// ===== NTT LAYER — spectral skeleton extraction =====
+//
+// Operates per regime (particle_scan boundaries, independent). NTT forward, keep
+// coefficients above 2x mean magnitude, inverse NTT, subtract skeleton.
+
+fn spectral_chunk(input: *i32, start: i32, chunk_len: i32,
+    skel: *i32, p: i32, kept_out: *i32, total_out: *i32) {
+    let log_n: i32 = ceil_log2(chunk_len);
+    let ntt_n: i32 = 1 << log_n;
+
+    // Copy to field buffer, zero-pad
+    let buf: *F = alloc(ntt_n);
+    var i: i32 = 0;
+    while i < chunk_len {
+        buf[i] = input[start + i] as F;
+        i = i + 1;
+    }
+    while i < ntt_n {
+        buf[i] = 0 as F;
+        i = i + 1;
+    }
+
+    ntt_forward_Field65537(buf, log_n);
+
+    // Compute magnitudes and mean
+    let mags: *i32 = alloc(ntt_n);
+    var sum_mag: i64 = 0;
+    i = 0;
+    while i < ntt_n {
+        mags[i] = fld_mag(buf[i] as i32, p);
+        sum_mag = sum_mag + mags[i] as i64;
+        i = i + 1;
+    }
+    let mean_mag: i32 = (sum_mag / (ntt_n as i64 + 1)) as i32;
+    let threshold: i32 = mean_mag * 2;
+
+    // Zero coefficients below threshold
+    var n_kept: i32 = 0;
+    i = 0;
+    while i < ntt_n {
+        if mags[i] > threshold {
+            n_kept = n_kept + 1;
+        } else {
+            buf[i] = 0 as F;
+        }
+        i = i + 1;
+    }
+
+    ntt_inverse_Field65537(buf, log_n);
+
+    // Copy skeleton back (only chunk_len samples)
+    i = 0;
+    while i < chunk_len {
+        skel[start + i] = buf[i] as i32;
+        i = i + 1;
+    }
+
+    kept_out[0] = kept_out[0] + n_kept;
+    total_out[0] = total_out[0] + ntt_n;
+
+    free(mags);
+    free(buf);
+}
+
+#[export]
+fn ntt_layer(input: *i32, n: i32,
+    cascade_res: *i32,
+    info: *LayerInfo) -> i32 {
+    let p: i32 = CASCADE_P;
+    info.kind = 1;
+
+    let max_bounds: i32 = n / 16 + 2;
+    let boundaries: *i32 = alloc(max_bounds);
+    let n_bounds: i32 = particle_scan(input, n, boundaries, max_bounds, p);
+    info.n_regimes = n_bounds;
+
+    let skel: *i32 = alloc(n);
+    var kept_acc: [i32; 1] = 0;
+    var total_acc: [i32; 1] = 0;
+    let max_chunk: i32 = 16384;
+
+    var cursor: i32 = 0;
+    var bi: i32 = 0;
+    while bi < n_bounds {
+        let regime_end: i32 = boundaries[bi];
+
+        while cursor < regime_end {
+            var chunk_len: i32 = regime_end - cursor;
+            if chunk_len > max_chunk { chunk_len = max_chunk; }
+
+            if chunk_len < 4 {
+                var i: i32 = 0;
+                while i < chunk_len {
+                    skel[cursor + i] = 0;
+                    cascade_res[cursor + i] = input[cursor + i];
+                    i = i + 1;
+                }
+                cursor = cursor + chunk_len;
+                continue;
+            }
+
+            spectral_chunk(input, cursor, chunk_len, skel, p,
+                &kept_acc[0], &total_acc[0]);
+
+            var i: i32 = 0;
+            while i < chunk_len {
+                cascade_res[cursor + i] = fld_sub(input[cursor + i], skel[cursor + i], p);
+                i = i + 1;
+            }
+
+            cursor = cursor + chunk_len;
+        }
+
+        bi = bi + 1;
+    }
+
+    info.ntt_kept = kept_acc[0];
+    info.ntt_total = total_acc[0];
+
+    compute_stats(cascade_res, n, p, info);
+
+    free(skel);
+    free(boundaries);
+
+    if kept_acc[0] == 0 { return 0; }
+    return 1;
+}
+
+// ===== CASCADE — alternate Register / NTT layers =====
+
+let MAX_LAYERS: i32 = 6;
+
+#[export]
+fn cascade_extract(input: *i32, n: i32,
+    infos: *LayerInfo,
+    final_res: *i32) -> i32 {
+    let buf_a: *i32 = alloc(n);
+    let buf_b: *i32 = alloc(n);
+    let cascade_res: *i32 = alloc(n);
+
+    var i: i32 = 0;
+    while i < n {
+        buf_a[i] = input[i];
+        i = i + 1;
+    }
+
+    var layer: i32 = 0;
+    var current: *i32 = buf_a;
+    var next: *i32 = buf_b;
+    var prev_mean: i32 = 32768;  // initial: half the field
+
+    while layer < MAX_LAYERS {
+        var found: i32 = 0;
+        if (layer % 2) == 0 {
+            found = register_layer(current, n, cascade_res, &infos[layer]);
+        } else {
+            found = ntt_layer(current, n, cascade_res, &infos[layer]);
+        }
+
+        if found == 0 {
+            i = 0;
+            while i < n { final_res[i] = current[i]; i = i + 1; }
+            break;
+        }
+
+        let cur_mean: i32 = infos[layer].res_mean;
+
+        // Depth rule (observe-learn, minimal form): accept a layer only if it
+        // REDUCED the residual mean; otherwise discard it and stop.
+        if layer > 0 {
+            if cur_mean >= prev_mean {
+                i = 0;
+                while i < n { final_res[i] = current[i]; i = i + 1; }
+                break;
+            }
+        }
+
+        layer = layer + 1;
+
+        if layer >= MAX_LAYERS {
+            i = 0;
+            while i < n { final_res[i] = cascade_res[i]; i = i + 1; }
+            break;
+        }
+
+        // Pass residual directly to next layer (already in [0, p-1])
+        i = 0;
+        while i < n { next[i] = cascade_res[i]; i = i + 1; }
+
+        prev_mean = cur_mean;
+
+        let tmp: *i32 = current;
+        current = next;
+        next = tmp;
+    }
+
+    free(cascade_res);
+    free(buf_b);
+    free(buf_a);
+    return layer;
+}

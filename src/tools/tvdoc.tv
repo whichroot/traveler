@@ -1,0 +1,291 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// tvdoc.tv — Markdown API doc generator: one section per top-level decl
+// (fn/struct/enum/trait/field) with signature + preceding doc-comment run.
+// @internal-design: tools
+
+// File input via the fs/ wrap layer (sized read, Result at the membrane);
+// tvdoc is stage1-built (run_doc.sh), so `import` is available.
+import "../lib/fs/fs.tv";
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn exit(code: i32);
+
+// ---- small helpers ----
+
+fn wr(fd: i32, s: *u8) {
+    var n: i32 = 0;
+    while s[n] != 0 { n = n + 1; }
+    write(fd, s, n as usize);
+}
+
+// NUL-terminated C-string compare (the imported string.tv owns the name
+// str_eq for length-carrying Str).
+fn cstr_eq(a: *u8, b: *u8) -> i32 {
+    var i: i32 = 0;
+    while a[i] != 0 && b[i] != 0 {
+        if a[i] != b[i] { return 0; }
+        i = i + 1;
+    }
+    if a[i] == 0 && b[i] == 0 { return 1; }
+    return 0;
+}
+
+// ---- growable output buffer (dogfoods A6 realloc) ----
+
+var g_out: *u8 = null;
+var g_out_len: i32 = 0;
+var g_out_cap: i32 = 0;
+
+fn out_ensure(extra: i32) {
+    if g_out_len + extra <= g_out_cap { return; }
+    while g_out_len + extra > g_out_cap { g_out_cap = g_out_cap * 2; }
+    g_out = realloc(g_out, g_out_cap);
+}
+
+fn out_byte(b: u8) {
+    out_ensure(1);
+    g_out[g_out_len] = b;
+    g_out_len = g_out_len + 1;
+}
+
+fn out_str(s: *u8) {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        out_byte(s[i]);
+        i = i + 1;
+    }
+}
+
+// Append source bytes [start, end).
+fn out_span(src: *u8, start: i32, end: i32) {
+    var p: i32 = start;
+    while p < end {
+        out_byte(src[p]);
+        p = p + 1;
+    }
+}
+
+// ---- pending doc-comment buffer ----
+// Accumulates the run of `//` lines directly above a declaration. Reset on a
+// blank line or a non-comment, non-declaration line.
+
+var g_doc: *u8 = null;
+var g_doc_len: i32 = 0;
+var g_doc_cap: i32 = 0;
+var g_doc_has: i32 = 0;   // 1 if any doc line accumulated
+
+fn doc_reset() {
+    g_doc_len = 0;
+    g_doc_has = 0;
+}
+
+fn doc_byte(b: u8) {
+    if g_doc_len + 1 > g_doc_cap {
+        while g_doc_len + 1 > g_doc_cap { g_doc_cap = g_doc_cap * 2; }
+        g_doc = realloc(g_doc, g_doc_cap);
+    }
+    g_doc[g_doc_len] = b;
+    g_doc_len = g_doc_len + 1;
+}
+
+// Append a comment line's TEXT (after the `//` and one optional space) to the
+// pending doc buffer, with a trailing newline.
+fn doc_add_line(src: *u8, start: i32, end: i32) {
+    // Skip leading `/` characters (handles `//` and `///`).
+    var p: i32 = start;
+    while p < end && src[p] == 47 { p = p + 1; }   // '/'
+    // Skip one leading space.
+    if p < end && src[p] == 32 { p = p + 1; }
+    var i: i32 = p;
+    while i < end {
+        doc_byte(src[i]);
+        i = i + 1;
+    }
+    doc_byte(10);
+    g_doc_has = 1;
+}
+
+// ---- declaration detection ----
+
+// Does line [start,end) begin (in column 0) with keyword `kw`, as a whole
+// word (followed by space)?  Returns 1 if so.
+fn line_starts_kw(src: *u8, start: i32, end: i32, kw: *u8) -> i32 {
+    var i: i32 = 0;
+    while kw[i] != 0 {
+        if start + i >= end { return 0; }
+        if src[start + i] != kw[i] { return 0; }
+        i = i + 1;
+    }
+    // Next char must be a space (whole-word match).
+    if start + i >= end { return 0; }
+    if src[start + i] != 32 { return 0; }
+    return 1;
+}
+
+// Classify a column-0 declaration line. Returns a short kind string, or null.
+fn decl_kind(src: *u8, start: i32, end: i32) -> *u8 {
+    if line_starts_kw(src, start, end, "fn") == 1 { return "fn"; }
+    if line_starts_kw(src, start, end, "pub") == 1 { return "fn"; }
+    if line_starts_kw(src, start, end, "struct") == 1 { return "struct"; }
+    if line_starts_kw(src, start, end, "enum") == 1 { return "enum"; }
+    if line_starts_kw(src, start, end, "trait") == 1 { return "trait"; }
+    if line_starts_kw(src, start, end, "field") == 1 { return "field"; }
+    if line_starts_kw(src, start, end, "binfield") == 1 { return "field"; }
+    if line_starts_kw(src, start, end, "extfield") == 1 { return "field"; }
+    // `type N = <FieldTy>;` (Phase-1 alias): every `type` decl today IS a
+    // field decl, so the doc kind is "field" for both spellings.
+    if line_starts_kw(src, start, end, "type") == 1 { return "field"; }
+    if line_starts_kw(src, start, end, "extern") == 1 { return "fn"; }
+    if line_starts_kw(src, start, end, "impl") == 1 { return "impl"; }
+    return null;
+}
+
+// Emit the signature portion of a declaration line: bytes from `start` up to
+// the first `{` or the terminating `;` (exclusive), trimming trailing ws.
+fn out_signature(src: *u8, start: i32, end: i32) {
+    var e: i32 = start;
+    while e < end && src[e] != 123 && src[e] != 59 { e = e + 1; }   // '{' or ';'
+    // Trim trailing whitespace.
+    while e > start && (src[e - 1] == 32 || src[e - 1] == 9) { e = e - 1; }
+    out_span(src, start, e);
+}
+
+// Extract the declared NAME from a declaration line for the heading, emitting
+// into the output buffer: `fn foo(...)` -> `foo`; `struct Point {` -> `Point`.
+fn out_decl_name(src: *u8, start: i32, end: i32) {
+    var p: i32 = start;
+    // Skip first keyword.
+    while p < end && src[p] != 32 { p = p + 1; }
+    while p < end && src[p] == 32 { p = p + 1; }
+    // `pub fn` / `extern "C" fn`: skip words until past `fn ` (simple
+    // heuristic when the line starts with pub/extern).
+    if line_starts_kw(src, start, end, "pub") == 1
+    || line_starts_kw(src, start, end, "extern") == 1 {
+        // find "fn " then advance past it
+        var q: i32 = start;
+        while q < end - 2 {
+            if src[q] == 102 && src[q + 1] == 110 && src[q + 2] == 32 {
+                p = q + 3;
+                q = end;
+            } else {
+                q = q + 1;
+            }
+        }
+    }
+    // Name = chars until '(' , '<', space, '{', ';', or end.
+    var e: i32 = p;
+    while e < end && src[e] != 40 && src[e] != 60 && src[e] != 32
+    && src[e] != 123 && src[e] != 59 {
+        e = e + 1;
+    }
+    out_span(src, p, e);
+}
+
+// ---- main scan ----
+
+fn gen_docs(src: *u8, n: i32, title: *u8) {
+    // Title header.
+    out_str("# ");
+    out_str(title);
+    out_byte(10);
+    out_byte(10);
+
+    var count: i32 = 0;
+    var pos: i32 = 0;
+    while pos < n {
+        let line_start: i32 = pos;
+        var line_end: i32 = pos;
+        while line_end < n && src[line_end] != 10 { line_end = line_end + 1; }
+
+        // First non-whitespace column.
+        var fns: i32 = line_start;
+        while fns < line_end && (src[fns] == 32 || src[fns] == 9) { fns = fns + 1; }
+        let is_blank: i32 = (fns >= line_end);
+
+        // A comment line at column 0 (// ...).
+        let is_comment: i32 =
+        (fns == line_start) && (fns + 1 < line_end)
+        && (src[fns] == 47) && (src[fns + 1] == 47);
+
+        if is_blank == 1 {
+            // Blank line breaks a doc run.
+            doc_reset();
+        } else if is_comment == 1 {
+            doc_add_line(src, fns, line_end);
+        } else if fns == line_start {
+            // Column-0 code line: possible declaration.
+            let kind: *u8 = decl_kind(src, line_start, line_end);
+            // `&&` short-circuits (known-issue #14, fixed): cstr_eq(kind, ...)
+            // is only evaluated when kind != null, so this is safe.
+            if kind != null && cstr_eq(kind, "impl") == 0 {
+                count = count + 1;
+                // Heading: ### kind name
+                out_str("### ");
+                out_str(kind);
+                out_str(" ");
+                out_decl_name(src, line_start, line_end);
+                out_byte(10);
+                out_byte(10);
+                // Signature in a code block.
+                out_str("```traveler\n");
+                out_signature(src, line_start, line_end);
+                out_byte(10);
+                out_str("```\n");
+                // Doc body, if any.
+                if g_doc_has == 1 {
+                    out_byte(10);
+                    out_span(g_doc, 0, g_doc_len);
+                }
+                out_byte(10);
+            }
+            doc_reset();
+        } else {
+            // Indented code (method body, field, etc.): breaks the doc run.
+            doc_reset();
+        }
+
+        if line_end < n { pos = line_end + 1; } else { pos = n; }
+    }
+
+    if count == 0 {
+        out_str("_No top-level declarations found._\n");
+    }
+}
+
+fn main(argc: i32, argv: **u8) {
+    var source_path: *u8 = null;
+    var ai: i32 = 1;
+    while ai < argc {
+        source_path = argv[ai];
+        ai = ai + 1;
+    }
+    if source_path == null {
+        wr(2, "usage: tvdoc FILE\n");
+        exit(2);
+    }
+
+    // fs/ wrap layer: sized read (no fixed cap), Err acknowledged in the type.
+    var src: *u8 = null;
+    var n: i64 = 0;
+    match fs_read_to_string(source_path) {
+        Result::Ok(s) => { src = s.data; n = s.len as i64; }
+        Result::Err(e) => {
+            wr(2, "error: cannot open file\n");
+            exit(2);
+        }
+    }
+
+    // Init buffers.
+    g_out_cap = 65536;
+    g_out = alloc(g_out_cap);
+    g_out_len = 0;
+    g_doc_cap = 4096;
+    g_doc = alloc(g_doc_cap);
+    g_doc_len = 0;
+    g_doc_has = 0;
+
+    gen_docs(src, n as i32, source_path);
+
+    write(1, g_out, g_out_len as usize);
+}

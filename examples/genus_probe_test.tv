@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_probe_test.tv — A.3a verification: measured genus signatures match the
+// Python apparatus, in-field over a runtime prime.
+// @internal-design: genus (genus_probe — the instrument)
+//
+// Synthesized shapes at integer-exact periods (the provable first), n=48:
+//   sawtooth  P12 step3 -> d*=1 nseg=4   (4 ramps; 1 boundary/period = reset)
+//   triangle  P12 step2 -> d*=1 nseg=8   (2 boundaries/period = peak + trough)
+//   square    P12 A100  -> d*=0 nseg=8   (piecewise constant; edge each half)
+//   pw-parab  P12       -> d*=2 nseg=4   (quadratic legs; onset at degree 2)
+//   pure cubic y=x^3    -> d*=3 nseg=1   (the degree IS the whole curve)
+//
+// Expected output (d* nseg per shape):
+//   1 4   1 8   0 8   2 4   3 1
+//
+// Link: regime_fri.o + genus_probe.o + genus_probe_test.o
+
+extern "C" fn genus_signature(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+
+fn measure(f: Field, data: *i64, n: i32, cert: *i64, work: *i64, out: *i64) {
+    genus_signature(f, data, n, 6, cert, work, out);
+    print(out[0] as i32);
+    print(out[1] as i32);
+}
+
+fn main() -> i32 {
+    let f: Field = field(18446744069414584321);   // Goldilocks
+    let n: i32 = 48;
+    let P: i32 = 12;
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let out: *i64 = alloc(2);
+    let data: *i64 = alloc(n);
+
+    // sawtooth P12 step3: (i % P) * 3
+    for i in 0..n { data[i] = ((i % P) * 3) as i64; }
+    measure(f, data, n, cert, work, out);   // 1 4
+
+    // triangle P12 step2: up to peak at P/2, down after
+    for i in 0..n {
+        let ph: i32 = i % P;
+        if ph <= P / 2 { data[i] = (ph * 2) as i64; }
+        else { data[i] = ((P - ph) * 2) as i64; }
+    }
+    measure(f, data, n, cert, work, out);   // 1 8
+
+    // square P12 A100: 100 for first half-period, 0 for second
+    for i in 0..n {
+        let ph: i32 = i % P;
+        if ph < P / 2 { data[i] = 100; } else { data[i] = 0; }
+    }
+    measure(f, data, n, cert, work, out);   // 0 8
+
+    // piecewise parabola P12: (i % P)^2
+    for i in 0..n {
+        let ph: i32 = i % P;
+        data[i] = (ph * ph) as i64;
+    }
+    measure(f, data, n, cert, work, out);   // 2 4
+
+    // pure cubic y = x^3 over the whole window
+    for i in 0..n { data[i] = (i * i * i) as i64; }
+    measure(f, data, n, cert, work, out);   // 3 1
+
+    free(data); free(cert); free(work); free(out);
+    return 0;
+}

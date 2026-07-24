@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dynfield_spike.tv — Phase 0 spike for Dynamic Field Unification: Field-as-value
+// dyn arithmetic as a pure .tv library, dyn-vs-baked bench (forward_sum / eval_at).
+// @internal-design: examples (dynfield_spike).
+//
+// GATE: dyn overhead <= 5x on forward_sum (the codec workload); the eval_at
+// ratio is RECORDED, not gated. Correctness: dyn == baked checksums exactly.
+
+extern "C" fn clock() -> i64;   // CPU time in CLOCKS_PER_SEC ticks (1e6)
+
+type Fb = Field<65537>;
+
+// ========== The Field value type (Phase 1 prototype) ==========
+struct Fld {
+    p: i64,
+    half_p: i64,
+    elem_bytes: i32,
+}
+
+fn field_new(p: i64) -> Fld {
+    return Fld { p: p, half_p: p / 2, elem_bytes: 4 };
+}
+
+// ========== Dyn arithmetic — runtime prime threaded by value ==========
+// Worst-case reduction (urem). Phase 1 replaces with Barrett.
+fn dyn_add(f: Fld, a: i64, b: i64) -> i64 {
+    let s: i64 = a + b;
+    if s >= f.p { return s - f.p; }
+    return s;
+}
+
+fn dyn_sub(f: Fld, a: i64, b: i64) -> i64 {
+    if a >= b { return a - b; }
+    return a - b + f.p;
+}
+
+fn dyn_mul(f: Fld, a: i64, b: i64) -> i64 {
+    return (a * b) % f.p;
+}
+
+fn dyn_pow(f: Fld, base: i64, exp: i64) -> i64 {
+    var result: i64 = 1;
+    var b: i64 = base % f.p;
+    var e: i64 = exp;
+    while e > 0 {
+        if (e & 1) == 1 { result = dyn_mul(f, result, b); }
+        b = dyn_mul(f, b, b);
+        e = e >> 1;
+    }
+    return result;
+}
+
+fn dyn_inv(f: Fld, a: i64) -> i64 {
+    return dyn_pow(f, a, f.p - 2);   // Fermat: a^(p-2)
+}
+
+// ========== Baked eval_at: Newton-basis Horner over Field<65537> ==========
+// result = c[d]; for k=d-1..0: result = c[k] + result*(x-k)/(k+1)
+fn eval_at_baked(c0: Fb, c1: Fb, c2: Fb, c3: Fb, x: Fb) -> Fb {
+    var result: Fb = c3;
+    // k = 2
+    let f2: Fb = (x - 2 as Fb) / (3 as Fb);
+    result = c2 + result * f2;
+    // k = 1
+    let f1: Fb = (x - 1 as Fb) / (2 as Fb);
+    result = c1 + result * f1;
+    // k = 0
+    let f0: Fb = (x - 0 as Fb) / (1 as Fb);
+    result = c0 + result * f0;
+    return result;
+}
+
+// ========== Dyn eval_at: same Horner, runtime field ==========
+fn eval_at_dyn(f: Fld, c0: i64, c1: i64, c2: i64, c3: i64, x: i64) -> i64 {
+    var result: i64 = c3;
+    // k = 2
+    let xm2: i64 = dyn_sub(f, x, 2);
+    let f2: i64 = dyn_mul(f, xm2, dyn_inv(f, 3));
+    result = dyn_add(f, c2, dyn_mul(f, result, f2));
+    // k = 1
+    let xm1: i64 = dyn_sub(f, x, 1);
+    let f1: i64 = dyn_mul(f, xm1, dyn_inv(f, 2));
+    result = dyn_add(f, c1, dyn_mul(f, result, f1));
+    // k = 0
+    let f0: i64 = x;   // (x-0)/1
+    result = dyn_add(f, c0, dyn_mul(f, result, f0));
+    return result;
+}
+
+fn main() -> i32 {
+    let n: i32 = 20000000;     // forward_sum iterations
+    let m: i32 = 1000000;      // eval_at calls
+    let p: i64 = 65537;
+    let fld: Fld = field_new(p);
+
+    // ========== Benchmark 1: forward_sum, BAKED (add-only, dyn best case) ==========
+    let t0: i64 = clock();
+    var bs0: Fb = 10;
+    var bs1: Fb = 3;
+    var bs2: Fb = 1;
+    var bs3: Fb = 2;
+    var bsum: Fb = 0;
+    var i: i32 = 0;
+    while i < n {
+        bsum = bsum + bs0;
+        bs0 = bs0 + bs1;
+        bs1 = bs1 + bs2;
+        bs2 = bs2 + bs3;
+        i = i + 1;
+    }
+    let t1: i64 = clock();
+
+    // ========== Benchmark 2: forward_sum, DYN ==========
+    var ds0: i64 = 10;
+    var ds1: i64 = 3;
+    var ds2: i64 = 1;
+    var ds3: i64 = 2;
+    var dsum: i64 = 0;
+    i = 0;
+    while i < n {
+        dsum = dyn_add(fld, dsum, ds0);
+        ds0 = dyn_add(fld, ds0, ds1);
+        ds1 = dyn_add(fld, ds1, ds2);
+        ds2 = dyn_add(fld, ds2, ds3);
+        i = i + 1;
+    }
+    let t2: i64 = clock();
+
+    // ========== Benchmark 3: eval_at, BAKED (mul/inv heavy, dyn worst case) ==========
+    var back: Fb = 0;
+    i = 0;
+    while i < m {
+        let x: Fb = (i % 60000) as Fb;
+        back = back + eval_at_baked(10, 3, 1, 2, x);
+        i = i + 1;
+    }
+    let t3: i64 = clock();
+
+    // ========== Benchmark 4: eval_at, DYN ==========
+    var dack: i64 = 0;
+    i = 0;
+    while i < m {
+        let x: i64 = (i % 60000) as i64;
+        dack = dyn_add(fld, dack, eval_at_dyn(fld, 10, 3, 1, 2, x));
+        i = i + 1;
+    }
+    let t4: i64 = clock();
+
+    // ========== Correctness: baked vs dyn checksums must match ==========
+    print(bsum as i64);
+    print(dsum);
+    print(back as i64);
+    print(dack);
+
+    // Timings (microseconds, CLOCKS_PER_SEC = 1e6)
+    print(t1 - t0);   // forward_sum baked
+    print(t2 - t1);   // forward_sum dyn
+    print(t3 - t2);   // eval_at baked
+    print(t4 - t3);   // eval_at dyn
+
+    return 0;
+}

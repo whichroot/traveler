@@ -1,0 +1,842 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// piecewise_wire.tv — codec split module imported by piecewise_codec.tv:
+// projection, dynamic prime, PCPW/PCLY wire formats, encode/decode, verify.
+// @internal-design: codec
+
+// ===== Sample projection: signed 16-bit -> Field<P> =====
+
+// Project signed 16-bit samples into the field. P=65537 (2^16+1) fits all
+// unsigned 16-bit values -> lossless, zero escapes. Returns out-of-field count.
+#[export]
+fn pc_project_to_field(signed_samples: *i16, n: i32, field_samples: *i32) -> i32 {
+    var escapes: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let s: i32 = signed_samples[i] as i32;
+        let u: i32 = s + 32768;    // shift to unsigned [0, 65535]
+        let f: i32 = u % P;         // project into field [0, P-1]
+        field_samples[i] = f;
+        if u >= P {
+            escapes = escapes + 1;
+        }
+        i = i + 1;
+    }
+    return escapes;
+}
+
+// Reconstruct signed 16-bit from field values.
+#[export]
+fn pc_project_from_field(field_samples: *i32, n: i32, signed_samples: *i16) {
+    var i: i32 = 0;
+    while i < n {
+        let u: i32 = field_samples[i];
+        let s: i32 = u - 32768;
+        signed_samples[i] = s as i16;
+        i = i + 1;
+    }
+}
+
+// ===== Layered projection: 16-bit -> two 8-bit layers over Field<251> =====
+// layer0 (skeleton) = (sample+32768)/256; layer1 (refinement) = (sample+32768)%256.
+// Reconstruct: layer0*256 + layer1 - 32768. The polynomial trajectory is
+// scale-invariant (skeleton ratio ~1/N). See @internal-design: codec.
+
+// Split signed 16-bit samples into two 8-bit layers.
+// layer0[i] = (sample + 32768) / 256  (skeleton, mod 251 for field)
+// layer1[i] = (sample + 32768) % 256  (refinement, mod 251 for field)
+#[export]
+fn pc_split_layers(signed_samples: *i16, n: i32,
+    layer0: *i32, layer1: *i32) {
+    var i: i32 = 0;
+    while i < n {
+        let u: i32 = signed_samples[i] as i32 + 32768;
+        layer0[i] = (u / 256) % 251;
+        layer1[i] = (u % 256) % 251;
+        i = i + 1;
+    }
+}
+
+// Reconstruct signed 16-bit from two decoded 8-bit layers. Encoding is mod 251
+// (field arithmetic); storage is raw 8-bit [0,255]. Lossless reconstruction uses
+// the raw quotient/remainder; values 251-255 ride as literal escapes (~2% of
+// samples). mod-251 wrapping subtlety: @internal-design: codec.
+#[export]
+fn pc_split_layers_raw(signed_samples: *i16, n: i32,
+    layer0: *i32, layer1: *i32) {
+    var i: i32 = 0;
+    while i < n {
+        let u: i32 = signed_samples[i] as i32 + 32768;
+        layer0[i] = u / 256;
+        layer1[i] = u % 256;
+        i = i + 1;
+    }
+}
+
+// Reconstruct from raw layers (no mod-251 loss).
+#[export]
+fn pc_reconstruct_layers(layer0: *i32, layer1: *i32, n: i32,
+    signed_samples: *i16) {
+    var i: i32 = 0;
+    while i < n {
+        let u: i32 = layer0[i] * 256 + layer1[i];
+        signed_samples[i] = (u - 32768) as i16;
+        i = i + 1;
+    }
+}
+
+// ===== Dynamic prime selection — the data decides the field =====
+
+// Max value in an array. One pass, O(n).
+#[export]
+fn scan_max(data: *i32, n: i32) -> i32 {
+    var mx: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        if data[i] > mx { mx = data[i]; }
+        i = i + 1;
+    }
+    return mx;
+}
+
+// Smallest prime >= min_val. Trial division for small values,
+// lookup table for common codec boundaries.
+#[export]
+fn next_prime(min_val: i32) -> i32 {
+    // Fast path: common codec primes at byte boundaries
+    if min_val <= 2 { return 2; }
+    if min_val <= 3 { return 3; }
+    if min_val <= 5 { return 5; }
+    if min_val <= 7 { return 7; }
+    if min_val <= 11 { return 11; }
+    if min_val <= 13 { return 13; }
+    if min_val <= 17 { return 17; }
+    if min_val <= 29 { return 29; }
+    if min_val <= 31 { return 31; }
+    if min_val <= 61 { return 61; }
+    if min_val <= 127 { return 127; }
+    if min_val <= 251 { return 251; }
+    if min_val <= 257 { return 257; }
+    if min_val <= 509 { return 509; }
+    if min_val <= 1021 { return 1021; }
+    if min_val <= 2039 { return 2039; }
+    if min_val <= 4093 { return 4093; }
+    if min_val <= 8191 { return 8191; }
+    if min_val <= 16381 { return 16381; }
+    if min_val <= 32749 { return 32749; }
+    if min_val <= 65521 { return 65521; }
+    if min_val <= 65537 { return 65537; }
+    if min_val <= 131071 { return 131071; }
+    if min_val <= 524287 { return 524287; }
+    if min_val <= 1048573 { return 1048573; }
+    if min_val <= 16777213 { return 16777213; }
+    if min_val <= 16777259 { return 16777259; }
+    // 32-bit safe primes
+    if min_val <= 2147483647 { return 2147483647; }
+    return 2147483647;  // largest i32 prime
+}
+
+// ===== Wire format encode/decode (PCPW format) =====
+
+// Block types
+let BT_LITERAL: i32 = 0;
+let BT_POLY_RESIDUAL: i32 = 1;
+let BT_CONSTANT: i32 = 2;
+let BT_CONT: i32 = 3;
+let BT_PREDICTIVE: i32 = 4;  // per-step self-correcting protocol
+
+// Write a little-endian u16 to buffer
+fn write_u16(buf: *u8, pos: i32, val: i32) {
+    buf[pos] = (val & 255) as u8;
+    buf[pos + 1] = ((val >> 8) & 255) as u8;
+}
+
+// Read a little-endian u16 from buffer
+fn read_u16(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256;
+}
+
+// Write a little-endian i32 to buffer
+fn write_i32(buf: *u8, pos: i32, val: i32) {
+    buf[pos] = (val & 255) as u8;
+    buf[pos + 1] = ((val >> 8) & 255) as u8;
+    buf[pos + 2] = ((val >> 16) & 255) as u8;
+    buf[pos + 3] = ((val >> 24) & 255) as u8;
+}
+
+// Read a little-endian i32 from buffer
+fn read_i32(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+    + (buf[pos + 2] as i32) * 65536 + (buf[pos + 3] as i32) * 16777216;
+}
+
+// Zigzag decode (inverse of zigzag in coding section)
+fn zigzag_decode(u: i32) -> i32 {
+    if (u & 1) == 1 {
+        return 0 - ((u + 1) / 2);
+    }
+    return u / 2;
+}
+
+// Rice encode residuals to byte buffer. Returns number of bytes written.
+fn rice_encode_to_buf(residuals: *i32, n_res: i32, k: i32, out: *u8,
+    f: Field) -> i32 {
+    var bit_pos: i32 = 0;
+    var byte_pos: i32 = 0;
+    var cur_byte: i32 = 0;
+
+    var i: i32 = 0;
+    while i < n_res {
+        let centered: i32 = center(residuals[i], f);
+        let u: i32 = zigzag(centered);
+        let q: i32 = u >> k;
+        let r: i32 = u & ((1 << k) - 1);
+
+        // Unary: q ones then a zero
+        var j: i32 = 0;
+        while j < q {
+            cur_byte = (cur_byte << 1) | 1;
+            bit_pos = bit_pos + 1;
+            if bit_pos == 8 {
+                out[byte_pos] = cur_byte as u8;
+                byte_pos = byte_pos + 1;
+                cur_byte = 0;
+                bit_pos = 0;
+            }
+            j = j + 1;
+        }
+        // Zero terminator
+        cur_byte = cur_byte << 1;
+        bit_pos = bit_pos + 1;
+        if bit_pos == 8 {
+            out[byte_pos] = cur_byte as u8;
+            byte_pos = byte_pos + 1;
+            cur_byte = 0;
+            bit_pos = 0;
+        }
+
+        // Remainder: k bits, MSB first
+        j = k - 1;
+        while j >= 0 {
+            cur_byte = (cur_byte << 1) | ((r >> j) & 1);
+            bit_pos = bit_pos + 1;
+            if bit_pos == 8 {
+                out[byte_pos] = cur_byte as u8;
+                byte_pos = byte_pos + 1;
+                cur_byte = 0;
+                bit_pos = 0;
+            }
+            j = j - 1;
+        }
+
+        i = i + 1;
+    }
+
+    // Flush remaining bits
+    if bit_pos > 0 {
+        cur_byte = cur_byte << (8 - bit_pos);
+        out[byte_pos] = cur_byte as u8;
+        byte_pos = byte_pos + 1;
+    }
+
+    return byte_pos;
+}
+
+// Encode a segmentation result to PCPW wire format (internal, takes Field carrier).
+// Returns number of bytes written to out.
+fn pc_encode_ctx(segments: *Segment, n_segs: i32,
+    residuals_buf: *i32, total_samples: i32,
+    out: *u8, capacity: i32,
+    f: Field) -> i32 {
+    var pos: i32 = 0;
+
+    // File header: PCPW + version + sample_width + total_samples
+    out[pos] = 80; pos = pos + 1;  // 'P'
+    out[pos] = 67; pos = pos + 1;  // 'C'
+    out[pos] = 80; pos = pos + 1;  // 'P'
+    out[pos] = 87; pos = pos + 1;  // 'W'
+    out[pos] = 1;  pos = pos + 1;  // version
+    out[pos] = (f.data_bytes * 8) as u8; pos = pos + 1;  // sample_width
+    write_i32(out, pos, total_samples);
+    pos = pos + 4;
+
+    let rice_buf: *u8 = alloc(65536);  // temp buffer for Rice encoding
+
+    var seg: i32 = 0;
+    while seg < n_segs {
+        if pos + 8 >= capacity { break; }  // safety margin
+
+        let length: i32 = segments[seg].length;
+        let order: i32 = segments[seg].order;
+
+        if segments[seg].is_cont == 1 {
+            // CONT block: type(1) + length(2) = 3 bytes
+            out[pos] = BT_CONT as u8;
+            pos = pos + 1;
+            write_u16(out, pos, length);
+            pos = pos + 2;
+        } else if order < 0 {
+            // Literal block: type(1) + length(2) + samples(length * data_bytes)
+            out[pos] = BT_LITERAL as u8;
+            pos = pos + 1;
+            write_u16(out, pos, length);
+            pos = pos + 2;
+            let res_off: i32 = segments[seg].res_offset;
+            let eb: i32 = f.data_bytes;
+            var r: i32 = 0;
+            while r < length {
+                if pos + eb >= capacity { break; }
+                let val: i32 = residuals_buf[res_off + r];
+                out[pos] = (val & 255) as u8;
+                if eb >= 2 { out[pos + 1] = ((val >> 8) & 255) as u8; }
+                if eb >= 3 { out[pos + 2] = ((val >> 16) & 255) as u8; }
+                if eb >= 4 { out[pos + 3] = ((val >> 24) & 255) as u8; }
+                pos = pos + eb;
+                r = r + 1;
+            }
+        } else {
+            // Polynomial block: choose block type from is_predictive flag
+            var bt: i32 = BT_POLY_RESIDUAL;
+            if segments[seg].is_predictive == 1 { bt = BT_PREDICTIVE; }
+            out[pos] = bt as u8;
+            pos = pos + 1;
+            write_u16(out, pos, length);
+            pos = pos + 2;
+            out[pos] = order as u8;
+            pos = pos + 1;
+
+            // Find optimal Rice k for this segment's residuals.
+            let res_off: i32 = segments[seg].res_offset;
+            let res_count: i32 = segments[seg].res_count;
+            let k: i32 = optimal_rice_k(&residuals_buf[res_off], res_count, f);
+            out[pos] = k as u8;
+            pos = pos + 1;
+
+            // Headers as i32
+            var h: i32 = 0;
+            while h < order {
+                if pos + 4 >= capacity { break; }
+                write_i32(out, pos, seg_get_header(&segments[seg], h));
+                pos = pos + 4;
+                h = h + 1;
+            }
+
+            // Rice-encode residuals
+            let rice_len: i32 = rice_encode_to_buf(&residuals_buf[res_off], res_count, k, rice_buf, f);
+            write_i32(out, pos, rice_len);
+            pos = pos + 4;
+            var rb: i32 = 0;
+            while rb < rice_len {
+                if pos >= capacity { break; }
+                out[pos] = rice_buf[rb];
+                pos = pos + 1;
+                rb = rb + 1;
+            }
+        }
+
+        seg = seg + 1;
+    }
+
+    free(rice_buf);
+    return pos;
+}
+
+// Public wrapper: backward compatible, constructs the Field carrier from p.
+#[export]
+fn pc_encode(segments: *Segment, n_segs: i32,
+    residuals_buf: *i32, total_samples: i32,
+    out: *u8, capacity: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    return pc_encode_ctx(segments, n_segs, residuals_buf, total_samples,
+        out, capacity, f);
+}
+
+// Decode PCPW wire format back to field samples.
+// Returns number of samples decoded.
+#[export]
+fn pc_decode(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    var pos: i32 = 0;
+    var n_out: i32 = 0;
+
+    // Read file header
+    // magic(4) + version(1) + sample_width(1) + total_samples(4)
+    let sample_width_bits: i32 = data[5] as i32;
+    let lit_bytes: i32 = (sample_width_bits + 7) / 8;
+    pos = 6;
+    let total_samples: i32 = read_i32(data, pos);
+    pos = pos + 4;
+
+    // Register state for CONT reconstruction
+    let vreg: *i32 = alloc(MAX_ORDER + 1);
+    var vreg_degree: i32 = 0;
+    var vreg_active: i32 = 0;
+
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+    let tmp_res: *i32 = alloc(MAX_SEGMENT);
+
+    while pos < data_len && n_out < total_samples {
+        let block_type: i32 = data[pos] as i32;
+        pos = pos + 1;
+        let seg_len: i32 = read_u16(data, pos);
+        pos = pos + 2;
+
+        if block_type == BT_CONT {
+            // Reconstruct via register advancement
+            var i: i32 = 0;
+            while i < seg_len && n_out < max_samples {
+                var k: i32 = 0;
+                while k < vreg_degree {
+                    vreg[k] = field_add(vreg[k], vreg[k + 1], f);
+                    k = k + 1;
+                }
+                out[n_out] = vreg[0];
+                n_out = n_out + 1;
+                i = i + 1;
+            }
+        } else if block_type == BT_LITERAL {
+            let eb: i32 = lit_bytes;
+            var i: i32 = 0;
+            while i < seg_len && n_out < max_samples {
+                var val: i32 = data[pos] as i32;
+                if eb >= 2 { val = val + (data[pos + 1] as i32) * 256; }
+                if eb >= 3 { val = val + (data[pos + 2] as i32) * 65536; }
+                if eb >= 4 { val = val + (data[pos + 3] as i32) * 16777216; }
+                out[n_out] = val;
+                n_out = n_out + 1;
+                pos = pos + eb;
+                i = i + 1;
+            }
+            vreg_active = 0;
+        } else if block_type == BT_POLY_RESIDUAL {
+            let order: i32 = data[pos] as i32;
+            pos = pos + 1;
+            let rice_k: i32 = data[pos] as i32;
+            pos = pos + 1;
+
+            // Read headers
+            var h: i32 = 0;
+            while h < order {
+                headers[h] = read_i32(data, pos);
+                pos = pos + 4;
+                h = h + 1;
+            }
+
+            // Read Rice data length and decode residuals
+            let rice_len: i32 = read_i32(data, pos);
+            pos = pos + 4;
+            let n_res: i32 = seg_len - order;
+
+            // Decode Rice data inline (bit-by-bit)
+            var bit_off: i32 = 0;
+            let rice_start: i32 = pos;
+            var ri: i32 = 0;
+            while ri < n_res {
+                // Read unary quotient
+                var q: i32 = 0;
+                while bit_off < rice_len * 8 {
+                    let byte_idx: i32 = rice_start + bit_off / 8;
+                    let bit_idx: i32 = 7 - (bit_off % 8);
+                    let bit: i32 = (data[byte_idx] as i32 >> bit_idx) & 1;
+                    bit_off = bit_off + 1;
+                    if bit == 0 { break; }
+                    q = q + 1;
+                }
+                // Read k-bit remainder
+                var r: i32 = 0;
+                var kb: i32 = 0;
+                while kb < rice_k {
+                    let byte_idx: i32 = rice_start + bit_off / 8;
+                    let bit_idx: i32 = 7 - (bit_off % 8);
+                    let bit: i32 = (data[byte_idx] as i32 >> bit_idx) & 1;
+                    r = (r << 1) | bit;
+                    bit_off = bit_off + 1;
+                    kb = kb + 1;
+                }
+                let u: i32 = (q << rice_k) | r;
+                tmp_res[ri] = uncenter(zigzag_decode(u), f);
+                ri = ri + 1;
+            }
+            pos = rice_start + rice_len;
+
+            // Reconstruct via forward summation
+            pc_forward_sum(headers, order, tmp_res, n_res, &out[n_out], seg_len, f);
+
+            // Build register state for continuation
+            build_register_state(headers, order, tmp_res, n_res, seg_len, vreg, f);
+            vreg_degree = order;
+            vreg_active = 1;
+
+            n_out = n_out + seg_len;
+        } else if block_type == BT_PREDICTIVE {
+            let order: i32 = data[pos] as i32;
+            pos = pos + 1;
+            let rice_k: i32 = data[pos] as i32;
+            pos = pos + 1;
+
+            // Read headers
+            var h: i32 = 0;
+            while h < order {
+                headers[h] = read_i32(data, pos);
+                pos = pos + 4;
+                h = h + 1;
+            }
+
+            // Read Rice data length and decode residuals
+            let rice_len: i32 = read_i32(data, pos);
+            pos = pos + 4;
+            let n_res: i32 = seg_len;  // predictive: n residuals, not n-order
+
+            // Decode Rice data inline (bit-by-bit)
+            var bit_off: i32 = 0;
+            let rice_start: i32 = pos;
+            var ri: i32 = 0;
+            while ri < n_res {
+                var q: i32 = 0;
+                while bit_off < rice_len * 8 {
+                    let byte_idx: i32 = rice_start + bit_off / 8;
+                    let bit_idx: i32 = 7 - (bit_off % 8);
+                    let bit: i32 = (data[byte_idx] as i32 >> bit_idx) & 1;
+                    bit_off = bit_off + 1;
+                    if bit == 0 { break; }
+                    q = q + 1;
+                }
+                var r: i32 = 0;
+                var kb: i32 = 0;
+                while kb < rice_k {
+                    let byte_idx: i32 = rice_start + bit_off / 8;
+                    let bit_idx: i32 = 7 - (bit_off % 8);
+                    let bit: i32 = (data[byte_idx] as i32 >> bit_idx) & 1;
+                    r = (r << 1) | bit;
+                    bit_off = bit_off + 1;
+                    kb = kb + 1;
+                }
+                let u: i32 = (q << rice_k) | r;
+                tmp_res[ri] = uncenter(zigzag_decode(u), f);
+                ri = ri + 1;
+            }
+            pos = rice_start + rice_len;
+
+            // Reconstruct via predictive summation
+            predictive_sum(headers, order, tmp_res, seg_len, &out[n_out], f);
+
+            // Build register state for continuation
+            build_register_state_predictive(headers, order, tmp_res, seg_len, vreg, f);
+            vreg_degree = order;
+            vreg_active = 1;
+
+            n_out = n_out + seg_len;
+        }
+    }
+
+    free(tmp_res);
+    free(headers);
+    free(vreg);
+    return n_out;
+}
+
+// ===== Encoded size estimation + round-trip verify =====
+
+// Compute total encoded size in bits for a segmentation result.
+#[export]
+fn pc_encoded_bits(segments: *Segment, n_segs: i32,
+    residuals_buf: *i32,
+    p: i32) -> i64 {
+    let f: Field = field(p);
+    var total: i64 = 0;
+    var i: i32 = 0;
+    while i < n_segs {
+        total = total + segments[i].encoded_bits;
+        i = i + 1;
+    }
+    return total;
+}
+
+// Verify lossless round-trip for a segmentation.
+// Returns 0 if all samples match, or the 1-based index of first mismatch.
+#[export]
+fn pc_verify_roundtrip(samples: *i32, n: i32,
+    segments: *Segment, n_segs: i32,
+    residuals_buf: *i32,
+    p: i32) -> i32 {
+    let f: Field = field(p);
+    let reconstructed: *i32 = alloc(n);
+    let headers: *i32 = alloc(MAX_ORDER + 1);
+
+    // Register state for continuation reconstruction
+    let vreg: *i32 = alloc(MAX_ORDER + 1);
+    var vreg_degree: i32 = 0;
+    var vreg_active: i32 = 0;
+
+    var seg: i32 = 0;
+    while seg < n_segs {
+        let start: i32 = segments[seg].start;
+        let length: i32 = segments[seg].length;
+        let order: i32 = segments[seg].order;
+
+        if segments[seg].is_cont == 1 {
+            // CONT segment: reconstruct by advancing register state
+            var i: i32 = 0;
+            while i < length {
+                var k: i32 = 0;
+                while k < vreg_degree {
+                    vreg[k] = field_add(vreg[k], vreg[k + 1], f);
+                    k = k + 1;
+                }
+                reconstructed[start + i] = vreg[0];
+                i = i + 1;
+            }
+        } else if order >= 1 {
+            // Normal polynomial segment: reconstruct via forward_sum
+            var k: i32 = 0;
+            while k < order {
+                headers[k] = seg_get_header(&segments[seg], k);
+                k = k + 1;
+            }
+            let res_off: i32 = segments[seg].res_offset;
+            let res_count: i32 = segments[seg].res_count;
+            pc_forward_sum(headers, order, &residuals_buf[res_off], res_count,
+                &reconstructed[start], length, f);
+
+            // Build register state for potential continuation
+            build_register_state(headers, order, &residuals_buf[res_off],
+                res_count, length, vreg, f);
+            vreg_degree = order;
+            vreg_active = 1;
+        } else {
+            // Literal: copy from residuals
+            let res_off: i32 = segments[seg].res_offset;
+            var r: i32 = 0;
+            while r < length {
+                reconstructed[start + r] = residuals_buf[res_off + r];
+                r = r + 1;
+            }
+            vreg_active = 0;
+        }
+        seg = seg + 1;
+    }
+
+    // Compare
+    var i: i32 = 0;
+    while i < n {
+        if reconstructed[i] != samples[i] {
+            free(vreg);
+            free(headers);
+            free(reconstructed);
+            return i + 1;
+        }
+        i = i + 1;
+    }
+
+    free(vreg);
+    free(headers);
+    free(reconstructed);
+    return 0;
+}
+
+// ===== N-layer encoding: single entry point, internal allocation =====
+// PCLY wire format:
+//   'P' 'C' 'L' 'Y' (4 magic) + version(1) + n_layers(1) + bits_per_sample(2)
+//   + total_samples(4); per layer: layer_prime(4) + pcpw_size(4) + PCPW data.
+// Layer decomposition (divmod chain): offset = 1 << (n_layers*8 - 1);
+//   layer[k] = ((sample+offset) / 256^(n_layers-1-k)) % 256.
+// Rationale (scale-invariant skeleton, shared boundaries): @internal-design: codec.
+
+// Layered encoder: samples in, compressed bytes out. Splits layers, runs
+// particle_scan on the full-resolution signal for shared boundaries, greedy +
+// encode per layer, wraps in PCLY.
+#[export]
+fn pc_encode_layered(samples: *i32, n: i32, n_layers: i32,
+    out: *u8, max_out: i32) -> i32 {
+    if n < 1 { return 0; }
+    if n_layers < 1 { return 0; }
+
+    let bps: i32 = n_layers * 8;
+    let offset: i32 = 1 << (bps - 1);
+
+    // --- Compute divisors for each layer ---
+    // divisors[k] = 256^(n_layers - 1 - k)
+    let divisors: *i32 = alloc(n_layers);
+    var k: i32 = 0;
+    while k < n_layers {
+        var d: i32 = 1;
+        var e: i32 = 0;
+        while e < n_layers - 1 - k {
+            d = d * 256;
+            e = e + 1;
+        }
+        divisors[k] = d;
+        k = k + 1;
+    }
+
+    // --- Split samples into layers ---
+    // layers is a flat array: layer k starts at layers[k * n]
+    let layers: *i32 = alloc(n * n_layers);
+    let unsigned_buf: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        let u: i32 = samples[i] + offset;
+        unsigned_buf[i] = u;
+        k = 0;
+        while k < n_layers {
+            layers[k * n + i] = (u / divisors[k]) % 256;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+
+    // --- Particle scan on full-resolution unsigned signal ---
+    // Find the prime for the full-resolution data
+    let full_max: i32 = scan_max(unsigned_buf, n);
+    let full_prime: i32 = next_prime(full_max + 1);
+    let max_bounds: i32 = n / MIN_SEGMENT + 2;
+    let boundaries: *i32 = alloc(max_bounds);
+    let n_bounds: i32 = particle_scan(unsigned_buf, n, boundaries, max_bounds, full_prime);
+
+    free(unsigned_buf);
+
+    // --- Allocate per-layer scratch ---
+    let max_segs: i32 = n / MIN_SEGMENT + 1;
+    let segments: *Segment = alloc(max_segs);
+    let residuals: *i32 = alloc(n);
+    let layer_pcpw: *u8 = alloc(n * 4);  // generous per-layer PCPW buffer
+
+    // --- Write PCLY header ---
+    var pos: i32 = 0;
+    out[pos] = 80; pos = pos + 1;  // 'P'
+    out[pos] = 67; pos = pos + 1;  // 'C'
+    out[pos] = 76; pos = pos + 1;  // 'L'
+    out[pos] = 89; pos = pos + 1;  // 'Y'
+    out[pos] = 1;  pos = pos + 1;  // version
+    out[pos] = n_layers as u8; pos = pos + 1;
+    write_u16(out, pos, bps);
+    pos = pos + 2;
+    write_i32(out, pos, n);
+    pos = pos + 4;
+    // PCLY header = 12 bytes
+
+    // --- Encode each layer ---
+    k = 0;
+    while k < n_layers {
+        let layer_data: *i32 = &layers[k * n];
+
+        // Dynamic prime selection for this layer
+        let layer_max: i32 = scan_max(layer_data, n);
+        let layer_prime: i32 = next_prime(layer_max + 1);
+        let layer_f: Field = field(layer_prime, layer_max);
+
+        // Greedy segmentation within shared boundaries
+        let n_segs: i32 = segment_greedy_bounded(layer_data, n,
+            segments, max_segs,
+            residuals, n,
+            boundaries, n_bounds,
+            layer_f);
+
+        // Encode to PCPW
+        let pcpw_size: i32 = pc_encode_ctx(segments, n_segs,
+            residuals, n,
+            layer_pcpw, n * 4,
+            layer_f);
+
+        // Write layer header + PCPW data to output
+        if pos + 8 + pcpw_size < max_out {
+            write_i32(out, pos, layer_prime);
+            pos = pos + 4;
+            write_i32(out, pos, pcpw_size);
+            pos = pos + 4;
+            // Copy PCPW data
+            var b: i32 = 0;
+            while b < pcpw_size {
+                out[pos + b] = layer_pcpw[b];
+                b = b + 1;
+            }
+            pos = pos + pcpw_size;
+        }
+
+        k = k + 1;
+    }
+
+    free(layer_pcpw);
+    free(residuals);
+    free(segments);
+    free(boundaries);
+    free(layers);
+    free(divisors);
+    return pos;
+}
+
+// Layered decoder: compressed bytes in, samples out.
+// Reads PCLY container, decodes each layer's PCPW stream,
+// reconstructs samples from layers.
+#[export]
+fn pc_decode_layered(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32) -> i32 {
+    // Read PCLY header
+    // magic(4) + version(1) + n_layers(1) + bps(2) + total_samples(4) = 12
+    if data_len < 12 { return 0; }
+    let n_layers: i32 = data[5] as i32;
+    let bps: i32 = read_u16(data, 6);
+    let total_samples: i32 = read_i32(data, 8);
+    let offset: i32 = 1 << (bps - 1);
+
+    if total_samples > max_samples { return 0; }
+    if n_layers < 1 { return 0; }
+
+    // Compute divisors
+    let divisors: *i32 = alloc(n_layers);
+    var k: i32 = 0;
+    while k < n_layers {
+        var d: i32 = 1;
+        var e: i32 = 0;
+        while e < n_layers - 1 - k {
+            d = d * 256;
+            e = e + 1;
+        }
+        divisors[k] = d;
+        k = k + 1;
+    }
+
+    // Allocate per-layer decode buffers
+    let layers: *i32 = alloc(total_samples * n_layers);
+    var pos: i32 = 12;  // after PCLY header
+
+    // Decode each layer
+    k = 0;
+    while k < n_layers {
+        if pos + 8 > data_len { break; }
+        let layer_prime: i32 = read_i32(data, pos);
+        pos = pos + 4;
+        let pcpw_size: i32 = read_i32(data, pos);
+        pos = pos + 4;
+
+        if pos + pcpw_size > data_len { break; }
+
+        // Decode this layer's PCPW stream
+        let layer_out: *i32 = &layers[k * total_samples];
+        let decoded: i32 = pc_decode(&data[pos], pcpw_size,
+            layer_out, total_samples,
+            layer_prime);
+        pos = pos + pcpw_size;
+        k = k + 1;
+    }
+
+    // Reconstruct samples from layers
+    var i: i32 = 0;
+    while i < total_samples {
+        var u: i32 = 0;
+        k = 0;
+        while k < n_layers {
+            u = u + layers[k * total_samples + i] * divisors[k];
+            k = k + 1;
+        }
+        out[i] = u - offset;
+        i = i + 1;
+    }
+
+    free(layers);
+    free(divisors);
+    return total_samples;
+}

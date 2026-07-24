@@ -1,0 +1,33 @@
+{
+  "name": "traveler-vscode",
+  "displayName": "Traveler",
+  "description": "Traveler (.tv) language support: diagnostics, hover, go-to-definition.",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:traveler"],
+  "main": "./client.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "traveler",
+        "aliases": ["Traveler", "traveler"],
+        "extensions": [".tv"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Traveler",
+      "properties": {
+        "traveler.enginePath": {
+          "type": "string",
+          "default": "/tmp/tvc_self",
+          "description": "Path to the tvc_self engine binary (the compiler in LSP query mode)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}

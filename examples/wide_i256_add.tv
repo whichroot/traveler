@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_i256_add.tv — Slice 2 gate: i256/u256 fall out of the width-parametric
+// plumbing; a shift PAST 128 bits proves the 256-bit lane. Division-free.
+// @internal-note: plan-wide-int-surface-types + @internal-design: examples (wide-int gates).
+
+fn main() {
+    let a64: i64 = 1000000;
+    let b64: i64 = 3000000;
+    let a: i256 = a64 as i256;
+    let b: i256 = b64 as i256;
+
+    let s: i256 = a + b;            // 4_000_000
+    print(s as i64);
+    let p: i256 = a * b;            // 3_000_000_000_000
+    print(p as i64);
+
+    // Shift PAST 128 bits — proves true 256-bit width (an i128 would lose this).
+    let hi: i256 = a << 200;        // 1_000_000 * 2^200, a ~220-bit value
+    print(hi as i64);               // 0 (low word)
+    let lo: i256 = hi >> 200;       // back to 1_000_000
+    print(lo as i64);
+    let c1: i32 = (hi > p) as i32;  // 1
+    print(c1);
+
+    // Unsigned u256 (ult path).
+    let ua: u256 = a64 as u256;
+    let ub: u256 = b64 as u256;
+    let uc: i32 = (ua < ub) as i32; // 1
+    print(uc);
+}

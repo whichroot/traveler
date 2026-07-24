@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// weil_zeta_ec.tv — Weil zeta of an elliptic curve: RH(E/F_p) as the exact i64
+// check a_p^2 <= 4p; #E(F_{p^2}) explicit-formula vs direct enumeration agree.
+// @internal-design: nt (+ @internal-design: field-domains-boundary L1.4)
+// @internal-oracle: weil_zeta_ec (bit-for-bit).
+
+type F101 = Field<101>;   // used only to show Field<p> arithmetic == i64 mod p
+
+// ---- exact arithmetic over F_p, in i32 (primes here are small: products < 2^31) ----
+
+fn mod_pos(x: i32, p: i32) -> i32 {
+    let r: i32 = x % p;
+    if r < 0 { return r + p; }
+    return r;
+}
+
+// modular exponentiation = field exponentiation (square-and-multiply).
+fn modpow(base: i32, e: i32, p: i32) -> i32 {
+    var r: i32 = 1;
+    var b: i32 = mod_pos(base, p);
+    var ee: i32 = e;
+    while ee > 0 {
+        if (ee % 2) == 1 { r = (r * b) % p; }
+        b = (b * b) % p;
+        ee = ee / 2;
+    }
+    return r;
+}
+
+// Legendre symbol chi(z) in {0, +1, -1} via Euler's criterion z^((p-1)/2).
+fn legendre(z: i32, p: i32) -> i32 {
+    let zz: i32 = mod_pos(z, p);
+    if zz == 0 { return 0; }
+    let c: i32 = modpow(zz, (p - 1) / 2, p);
+    if c == 1 { return 1; }
+    return -1;
+}
+
+fn smallest_nonresidue(p: i32) -> i32 {
+    var nr: i32 = 2;
+    while nr < p {
+        if legendre(nr, p) == -1 { return nr; }
+        nr = nr + 1;
+    }
+    return 0;
+}
+
+// #E(F_p) = p + 1 + sum_x chi(x^3 + a*x + b)   (the +1 is the point at infinity)
+fn count_fp(p: i32, a: i32, b: i32) -> i32 {
+    var s: i32 = 0;
+    var x: i32 = 0;
+    while x < p {
+        let x2: i32 = (x * x) % p;
+        let x3: i32 = (x2 * x) % p;
+        let fx: i32 = (x3 + (a * x + b) % p) % p;
+        s = s + legendre(fx, p);
+        x = x + 1;
+    }
+    return p + 1 + s;
+}
+
+// ---- F_{p^2} = F_p[i]/(i^2 = nr) as pairs (u, v) = u + v*i ----
+
+fn gf2re(a0: i32, a1: i32, b0: i32, b1: i32, p: i32, nr: i32) -> i32 {
+    return (a0 * b0 % p + (a1 * b1 % p) * nr % p) % p;
+}
+
+fn gf2im(a0: i32, a1: i32, b0: i32, b1: i32, p: i32) -> i32 {
+    return (a0 * b1 % p + a1 * b0 % p) % p;
+}
+
+// #E(F_{p^2}) = p^2 + 1 + sum_{x in F_{p^2}} chi2(f(x)), via a square-set.
+fn count_fp2(p: i32, a: i32, b: i32) -> i32 {
+    let nr: i32 = smallest_nonresidue(p);
+    let n: i32 = p * p;
+    let sq: *i32 = alloc(n);
+    var i: i32 = 0;
+    while i < n { sq[i] = 0; i = i + 1; }
+
+    // mark every square (c+d*i)^2 in the set, keyed by re*p + im
+    var u: i32 = 0;
+    while u < p {
+        var v: i32 = 0;
+        while v < p {
+            let s0: i32 = gf2re(u, v, u, v, p, nr);
+            let s1: i32 = gf2im(u, v, u, v, p);
+            sq[s0 * p + s1] = 1;
+            v = v + 1;
+        }
+        u = u + 1;
+    }
+
+    // sum chi2(f(x)) over all x = (uu, vv) in F_{p^2}
+    var total: i32 = 0;
+    var uu: i32 = 0;
+    while uu < p {
+        var vv: i32 = 0;
+        while vv < p {
+            let x2r: i32 = gf2re(uu, vv, uu, vv, p, nr);
+            let x2i: i32 = gf2im(uu, vv, uu, vv, p);
+            let x3r: i32 = gf2re(x2r, x2i, uu, vv, p, nr);
+            let x3i: i32 = gf2im(x2r, x2i, uu, vv, p);
+            let f0: i32 = (x3r + (a * uu) % p + b) % p;
+            let f1: i32 = (x3i + (a * vv) % p) % p;
+            if f0 != 0 || f1 != 0 {
+                if sq[f0 * p + f1] == 1 { total = total + 1; }
+                else { total = total - 1; }
+            }
+            vv = vv + 1;
+        }
+        uu = uu + 1;
+    }
+    free(sq);
+    return n + 1 + total;
+}
+
+// Per curve: a_p, #E(F_p), #E(F_{p^2}) [direct], RH flag (a_p^2<=4p), G4 flag.
+fn report(p: i32, a: i32, b: i32) {
+    let cfp: i32 = count_fp(p, a, b);
+    let ap: i32 = p + 1 - cfp;
+    var rh: i32 = 0;
+    if ap * ap <= 4 * p { rh = 1; }
+    let direct: i32 = count_fp2(p, a, b);
+    let recur: i32 = p * p + 1 - (ap * ap - 2 * p);   // explicit formula, n=2
+    var g4: i32 = 0;
+    if direct == recur { g4 = 1; }
+    print(ap);
+    print(cfp);
+    print(direct);
+    print(rh);
+    print(g4);
+}
+
+// Field<101> exponentiation == i64 mod-101 Legendre: same arithmetic, two coords.
+fn legendre_field_101(z: i64) -> i32 {
+    let zf: F101 = z as F101;
+    let cf: F101 = zf ** 50;     // (101-1)/2 = 50; field modular exponentiation
+    let ci: i64 = cf as i64;
+    if ci == 0 { return 0; }
+    if ci == 1 { return 1; }
+    return -1;
+}
+
+fn main() -> i32 {
+    // y^2 = x^3 + a*x + b  over three primes
+    report(5, 1, 1);
+    report(13, 2, 1);
+    report(101, 1, 1);
+
+    // coordinate principle: Field<101> ** agrees with i64 mod-101 Legendre
+    var ok: i32 = 1;
+    var z: i32 = 0;
+    while z < 101 {
+        if legendre_field_101(z as i64) != legendre(z, 101) { ok = 0; }
+        z = z + 1;
+    }
+    print(ok);
+    return 0;
+}

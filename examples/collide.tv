@@ -1,0 +1,200 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// collide.tv — random Zobrist vs syndrome key at IDENTICAL 14-bit width, 120 slots:
+// exhaustive per-weight invisibility counts (BCH designed distance 5 vs chance).
+// @internal-design: ecc (syndrome keys)
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+
+// GF(2^7), x^7 + x + 1.  2^7 - 1 = 127 is a Mersenne prime, so alpha = x is
+// primitive and alpha^j is distinct for all 120 slots.
+binfield G = BinField<7, 0x83>;
+
+let NSLOT: i32 = 120;
+let ORD: i64 = 127;
+
+var g_s1: *G = null;      // alpha^j
+var g_s3: *G = null;      // alpha^(3j)
+var g_z: *i32 = null;     // classical 14-bit random words
+
+fn str_len(s: *u8) -> i32 { var i: i32 = 0; while s[i] != 0 { i = i + 1; } return i; }
+fn wr(s: *u8) { write(1, s, str_len(s) as usize); }
+fn wr_ch(c: i32) { var d: [u8; 1] = 0; d[0] = c as u8; write(1, &d[0], 1); }
+fn wr_int(n: i64) {
+    if n < 0 { wr("-"); wr_int(0 - n); return; }
+    if n >= 10 { wr_int(n / 10); }
+    wr_ch((n % 10) as i32 + 48);
+}
+fn pad(n: i64, width: i32) {
+    var d: i32 = 1;
+    var t: i64 = n;
+    while t >= 10 { t = t / 10; d = d + 1; }
+    while d < width { wr(" "); d = d + 1; }
+    wr_int(n);
+}
+
+var g_rng: i64 = 0x9E3779B97F4A7C15;
+fn rnd() -> i64 {
+    var x: i64 = g_rng;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 7);
+    x = x ^ (x << 17);
+    g_rng = x;
+    if x < 0 { return 0 - x; }
+    return x;
+}
+
+fn fpow7(base: G, e: i64) -> G {
+    var r: G = 1 as G;
+    var b: G = base;
+    var ee: i64 = e;
+    while ee > 0 {
+        if (ee % 2) == 1 { r = r * b; }
+        b = b * b;
+        ee = ee / 2;
+    }
+    return r;
+}
+
+fn init() {
+    g_s1 = alloc(NSLOT);
+    g_s3 = alloc(NSLOT);
+    g_z = alloc(NSLOT);
+    var j: i32 = 0;
+    while j < NSLOT {
+        g_s1[j] = fpow7(2 as G, (j as i64) % ORD);
+        g_s3[j] = fpow7(2 as G, (3 * (j as i64)) % ORD);
+        g_z[j] = (rnd() % 16384) as i32;      // 14-bit random word
+        j = j + 1;
+    }
+}
+
+fn main() {
+    init();
+
+    wr("======================================================================\n");
+    wr("  14-bit key, 120 slots.  Exhaustive over every difference pattern.\n");
+    wr("  classical = XOR of random 14-bit words\n");
+    wr("  syndrome  = (S_1, S_3) over GF(2^7) = BinField<7, 0x83>\n");
+    wr("======================================================================\n\n");
+    wr("  weight |      patterns |  classical invisible |  syndrome invisible\n");
+    wr("  -------+---------------+----------------------+--------------------\n");
+
+    // ---- weight 1 ----
+    var cz: i64 = 0; var cs: i64 = 0; var n: i64 = 0;
+    var a: i32 = 0;
+    while a < NSLOT {
+        if g_z[a] == 0 { cz = cz + 1; }
+        if g_s1[a] == (0 as G) && g_s3[a] == (0 as G) { cs = cs + 1; }
+        n = n + 1;
+        a = a + 1;
+    }
+    wr("       1 | "); pad(n, 13); wr(" | "); pad(cz, 20); wr(" | "); pad(cs, 19); wr("\n");
+
+    // ---- weight 2 ----
+    cz = 0; cs = 0; n = 0;
+    a = 0;
+    while a < NSLOT {
+        var b: i32 = a + 1;
+        while b < NSLOT {
+            if (g_z[a] ^ g_z[b]) == 0 { cz = cz + 1; }
+            if (g_s1[a] + g_s1[b]) == (0 as G) && (g_s3[a] + g_s3[b]) == (0 as G) { cs = cs + 1; }
+            n = n + 1;
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    wr("       2 | "); pad(n, 13); wr(" | "); pad(cz, 20); wr(" | "); pad(cs, 19); wr("\n");
+
+    // ---- weight 3 ----
+    cz = 0; cs = 0; n = 0;
+    a = 0;
+    while a < NSLOT {
+        var b: i32 = a + 1;
+        while b < NSLOT {
+            let z2: i32 = g_z[a] ^ g_z[b];
+            let p2: G = g_s1[a] + g_s1[b];
+            let q2: G = g_s3[a] + g_s3[b];
+            var c: i32 = b + 1;
+            while c < NSLOT {
+                if (z2 ^ g_z[c]) == 0 { cz = cz + 1; }
+                if (p2 + g_s1[c]) == (0 as G) && (q2 + g_s3[c]) == (0 as G) { cs = cs + 1; }
+                n = n + 1;
+                c = c + 1;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    wr("       3 | "); pad(n, 13); wr(" | "); pad(cz, 20); wr(" | "); pad(cs, 19); wr("\n");
+
+    // ---- weight 4 ----
+    cz = 0; cs = 0; n = 0;
+    a = 0;
+    while a < NSLOT {
+        var b: i32 = a + 1;
+        while b < NSLOT {
+            let z2: i32 = g_z[a] ^ g_z[b];
+            let p2: G = g_s1[a] + g_s1[b];
+            let q2: G = g_s3[a] + g_s3[b];
+            var c: i32 = b + 1;
+            while c < NSLOT {
+                let z3: i32 = z2 ^ g_z[c];
+                let p3: G = p2 + g_s1[c];
+                let q3: G = q2 + g_s3[c];
+                var d: i32 = c + 1;
+                while d < NSLOT {
+                    if (z3 ^ g_z[d]) == 0 { cz = cz + 1; }
+                    if (p3 + g_s1[d]) == (0 as G) && (q3 + g_s3[d]) == (0 as G) { cs = cs + 1; }
+                    n = n + 1;
+                    d = d + 1;
+                }
+                c = c + 1;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    wr("       4 | "); pad(n, 13); wr(" | "); pad(cz, 20); wr(" | "); pad(cs, 19); wr("\n");
+
+    // ---- weight 5: the bound runs out. the theorem MUST fail here. ----
+    cz = 0; cs = 0; n = 0;
+    a = 0;
+    while a < NSLOT {
+        var b: i32 = a + 1;
+        while b < NSLOT {
+            let z2: i32 = g_z[a] ^ g_z[b];
+            let p2: G = g_s1[a] + g_s1[b];
+            let q2: G = g_s3[a] + g_s3[b];
+            var c: i32 = b + 1;
+            while c < NSLOT {
+                let z3: i32 = z2 ^ g_z[c];
+                let p3: G = p2 + g_s1[c];
+                let q3: G = q2 + g_s3[c];
+                var d: i32 = c + 1;
+                while d < NSLOT {
+                    let z4: i32 = z3 ^ g_z[d];
+                    let p4: G = p3 + g_s1[d];
+                    let q4: G = q3 + g_s3[d];
+                    var e: i32 = d + 1;
+                    while e < NSLOT {
+                        if (z4 ^ g_z[e]) == 0 { cz = cz + 1; }
+                        if (p4 + g_s1[e]) == (0 as G) && (q4 + g_s3[e]) == (0 as G) { cs = cs + 1; }
+                        n = n + 1;
+                        e = e + 1;
+                    }
+                    d = d + 1;
+                }
+                c = c + 1;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    wr("       5 | "); pad(n, 13); wr(" | "); pad(cz, 20); wr(" | "); pad(cs, 19); wr("\n");
+
+    wr("\n  Rows 1-4: the BCH bound (designed distance 2T+1 = 5) forbids an\n");
+    wr("  invisible difference of weight <= 4. Zero, over every pattern.\n");
+    wr("  Row 5: the bound stops. The syndrome key collides too -- the\n");
+    wr("  theorem is TIGHT, not conservative.\n");
+}

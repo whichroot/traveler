@@ -1,0 +1,29 @@
+// #54: pfor dispatch over an i64-bound loop — the i64 dispatch ABI
+// (__parallel_for_i64, (ptr, i64, i64) worker). The analyzer's axioms decide
+// dispatch; bound WIDTH never refuses. Deterministic: T=1 == T=N bit-identical.
+// tvc_self-only (the frozen seed refuses wide bounds).
+
+type F = Field<65521>;
+
+fn main() -> i32 {
+    let n: i64 = 8192;
+    let a: *F = alloc(8192);
+    let b: *F = alloc(8192);
+    var i: i64 = 0;
+    while i < 8192 {
+        a[i] = i as F;
+        i = i + 1;
+    }
+    // Dispatched: element-independent field map, i64 iterator.
+    for j in 0..n {
+        b[j] = a[j] * (7 as F) + (13 as F);
+    }
+    var chk: F = 0;
+    var k: i64 = 0;
+    while k < 8192 {
+        chk = chk + b[k];
+        k = k + 1;
+    }
+    print(chk as i64);
+    return 0;
+}

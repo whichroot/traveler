@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poseidon2_wide_test.tv — B-Width Stage A gate: width-generic dyn Poseidon2
+// (poseidon2_wide.tv) at t=8 (Goldilocks parity vs the Plonky3 vector) and
+// t=16 (BabyBear math-generic liveness + MDS soundness).
+// @internal-design: crypto
+//
+// Expected output: 1   1 1
+//   Test 1: permute_w(t=8, Goldilocks) == Plonky3 width-8 vector            -> 1
+//   Test 2a: generated width-16 BabyBear diagonal is MDS-valid              -> 1
+//   Test 2b: width-16 permutation ran to completion (nonzero state)         -> 1
+//
+// 3-file link: poseidon2_wide.o + mds_check.o + grain_lfsr.o + this.
+
+extern "C" fn poseidon2_permute_w_dyn(
+    f: Field, state: *i64, rc_init: *i64, rc_term: *i64, rc_int: *i64,
+    diag: *i64, t: i32, rf_half: i32, rp: i32);
+extern "C" fn poseidon2_diag_generate_w(f: Field, pp: i64, n: i32, t: i32,
+    rf: i32, rp: i32, out: *i64) -> i32;
+extern "C" fn mds_check_diag_dyn(f: Field, pp: i64, v: *i64, t: i32) -> i32;
+extern "C" fn grain_generate(f: Field, n: i32, t: i32, rf: i32, rp: i32,
+    out: *i64, count: i32);
+
+// Canonical width-8 base diagonal, derived in-field over the runtime prime.
+fn canon_base8<F: Field>(out: *F) {
+    let zero: F = 0;
+    let one: F = 1;
+    let two: F = 2;
+    let three: F = 3;
+    let four: F = 4;
+    let half: F = one / two;
+    out[0] = zero - two;
+    out[1] = one;
+    out[2] = two;
+    out[3] = half;
+    out[4] = three;
+    out[5] = zero - half;
+    out[6] = zero - three;
+    out[7] = zero - four;
+}
+
+instantiate canon_base8<dyn>;
+
+// ---- Test 1: width-8 parity over Goldilocks ----
+fn test_t8_parity() {
+    let p: i64 = 18446744069414584321;
+    let f: Field = field(p);
+    let n: i32 = 64;
+
+    // Published Goldilocks round constants (raw stream order
+    // [ext_init(32), internal(22), ext_final(32)]), generated at runtime.
+    let raw: *i64 = alloc(86);
+    grain_generate(f, n, 8, 8, 22, raw, 86);
+    let rc_init: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let rc_term: *i64 = alloc(32);
+    for i in 0..32 { rc_init[i] = raw[i]; }
+    for i in 0..22 { rc_int[i]  = raw[32 + i]; }
+    for i in 0..32 { rc_term[i] = raw[54 + i]; }
+
+    // Canonical width-8 diagonal (valid over Goldilocks).
+    let diag: *i64 = alloc(8);
+    canon_base8_dyn(f, diag);
+
+    let state: *i64 = alloc(8);
+    for i in 0..8 { state[i] = i as i64; }
+
+    // rf_half = 4, rp = 22 for Goldilocks t=8.
+    poseidon2_permute_w_dyn(f, state, rc_init, rc_term, rc_int, diag, 8, 4, 22);
+
+    let expected: *i64 = alloc(8);
+    expected[0] = 0x020cf04a1b214d14;
+    expected[1] = 0x84e14aaaeacaed25;
+    expected[2] = 0x1ae0f640e81c7457;
+    expected[3] = 0xa4d204cbaeb0d8a5;
+    expected[4] = 0x0cf637b627b3a7ff;
+    expected[5] = 0x788d304d948b486b;
+    expected[6] = 0x7327133ea1949af4;
+    expected[7] = 0xf415abb924da395b;
+    var ok: i32 = 1;
+    for i in 0..8 { if state[i] != expected[i] { ok = 0; } }
+    print(ok);
+
+    free(raw); free(rc_init); free(rc_int); free(rc_term);
+    free(diag); free(state); free(expected);
+}
+
+// ---- Test 2: width-16 math-generic liveness + soundness over BabyBear ----
+fn test_t16_babybear() {
+    let p: i64 = 2013265921;
+    let f: Field = field(p);
+    let n: i32 = 31;
+    let t: i32 = 16;
+    let rp: i32 = 13;        // BabyBear width-16 internal rounds
+
+    // Generate an MDS-valid width-16 base diagonal.
+    let diag: *i64 = alloc(16);
+    poseidon2_diag_generate_w(f, p, n, t, 8, rp, diag);
+
+    // (2a) the generated diagonal is MDS-valid at t=16 (matrix form base+1).
+    let v: *i64 = alloc(16);
+    let one_b: i64 = 1;
+    for i in 0..16 { v[i] = diag[i] + one_b; }
+    print(mds_check_diag_dyn(f, p, v, 16));
+
+    // (2b) drive the width-16 permutation to completion with grain constants.
+    let n_consts: i32 = 8 * 16 + 13;     // rf*t + rp = 141
+    let raw: *i64 = alloc(141);
+    grain_generate(f, n, t, 8, rp, raw, n_consts);
+    let rc_init: *i64 = alloc(64);       // rf_half*t = 4*16
+    let rc_int: *i64 = alloc(13);
+    let rc_term: *i64 = alloc(64);
+    for i in 0..64 { rc_init[i] = raw[i]; }
+    for i in 0..13 { rc_int[i]  = raw[64 + i]; }
+    for i in 0..64 { rc_term[i] = raw[77 + i]; }
+
+    let state: *i64 = alloc(16);
+    for i in 0..16 { state[i] = i as i64; }
+    poseidon2_permute_w_dyn(f, state, rc_init, rc_term, rc_int, diag, 16, 4, rp);
+
+    var live: i32 = 0;
+    for i in 0..16 { if state[i] != 0 { live = 1; } }
+    print(live);
+
+    free(diag); free(v); free(raw);
+    free(rc_init); free(rc_int); free(rc_term); free(state);
+}
+
+fn main() -> i32 {
+    test_t8_parity();
+    test_t16_babybear();
+    return 0;
+}

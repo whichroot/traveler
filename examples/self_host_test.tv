@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// self_host_test.tv — Self-hosting readiness: while loops, *T function
+// args/returns, character literals, mutable pointer reassignment.
+//
+// The four features are the minimum needed to write a lexer/parser/symbol
+// table in Traveler; the patterns mirror the bootstrap compiler's code.
+//
+// Expected output: 5 72 101 108 108 111 3 99
+
+struct Token {
+    kind: i32,
+    value: i32,
+}
+
+// Function taking *u8 and returning i32 — the strlen pattern
+fn count_chars(buf: *u8, len: i32) -> i32 {
+    var count: i32 = 0;
+    var i: i32 = 0;
+    while i < len {
+        let ch: i32 = buf[i];
+        if ch != 0 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+// Function taking and returning *Token — the lookup pattern
+fn make_token(kind: i32, value: i32) -> *Token {
+    let t: *Token = alloc(1);
+    t.kind = kind;
+    t.value = value;
+    return t;
+}
+
+fn main() {
+    // === While loop + character literals ===
+    // Count non-space characters in a buffer using while loop
+    let buf: *u8 = alloc(8);
+    buf[0] = 'H';
+    buf[1] = 'e';
+    buf[2] = 'l';
+    buf[3] = 'l';
+    buf[4] = 'o';
+    buf[5] = 0;
+    buf[6] = 0;
+    buf[7] = 0;
+
+    let n: i32 = count_chars(buf, 8);
+    print(n);           // 5
+
+    // === Character literal values ===
+    // Print ASCII values of the buffer using while loop
+    var i: i32 = 0;
+    while i < 5 {
+        print(buf[i]);  // 72 101 108 108 111  (H e l l o)
+        i = i + 1;
+    }
+
+    // === *T function args and returns ===
+    let tok: *Token = make_token(3, 42);
+    print(tok.kind);    // 3
+
+    // === Mutable pointer reassignment ===
+    var p: *Token = tok;
+    let tok2: *Token = make_token(4, 99);
+    p = tok2;           // reassign pointer
+    print(p.value);     // 99 (from tok2, not tok)
+
+    free(tok);
+    free(tok2);
+    free(buf);
+}

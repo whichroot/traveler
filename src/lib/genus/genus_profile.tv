@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_profile.tv — Phase D.4: the degree filtration nseg(d) for d = 0..d_max
+// (the order-free genus invariant), greedy == global DP certified per degree.
+// @internal-design: genus
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+// seg_fits<dyn> (regime_fri.tv): window [a, a+len) fits degree `deg` iff its
+// (deg+1)-th forward difference vanishes — the SAME exact predicate greedy uses.
+extern "C" fn seg_fits_dyn(
+    f: Field, data: *i64, a: i32, len: i32, deg: i32, work: *i64) -> i32;
+
+// Greedy (canonical, left-maximal) segment count at fixed degree `deg`.
+fn gp_greedy_nseg(f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32 {
+    return regime_prove_dyn(f, data, n, deg, cert, work);
+}
+
+// Global DP-optimal minimal segment count at fixed degree `deg`, same exact-fit
+// predicate as greedy. O(n^2) fit-tests — fine for measurement sizes.
+fn gp_global_nseg(f: Field, data: *i64, n: i32, deg: i32, work: *i64) -> i32 {
+    // dp[e] = min segments to cover [0, e). dp[0]=0, others = large.
+    let big: i32 = 1000000;
+    let dp: *i32 = alloc(n + 1);
+    dp[0] = 0;
+    for e in 1..(n + 1) { dp[e] = big; }
+    for e in 1..(n + 1) {
+        for s in 0..e {
+            if seg_fits_dyn(f, data, s, e - s, deg, work) == 1 {
+                if dp[s] + 1 < dp[e] { dp[e] = dp[s] + 1; }
+            }
+        }
+    }
+    let r: i32 = dp[n];
+    free(dp);
+    return r;
+}
+
+// The degree filtration nseg(d) for d = 0..d_max, GREEDY, into out[0..d_max].
+// The canonical order-free genus invariant.
+#[export]
+fn genus_filtration(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64
+) {
+    for d in 0..(d_max + 1) {
+        out[d] = gp_greedy_nseg(f, data, n, d, cert, work) as i64;
+    }
+}
+
+// Returns 1 iff greedy == global for every degree d = 0..d_max (the
+// infix-closure / canonically-greedy certificate for the difference family).
+#[export]
+fn genus_greedy_is_global(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64
+) -> i32 {
+    for d in 0..(d_max + 1) {
+        let g: i32 = gp_greedy_nseg(f, data, n, d, cert, work);
+        let gl: i32 = gp_global_nseg(f, data, n, d, work);
+        if g != gl { return 0; }
+    }
+    return 1;
+}
+
+// Maximal segment length under greedy degree-`deg` segmentation; maxseg > deg+1
+// distinguishes REAL structure from the trivial-interpolation artifact.
+fn gp_maxseg(f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32 {
+    let nseg: i32 = regime_prove_dyn(f, data, n, deg, cert, work);
+    var mx: i32 = 0;
+    for k in 0..nseg {
+        let len: i32 = cert[k * 3 + 1] as i32;
+        if len > mx { mx = len; }
+    }
+    return mx;
+}
+
+// Resolve the MEANINGFUL plateau of the fixed-degree filtration into out[0..2]:
+//   out[0] = d*    onset degree (first d with maxseg > d+1; sentinel d_max+1)
+//   out[1] = d_end last degree from d* over which nseg stays == nseg(d*) AND
+//                  maxseg(d) > d+1 (real structure, not interpolation slack)
+//   out[2] = P     the plateau value nseg(d*) (0 if no onset)
+#[export]
+fn genus_resolve_plateau(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64
+) {
+    // onset d* = first d with maxseg > d+1
+    var dstar: i32 = d_max + 1;
+    var dd: i32 = 0;
+    var scanning: i32 = 1;
+    while scanning == 1 {
+        if dd > d_max { scanning = 0; }
+        else {
+            if gp_maxseg(f, data, n, dd, cert, work) > dd + 1 {
+                dstar = dd; scanning = 0;
+            } else { dd = dd + 1; }
+        }
+    }
+    out[0] = dstar as i64;
+    if dstar > d_max { out[1] = d_max as i64; out[2] = 0; return; }
+    let P: i32 = gp_greedy_nseg(f, data, n, dstar, cert, work);
+    out[2] = P as i64;
+    // extend plateau while nseg stays P and maxseg stays real
+    var dend: i32 = dstar;
+    var d: i32 = dstar;
+    var going: i32 = 1;
+    while going == 1 {
+        if d > d_max { going = 0; }
+        else {
+            let ns: i32 = gp_greedy_nseg(f, data, n, d, cert, work);
+            let mx: i32 = gp_maxseg(f, data, n, d, cert, work);
+            if ns == P && mx > d + 1 { dend = d; d = d + 1; }
+            else { going = 0; }
+        }
+    }
+    out[1] = dend as i64;
+}

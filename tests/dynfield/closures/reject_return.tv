@@ -1,0 +1,6 @@
+// N1 (Rubicon): a closure cannot escape via return.
+fn make(c: i32) {
+    let f = |x: i32| x + c;
+    return f;
+}
+fn main() { make(1); print(1); }

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_if_dyn_test.tv — driver for the #[zk] conditional select over a runtime
+// prime: the SAME #[zk] select proven over Goldilocks, then BabyBear.
+// @internal-design: zk
+//
+// Calls (matching the baked zk_if_test / zk_cubic_dyn contract):
+//   1. select_val_dyn(f, 1, 42, 99) natively -> 42 (sel=1 picks a)
+//   2. select_val_zk_prove_dyn(f, 1, 42, 99, ...) -> dyn PLONK proof, returns 1
+//
+// Link: plonk_dyn.o + zk_if_dyn.o + zk_if_dyn_test.o
+// Expected output: 42 1  42 1
+
+extern "C" fn fill_rc(rc_init: *i64, rc_term: *i64, rc_int: *i64);
+extern "C" fn poseidon2_diag_dyn(f: Field, diag: *i64);
+
+extern "C" fn select_val_dyn(f: Field, sel: i64, a: i64, b: i64) -> i64;
+extern "C" fn select_val_zk_prove_dyn(
+    f: Field, sel: i64, a: i64, b: i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+
+fn run(p: i64) {
+    let f: Field = field(p);
+    let rc_init: *i64 = alloc(32);
+    let rc_term: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let diag: *i64 = alloc(8);
+    fill_rc(rc_init, rc_term, rc_int);
+    poseidon2_diag_dyn(f, diag);
+
+    // 1. native: sel=1 picks a=42
+    print(select_val_dyn(f, 1, 42, 99));   // 42
+
+    // 2. prove
+    let num_queries: i32 = 3;
+    let eval_out: *i64 = alloc(16);
+    let fri_roots: *i64 = alloc(128);
+    let fri_challenges: *i64 = alloc(32);
+    let fri_final_poly: *i64 = alloc(4);
+    let fri_query_values: *i64 = alloc(512);
+    let fri_query_paths: *i64 = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    let ok: i32 = select_val_zk_prove_dyn(f, 1, 42, 99, eval_out,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        fri_n_rounds, num_queries, rc_init, rc_term, rc_int, diag);
+    print(ok);   // 1
+
+    free(eval_out); free(fri_roots); free(fri_challenges); free(fri_final_poly);
+    free(fri_query_values); free(fri_query_paths); free(fri_query_indices); free(fri_n_rounds);
+    free(rc_init); free(rc_term); free(rc_int); free(diag);
+}
+
+fn main() -> i32 {
+    run(18446744069414584321);
+    run(2013265921);
+    return 0;
+}

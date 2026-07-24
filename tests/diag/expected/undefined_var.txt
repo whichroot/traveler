@@ -1,0 +1,2 @@
+undefined variable 'undefined_thing'
+undefined_var.tv:2:11

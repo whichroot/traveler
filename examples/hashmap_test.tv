@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// hashmap_test.tv — HashMap<K,V> gate (B1a Slice 3; tvc_self ONLY, defs
+// inlined): int/struct/field keys, collision, overwrite, absent-key probes.
+// @internal-design: collections.
+//
+// Expected output:
+//   77     (get key=42 -> found, value 77)
+//   1      (collision: both colliding keys retrievable -> flag)
+//   88     (overwrite: get key=42 -> new value 88)
+//   2      (len after {42, 58} distinct inserts, pre-overwrite count kept)
+//   0      (absent key 99 -> not found)
+//   1      (struct key Pt{3,4} retrievable -> flag)
+//   1      (field-key value-direct: key 200 retrievable -> flag)
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn exit(code: i32);
+
+struct HashMap<K, V> {
+    keys: *K,
+    vals: *V,
+    used: *u8,
+    cap: i32,
+    len: i32,
+    kw: i32,
+    mode: i32,
+}
+
+fn hm_hash_djb2(p: *u8, kw: i32, cap: i32) -> i32 {
+    var h: u32 = 5381;
+    var i: i32 = 0;
+    while i < kw {
+        h = ((h << 5) + h) + (p[i] as u32);
+        i = i + 1;
+    }
+    return (h as i32) & (cap - 1);
+}
+
+fn hm_hash_value(p: *u8, kw: i32, cap: i32) -> i32 {
+    var v: u64 = 0;
+    var i: i32 = 0;
+    while i < kw {
+        v = v | ((p[i] as u64) << (i * 8));
+        i = i + 1;
+    }
+    return (v as i32) & (cap - 1);
+}
+
+fn hm_hash(p: *u8, kw: i32, cap: i32, mode: i32) -> i32 {
+    if mode == 1 {
+        return hm_hash_value(p, kw, cap);
+    }
+    return hm_hash_djb2(p, kw, cap);
+}
+
+fn hm_bytes_eq(a: *u8, b: *u8, kw: i32) -> i32 {
+    var i: i32 = 0;
+    while i < kw {
+        if a[i] != b[i] {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn hashmap_new<K, V>(key_width: i32) -> HashMap<K, V> {
+    let k: *K = alloc(16);
+    let v: *V = alloc(16);
+    let u: *u8 = alloc(16);
+    return HashMap { keys: k, vals: v, used: u, cap: 16, len: 0, kw: key_width, mode: 0 };
+}
+
+fn hashmap_new_field<K, V>(key_width: i32) -> HashMap<K, V> {
+    let k: *K = alloc(16);
+    let v: *V = alloc(16);
+    let u: *u8 = alloc(16);
+    return HashMap { keys: k, vals: v, used: u, cap: 16, len: 0, kw: key_width, mode: 1 };
+}
+
+fn hashmap_insert<K, V>(m: *HashMap<K, V>, k: K, v: V) {
+    let kb: *u8 = (&k) as *u8;
+    var idx: i32 = hm_hash(kb, m.kw, m.cap, m.mode);
+    var probes: i32 = 0;
+    while probes < m.cap {
+        if m.used[idx] == 0 {
+            if m.len == m.cap {
+                write(2, "hashmap: full\n", 14);
+                exit(1);
+            }
+            m.keys[idx] = k;
+            m.vals[idx] = v;
+            m.used[idx] = 1;
+            m.len = m.len + 1;
+            return;
+        }
+        let slot_kb: *u8 = (&m.keys[idx]) as *u8;
+        if hm_bytes_eq(slot_kb, kb, m.kw) == 1 {
+            m.vals[idx] = v;
+            return;
+        }
+        idx = (idx + 1) & (m.cap - 1);
+        probes = probes + 1;
+    }
+    write(2, "hashmap: full\n", 14);
+    exit(1);
+}
+
+fn hashmap_get<K, V>(m: *HashMap<K, V>, k: K, out: *V) -> i32 {
+    let kb: *u8 = (&k) as *u8;
+    var idx: i32 = hm_hash(kb, m.kw, m.cap, m.mode);
+    var probes: i32 = 0;
+    while probes < m.cap {
+        if m.used[idx] == 0 {
+            return 0;
+        }
+        let slot_kb: *u8 = (&m.keys[idx]) as *u8;
+        if hm_bytes_eq(slot_kb, kb, m.kw) == 1 {
+            out[0] = m.vals[idx];
+            return 1;
+        }
+        idx = (idx + 1) & (m.cap - 1);
+        probes = probes + 1;
+    }
+    return 0;
+}
+
+fn hashmap_len<K, V>(m: *HashMap<K, V>) -> i32 {
+    return m.len;
+}
+
+fn hashmap_free<K, V>(m: *HashMap<K, V>) {
+    free(m.keys);
+    free(m.vals);
+    free(m.used);
+}
+
+struct Pt {
+    x: i32,
+    y: i32,
+}
+
+fn main() -> i32 {
+    // --- int keys (kw=4) ---
+    var m: HashMap<i32, i32> = hashmap_new(4);
+    hashmap_insert(&m, 42, 77);
+    hashmap_insert(&m, 58, 99);   // 58 = 42 + 16: collides with 42 at cap=16
+    var out: i32 = 0;
+    let f1: i32 = hashmap_get(&m, 42, &out);
+    print(out);                   // 77
+
+    // --- forced collision: both 42 and 58 retrievable ---
+    var o2: i32 = 0;
+    let g42: i32 = hashmap_get(&m, 42, &o2);
+    var o3: i32 = 0;
+    let g58: i32 = hashmap_get(&m, 58, &o3);
+    var coll: i32 = 0;
+    if g42 == 1 && g58 == 1 && o2 == 77 && o3 == 99 { coll = 1; }
+    print(coll);                  // 1
+
+    // --- overwrite key 42 ---
+    hashmap_insert(&m, 42, 88);
+    var o4: i32 = 0;
+    hashmap_get(&m, 42, &o4);
+    print(o4);                    // 88
+    print(hashmap_len(&m));       // 2 (overwrite did not grow len)
+
+    // --- absent key ---
+    var o5: i32 = 0;
+    print(hashmap_get(&m, 99, &o5)); // 0
+    hashmap_free(&m);
+
+    // --- struct key Pt (kw=8) ---
+    var sm: HashMap<Pt, i32> = hashmap_new(8);
+    hashmap_insert(&sm, Pt { x: 3, y: 4 }, 1234);
+    var so: i32 = 0;
+    let sg: i32 = hashmap_get(&sm, Pt { x: 3, y: 4 }, &so);
+    var sflag: i32 = 0;
+    if sg == 1 && so == 1234 { sflag = 1; }
+    print(sflag);                 // 1
+    hashmap_free(&sm);
+
+    // --- field-key sub-probe (mode 1, value-direct) ---
+    var fm: HashMap<i32, i32> = hashmap_new_field(4);
+    hashmap_insert(&fm, 200, 5);  // field value 200 (< 251) as key
+    hashmap_insert(&fm, 7, 9);
+    var fo: i32 = 0;
+    let fg: i32 = hashmap_get(&fm, 200, &fo);
+    var fflag: i32 = 0;
+    if fg == 1 && fo == 5 { fflag = 1; }
+    print(fflag);                 // 1
+    hashmap_free(&fm);
+
+    return 0;
+}

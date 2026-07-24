@@ -1,0 +1,4 @@
+wrong number of arguments to closure
+expected 2
+found 1
+arity_closure.tv:6

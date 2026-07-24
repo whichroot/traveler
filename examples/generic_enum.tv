@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// generic_enum.tv — generic enums Option<T> / Result<T,E>, monomorphized per
+// instantiation (B2a Slice 0). tvc_self ONLY (gated in tests/dynfield/run.sh).
+// @internal-design: examples (generic_enum).
+//
+// Expected output:
+//   42     Option<i32> Some payload
+//   99     Option<i32> None arm
+//   7      Result<i32,i32> Ok
+//   13     Result<i32,i32> Err
+//   3      Option<Pt> struct payload .x
+//   4      Option<Pt> struct payload .y
+//   5      safe_div(20,4) -> Some(5), unwrapped
+//   -1     safe_div(7,0) -> None, default
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+struct Pt {
+    x: i32,
+    y: i32,
+}
+
+// Generic enum as a return type — the hashmap_get -> Option<V> shape.
+fn safe_div(a: i32, b: i32) -> Option<i32> {
+    if b == 0 {
+        return Option::None;
+    }
+    return Option::Some(a / b);
+}
+
+// Generic enum as a parameter type.
+fn unwrap_or(o: Option<i32>, dflt: i32) -> i32 {
+    match o {
+        Option::Some(v) => { return v; }
+        Option::None => { return dflt; }
+    }
+    return dflt;
+}
+
+fn main() -> i32 {
+    // Option<i32>: construct + match
+    let a: Option<i32> = Option::Some(42);
+    match a {
+        Option::Some(v) => { print(v); }       // 42
+        Option::None => { print(0); }
+    }
+    let b: Option<i32> = Option::None;
+    match b {
+        Option::Some(v) => { print(v); }
+        Option::None => { print(99); }         // 99
+    }
+
+    // Result<i32, i32>: two type parameters
+    let r1: Result<i32, i32> = Result::Ok(7);
+    match r1 {
+        Result::Ok(v) => { print(v); }         // 7
+        Result::Err(e) => { print(0 - e); }
+    }
+    let r2: Result<i32, i32> = Result::Err(13);
+    match r2 {
+        Result::Ok(v) => { print(v); }
+        Result::Err(e) => { print(e); }        // 13
+    }
+
+    // Option<Pt>: struct payload (payload size = sizeof(Pt))
+    let p: Option<Pt> = Option::Some(Pt { x: 3, y: 4 });
+    match p {
+        Option::Some(pt) => { print(pt.x); print(pt.y); }  // 3 4
+        Option::None => { print(0); }
+    }
+
+    // Generic enum through function return + parameter
+    print(unwrap_or(safe_div(20, 4), 0 - 1));  // 5
+    print(unwrap_or(safe_div(7, 0), 0 - 1));   // -1
+    return 0;
+}

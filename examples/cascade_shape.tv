@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// cascade_shape.tv — decomposition SHAPE of real audio (spectral-tail Phase 0):
+// 16-bit PCM WAV -> L/R/mid/side -> Field<65537> -> Register+NTT cascade stats.
+// @internal-design: examples (cascade_shape).
+//
+// Link: cascade_shape.o + residual_cascade.o + piecewise_codec.o + ntt.o
+// Usage: cascade_shape <file.wav>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+// codec: project signed i16 PCM -> Field<65537> i32 samples
+extern "C" fn pc_project_to_field(signed_samples: *i16, n: i32, field_samples: *i32) -> i32;
+
+// cascade core (residual_cascade.o). LayerInfo re-declared to match its layout.
+struct LayerInfo {
+    kind: i32,
+    n_regimes: i32,
+    res_max: i32,
+    res_mean: i32,
+    n_small: i32,
+    n_medium: i32,
+    n_large: i32,
+    ntt_kept: i32,
+    ntt_total: i32,
+}
+extern "C" fn cascade_extract(input: *i32, n: i32, infos: *LayerInfo, final_res: *i32) -> i32;
+extern "C" fn compute_stats(res: *i32, n: i32, p: i32, info: *LayerInfo);
+
+let CS_P: i32 = 65537;
+let CS_LAYERS: i32 = 6;
+
+// ==================== OUTPUT ====================
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 { wr_int(fd, n / 10); }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn kv(fd: i32, key: *u8, v: i64) {
+    wr(fd, key);
+    wr_int(fd, v);
+}
+
+// ==================== WAV ====================
+
+fn read_le_u16(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256;
+}
+
+fn read_le_u32(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+    + (buf[pos + 2] as i32) * 65536 + (buf[pos + 3] as i32) * 16777216;
+}
+
+// read a signed 16-bit little-endian sample at byte offset
+fn read_s16(buf: *u8, off: i32) -> i32 {
+    var val: i32 = buf[off] as i32 + (buf[off + 1] as i32) * 256;
+    if val >= 32768 { val = val - 65536; }
+    return val;
+}
+
+fn find_data_chunk(buf: *u8, file_size: i32, data_size_out: *i32) -> i32 {
+    var pos: i32 = 12;
+    while pos < file_size - 8 {
+        let c0: i32 = buf[pos] as i32;
+        let c1: i32 = buf[pos + 1] as i32;
+        let c2: i32 = buf[pos + 2] as i32;
+        let c3: i32 = buf[pos + 3] as i32;
+        let sz: i32 = read_le_u32(buf, pos + 4);
+        if c0 == 100 && c1 == 97 && c2 == 116 && c3 == 97 {   // 'data'
+            data_size_out[0] = sz;
+            return pos + 8;
+        }
+        pos = pos + 8 + sz + (sz % 2);
+    }
+    return 0;
+}
+
+// ==================== ONE FRAMING ====================
+
+fn print_layer(info: *LayerInfo, idx: i32) {
+    wr(2, "  L"); wr_int(2, idx as i64);
+    if info.kind == 0 { wr(2, " Register "); } else { wr(2, " NTT      "); }
+    kv(2, " regimes=", info.n_regimes as i64);
+    kv(2, " res_mean=", info.res_mean as i64);
+    kv(2, " res_max=", info.res_max as i64);
+    wr(2, " s/m/l=");
+    wr_int(2, info.n_small as i64); wr(2, "/");
+    wr_int(2, info.n_medium as i64); wr(2, "/");
+    wr_int(2, info.n_large as i64);
+    if info.kind == 1 {
+        kv(2, " kept=", info.ntt_kept as i64);
+        wr(2, "/"); wr_int(2, info.ntt_total as i64);
+    }
+    wr(2, "\n");
+}
+
+fn analyze(label: *u8, ch: *i16, n: i32) {
+    let field_samples: *i32 = alloc(n);
+    pc_project_to_field(ch, n, field_samples);
+
+    // input stats
+    let input_info: *LayerInfo = alloc(1);
+    compute_stats(field_samples, n, CS_P, input_info);
+
+    let infos: *LayerInfo = alloc(CS_LAYERS);
+    let final_res: *i32 = alloc(n);
+    let n_layers: i32 = cascade_extract(field_samples, n, infos, final_res);
+
+    wr(2, "== "); wr(2, label); wr(2, " ==\n");
+    wr(2, "  input   ");
+    kv(2, " res_mean=", input_info.res_mean as i64);
+    kv(2, " res_max=", input_info.res_max as i64);
+    wr(2, " s/m/l=");
+    wr_int(2, input_info.n_small as i64); wr(2, "/");
+    wr_int(2, input_info.n_medium as i64); wr(2, "/");
+    wr_int(2, input_info.n_large as i64);
+    wr(2, "\n");
+    kv(2, "  layers=", n_layers as i64); wr(2, "\n");
+
+    var layer: i32 = 0;
+    while layer < n_layers {
+        print_layer(&infos[layer], layer);
+        layer = layer + 1;
+    }
+    // final residual stats (the tail that survives the cascade)
+    let tail_info: *LayerInfo = alloc(1);
+    compute_stats(final_res, n, CS_P, tail_info);
+    wr(2, "  TAIL    ");
+    kv(2, " res_mean=", tail_info.res_mean as i64);
+    kv(2, " res_max=", tail_info.res_max as i64);
+    wr(2, " s/m/l=");
+    wr_int(2, tail_info.n_small as i64); wr(2, "/");
+    wr_int(2, tail_info.n_medium as i64); wr(2, "/");
+    wr_int(2, tail_info.n_large as i64);
+    wr(2, "\n");
+
+    free(tail_info);
+    free(final_res);
+    free(infos);
+    free(input_info);
+    free(field_samples);
+}
+
+// ==================== MAIN ====================
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc < 2 {
+        wr(2, "usage: cascade_shape <file.wav>\n");
+        exit(1);
+    }
+    let path: *u8 = argv[1];
+
+    let fd: i32 = open(path, 0, 0);
+    if fd < 0 { wr(2, "error: cannot open file\n"); exit(1); }
+    let buf: *u8 = alloc(134217728);   // 128 MB cap
+    let file_size: i64 = read_bytes(fd, buf, 134217728);
+    close(fd);
+
+    let num_channels: i32 = read_le_u16(buf, 22);
+    let sample_rate: i32 = read_le_u32(buf, 24);
+    let bits: i32 = read_le_u16(buf, 34);
+    if bits != 16 { wr(2, "error: only 16-bit PCM supported\n"); exit(1); }
+
+    var data_size_arr: [i32; 1] = 0;
+    let data_offset: i32 = find_data_chunk(buf, file_size as i32, &data_size_arr[0]);
+    let data_size: i32 = data_size_arr[0];
+    if data_offset == 0 { wr(2, "error: no data chunk\n"); exit(1); }
+    let num_frames: i32 = data_size / (2 * num_channels);
+
+    wr(2, "FILE "); wr(2, path); wr(2, "\n");
+    kv(2, "  channels=", num_channels as i64);
+    kv(2, " rate=", sample_rate as i64);
+    kv(2, " frames=", num_frames as i64);
+    wr(2, "\n");
+
+    // Build the four channel framings as signed i16 arrays.
+    let chL: *i16 = alloc(num_frames);
+    let chR: *i16 = alloc(num_frames);
+    let chM: *i16 = alloc(num_frames);
+    let chS: *i16 = alloc(num_frames);
+    var i: i32 = 0;
+    while i < num_frames {
+        let base: i32 = data_offset + (i * num_channels) * 2;
+        let l: i32 = read_s16(buf, base);
+        var r: i32 = l;
+        if num_channels > 1 { r = read_s16(buf, base + 2); }
+        chL[i] = l as i16;
+        chR[i] = r as i16;
+        chM[i] = ((l + r) / 2) as i16;
+        chS[i] = ((l - r) / 2) as i16;
+        i = i + 1;
+    }
+    free(buf);
+
+    analyze("L", chL, num_frames);
+    analyze("R", chR, num_frames);
+    analyze("mid", chM, num_frames);
+    analyze("side", chS, num_frames);
+
+    free(chS); free(chM); free(chR); free(chL);
+
+    print(num_frames as i64);
+    return 0;
+}

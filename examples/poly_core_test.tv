@@ -1,0 +1,363 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poly_core_test.tv — Comprehensive test for poly_core kernel.
+//
+// Links with poly_core.tv (two-file link).
+//
+// Test matrix:
+//   Round-trip: orders 1-8 × primes {0, 251, 65521} = 24 tests
+//     For each: generate coefficients → forward_sum → data → forward_diff
+//     → recovered coefficients → verify exact match → forward_sum again
+//     → verify data reconstruction exact.
+//   Regime boundary: primes {0, 251, 65521} = 3 tests
+//     Splice two polynomials, verify regime_detect finds the boundary.
+//   eval_at × forward_sum: orders 1-4 × primes {251, 65521} = 8 tests
+//     Multiplicative evaluation must match additive evaluation
+//     at all consecutive points.
+//   eval_at non-consecutive: 3 points × 2 primes = 6 tests
+//     Known polynomial f(x) = 10 + 4x + 2x(x-1), hand-computed values
+//     at points unreachable by forward_sum.
+//   Total: 41 tests
+//
+// Coefficient generation:
+//   p > 0: coeffs[k] = (k * 37 + 13) % p
+//     For p=251: [13, 50, 87, 124, 161, 198, 235, 21, 58]
+//     Includes values near p (235) and wrapped values (21, 58).
+//   p = 0: coeffs[k] = k + 1
+//     Small values [1, 2, ..., 9] to avoid i32 overflow at 20 points.
+//
+// Data points: n=100 for field primes (wrapping keeps values in range),
+//   n=20 for p=0 (i32 overflow-safe with small coefficients).
+//
+// Expected output: 41 tests, 41 passed
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// Import kernel functions (linked from poly_core.o)
+extern "C" fn forward_sum(coeffs: *i32, order: i32, out: *i32, n: i32, p: i32, reg: *i32);
+extern "C" fn forward_diff(data: *i32, n: i32, coeffs: *i32, max_order: i32, p: i32, work: *i32) -> i32;
+extern "C" fn regime_detect(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32;
+extern "C" fn eval_at(coeffs: *i32, order: i32, x: i32, p: i32) -> i32;
+
+fn main() {
+    var tests: i32 = 0;
+    var passed: i32 = 0;
+
+    var primes: [i32; 3] = 0;
+    primes[0] = 0;
+    primes[1] = 251;
+    primes[2] = 65521;
+
+    // Shared buffers sized for worst case: order 8, n=100
+    var coeffs: [i32; 9] = 0;
+    var out: [i32; 100] = 0;
+    var recovered: [i32; 10] = 0;
+    var work: [i32; 100] = 0;
+    var reg: [i32; 9] = 0;
+    var verify: [i32; 100] = 0;
+    var reg2: [i32; 9] = 0;
+
+    // ============================================================
+    //  ROUND-TRIP: 8 orders × 3 primes = 24 tests
+    //
+    //  For a degree-d polynomial (order d), Newton coefficients
+    //  [c_0, c_1, ..., c_d] produce data via forward_sum.
+    //  forward_diff on that data must recover the exact coefficients.
+    //  forward_sum on recovered must reproduce the exact data.
+    //  This is the identity: decode ∘ encode = id.
+    // ============================================================
+    var oi: i32 = 0;
+    while oi < 8 {
+        let order: i32 = oi + 1;
+        var pi: i32 = 0;
+        while pi < 3 {
+            let p: i32 = primes[pi];
+
+            // n=100 for field primes, n=20 for raw integer (i32 overflow safety)
+            var n: i32 = 100;
+            if p == 0 { n = 20; }
+
+            // Generate deterministic coefficients
+            var k: i32 = 0;
+            while k <= order {
+                if p > 0 {
+                    coeffs[k] = (k * 37 + 13) % p;
+                } else {
+                    coeffs[k] = k + 1;
+                }
+                k = k + 1;
+            }
+
+            // Step 1: forward_sum — coefficients → data
+            forward_sum(&coeffs[0], order, &out[0], n, p, &reg[0]);
+
+            // Step 2: forward_diff — data → recovered coefficients
+            let det: i32 = forward_diff(&out[0], n, &recovered[0], order + 1, p, &work[0]);
+
+            // Check A: detected vanishing level == order + 1
+            var ok: i32 = 1;
+            if det != order + 1 { ok = 0; }
+
+            // Check B: recovered[0..order] == coeffs[0..order]
+            k = 0;
+            while k <= order {
+                if recovered[k] != coeffs[k] { ok = 0; }
+                k = k + 1;
+            }
+
+            // Step 3: forward_sum(recovered) — verify data reconstruction
+            forward_sum(&recovered[0], order, &verify[0], n, p, &reg2[0]);
+
+            // Check C: verify[0..n-1] == out[0..n-1]
+            var di: i32 = 0;
+            while di < n {
+                if verify[di] != out[di] { ok = 0; }
+                di = di + 1;
+            }
+
+            // Report
+            tests = tests + 1;
+            wr(1, "round-trip order=");
+            wr_int(1, order as i64);
+            wr(1, " p=");
+            wr_int(1, p as i64);
+            wr(1, ": ");
+            if ok == 1 {
+                wr(1, "PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, "FAIL (det=");
+                wr_int(1, det as i64);
+                wr(1, ")\n");
+            }
+
+            pi = pi + 1;
+        }
+        oi = oi + 1;
+    }
+
+    // ============================================================
+    //  REGIME BOUNDARY: 3 primes
+    //
+    //  Splice two degree-2 polynomials at the midpoint.
+    //  Poly1: Newton coeffs [10, 4, 2] for first half.
+    //  Poly2: Newton coeffs [5, 7, 1] for second half.
+    //  Poly2 starts from t=0 at the splice point, creating a
+    //  discontinuity. regime_detect must find the boundary.
+    // ============================================================
+    var c1: [i32; 3] = 0;
+    c1[0] = 10; c1[1] = 4; c1[2] = 2;
+    var c2: [i32; 3] = 0;
+    c2[0] = 5; c2[1] = 7; c2[2] = 1;
+
+    var half1: [i32; 50] = 0;
+    var half2: [i32; 50] = 0;
+    var splice: [i32; 100] = 0;
+    var r1: [i32; 3] = 0;
+    var r2: [i32; 3] = 0;
+    var r3: [i32; 3] = 0;
+
+    var rpi: i32 = 0;
+    while rpi < 3 {
+        let p: i32 = primes[rpi];
+        var n: i32 = 100;
+        if p == 0 { n = 20; }
+        let half_n: i32 = n / 2;
+
+        // Generate first half from poly1
+        forward_sum(&c1[0], 2, &half1[0], half_n, p, &r1[0]);
+        // Generate second half from poly2 (starting from t=0)
+        forward_sum(&c2[0], 2, &half2[0], half_n, p, &r2[0]);
+
+        // Splice into one array
+        var si: i32 = 0;
+        while si < half_n {
+            splice[si] = half1[si];
+            si = si + 1;
+        }
+        si = 0;
+        while si < half_n {
+            splice[half_n + si] = half2[si];
+            si = si + 1;
+        }
+
+        // Detect boundary (threshold=0: any residual triggers)
+        let boundary: i32 = regime_detect(&splice[0], n, 2, 0, p, &r3[0]);
+
+        // Report
+        tests = tests + 1;
+        wr(1, "regime order=2 p=");
+        wr_int(1, p as i64);
+        wr(1, " boundary=");
+        wr_int(1, boundary as i64);
+        wr(1, ": ");
+        if boundary == half_n {
+            wr(1, "PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, "FAIL (expected ");
+            wr_int(1, half_n as i64);
+            wr(1, ")\n");
+        }
+
+        rpi = rpi + 1;
+    }
+
+    // ============================================================
+    //  EVAL_AT × FORWARD_SUM CROSS-VERIFICATION
+    //  4 orders × 2 primes = 8 tests
+    //
+    //  The multiplicative evaluation (eval_at, Horner on falling
+    //  factorials) must agree with the additive evaluation
+    //  (forward_sum, register advancement) at every consecutive
+    //  integer point. This proves the two paths through the
+    //  algebra produce the same result.
+    // ============================================================
+    var eoi: i32 = 0;
+    while eoi < 4 {
+        let eorder: i32 = eoi + 1;
+        var epi: i32 = 0;
+        while epi < 2 {
+            // p=251 and p=65521 only (eval_at requires p > 0)
+            let ep: i32 = primes[epi + 1];
+            let en: i32 = 20;
+
+            // Generate coefficients (same scheme as round-trip)
+            var ek: i32 = 0;
+            while ek <= eorder {
+                coeffs[ek] = (ek * 37 + 13) % ep;
+                ek = ek + 1;
+            }
+
+            // forward_sum for reference data
+            forward_sum(&coeffs[0], eorder, &out[0], en, ep, &reg[0]);
+
+            // Cross-verify: eval_at at each consecutive point
+            var eok: i32 = 1;
+            var ei: i32 = 0;
+            while ei < en {
+                let eval_val: i32 = eval_at(&coeffs[0], eorder, ei, ep);
+                if eval_val != out[ei] { eok = 0; }
+                ei = ei + 1;
+            }
+
+            tests = tests + 1;
+            wr(1, "eval_at*sum order=");
+            wr_int(1, eorder as i64);
+            wr(1, " p=");
+            wr_int(1, ep as i64);
+            wr(1, ": ");
+            if eok == 1 {
+                wr(1, "PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, "FAIL\n");
+            }
+
+            epi = epi + 1;
+        }
+        eoi = eoi + 1;
+    }
+
+    // ============================================================
+    //  EVAL_AT NON-CONSECUTIVE POINTS
+    //  3 points × 2 primes = 6 tests
+    //
+    //  Known polynomial: Newton coefficients [10, 4, 2], order 2
+    //  f(x) = 10 + 4*(x choose 1) + 2*(x choose 2)
+    //       = 10 + 4x + x*(x-1) = x^2 + 3x + 10 (standard form)
+    //
+    //  These test points are beyond the range of any forward_sum
+    //  call. Only eval_at can reach them.
+    //
+    //  p=251:
+    //    f(100)  = 10000 + 300 + 10 = 10310 ≡ 19  (mod 251)
+    //    f(200)  = 40000 + 600 + 10 = 40610 ≡ 199 (mod 251)
+    //    f(250)  = f(-1 mod 251) = 1 - 3 + 10 = 8
+    //
+    //  p=65521:
+    //    f(100)   = 10310 (no reduction needed)
+    //    f(1000)  = 1003010 ≡ 20195 (mod 65521)
+    //    f(65520) = f(-1 mod 65521) = 1 - 3 + 10 = 8
+    // ============================================================
+    var nc_c: [i32; 3] = 0;
+    nc_c[0] = 10; nc_c[1] = 4; nc_c[2] = 2;
+
+    // p=251 non-consecutive tests
+    var nc_x: [i32; 3] = 0;
+    nc_x[0] = 100; nc_x[1] = 200; nc_x[2] = 250;
+    var nc_e: [i32; 3] = 0;
+    nc_e[0] = 19; nc_e[1] = 199; nc_e[2] = 8;
+
+    var nci: i32 = 0;
+    while nci < 3 {
+        let got: i32 = eval_at(&nc_c[0], 2, nc_x[nci], 251);
+        tests = tests + 1;
+        wr(1, "eval_at x=");
+        wr_int(1, nc_x[nci] as i64);
+        wr(1, " p=251: ");
+        if got == nc_e[nci] {
+            wr(1, "PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, "FAIL (got ");
+            wr_int(1, got as i64);
+            wr(1, " expect ");
+            wr_int(1, nc_e[nci] as i64);
+            wr(1, ")\n");
+        }
+        nci = nci + 1;
+    }
+
+    // p=65521 non-consecutive tests
+    var nc_x2: [i32; 3] = 0;
+    nc_x2[0] = 100; nc_x2[1] = 1000; nc_x2[2] = 65520;
+    var nc_e2: [i32; 3] = 0;
+    nc_e2[0] = 10310; nc_e2[1] = 20195; nc_e2[2] = 8;
+
+    nci = 0;
+    while nci < 3 {
+        let got2: i32 = eval_at(&nc_c[0], 2, nc_x2[nci], 65521);
+        tests = tests + 1;
+        wr(1, "eval_at x=");
+        wr_int(1, nc_x2[nci] as i64);
+        wr(1, " p=65521: ");
+        if got2 == nc_e2[nci] {
+            wr(1, "PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, "FAIL (got ");
+            wr_int(1, got2 as i64);
+            wr(1, " expect ");
+            wr_int(1, nc_e2[nci] as i64);
+            wr(1, ")\n");
+        }
+        nci = nci + 1;
+    }
+
+    // Summary
+    wr_int(1, tests as i64);
+    wr(1, " tests, ");
+    wr_int(1, passed as i64);
+    wr(1, " passed\n");
+}

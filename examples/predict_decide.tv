@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// predict_decide.tv — the B2 capstone: the predict/decide architecture
+// (mantis-shaped) — runtime fn-pointer prediction, compile-time trait decision.
+// tvc_self ONLY. Prose: @internal-design: examples (predict_decide).
+//
+// Expected output:
+//   25     terrain net_edge(p_true=70, p_market=45) = |70-45|
+//   1      momentum predictor on (70,45): trending up -> signal 1
+//   0      revert predictor on (70,45): far from mean -> signal 0
+//   1      ConservativeGate: net_edge 25 >= 20 AND signal 1 -> EXECUTE
+//   0      ConservativeGate: net_edge 25 but signal 0       -> SKIP
+//   1      AggressiveGate: net_edge 25 >= 10 -> EXECUTE (ignores signal)
+//   62     run_bot(momentum, conservative): executed, size = net_edge*2+12
+
+// ---- TERRAIN: parameter-free physics (the fixed basis) ----
+
+fn abs_i32(x: i32) -> i32 {
+    if x < 0 { return 0 - x; }
+    return x;
+}
+
+// net_edge = |p_true - p_market|. No knobs. The trail either exists or not.
+fn net_edge(p_true: i32, p_market: i32) -> i32 {
+    return abs_i32(p_true - p_market);
+}
+
+// ---- PREDICTION: runtime-swappable strategies (function-pointer values) ----
+
+// Momentum: signal 1 if p_true is above p_market (trending up).
+fn momentum(p_true: i32, p_market: i32) -> i32 {
+    if p_true > p_market { return 1; }
+    return 0;
+}
+
+// Mean-revert: signal 1 only if the gap is SMALL (near the mean).
+fn revert(p_true: i32, p_market: i32) -> i32 {
+    if net_edge(p_true, p_market) < 10 { return 1; }
+    return 0;
+}
+
+// ---- DECISION: compile-time-resolved gates (a trait, no fallbacks) ----
+
+struct ConservativeGate { min_edge: i32 }
+struct AggressiveGate { min_edge: i32 }
+
+// The decision contract: given the terrain edge and the predicted signal,
+// decide whether to execute (1) or skip (0). Statically resolved.
+trait Gate {
+    fn decide(self, edge: i32, signal: i32) -> i32;
+}
+
+impl Gate for ConservativeGate {
+    // Hard rule: BOTH a strong edge AND a positive signal. No fallback.
+    fn decide(self, edge: i32, signal: i32) -> i32 {
+        if edge >= self.min_edge {
+            if signal == 1 { return 1; }
+        }
+        return 0;
+    }
+}
+
+impl Gate for AggressiveGate {
+    // Hard rule: edge alone, ignore the predictor.
+    fn decide(self, edge: i32, signal: i32) -> i32 {
+        if edge >= self.min_edge { return 1; }
+        return 0;
+    }
+}
+
+// ---- THE BOT: compose the three layers across the visible seam ----
+// `predict` is a runtime value; `gate` is a compile-time-bound trait; the
+// terrain is fixed. If the gate says execute, size from the terrain edge.
+fn run_bot<G: Gate>(predict: fn(i32, i32) -> i32, gate: G,
+    p_true: i32, p_market: i32) -> i32 {
+    let edge: i32 = net_edge(p_true, p_market);       // terrain (fixed)
+    let signal: i32 = predict(p_true, p_market);      // prediction (runtime)
+    let go: i32 = gate.decide(edge, signal);          // decision (compile-time)
+    if go == 1 {
+        return edge * 2 + 12;                          // size the order
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let p_true: i32 = 70;
+    let p_market: i32 = 45;
+
+    // Terrain.
+    print(net_edge(p_true, p_market));        // 25
+
+    // Prediction (runtime strategy values).
+    let mom: fn(i32, i32) -> i32 = &momentum;
+    let rev: fn(i32, i32) -> i32 = &revert;
+    print(mom(p_true, p_market));             // 1
+    print(rev(p_true, p_market));             // 0
+
+    // Decision (compile-time-resolved gates).
+    let cons: ConservativeGate = ConservativeGate { min_edge: 20 };
+    let aggr: AggressiveGate = AggressiveGate { min_edge: 10 };
+    print(cons.decide(25, 1));                // 1
+    print(cons.decide(25, 0));                // 0
+    print(aggr.decide(25, 0));                // 1
+
+    // The whole bot: momentum predictor + conservative gate.
+    print(run_bot(&momentum, cons, p_true, p_market));  // 62 (25*2+12)
+    return 0;
+}

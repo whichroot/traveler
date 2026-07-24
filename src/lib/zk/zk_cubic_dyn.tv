@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_cubic_dyn.tv — zk_cubic (x^3+x+5) over a RUNTIME prime: #[zk] generic fn
+// instantiated <dyn>, emitting native cubic_dyn + dyn-PLONK cubic_zk_prove_dyn.
+// Link: plonk_dyn.o + zk_cubic_dyn.o + zk_cubic_dyn_test.o
+// @internal-design: zk
+
+#[zk]
+fn cubic<F: Field>(x: F) -> F {
+    let x2: F = x * x;
+    let x3: F = x2 * x;
+    return x3 + x + 5;
+}
+
+instantiate cubic<dyn>;

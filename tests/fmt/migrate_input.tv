@@ -1,0 +1,53 @@
+// migrate_input.tv — tvfmt --migrate trap fixture (syntax-modernization Phase 2).
+// This file deliberately keeps every OLD spelling: it is the codemod's INPUT
+// and must never itself be migrated in place. migrate_golden.tv is the
+// expected output; tests/run_fmt.sh gates output==golden, idempotence on the
+// golden, `--migrate --check` on the golden, and input-vs-golden BYTE-IDENTICAL
+// emitted IR (the Phase-1 output-neutrality proof applied to the codemod).
+//
+// comment trap (must survive byte-identical): let mut x = 1; field F = Field<7>;
+/* block-comment trap, multi-line:
+   let mut y   binfield G = BinField<8, 0x11B>;
+   extfield E9   let   mut z */
+
+field F = Field<251>;
+binfield B = BinField<8, 0x11B>;
+extfield E = ExtField<Field<251>, 2>;
+
+let mut g_count: i32 = 0;
+
+// identifiers embedding the keywords: never rewritten.
+fn mutate(sublet: i32) -> i32 {
+    let letter: i32 = sublet + 1;
+    let field2: i32 = letter * 2;
+    return field2;
+}
+
+fn main() -> i32 {
+    let mut a: i32 = 1; let mut b: i32 = 2;
+    let  mut c: i32 = 3;
+    let d: i32 = 4;
+    a = a + b + c + d;
+    g_count = g_count + a;
+    let s: *u8 = "let mut in a string; field F = Field<7>; mut";
+    var n: i32 = 0;
+    while s[n] != 0 { n = n + 1; }
+    // dyn-field constructor builtin: `field(...)` must NOT become `type(...)`
+    // (only the decl form `field N = ...` migrates).
+    let dynf: Field = field(251);
+    let ch: u8 = 'm';
+    let fe: F = 250;
+    let ge: F = 3;
+    let bx: B = 0x53;
+    let by: B = 0xCA;
+    let ee: E = 10;
+    print(a);
+    print(n);
+    print(ch as i32);
+    print(fe + ge);
+    print(bx + by);
+    print(ee);
+    print(mutate(5));
+    print(g_count);
+    return 0;
+}

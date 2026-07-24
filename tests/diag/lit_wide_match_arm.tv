@@ -1,0 +1,10 @@
+// #56: a wrapped match-arm literal (2^64+5 -> 5) either collided as a
+// duplicate switch case (llc reject, no location) or silently matched the
+// WRONG number. Refused at parse with the arm's location.
+fn main() -> i32 {
+    match 5 {
+        18446744073709551621 => { print(1); }
+        5 => { print(2); }
+    }
+    return 0;
+}

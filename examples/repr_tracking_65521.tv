@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// repr_tracking_65521.tv — Polynomial repr tracking over Field<65521>
+//
+// Same test as repr_tracking.tv but over a 16-bit field, proving
+// that poly conversion functions are generalized beyond Field<251>.
+//
+// Expected output: 10 14 28 10 38
+// (identical to repr_tracking.tv — the algebra is the same)
+
+type F = Field<65521>;
+
+fn main() {
+    // f(t) = 10 + 3t + t^2 evaluated at t=0,1,2
+    var data: [F; 3] = 0;
+    data[0] = 10;
+    data[1] = 14;
+    data[2] = 20;
+
+    // analyze() → Newton form: N = [10, 4, 2]
+    let p: Poly<F, 2> = analyze(data, 3);
+
+    // eval() on Newton form — no conversion needed
+    let v0: F = eval(p, 0);  print(v0);    // 10
+    let v1: F = eval(p, 1);  print(v1);    // 14
+    let v3: F = eval(p, 3);  print(v3);    // 28
+
+    // poly() → standard form: S = [1, 0, 1]
+    let q: Poly<F, 2> = poly(1, 0, 1);
+
+    // eval() on standard form → auto-inserts std_to_newton_F65521
+    let v4: F = eval(q, 3);  print(v4);    // 10
+
+    // p + q → auto-inserts newton_to_std_F65521(p)
+    let r: Poly<F, 2> = p + q;
+
+    // eval(r, 3) → auto-inserts std_to_newton_F65521(r)
+    let v5: F = eval(r, 3);  print(v5);    // 38
+}

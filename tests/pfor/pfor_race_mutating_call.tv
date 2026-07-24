@@ -1,0 +1,48 @@
+// pfor_race_mutating_call.tv — HOLE 6: "pure" function mutates pointer param
+//
+// fn bump(acc: *F, v: F) { acc[0] = acc[0] + v; }
+//
+// stmt_is_pure treats AST_INDEX_ASSIGN as pure ("local mutation"), but the
+// target is the CALLER'S pointer.  bump is classified pure, the loop body
+// is a bare call to it, and the analyzer parallelizes a single-cell
+// reduction hidden inside a function.
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.  Expected output: 50000.
+
+field F = Field<2013265921>;
+
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+// Writes through its pointer parameter — NOT pure for pfor purposes.
+fn bump(acc: *F, v: F) {
+    acc[0] = acc[0] + v;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let a: *F = alloc(n);
+    let acc: *F = alloc(1);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        w = w + 1;
+    }
+    acc[0] = 0;
+
+    // RACE: the reduction is hidden inside bump()
+    for i in 0..n {
+        bump(acc, slow(a[i]));
+    }
+
+    print(acc[0]);
+    return 0;
+}

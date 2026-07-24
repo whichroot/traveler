@@ -1,0 +1,68 @@
+// pfor_race_noninjective.tv — HOLE 3: non-injective derived write index
+//
+// out[i / 2]  — two iterations map to each cell.
+// out2[i % 64] — n/64 iterations map to each cell.
+// The loop variable appears in the index, but under an operator that
+// destroys injectivity.  Both are RMW races under parallel dispatch.
+//
+// MUST NOT PARALLELIZE (either loop).  Expected workers: 0.
+// Expected output: 50000 / 50000 (total mass conserved in each array).
+
+field F = Field<2013265921>;
+
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+    let out2: *F = alloc(64);
+
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        out[w] = 0;
+        w = w + 1;
+    }
+    w = 0;
+    while w < 64 {
+        out2[w] = 0;
+        w = w + 1;
+    }
+
+    // RACE: i/2 maps pairs of iterations onto one cell
+    for i in 0..n {
+        out[i / 2] = out[i / 2] + slow(a[i]);
+    }
+
+    // RACE: i%64 maps n/64 iterations onto one cell
+    for i in 0..n {
+        out2[i % 64] = out2[i % 64] + slow(a[i]);
+    }
+
+    // Serial checksums: total mass in each array must equal n
+    let mut s1: F = 0;
+    w = 0;
+    while w < n {
+        s1 = s1 + out[w];
+        w = w + 1;
+    }
+    let mut s2: F = 0;
+    w = 0;
+    while w < 64 {
+        s2 = s2 + out2[w];
+        w = w + 1;
+    }
+
+    print(s1);
+    print(s2);
+    return 0;
+}

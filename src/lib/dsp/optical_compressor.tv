@@ -1,0 +1,330 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// optical_compressor.tv — optical compressor DSP core: envelope, gain curve,
+// optical smoothing, gain application — all integer (i64 intermediates), no
+// floats; a host wrapper does double<->i32 at the boundary.
+// @internal-design: dsp
+
+type F = Field<65537>;   // declared hook for polynomial envelope modeling (unused in ops)
+
+// ===== State layout: flat i32 array, 64 slots (256 bytes) =====
+// Caller allocates. Traveler owns the semantics.
+// [0]  peak_reduction   0-1000  (knob 0%-100%, scaled x10)
+// [1]  gain             0-600   (makeup 0-60 dB, scaled x10)
+// [2]  mode             0=compress  1=limit
+// [3]  sample_rate      e.g. 44100
+// [4]  env_level        envelope follower state (0..32768)
+// [5]  optical_gr       current gain reduction  (0..32768)
+// [6]  regime           0=idle 1=attack 2=release
+// [7]  comp_time        samples spent compressing (for program-dep release)
+// [8]  threshold        computed from peak_reduction (0..32768)
+// [9]  ratio_num        compression ratio numerator   (e.g. 2 for 3:1)
+// [10] ratio_den        compression ratio denominator (e.g. 3 for 3:1)
+// [11] (unused)
+// [12] (unused)
+// [13] attack_den       attack time constant in samples
+// [14] release_den      current release time constant (updated per block)
+// [15] release_base     base release denominator (fast release samples)
+// [16] release_slow     slow release factor
+// [17] gr_display       gain reduction for VU meter (0..32768)
+// [18] env_attack_den   envelope attack denominator
+// [19] env_release_den  envelope release denominator
+// [20] makeup_num       makeup gain numerator (integer ratio)
+// [21] makeup_den       makeup gain denominator
+// [22] prev_abs         previous sample absolute level (for limit mode)
+// [23..63] reserved
+
+// ===== Integer arithmetic helpers (i64 intermediates prevent overflow) =====
+
+fn abs_val(x: i32) -> i32 {
+    if x < 0 { return 0 - x; }
+    return x;
+}
+
+fn clamp(x: i32, lo: i32, hi: i32) -> i32 {
+    if x < lo { return lo; }
+    if x > hi { return hi; }
+    return x;
+}
+
+// ===== Compression curve: threshold + ratio (~3:1 compress, ~100:1 limit) =====
+
+fn compute_target_gr(env_level: i32, threshold: i32,
+    ratio_num: i32, ratio_den: i32) -> i32 {
+    if env_level <= threshold {
+        return 0;
+    }
+    // gr = excess * ratio_num / ratio_den
+    // For 3:1 compress: ratio_num=2, ratio_den=3 → remove 2/3 of excess
+    let excess: i64 = (env_level - threshold) as i64;
+    let gr: i64 = excess * (ratio_num as i64) / (ratio_den as i64);
+    return clamp(gr as i32, 0, 32768);
+}
+
+// ===== Envelope follower (integer one-pole, distinct attack/release rates) =====
+
+fn envelope_follow(env: i32, level: i32,
+    attack_den: i32, release_den: i32) -> i32 {
+    if level > env {
+        // Attack: fast rise
+        let diff: i64 = (level as i64) - (env as i64);
+        let step: i64 = diff / (attack_den as i64);
+        if step == 0 && diff > 0 { return env + 1; }
+        return env + (step as i32);
+    } else {
+        // Release: slower fall
+        let diff: i64 = (env as i64) - (level as i64);
+        let step: i64 = diff / (release_den as i64);
+        if step == 0 && diff > 0 { return env - 1; }
+        return env - (step as i32);
+    }
+}
+
+// ===== Optical element model (integer one-pole, variable rate) =====
+// Attack ~10ms; release program-dependent dual-stage (fast ~60ms, then slow
+// 0.5-5s by compression duration). Integer smoother: step = diff / time_constant.
+
+fn optical_smooth(optical_gr: i32, target_gr: i32,
+    attack_den: i32, release_den: i32) -> i32 {
+    if target_gr > optical_gr {
+        // Attack: compressing harder
+        let diff: i64 = (target_gr as i64) - (optical_gr as i64);
+        let step: i64 = diff / (attack_den as i64);
+        if step == 0 && diff > 0 { return optical_gr + 1; }
+        let next: i32 = optical_gr + (step as i32);
+        if next > target_gr { return target_gr; }
+        return next;
+    } else if target_gr < optical_gr {
+        // Release: recovering toward target
+        let diff: i64 = (optical_gr as i64) - (target_gr as i64);
+        let step: i64 = diff / (release_den as i64);
+        if step == 0 && diff > 0 { return optical_gr - 1; }
+        let next: i32 = optical_gr - (step as i32);
+        if next < target_gr { return target_gr; }
+        return next;
+    }
+    return optical_gr;
+}
+
+// ===== Gain application =====
+// output_centered = input_centered * (32768 - gr) / 32768, then makeup gain.
+// Offset encoding: 32768 = silence, 0 = max negative, 65536 = max positive.
+
+fn apply_gain(centered: i32, optical_gr: i32,
+    makeup_num: i32, makeup_den: i32) -> i32 {
+    // Gain reduction: scale by (32768 - gr) / 32768
+    let gain: i64 = (32768 - optical_gr) as i64;
+    let compressed: i64 = (centered as i64) * gain / 32768;
+
+    // Makeup gain: scale by makeup_num / makeup_den
+    let made_up: i64 = compressed * (makeup_num as i64) / (makeup_den as i64);
+
+    // Clamp to sample range and re-offset
+    let result: i32 = clamp(made_up as i32, 0 - 32768, 32768);
+    return result + 32768;
+}
+
+// ===== Level detection for Limit mode (first-order forward difference) =====
+
+fn detect_level_limit(sample_abs: i32, prev_abs: i32) -> i32 {
+    let diff: i32 = sample_abs - prev_abs;
+    let abs_diff: i32 = abs_val(diff);
+    // Weight: 70% level + 30% difference magnitude
+    let weighted: i64 = (sample_abs as i64) * 7 + (abs_diff as i64) * 3;
+    return (weighted / 10) as i32;
+}
+
+// ===== Precompute per-block coefficients (once per process block) =====
+
+fn precompute_block(state: *i32) {
+    let sr: i32 = state[3];
+    let fast_release: i32 = state[15];
+    let comp_time: i32 = state[7];
+
+    // Program-dependent release: longer compression → slower release
+    // slow_add = comp_time * slow_factor / sample_rate
+    let slow_add: i64 = (comp_time as i64) * (state[16] as i64) / (sr as i64);
+    var release_den: i32 = fast_release + (slow_add as i32);
+    if release_den < 1 { release_den = 1; }
+    state[14] = release_den;
+}
+
+// ===== Output level: GAIN knob mapping (integer ratio num/den, exact) =====
+
+fn compute_output_level(gain_knob: i32, state: *i32) {
+    // gain_knob: 0-1000 (knob 0-100, scaled x10)
+    // output_level = gain_knob / 500
+    // At 500 (knob 50): ratio = 1.0 (unity)
+    // At 0: ratio = 0.0 (silence)
+    // At 1000 (knob 100): ratio = 2.0 (+6dB)
+    state[20] = gain_knob;
+    state[21] = 500;
+}
+
+// ===== EXPORTED API =====
+
+#[export]
+fn optcomp_init(state: *i32, sample_rate: i32) {
+    // Zero all 64 slots
+    var i: i32 = 0;
+    while i < 64 {
+        state[i] = 0;
+        i = i + 1;
+    }
+
+    // Parameters (defaults)
+    state[0] = 500;            // peak_reduction: 50%
+    state[1] = 0;              // gain: 0 dB
+    state[2] = 0;              // mode: compress
+    state[3] = sample_rate;
+
+    // Envelope state
+    state[4] = 0;              // env_level
+    state[5] = 0;              // optical_gr
+    state[6] = 0;              // regime: idle
+    state[7] = 0;              // comp_time
+
+    // Compression curve defaults (set by optcomp_set_peak_reduction)
+    state[9] = 2;              // ratio_num (3:1 → remove 2/3)
+    state[10] = 3;             // ratio_den
+
+    // Optical element timing
+    // Attack: ~10ms
+    let attack_den: i32 = sample_rate / 100;
+    state[13] = clamp(attack_den, 1, 100000);
+
+    // Release: ~60ms base, up to ~4s additional (program-dependent)
+    state[15] = sample_rate * 6 / 100;   // 60ms in samples
+    state[16] = sample_rate * 4;          // slow release factor
+
+    // Envelope follower timing
+    // Env attack: ~0.5ms (very fast level tracking)
+    state[18] = clamp(sample_rate / 2000, 1, 100000);
+    // Env release: ~10ms
+    state[19] = clamp(sample_rate / 100, 1, 100000);
+
+    // Output level: unity (500/500 = 1.0, knob at 50)
+    state[20] = 500;
+    state[21] = 500;
+
+    // Apply default parameters
+    optcomp_set_peak_reduction(state, 500);
+    optcomp_set_gain(state, 500);
+}
+
+#[export]
+fn optcomp_set_peak_reduction(state: *i32, value: i32) {
+    let v: i32 = clamp(value, 0, 1000);
+    state[0] = v;
+
+    // Threshold: higher peak_reduction → lower threshold → more compression
+    // At 0:    threshold = 32768 (no compression possible)
+    // At 1000: threshold = 0     (everything compressed)
+    state[8] = 32768 - (32768 * v / 1000);
+
+    // Ratio depends on mode
+    if state[2] == 1 {
+        // Limit: ~100:1
+        state[9] = 99;
+        state[10] = 100;
+    } else {
+        // Compress: ~3:1
+        state[9] = 2;
+        state[10] = 3;
+    }
+}
+
+#[export]
+fn optcomp_set_gain(state: *i32, value: i32) {
+    // value: 0-1000 (knob 0-100, scaled x10)
+    let v: i32 = clamp(value, 0, 1000);
+    state[1] = v;
+    compute_output_level(v, state);
+}
+
+#[export]
+fn optcomp_set_mode(state: *i32, mode: i32) {
+    state[2] = mode;
+    // Recompute ratio for new mode
+    optcomp_set_peak_reduction(state, state[0]);
+}
+
+#[export]
+fn optcomp_get_gr(state: *i32) -> i32 {
+    return state[17];
+}
+
+#[export]
+fn optcomp_state_size() -> i32 {
+    return 256;
+}
+
+// ===== Main processing function =====
+// Processes n samples; i32 arrays, offset encoding (32768 = silence,
+// [0, 65536] full range). Host wrapper converts double<->i32 at the boundary.
+
+#[export]
+fn optcomp_process(state: *i32, input: *i32, output: *i32, n: i32) {
+    // Per-block precomputation
+    precompute_block(state);
+
+    let threshold: i32 = state[8];
+    let ratio_num: i32 = state[9];
+    let ratio_den: i32 = state[10];
+    let attack_den: i32 = state[13];
+    let release_den: i32 = state[14];
+    let env_attack_den: i32 = state[18];
+    let env_release_den: i32 = state[19];
+    let makeup_num: i32 = state[20];
+    let makeup_den: i32 = state[21];
+    let mode: i32 = state[2];
+
+    var env: i32 = state[4];
+    var optical_gr: i32 = state[5];
+    var comp_time: i32 = state[7];
+    var prev_abs: i32 = state[22];
+
+    var i: i32 = 0;
+    while i < n {
+        // 1. Center the sample (remove offset)
+        let centered: i32 = input[i] - 32768;
+        let sample_abs: i32 = abs_val(centered);
+
+        // 2. Level detection
+        var det_level: i32 = sample_abs;
+        if mode == 1 {
+            det_level = detect_level_limit(sample_abs, prev_abs);
+        }
+        prev_abs = sample_abs;
+
+        // 3. Envelope follower (integer one-pole)
+        env = envelope_follow(env, det_level, env_attack_den, env_release_den);
+
+        // 4. Compression curve → target gain reduction
+        let target_gr: i32 = compute_target_gr(env, threshold,
+            ratio_num, ratio_den);
+
+        // 5. Optical element smoothing (integer one-pole)
+        optical_gr = optical_smooth(optical_gr, target_gr,
+            attack_den, release_den);
+
+        // 6. Track compression time (for program-dependent release)
+        if target_gr > 0 {
+            comp_time = comp_time + 1;
+        } else {
+            if comp_time > 0 { comp_time = comp_time - 1; }
+        }
+
+        // 7. Apply gain reduction + makeup (integer arithmetic)
+        output[i] = apply_gain(centered, optical_gr, makeup_num, makeup_den);
+
+        i = i + 1;
+    }
+
+    // Write state back
+    state[4] = env;
+    state[5] = optical_gr;
+    state[7] = comp_time;
+    state[17] = optical_gr;
+    state[22] = prev_abs;
+}

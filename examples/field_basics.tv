@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// field_basics.tv — Traveler field arithmetic basics
+//
+// Target: compile to native via LLVM, verify field semantics.
+
+type F = Field<251>;
+
+fn main() {
+    // Basic arithmetic: branchless, exact, no floats
+    let a: F = 200;
+    let b: F = 100;
+    let c: F = a + b;     // 300 mod 251 = 49
+    let d: F = a - b;     // 100
+    let e: F = a * b;     // 20000 mod 251 = 171  (20000 = 79*251 + 171)
+    let f: F = a / b;     // 200 * inv(100) mod 251 = 200 * 123 = 24600 mod 251 = 2
+
+    print(c);  // 49
+    print(d);  // 100
+    print(e);  // 171
+    print(f);  // 2
+
+    // Inverse: Fermat's little theorem
+    let lr: F = 1 / 100;  // inv(100) mod 251 = 123
+    print(lr);  // 123
+
+    // Verify: 100 * 123 mod 251 = 12300 mod 251 = 1
+    let check: F = 100 * lr;
+    print(check);  // 1
+}

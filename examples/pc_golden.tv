@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// pc_golden.tv — byte-identity harness for the Phase 5b codec rewrite: encodes
+// fixed vectors, prints FNV-1a hash + length + lossless flags; OLD == NEW.
+// @internal-design: examples (pc_golden).
+//
+// Vectors:
+//   V1: linear ramp, p=251, n=128         (CONT blocks)
+//   V2: mixed const/linear/quadratic, p=251, n=48
+//   V3: staircase, p=65537, n=256          (order-0 segments)
+//   V4: LCG pseudo-random, p=65537, n=2048 (rice paths, high entropy)
+//   V5: quadratic chirp, p=65537, n=1024   (predictive protocol chance)
+//   V6: layered 16-bit, 2 layers, n=512    (PCLY container, per-layer primes)
+//
+// Output per V1-V5: hash length n_segs lossless
+// Output per V6:    hash length lossless
+//
+// Build (two-file link):
+//   tvc piecewise_codec.tv -o pc.ll && tvc pc_golden.tv -o g.ll
+//   llc each, clang pc.o g.o -o golden && ./golden
+
+type F = Field<251>;
+
+struct Segment {
+    start: i32,
+    length: i32,
+    order: i32,
+    n_headers: i32,
+    h0: i32, h1: i32, h2: i32, h3: i32, h4: i32, h5: i32, h6: i32,
+    res_offset: i32,
+    res_count: i32,
+    encoded_bits: i64,
+    is_cont: i32,
+    is_predictive: i32,
+}
+
+extern "C" fn pc_segment_greedy(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32;
+extern "C" fn pc_segment_unified(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32;
+extern "C" fn pc_encode(segments: *Segment, n_segs: i32,
+    residuals_buf: *i32, total_samples: i32,
+    out: *u8, capacity: i32,
+    p: i32) -> i32;
+extern "C" fn pc_decode(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32,
+    p: i32) -> i32;
+extern "C" fn pc_encode_layered(samples: *i32, n: i32, n_layers: i32,
+    out: *u8, max_out: i32) -> i32;
+extern "C" fn pc_decode_layered(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32) -> i32;
+
+// FNV-1a 64-bit over the encoded buffer
+fn fnv1a(buf: *u8, n: i32) -> u64 {
+    var h: u64 = 14695981039346656037;
+    var i: i32 = 0;
+    while i < n {
+        h = h ^ (buf[i] as u64);
+        h = h * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+// Encode one vector through a segmenter + pc_encode, print hash/len/segs/lossless
+fn run_vector(samples: *i32, n: i32, p: i32, use_unified: i32) {
+    let segments: *Segment = alloc(512);
+    let residuals: *i32 = alloc(65536);
+    let encoded: *u8 = alloc(262144);
+    let decoded: *i32 = alloc(65536);
+
+    var n_segs: i32 = 0;
+    if use_unified == 1 {
+        n_segs = pc_segment_unified(samples, n, segments, 512, residuals, 65536, p);
+    } else {
+        n_segs = pc_segment_greedy(samples, n, segments, 512, residuals, 65536, p);
+    }
+    let enc_len: i32 = pc_encode(segments, n_segs, residuals, n, encoded, 262144, p);
+
+    let dec_n: i32 = pc_decode(encoded, enc_len, decoded, 65536, p);
+    var lossless: i32 = 1;
+    if dec_n != n { lossless = 0; }
+    var i: i32 = 0;
+    while i < n {
+        if decoded[i] != samples[i] { lossless = 0; }
+        i = i + 1;
+    }
+
+    print(fnv1a(encoded, enc_len));
+    print(enc_len);
+    print(n_segs);
+    print(lossless);
+
+    free(decoded); free(encoded); free(residuals); free(segments);
+}
+
+fn main() -> i32 {
+    // ---- V1: linear ramp, p=251 ----
+    let n1: i32 = 128;
+    let v1: *i32 = alloc(n1);
+    var i: i32 = 0;
+    while i < n1 { v1[i] = (10 + 3 * i) % 251; i = i + 1; }
+    run_vector(v1, n1, 251, 0);
+
+    // ---- V2: mixed const/linear/quadratic, p=251 ----
+    let n2: i32 = 48;
+    let v2: *i32 = alloc(n2);
+    i = 0;
+    while i < 16 { v2[i] = 50; i = i + 1; }
+    while i < 32 { v2[i] = 50 + 5 * (i - 16); i = i + 1; }
+    while i < 48 {
+        let t: i32 = i - 32;
+        v2[i] = (125 + 2 * t + t * t) % 251;
+        i = i + 1;
+    }
+    run_vector(v2, n2, 251, 0);
+
+    // ---- V3: staircase, p=65537 ----
+    let n3: i32 = 256;
+    let v3: *i32 = alloc(n3);
+    i = 0;
+    while i < n3 { v3[i] = (i / 32) * 1000; i = i + 1; }
+    run_vector(v3, n3, 65537, 0);
+
+    // ---- V4: LCG pseudo-random, p=65537 ----
+    let n4: i32 = 2048;
+    let v4: *i32 = alloc(n4);
+    var seed: u64 = 12345;
+    i = 0;
+    while i < n4 {
+        seed = seed * 6364136223846793005 + 1442695040888963407;
+        v4[i] = ((seed >> 33) % 65537) as i32;
+        i = i + 1;
+    }
+    run_vector(v4, n4, 65537, 0);
+
+    // ---- V5: quadratic chirp, p=65537, unified segmenter ----
+    let n5: i32 = 1024;
+    let v5: *i32 = alloc(n5);
+    i = 0;
+    while i < n5 {
+        // piecewise quadratics with breaks every 200
+        let seg: i32 = i / 200;
+        let t: i32 = i - seg * 200;
+        v5[i] = (1000 * seg + 7 * t + ((t * t) % 4001)) % 65537;
+        i = i + 1;
+    }
+    run_vector(v5, n5, 65537, 1);
+
+    // ---- V6: layered 16-bit, 2 layers ----
+    let n6: i32 = 512;
+    let v6: *i32 = alloc(n6);
+    i = 0;
+    while i < n6 {
+        // gentle ramp with texture, signed 16-bit range
+        v6[i] = (i * 37) % 8192 - 4096;
+        i = i + 1;
+    }
+    let enc6: *u8 = alloc(262144);
+    let enc_len6: i32 = pc_encode_layered(v6, n6, 2, enc6, 262144);
+    let dec6: *i32 = alloc(65536);
+    let dec_n6: i32 = pc_decode_layered(enc6, enc_len6, dec6, 65536);
+    var lossless6: i32 = 1;
+    if dec_n6 != n6 { lossless6 = 0; }
+    i = 0;
+    while i < n6 {
+        if v6[i] != dec6[i] { lossless6 = 0; }
+        i = i + 1;
+    }
+    print(fnv1a(enc6, enc_len6));
+    print(enc_len6);
+    print(lossless6);
+
+    return 0;
+}

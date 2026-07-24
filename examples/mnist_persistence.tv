@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mnist_persistence.tv — MNIST persistence profiles via 2D regime detection
+//
+// Loads MNIST test set (10K images, 28x28), runs regime_detect along rows
+// and columns at 5 threshold levels, reports per-class mean boundary counts.
+//
+// @internal-design: genus (persistence profile on MNIST)
+//
+// Uses p=0 (raw integer): Z/257Z wraps pixel 255 to distance 2 from 0. Field-
+// invariance holds for any p > 510 (regime_topology_test, regime_2d_test).
+//
+// Links with poly_core.tv (two-file link).
+// Usage: ./mnist_persistence <data_directory>
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// Right-align integer in a field of width w (pad with spaces)
+fn wr_int_pad(fd: i32, n: i64, w: i32) {
+    // Count digits
+    var tmp: i64 = n;
+    if tmp < 0 { tmp = 0 - tmp; }
+    var digits: i32 = 1;
+    while tmp >= 10 { tmp = tmp / 10; digits = digits + 1; }
+    if n < 0 { digits = digits + 1; }
+    var pad: i32 = w - digits;
+    while pad > 0 { write(fd, " ", 1); pad = pad - 1; }
+    wr_int(fd, n);
+}
+
+fn path_build(dst: *u8, dir: *u8, file: *u8) {
+    var i: i32 = 0;
+    while dir[i] != 0 { dst[i] = dir[i]; i = i + 1; }
+    dst[i] = 47; i = i + 1;
+    var j: i32 = 0;
+    while file[j] != 0 { dst[i] = file[j]; i = i + 1; j = j + 1; }
+    dst[i] = 0;
+}
+
+fn read_be_i32(buf: *u8, off: i32) -> i32 {
+    return (buf[off] as i32) * 16777216
+    + (buf[off + 1] as i32) * 65536
+    + (buf[off + 2] as i32) * 256
+    + (buf[off + 3] as i32);
+}
+
+// Import kernel function (linked from poly_core.o)
+extern "C" fn regime_detect(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32;
+
+// Count all regime boundaries in a 1D signal.
+fn count_boundaries(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32 {
+    var count: i32 = 0;
+    var offset: i32 = 0;
+    while n - offset > order + 1 {
+        let rem: i32 = n - offset;
+        let b: i32 = regime_detect(&data[offset], rem, order, threshold, p, reg);
+        if b >= rem { break; }
+        count = count + 1;
+        offset = offset + b;
+    }
+    return count;
+}
+
+// Scan one 28x28 image: count total row + column boundaries.
+// img points to 784 u8 pixels (row-major).
+fn scan_image(img: *u8, threshold: i32, row_buf: *i32, col_buf: *i32, reg: *i32) -> i32 {
+    var total: i32 = 0;
+
+    // Scan 28 rows
+    var r: i32 = 0;
+    while r < 28 {
+        var c: i32 = 0;
+        while c < 28 {
+            row_buf[c] = img[r * 28 + c] as i32;
+            c = c + 1;
+        }
+        total = total + count_boundaries(row_buf, 28, 1, threshold, 0, reg);
+        r = r + 1;
+    }
+
+    // Scan 28 columns
+    var c: i32 = 0;
+    while c < 28 {
+        var r2: i32 = 0;
+        while r2 < 28 {
+            col_buf[r2] = img[r2 * 28 + c] as i32;
+            r2 = r2 + 1;
+        }
+        total = total + count_boundaries(col_buf, 28, 1, threshold, 0, reg);
+        c = c + 1;
+    }
+
+    return total;
+}
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 2 {
+        wr(2, "usage: mnist_persistence <data_directory>\n");
+        exit(1);
+    }
+
+    let dir: *u8 = argv[1];
+    var path_buf: [u8; 512] = 0;
+
+    // --- Load test set ---
+    wr(2, "Loading test images...\n");
+    let test_img: *u8 = alloc(7840016);
+    path_build(&path_buf[0], dir, "t10k-images-idx3-ubyte");
+    var fd: i32 = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test images\n"); exit(1); }
+    read_bytes(fd, test_img, 7840016);
+    close(fd);
+
+    let test_lbl: *u8 = alloc(10008);
+    path_build(&path_buf[0], dir, "t10k-labels-idx1-ubyte");
+    fd = open(&path_buf[0], 0, 0);
+    if fd < 0 { wr(2, "error: cannot open test labels\n"); exit(1); }
+    read_bytes(fd, test_lbl, 10008);
+    close(fd);
+
+    let n_test: i32 = read_be_i32(test_img, 4);
+    wr(2, "  images: ");
+    wr_int(2, n_test as i64);
+    wr(2, "\n");
+
+    // --- Thresholds ---
+    var thresholds: [i32; 5] = 0;
+    thresholds[0] = 5;
+    thresholds[1] = 20;
+    thresholds[2] = 50;
+    thresholds[3] = 100;
+    thresholds[4] = 150;
+
+    // --- Accumulators: 10 classes × 5 thresholds ---
+    var totals: [i32; 50] = 0;
+    var counts: [i32; 10] = 0;
+
+    // Shared buffers
+    var row_buf: [i32; 28] = 0;
+    var col_buf: [i32; 28] = 0;
+    var reg: [i32; 2] = 0;
+
+    // --- Process all test images ---
+    wr(2, "Scanning...\n");
+    var i: i32 = 0;
+    while i < n_test {
+        let label: i32 = test_lbl[8 + i] as i32;
+        counts[label] = counts[label] + 1;
+
+        let img: *u8 = &test_img[16 + i * 784];
+
+        var ti: i32 = 0;
+        while ti < 5 {
+            let b: i32 = scan_image(img, thresholds[ti], &row_buf[0], &col_buf[0], &reg[0]);
+            totals[label * 5 + ti] = totals[label * 5 + ti] + b;
+            ti = ti + 1;
+        }
+
+        if (i + 1) % 2000 == 0 {
+            wr(2, "  ");
+            wr_int(2, (i + 1) as i64);
+            wr(2, " / ");
+            wr_int(2, n_test as i64);
+            wr(2, "\n");
+        }
+
+        i = i + 1;
+    }
+
+    // --- Report persistence profiles ---
+    wr(1, "=== MNIST Persistence (row+col, order=1, p=0) ===\n");
+    wr(1, "class    n     t=5   t=20   t=50  t=100  t=150\n");
+
+    var cls: i32 = 0;
+    while cls < 10 {
+        wr(1, "    ");
+        wr_int(1, cls as i64);
+        wr_int_pad(1, counts[cls] as i64, 5);
+
+        var ti: i32 = 0;
+        while ti < 5 {
+            let mean: i32 = totals[cls * 5 + ti] / counts[cls];
+            wr_int_pad(1, mean as i64, 7);
+            ti = ti + 1;
+        }
+        wr(1, "\n");
+
+        cls = cls + 1;
+    }
+
+    // --- Summary: total across all classes ---
+    wr(1, "  all");
+    wr_int_pad(1, n_test as i64, 5);
+    var ti: i32 = 0;
+    while ti < 5 {
+        var sum: i32 = 0;
+        var cls2: i32 = 0;
+        while cls2 < 10 {
+            sum = sum + totals[cls2 * 5 + ti];
+            cls2 = cls2 + 1;
+        }
+        let mean: i32 = sum / n_test;
+        wr_int_pad(1, mean as i64, 7);
+        ti = ti + 1;
+    }
+    wr(1, "\n");
+
+    free(test_img);
+    free(test_lbl);
+}

@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poseidon2_babybear_test.tv — B-Width Stage B INTEROP gate: BabyBear width-16
+// Poseidon2 pinned bit-for-bit to the canonical Plonky3 reference (Plonky3
+// baby-bear/src/poseidon2.rs, test_default_babybear_poseidon2_width_16);
+// reference pre-pinned by @internal-oracle: poseidon2_t16 (PINs 1+2).
+// @internal-design: crypto
+//
+// Expected output: 1 1 1
+//   1  derived closed-form diagonal == published BabyBear-16 diagonal
+//   1  derived diagonal (matrix form) is MDS-valid at t=16 (non-vacuous soundness)
+//   1  permute_w with published constants+diag == Plonky3 published vector (INTEROP)
+//
+// 4-file link: poseidon2_wide.o + mds_check.o + grain_lfsr.o + this.
+
+extern "C" fn poseidon2_permute_w_dyn(
+    f: Field, state: *i64, rc_init: *i64, rc_term: *i64, rc_int: *i64,
+    diag: *i64, t: i32, rf_half: i32, rp: i32);
+extern "C" fn mds_check_diag_dyn(f: Field, pp: i64, v: *i64, t: i32) -> i32;
+extern "C" fn grain_generate(f: Field, n: i32, t: i32, rf: i32, rp: i32,
+    out: *i64, count: i32);
+
+// Derive the Plonky3 BabyBear-16 internal diagonal IN-FIELD over the runtime
+// carrier. base[i] is the value mds_internal multiplies (state[i]*base[i]+sum).
+//   V = [-2,1,2,1/2,3,4,-1/2,-3,-4, 1/2^8,1/4,1/8,1/2^27, -1/2^8,-1/16,-1/2^27]
+fn derive_bb16_diag<F: Field>(out: *F) {
+    let zero: F = 0;
+    let one: F = 1;
+    let two: F = 2;
+    let three: F = 3;
+    let four: F = 4;
+    // inverse powers of two via field inv of 2^k
+    let inv_2: F = one / two;                    // 1/2
+    let inv_4: F = one / (two * two);            // 1/4
+    let inv_8: F = one / (two * two * two);      // 1/8
+    // 1/2^8
+    let pw8: F = (two * two) * (two * two) * (two * two) * (two * two);  // 2^8
+    let inv_256: F = one / pw8;                  // 1/2^8
+    // 1/2^4 = 1/16
+    let pw4: F = (two * two) * (two * two);      // 2^4
+    let inv_16: F = one / pw4;                   // 1/16
+    // 1/2^27 = 1/2^8 * 1/2^8 * 1/2^8 * 1/2^3
+    let inv_2p27: F = inv_256 * inv_256 * inv_256 * inv_8;   // 1/2^27
+    out[0]  = zero - two;        // -2
+    out[1]  = one;               //  1
+    out[2]  = two;               //  2
+    out[3]  = inv_2;             //  1/2
+    out[4]  = three;             //  3
+    out[5]  = four;              //  4
+    out[6]  = zero - inv_2;      // -1/2
+    out[7]  = zero - three;      // -3
+    out[8]  = zero - four;       // -4
+    out[9]  = inv_256;           //  1/2^8
+    out[10] = inv_4;             //  1/4
+    out[11] = inv_8;             //  1/8
+    out[12] = inv_2p27;          //  1/2^27
+    out[13] = zero - inv_256;    // -1/2^8
+    out[14] = zero - inv_16;     // -1/16
+    out[15] = zero - inv_2p27;   // -1/2^27
+}
+
+instantiate derive_bb16_diag<dyn>;
+
+fn main() -> i32 {
+    let p: i64 = 2013265921;
+    let f: Field = field(p);
+    let n: i32 = 31;
+    let t: i32 = 16;
+    let rp: i32 = 13;
+
+    // ---- 1. derived closed-form diagonal == published BabyBear-16 diagonal ----
+    let diag: *i64 = alloc(16);
+    derive_bb16_diag_dyn(f, diag);
+
+    // Published BabyBear-16 BASE diagonal (from the oracle dump, == the matrix
+    // values in mds_check_test.tv minus the +1 the all-ones contributes... note
+    // these ARE the base values mds_internal multiplies).
+    let pub_diag: *i64 = alloc(16);
+    pub_diag[0]=2013265919; pub_diag[1]=1; pub_diag[2]=2; pub_diag[3]=1006632961;
+    pub_diag[4]=3; pub_diag[5]=4; pub_diag[6]=1006632960; pub_diag[7]=2013265918;
+    pub_diag[8]=2013265917; pub_diag[9]=2005401601; pub_diag[10]=1509949441;
+    pub_diag[11]=1761607681; pub_diag[12]=2013265906; pub_diag[13]=7864320;
+    pub_diag[14]=125829120; pub_diag[15]=15;
+    var diag_ok: i32 = 1;
+    for i in 0..16 { if diag[i] != pub_diag[i] { diag_ok = 0; } }
+    print(diag_ok);
+
+    // ---- 2. derived diagonal (matrix form v=base+1) is MDS-valid at t=16 ----
+    let v: *i64 = alloc(16);
+    let one_b: i64 = 1;
+    for i in 0..16 { v[i] = diag[i] + one_b; }
+    print(mds_check_diag_dyn(f, p, v, 16));
+
+    // ---- 3. INTEROP: permute_w with published constants + diag == Plonky3 vector ----
+    let n_consts: i32 = 8 * 16 + 13;     // rf*t + rp = 141
+    let raw: *i64 = alloc(141);
+    grain_generate(f, n, t, 8, rp, raw, n_consts);
+    let rc_init: *i64 = alloc(64);
+    let rc_int: *i64 = alloc(13);
+    let rc_term: *i64 = alloc(64);
+    for i in 0..64 { rc_init[i] = raw[i]; }
+    for i in 0..13 { rc_int[i]  = raw[64 + i]; }
+    for i in 0..64 { rc_term[i] = raw[77 + i]; }
+
+    let state: *i64 = alloc(16);
+    state[0]=894848333;  state[1]=1437655012; state[2]=1200606629; state[3]=1690012884;
+    state[4]=71131202;   state[5]=1749206695; state[6]=1717947831; state[7]=120589055;
+    state[8]=19776022;   state[9]=42382981;   state[10]=1831865506; state[11]=724844064;
+    state[12]=171220207; state[13]=1299207443; state[14]=227047920; state[15]=1783754913;
+
+    poseidon2_permute_w_dyn(f, state, rc_init, rc_term, rc_int, diag, 16, 4, rp);
+
+    let expected: *i64 = alloc(16);
+    expected[0]=516096821;  expected[1]=90309867;   expected[2]=1101817252; expected[3]=1660784290;
+    expected[4]=360715097;  expected[5]=1789519026; expected[6]=1788910906; expected[7]=563338433;
+    expected[8]=319524748;  expected[9]=1741414159; expected[10]=1650859320; expected[11]=894311162;
+    expected[12]=1121347488; expected[13]=1692793758; expected[14]=1052633829; expected[15]=1344246938;
+    var interop: i32 = 1;
+    for i in 0..16 { if state[i] != expected[i] { interop = 0; } }
+    print(interop);
+
+    free(diag); free(pub_diag); free(v); free(raw);
+    free(rc_init); free(rc_int); free(rc_term); free(state); free(expected);
+    return 0;
+}

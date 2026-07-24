@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// grain_lfsr.tv — runtime Grain-LFSR Poseidon2 round-constant generator (exact
+// Plonky3 GrainLFSR port; the prime enters ONLY at rejection sampling).
+// @internal-design: crypto
+
+// ---- 80-bit LFSR state held as 80 i64 cells (each 0 or 1) ----
+// We pass the state array (length 80) explicitly; caller owns it.
+
+// Write integer `value` as `width` big-endian bits into bits[off..off+width).
+fn grain_put_bits(bits: *i64, off: i32, value: i64, width: i32) {
+    var i: i32 = 0;
+    while i < width {
+        // big-endian: MSB first
+        let shift: i32 = width - 1 - i;
+        bits[off + i] = (value >> shift) & 1;
+        i = i + 1;
+    }
+}
+
+// One LFSR clock: feedback = XOR of taps {0,13,23,38,51,62}; shift left
+// (drop index 0, append feedback at index 79). Returns the feedback bit.
+fn grain_clock(state: *i64) -> i64 {
+    let nb: i64 = state[0] ^ state[13] ^ state[23] ^ state[38] ^ state[51] ^ state[62];
+    var i: i32 = 0;
+    while i < 79 {
+        state[i] = state[i + 1];
+        i = i + 1;
+    }
+    state[79] = nb;
+    return nb;
+}
+
+// Self-shrinking output: clock pairs (a,b); if a==1 emit b, else discard.
+fn grain_next_bit(state: *i64) -> i64 {
+    var looping: i32 = 1;
+    var out: i64 = 0;
+    while looping == 1 {
+        let a: i64 = grain_clock(state);
+        let b: i64 = grain_clock(state);
+        if a == 1 {
+            out = b;
+            looping = 0;
+        }
+    }
+    return out;
+}
+
+// Initialize the 80-bit state from Poseidon parameters and burn in 160 cycles.
+//   field_type=1 (GF(p)), sbox=0 (exp flag for x^alpha), n, t, R_F, R_P.
+// Bit layout (big-endian): field(2) sbox(4) n(12) t(12) RF(10) RP(10) ones(30).
+#[export]
+fn grain_init(state: *i64, n: i32, t: i32, rf: i32, rp: i32) {
+    grain_put_bits(state, 0, 1, 2);          // field_type = 1
+    grain_put_bits(state, 2, 0, 4);          // sbox flag = 0 (x^alpha)
+    grain_put_bits(state, 6, n as i64, 12);
+    grain_put_bits(state, 18, t as i64, 12);
+    grain_put_bits(state, 30, rf as i64, 10);
+    grain_put_bits(state, 40, rp as i64, 10);
+    grain_put_bits(state, 50, 0 - 1, 30);    // 30 ones (all bits set -> & 1 each)
+    // burn-in: 160 clocks, output discarded
+    var i: i32 = 0;
+    while i < 160 {
+        grain_clock(state);
+        i = i + 1;
+    }
+}
+
+// Draw one field element: n bits big-endian -> integer; reject if >= p, redraw.
+// The prime enters here and ONLY here (p from the carrier). The rejection
+// compare MUST be UNSIGNED (u64/`ult`) — see @internal-design: crypto.
+#[export]
+fn grain_random_field_elem(f: Field, state: *i64, n: i32) -> i64 {
+    let p: u64 = f.p as u64;
+    var result: i64 = 0;
+    var accepting: i32 = 1;
+    while accepting == 1 {
+        var v: u64 = 0;
+        var i: i32 = 0;
+        while i < n {
+            let bit: i64 = grain_next_bit(state);
+            v = (v << 1) | (bit as u64);
+            i = i + 1;
+        }
+        if v < p {
+            result = v as i64;
+            accepting = 0;
+        }
+        // else: v >= p, rejected — redraw n fresh bits (the gap fires here)
+    }
+    return result;
+}
+
+// Generate `count` raw field constants into out[0..count); raw stream order is
+// [external_initial, internal, external_final]. n = bit_length(p) must match.
+#[export]
+fn grain_generate(f: Field, n: i32, t: i32, rf: i32, rp: i32,
+    out: *i64, count: i32) {
+    // 80-bit state buffer
+    let state: *i64 = alloc(80);
+    grain_init(state, n, t, rf, rp);
+    var k: i32 = 0;
+    while k < count {
+        out[k] = grain_random_field_elem(f, state, n);
+        k = k + 1;
+    }
+    free(state);
+}

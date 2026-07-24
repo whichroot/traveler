@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// relational.tv — Level 2 of the verifiable-classifier ladder: ordering-invariant
+// spectral moments tr(M^k) over a field F, for a {0,1} relation graph M (m x m,
+// flat row-major). Caller owns scratch P, Q (each m*m field elements).
+// @internal-design: features
+
+fn mat_trace_pow<F: Field>(
+    M: *F, m: i32, k: i32, P: *F, Q: *F
+) -> F {
+    // P = M
+    let total: i32 = m * m;
+    for i in 0..total { P[i] = M[i]; }
+    var step: i32 = 1;
+    while step < k {
+        // Q = P * M  (over F)
+        for i in 0..m {
+            for j in 0..m {
+                var acc: F = 0;
+                for t in 0..m {
+                    acc = acc + P[i * m + t] * M[t * m + j];
+                }
+                Q[i * m + j] = acc;
+            }
+        }
+        for i in 0..total { P[i] = Q[i]; }
+        step = step + 1;
+    }
+    // trace
+    var tr: F = 0;
+    for i in 0..m { tr = tr + P[i * m + i]; }
+    return tr;
+}
+
+instantiate mat_trace_pow<dyn>;

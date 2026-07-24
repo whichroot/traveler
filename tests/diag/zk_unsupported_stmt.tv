@@ -1,0 +1,16 @@
+// zk_unsupported_stmt.tv — A-2 gate: a #[zk] function body containing a
+// statement the circuit builder does not handle (a `while` loop) must be
+// REFUSED loudly, not silently dropped from the circuit + witness. A dropped
+// statement would let the verifier accept a proof of a weaker computation than
+// the source states. See @internal-note: audit (A-2) + @internal-design: zk.
+
+field Goldilocks = Field<18446744069414584321>;
+
+#[export zk]
+fn bad(x: Goldilocks) -> Goldilocks {
+    let mut y: Goldilocks = x;
+    while y > 0 {
+        y = y - 1;
+    }
+    return y;
+}

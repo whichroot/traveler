@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poly_discrim.tv — polynomial discriminant classifier in native Traveler:
+// row-sum features -> per-class lookup tables -> bounded accumulation -> argmax.
+// @internal-design: examples (poly_discrim).
+//
+// Expected output:
+//   0 4 0 0 16 0 0 1 1 1 1 0 16 1
+
+type F = Field<65521>;
+
+fn main() {
+    // ----- Lookup tables (precomputed from training data) -----
+    // Class 0: "horizontal bar" — row 1 has high density
+    var c0_r0: [F; 5] = 0;  c0_r0[0] = 4;
+    var c0_r1: [F; 5] = 0;  c0_r1[4] = 4;
+    var c0_r2: [F; 5] = 0;  c0_r2[0] = 4;
+    var c0_r3: [F; 5] = 0;  c0_r3[0] = 4;
+
+    // Class 1: "vertical bar" — each row has exactly 1 pixel on
+    var c1_r0: [F; 5] = 0;  c1_r0[1] = 4;
+    var c1_r1: [F; 5] = 0;  c1_r1[1] = 4;
+    var c1_r2: [F; 5] = 0;  c1_r2[1] = 4;
+    var c1_r3: [F; 5] = 0;  c1_r3[1] = 4;
+
+    // ----- Test 1: horizontal bar -----
+    var img: [F; 16] = 0;
+    img[4] = 1; img[5] = 1; img[6] = 1; img[7] = 1;
+
+    // Feature extraction: row sums (inline, 4 additions each)
+    let r0: F = img[0] + img[1] + img[2] + img[3];
+    let r1: F = img[4] + img[5] + img[6] + img[7];
+    let r2: F = img[8] + img[9] + img[10] + img[11];
+    let r3: F = img[12] + img[13] + img[14] + img[15];
+
+    // Print row sums as signed (for readability)
+    let sr0: i32 = signed(r0); print(sr0);  // 0
+    let sr1: i32 = signed(r1); print(sr1);  // 4
+    let sr2: i32 = signed(r2); print(sr2);  // 0
+    let sr3: i32 = signed(r3); print(sr3);  // 0
+
+    // Score: lookup table indexing + bounded accumulation
+    // Each lookup returns a value in {0,...,4}, sum of 4 ≤ 16 < 65521. No wrap.
+    let s0: F = c0_r0[sr0] + c0_r1[sr1] + c0_r2[sr2] + c0_r3[sr3];
+    let s1: F = c1_r0[sr0] + c1_r1[sr1] + c1_r2[sr2] + c1_r3[sr3];
+
+    // Classification: argmax of signed scores
+    let ss0: i32 = signed(s0); print(ss0);  // 16
+    let ss1: i32 = signed(s1); print(ss1);  // 0
+
+    if ss0 > ss1 { print(0); } else { print(1); }  // Class 0 ✓
+
+    // ----- Test 2: vertical bar -----
+    var img2: [F; 16] = 0;
+    img2[0] = 1; img2[4] = 1; img2[8] = 1; img2[12] = 1;
+
+    let v0: F = img2[0] + img2[1] + img2[2] + img2[3];
+    let v1: F = img2[4] + img2[5] + img2[6] + img2[7];
+    let v2: F = img2[8] + img2[9] + img2[10] + img2[11];
+    let v3: F = img2[12] + img2[13] + img2[14] + img2[15];
+
+    let sv0: i32 = signed(v0); print(sv0);  // 1
+    let sv1: i32 = signed(v1); print(sv1);  // 1
+    let sv2: i32 = signed(v2); print(sv2);  // 1
+    let sv3: i32 = signed(v3); print(sv3);  // 1
+
+    let vs0: F = c0_r0[sv0] + c0_r1[sv1] + c0_r2[sv2] + c0_r3[sv3];
+    let vs1: F = c1_r0[sv0] + c1_r1[sv1] + c1_r2[sv2] + c1_r3[sv3];
+
+    let vss0: i32 = signed(vs0); print(vss0);  // 0
+    let vss1: i32 = signed(vs1); print(vss1);  // 16
+
+    if vss0 > vss1 { print(0); } else { print(1); }  // Class 1 ✓
+}

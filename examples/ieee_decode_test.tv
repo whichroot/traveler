@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// ieee_decode_test.tv — standalone membrane-decoder test: decode known IEEE-754
+// bit patterns to (class, sign, M, E); (-1)^sign * M * 2^E must match textbook.
+//
+// Verified facts (hand-checked):
+//   0x3F800000  =  1.0       -> normal sign0 M=8388608 (2^23) E=-23
+//   0x40000000  =  2.0       -> normal sign0 M=8388608      E=-22
+//   0x3E200000  =  0.15625   -> normal sign0 M=10485760     E=-26  (10485760*2^-26)
+//   0xC0490FDB  = -3.1415927 -> normal sign1 M=13176795     E=-22
+//   0x00000000  =  0.0       -> zero  sign0 M=0 E=0
+//   0x80000000  = -0.0       -> zero  sign1 M=0 E=0
+//   0x7F800000  = +Inf       -> class 3
+//   0xFF800000  = -Inf       -> class 3 sign1
+//   0x7FC00000  = NaN        -> class 4
+//   0x00000001  = smallest subnormal -> class 2 M=1 E=-149
+//   bf16 0x3F80 =  1.0       -> normal sign0 M=128 (2^7) E=-7
+//   f64 0x3FF0000000000000 = 1.0 -> normal sign0 M=2^52 E=-52
+//
+// Link: ieee.o + ieee_decode_test.o
+
+extern "C" fn f32_decode(bits: i64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32;
+extern "C" fn bf16_decode(bits: i64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32;
+extern "C" fn f64_decode(bits: u64, out_sign: *i64, out_M: *i64, out_E: *i64) -> i32;
+
+fn show_f32(bits: i64) {
+    let s: *i64 = alloc(1);
+    let m: *i64 = alloc(1);
+    let e: *i64 = alloc(1);
+    let cls: i32 = f32_decode(bits, s, m, e);
+    print(cls as i64);
+    print(s[0]);
+    print(m[0]);
+    print(e[0]);
+    free(s); free(m); free(e);
+}
+
+fn main() -> i32 {
+    // --- f32 normals ---
+    show_f32(1065353216);   // 0x3F800000 = 1.0       -> 1 0 8388608 -23
+    show_f32(1073741824);   // 0x40000000 = 2.0       -> 1 0 8388608 -22
+    show_f32(1042284544);   // 0x3E200000 = 0.15625   -> 1 0 10485760 -26
+    show_f32(3226013659);   // 0xC0490FDB = -pi        -> 1 1 13176795 -22
+
+    // --- f32 specials ---
+    show_f32(0);            // 0x00000000 = +0.0      -> 0 0 0 0
+    show_f32(2147483648);   // 0x80000000 = -0.0      -> 0 1 0 0
+    show_f32(2139095040);   // 0x7F800000 = +Inf      -> 3 0 0 0
+    show_f32(4286578688);   // 0xFF800000 = -Inf      -> 3 1 0 0
+    show_f32(2143289344);   // 0x7FC00000 = NaN       -> 4 0 0 0
+    show_f32(1);            // 0x00000001 = subnormal -> 2 0 1 -149
+
+    // --- bf16 ---
+    let s: *i64 = alloc(1);
+    let m: *i64 = alloc(1);
+    let e: *i64 = alloc(1);
+    let bc: i32 = bf16_decode(16256, s, m, e);   // 0x3F80 = 1.0 -> 1 0 128 -7
+    print(bc as i64); print(s[0]); print(m[0]); print(e[0]);
+
+    // --- f64 ---
+    // 0x3FF0000000000000 = 1.0, assembled with shifts (predates the #16 fix
+    // that lets wide literals materialize directly as i64; kept as-is).
+    let one_f64: i64 = (1023 as i64) << 52;    // exp=1023, mant=0 -> 1.0
+    let dc: i32 = f64_decode(one_f64 as u64, s, m, e);
+    print(dc as i64); print(s[0]); print(m[0]); print(e[0]);        // -> 1 0 4503599627370496 -52
+
+    free(s); free(m); free(e);
+    return 0;
+}

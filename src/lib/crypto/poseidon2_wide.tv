@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// poseidon2_wide.tv — width-generic dyn Poseidon2 permutation: t=8 / t=16 / any
+// multiple-of-4 width up to 32, width threaded as a runtime i32. Buffers caller-owned.
+// @internal-design: crypto
+
+// ---- S-box x^7 (D=7; Goldilocks and BabyBear both use alpha=7) ----
+fn sbox7<F: Field>(x: F) -> F {
+    let x2: F = x * x;
+    let x4: F = x2 * x2;
+    let x7: F = x4 * x2 * x;
+    return x7;
+}
+
+// ---- MDSMat4: the 4x4 circulant [[2,3,1,1],[1,2,3,1],[1,1,2,3],[3,1,1,2]] ----
+// Identical to poseidon2.tv / Plonky3 apply_mat4.
+fn mds_mat4<F: Field>(s: *F) {
+    let s0: F = s[0]; let s1: F = s[1]; let s2: F = s[2]; let s3: F = s[3];
+    let t01: F  = s0 + s1;
+    let t23: F  = s2 + s3;
+    let t0123: F = t01 + t23;
+    let t01123: F = t0123 + s1;
+    let t01233: F = t0123 + s3;
+    s[0] = t01123 + t01;
+    s[1] = t01123 + s2 + s2;
+    s[2] = t01233 + t23;
+    s[3] = t01233 + s0 + s0;
+}
+
+// ---- External linear layer (width-generic) ----
+// mds_mat4 on each 4-chunk, then the outer circulant. t must be a multiple of 4.
+fn mds_external_w<F: Field>(state: *F, t: i32) {
+    let nchunks: i32 = t / 4;
+    // 1. MDSMat4 on each consecutive 4-chunk
+    for c in 0..nchunks {
+        let chunk: *F = &state[c * 4];
+        mds_mat4(chunk);
+    }
+    // 2. four cross-chunk sums: sums[k] = Σ_c state[c*4 + k]
+    let sums: *F = alloc(4);
+    for k in 0..4 {
+        var acc: F = state[k];
+        for c in 1..nchunks {
+            acc = acc + state[c * 4 + k];
+        }
+        sums[k] = acc;
+    }
+    // 3. state[i] += sums[i % 4]
+    for i in 0..t {
+        state[i] = state[i] + sums[i % 4];
+    }
+    free(sums);
+}
+
+// ---- Internal linear layer (width-generic) ----
+// state[i] = state[i]*diag[i] + sum(all state). diag has t entries.
+fn mds_internal_w<F: Field>(state: *F, diag: *F, t: i32) {
+    var sum: F = state[0];
+    for i in 1..t {
+        sum = sum + state[i];
+    }
+    for i in 0..t {
+        state[i] = state[i] * diag[i] + sum;
+    }
+}
+
+// ---- The width-generic permutation ----
+// rc_init: rf_half*t entries, rc_term: rf_half*t entries, rc_int: rp entries,
+// diag: t entries. rf_half is R_F/2 (= 4 for the 128-bit-security instances).
+fn poseidon2_permute_w<F: Field>(
+    state: *F, rc_init: *F, rc_term: *F, rc_int: *F, diag: *F,
+    t: i32, rf_half: i32, rp: i32
+) {
+    mds_external_w(state, t);
+    // initial external rounds
+    for r in 0..rf_half {
+        let base: i32 = r * t;
+        for i in 0..t {
+            state[i] = state[i] + rc_init[base + i];
+        }
+        for i in 0..t {
+            state[i] = sbox7(state[i]);
+        }
+        mds_external_w(state, t);
+    }
+    // internal rounds (S-box on state[0] only)
+    for r in 0..rp {
+        state[0] = state[0] + rc_int[r];
+        state[0] = sbox7(state[0]);
+        mds_internal_w(state, diag, t);
+    }
+    // terminal external rounds
+    for r in 0..rf_half {
+        let base: i32 = r * t;
+        for i in 0..t {
+            state[i] = state[i] + rc_term[base + i];
+        }
+        for i in 0..t {
+            state[i] = sbox7(state[i]);
+        }
+        mds_external_w(state, t);
+    }
+}
+
+instantiate sbox7<dyn>;
+instantiate mds_mat4<dyn>;
+instantiate mds_external_w<dyn>;
+instantiate mds_internal_w<dyn>;
+instantiate poseidon2_permute_w<dyn>;

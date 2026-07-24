@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// time_basics.tv — time/ wrap layer, deterministic verdicts (Tier 0): prints
+// only PASS codes, never raw timings. tvc_self ONLY (imports time/).
+// @internal-design: time.
+//
+// Expected output:
+//   1     the monotonic clock is non-decreasing
+//   2     the wall clock is sane (> 1.75e9 s — past 2025-06)
+//   3     wall_ns and wall_sec agree (the i64 ns multiply is intact)
+//   4     sleep_ms(50) slept >= 50 ms by the monotonic clock
+//   700   the ? pipeline completed
+//   404   sleep_ns(-1) was refused as BadDuration
+
+import "../src/lib/time/time.tv";
+
+fn run() -> Result<i64, TimeError> {
+    // Monotonic clock never runs backwards across two reads.
+    let t0: i64 = time_mono_ns()?;
+    let t1: i64 = time_mono_ns()?;
+    if t1 >= t0 { print(1); }
+
+    // Wall clock is past mid-2025 (a coarse "the clock is set" sanity).
+    let ws: i64 = time_wall_sec()?;
+    if ws > 1750000000 { print(2); }
+
+    // The full-nanosecond wall read divided back down agrees with the
+    // seconds read — proves sec*1e9 did not overflow/truncate to i32.
+    let wn: i64 = time_wall_ns()?;
+    if wn / 1000000000 >= ws { print(3); }
+
+    // sleep_ms honours its lower bound, measured by the monotonic clock.
+    let a: i64 = time_mono_ns()?;
+    time_sleep_ms(50)?;
+    let b: i64 = time_mono_ns()?;
+    if b - a >= 50000000 { print(4); }
+
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    // The Err arm: a negative duration is refused, not silently clamped.
+    match time_sleep_ns(0 - 1) {
+        Result::Ok(v) => { print(0); }
+        Result::Err(e) => { print(404); }
+    }
+    return 0;
+}

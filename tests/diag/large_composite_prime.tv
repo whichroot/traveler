@@ -1,0 +1,6 @@
+field BIG = Field<18446744073709551559>;
+
+fn main() {
+    let x: BIG = 1;
+    print(x);
+}

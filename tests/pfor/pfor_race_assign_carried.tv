@@ -1,0 +1,18 @@
+// #43 refusal side: assignment to an ENCLOSING-scope scalar is a genuine
+// loop-carried dependency (serial accumulation across iterations) and must
+// keep the loop serial — 0 workers, reason "assign-carried" (the precise
+// successor to the old blanket "unsupported-stmt" for this shape).
+// sum = 1 + 2 + ... + 4096 = 8390656.
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *i64 = alloc(n * 8);
+    var i: i32 = 0;
+    while i < n { a[i] = (i + 1) as i64; i = i + 1; }
+
+    var sum: i64 = 0;
+    for j in 0..4096 {
+        sum = sum + a[j];   // enclosing scalar: carried, refuse
+    }
+    print(sum);
+    return 0;
+}

@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// int_match.tv — Integer match (switch) expressions.
+//
+// Tests: match on i32 with literal arms, negative arms, wildcard.
+// Also tests a token-kind dispatcher pattern (the self-hosting use case).
+//
+// Expected output: 0 10 20 420 99 -1 1 2 3 0
+
+extern "C" fn putchar(c: i32) -> i32;
+
+// Token kinds (mimics the self-hosting compiler's TokenKind)
+let TOK_EOF: i32 = 0;
+let TOK_INT: i32 = 1;
+let TOK_IDENT: i32 = 2;
+let TOK_PLUS: i32 = 3;
+let TOK_MINUS: i32 = 4;
+let TOK_STAR: i32 = 5;
+
+fn classify(x: i32) -> i32 {
+    match x {
+        0 => { return 0; }
+        1 => { return 10; }
+        2 => { return 20; }
+        42 => { return 420; }
+        -1 => { return 99; }
+        _ => { return -1; }
+    }
+    return -2;
+}
+
+// Simulate a token-kind printer — the pattern used in every compiler
+fn print_tok_kind(kind: i32) {
+    match kind {
+        0 => { putchar('E'); putchar('O'); putchar('F'); }
+        1 => { putchar('I'); putchar('N'); putchar('T'); }
+        2 => { putchar('I'); putchar('D'); }
+        3 => { putchar('+'); }
+        4 => { putchar('-'); }
+        5 => { putchar('*'); }
+        _ => { putchar('?'); }
+    }
+}
+
+fn is_binop(kind: i32) -> i32 {
+    match kind {
+        3 => { return 1; }
+        4 => { return 1; }
+        5 => { return 1; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+fn main() {
+    // Basic integer match
+    print(classify(0));    // 0
+    print(classify(1));    // 10
+    print(classify(2));    // 20
+    print(classify(42));   // 420
+    print(classify(-1));   // 99
+    print(classify(100));  // -1
+
+    // Token-kind dispatch
+    print(is_binop(3));    // 1 (plus)
+    print(is_binop(4));    // 1 (minus)
+    print(is_binop(5));    // 1 (star, TOK_STAR=5)
+
+    print(is_binop(2));    // 0 (TOK_IDENT, not a binop)
+}

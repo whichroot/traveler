@@ -1,0 +1,214 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_profile_certify.tv — Phase Z.4: ZK fixed-degree (crisp) certificate:
+// PROFILE nseg(d) + PLATEAU (d*, d_end, P) + CANONICAL + FIT; 3 tampers rejected.
+// @internal-design: genus (genus_profile + certificate examples)
+//
+// Per shape the driver prints:
+//   profile[0..d_max]  d*  d_end  P  greedy==global(1)  verify(1)  wtamper(0)
+//   dtamper(0)  ftamper(0)
+//
+// Corpus (single-degree shapes):
+//   line       -> profile [8,1,1,1,1], plateau d*=1..4 P=1
+//   single quad-> profile [8,4,1,1,1], plateau d*=2..4 P=1
+//
+// Expected output:
+//   8 1 1 1 1   1 4 1   1   1 0 0 0
+//   8 4 1 1 1   2 4 1   1   1 0 0 0
+//
+// Link: plonk_dyn.o + regime_fri.o + genus_profile.o + runtime_circuit.o
+//       + genus_profile_certify.o
+
+extern "C" fn fill_rc(rc_init: *i64, rc_term: *i64, rc_int: *i64);
+extern "C" fn poseidon2_diag_dyn(f: Field, diag: *i64);
+extern "C" fn fadd_dyn(f: Field, a: i64, b: i64) -> i64;
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+// profile primitives (D.4)
+extern "C" fn genus_filtration(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+extern "C" fn genus_greedy_is_global(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64) -> i32;
+extern "C" fn genus_resolve_plateau(
+    f: Field, data: *i64, n: i32, d_max: i32, cert: *i64, work: *i64, out: *i64);
+
+// runtime circuit library (A.2)
+extern "C" fn rc_count_gates(desc: *i32, nseg: i32) -> i32;
+extern "C" fn rc_next_pow2(x: i32) -> i32;
+extern "C" fn rc_ilog2(n: i32) -> i32;
+extern "C" fn rc_build(
+    f: Field, desc: *i32, nseg: i32, data: *i64, padded_n: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64, sigma_a: *i64, sigma_b: *i64, sigma_c: *i64);
+extern "C" fn rc_commit_data(
+    f: Field, data: *i64, n_leaves: i32, leaves: *i64, tree: *i64, data_root: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64);
+extern "C" fn rc_make_fingerprint(
+    f: Field, data_root: *i64, cert: *i64, nseg: i32, fp: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64);
+extern "C" fn rc_verify(
+    f: Field, data: *i64, n: i32, n_leaves: i32,
+    cert_i64: *i64, desc: *i32, nseg: i32, padded_n: i32, log_n: i32,
+    committed_root: *i64, committed_fp: *i64,
+    eval_out: *i64, fri_n_rounds: i32,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, num_queries: i32,
+    leaves: *i64, tree: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+extern "C" fn plonk_prove_dyn(
+    f: Field, n_gates: i32, log_n: i32,
+    q_L: *i64, q_R: *i64, q_O: *i64, q_M: *i64, q_C: *i64,
+    wa: *i64, wb: *i64, wc: *i64, sigma_a: *i64, sigma_b: *i64, sigma_c: *i64,
+    eval_out: *i64,
+    fri_roots: *i64, fri_challenges: *i64, fri_final_poly: *i64,
+    fri_query_values: *i64, fri_query_paths: *i64,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64) -> i32;
+
+fn certify(p: i64, p_alt: i64, data: *i64, n: i32, n_leaves: i32, d_max: i32) {
+    let f: Field = field(p);
+    let rc_init: *i64 = alloc(32);
+    let rc_term: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let diag: *i64 = alloc(8);
+    fill_rc(rc_init, rc_term, rc_int);
+    poseidon2_diag_dyn(f, diag);
+
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let prof: *i64 = alloc(d_max + 1);
+    let pl: *i64 = alloc(3);
+
+    // PROFILE: the degree filtration nseg(d).
+    genus_filtration(f, data, n, d_max, cert, work, prof);
+    for d in 0..(d_max + 1) { print(prof[d] as i32); }
+
+    // PLATEAU: resolve (d*, d_end, P).
+    genus_resolve_plateau(f, data, n, d_max, cert, work, pl);
+    let dstar: i32 = pl[0] as i32;
+    print(dstar);            // d*
+    print(pl[1] as i32);     // d_end
+    print(pl[2] as i32);     // P
+
+    // CANONICAL: greedy == global (infix-closure).
+    print(genus_greedy_is_global(f, data, n, d_max, cert, work));   // 1
+
+    // FIT: build the circuit at d* and prove.
+    let nseg: i32 = regime_prove_dyn(f, data, n, dstar, cert, work);
+    let desc: *i32 = alloc(nseg * 3);
+    for s in 0..nseg {
+        desc[s * 3 + 0] = cert[s * 3 + 0] as i32;
+        desc[s * 3 + 1] = cert[s * 3 + 1] as i32;
+        desc[s * 3 + 2] = cert[s * 3 + 2] as i32;
+    }
+    let n_real: i32 = rc_count_gates(desc, nseg);
+    let padded_n: i32 = rc_next_pow2(n_real);
+    let log_n: i32 = rc_ilog2(padded_n);
+
+    let leaves: *i64 = alloc(n_leaves * 4);
+    let tree: *i64 = alloc(n_leaves * 8);
+    let data_root: *i64 = alloc(4);
+    let fp: *i64 = alloc(4);
+    rc_commit_data(f, data, n_leaves, leaves, tree, data_root, rc_init, rc_term, rc_int, diag);
+    rc_make_fingerprint(f, data_root, cert, nseg, fp, rc_init, rc_term, rc_int, diag);
+
+    let q_L: *i64 = alloc(padded_n); let q_R: *i64 = alloc(padded_n);
+    let q_O: *i64 = alloc(padded_n); let q_M: *i64 = alloc(padded_n);
+    let q_C: *i64 = alloc(padded_n);
+    let wa: *i64 = alloc(padded_n); let wb: *i64 = alloc(padded_n);
+    let wc: *i64 = alloc(padded_n);
+    let sa: *i64 = alloc(padded_n); let sb: *i64 = alloc(padded_n);
+    let sc: *i64 = alloc(padded_n);
+    rc_build(f, desc, nseg, data, padded_n, log_n,
+        q_L, q_R, q_O, q_M, q_C, wa, wb, wc, sa, sb, sc);
+
+    let num_queries: i32 = 3;
+    let eval_out: *i64 = alloc(16);
+    let fri_roots: *i64 = alloc(128);
+    let fri_challenges: *i64 = alloc(32);
+    let fri_final_poly: *i64 = alloc(4);
+    let fri_query_values: *i64 = alloc(512);
+    let fri_query_paths: *i64 = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+    plonk_prove_dyn(f, padded_n, log_n, q_L, q_R, q_O, q_M, q_C,
+        wa, wb, wc, sa, sb, sc,
+        eval_out, fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        fri_n_rounds, num_queries, rc_init, rc_term, rc_int, diag);
+    let nr: i32 = fri_n_rounds[0];
+
+    // honest verify -> 1
+    print(rc_verify(f, data, n, n_leaves, cert, desc, nseg, padded_n, log_n,
+            data_root, fp, eval_out, nr,
+            fri_roots, fri_challenges, fri_final_poly,
+            fri_query_values, fri_query_paths, fri_query_indices, num_queries,
+            leaves, tree, rc_init, rc_term, rc_int, diag));
+
+    // tamper 1: witness -> 0
+    let saved_e: i64 = eval_out[2];
+    eval_out[2] = fadd_dyn(f, eval_out[2], 1);
+    print(rc_verify(f, data, n, n_leaves, cert, desc, nseg, padded_n, log_n,
+            data_root, fp, eval_out, nr,
+            fri_roots, fri_challenges, fri_final_poly,
+            fri_query_values, fri_query_paths, fri_query_indices, num_queries,
+            leaves, tree, rc_init, rc_term, rc_int, diag));
+    eval_out[2] = saved_e;
+
+    // tamper 2: descriptor -> 0 (perturb a length)
+    let saved_l: i64 = cert[1];
+    cert[1] = saved_l - 1;
+    print(rc_verify(f, data, n, n_leaves, cert, desc, nseg, padded_n, log_n,
+            data_root, fp, eval_out, nr,
+            fri_roots, fri_challenges, fri_final_poly,
+            fri_query_values, fri_query_paths, fri_query_indices, num_queries,
+            leaves, tree, rc_init, rc_term, rc_int, diag));
+    cert[1] = saved_l;
+
+    // tamper 3: field -> 0
+    let f2: Field = field(p_alt);
+    let rc_init2: *i64 = alloc(32);
+    let rc_term2: *i64 = alloc(32);
+    let rc_int2: *i64 = alloc(22);
+    let diag2: *i64 = alloc(8);
+    fill_rc(rc_init2, rc_term2, rc_int2);
+    poseidon2_diag_dyn(f2, diag2);
+    print(rc_verify(f2, data, n, n_leaves, cert, desc, nseg, padded_n, log_n,
+            data_root, fp, eval_out, nr,
+            fri_roots, fri_challenges, fri_final_poly,
+            fri_query_values, fri_query_paths, fri_query_indices, num_queries,
+            leaves, tree, rc_init2, rc_term2, rc_int2, diag2));
+    free(rc_init2); free(rc_term2); free(rc_int2); free(diag2);
+
+    free(q_L); free(q_R); free(q_O); free(q_M); free(q_C);
+    free(wa); free(wb); free(wc); free(sa); free(sb); free(sc);
+    free(eval_out); free(fri_roots); free(fri_challenges); free(fri_final_poly);
+    free(fri_query_values); free(fri_query_paths); free(fri_query_indices);
+    free(fri_n_rounds);
+    free(cert); free(work); free(prof); free(pl); free(desc);
+    free(leaves); free(tree); free(data_root); free(fp);
+    free(rc_init); free(rc_term); free(rc_int); free(diag);
+}
+
+fn main() -> i32 {
+    let GOLD: i64 = 18446744069414584321;
+    let BABY: i64 = 2013265921;
+    let d_max: i32 = 4;
+
+    // line -> profile [8,1,1,1,1], plateau d*=1..4 P=1
+    let a: *i64 = alloc(8);
+    for i in 0..8 { a[i] = (3 * i) as i64; }
+    certify(GOLD, BABY, a, 8, 8, d_max);   // 8 1 1 1 1 / 1 4 1 / 1 / 1 0 0 0
+    free(a);
+
+    // single quad -> profile [8,4,1,1,1], plateau d*=2..4 P=1
+    let b: *i64 = alloc(8);
+    for i in 0..8 { b[i] = (i * i) as i64; }
+    certify(GOLD, BABY, b, 8, 8, d_max);   // 8 4 1 1 1 / 2 4 1 / 1 / 1 0 0 0
+    free(b);
+
+    return 0;
+}

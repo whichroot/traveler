@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// extfield_basics.tv — ExtField<Field<251>, 2> arithmetic.
+// GF(251^2) = {a + b*i : a,b in Z/251Z, i^2 = nr}; the compiler picks the
+// smallest quadratic non-residue: nr = 2 for p=251 (2^125 mod 251 = 250 = p-1).
+//
+// Expected output:
+//   40 0       <- add: (10,0) + (30,0)
+//   231 0      <- sub: (10,0) - (30,0) = (-20 mod 251, 0)
+//   171 0      <- mul: (200,0) * (100,0) = (20000 mod 251, 0)
+//   1 0        <- inv: c * inv(c) = identity
+//   1 0        <- div: c / c = identity
+
+type F251 = Field<251>;
+type Ext251 = ExtField<Field<251>, 2>;
+
+fn main() -> i32 {
+    // Test 1: add
+    let a: Ext251 = 10;
+    let b: Ext251 = 30;
+    let r_add: Ext251 = a + b;
+    print(r_add);
+
+    // Test 2: sub
+    let r_sub: Ext251 = a - b;
+    print(r_sub);
+
+    // Test 3: mul
+    let c: Ext251 = 200;
+    let d: Ext251 = 100;
+    let r_mul: Ext251 = c * d;
+    print(r_mul);
+
+    // Test 4: inverse via division — c * (1/c) should equal {1, 0}
+    let one: Ext251 = 1;
+    let inv_c: Ext251 = one / c;
+    let r_inv: Ext251 = c * inv_c;
+    print(r_inv);
+
+    // Test 5: division — c / c should equal {1, 0}
+    let r_div: Ext251 = c / c;
+    print(r_div);
+
+    return 0;
+}

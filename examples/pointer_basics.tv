@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// pointer_basics.tv — raw pointers: alloc, auto-deref, null check, free.
+// Third self-hosting prerequisite: AST nodes / symbol tables are pointer-built.
+//
+// Expected output: 10 20 10 0
+
+struct Node {
+    value: i32,
+    next: *Node,
+}
+
+fn main() {
+    // Allocate on heap (type inferred from *Node context)
+    let a: *Node = alloc(1);
+    a.value = 10;
+    a.next = null;
+
+    let b: *Node = alloc(1);
+    b.value = 20;
+    b.next = a;
+
+    // Auto-deref: read field through pointer
+    print(a.value);           // 10
+
+    // Auto-deref: read field through pointer
+    print(b.value);           // 20
+
+    // Chained auto-deref: b.next.value (two pointer dereferences)
+    print(b.next.value);      // 10
+
+    // Null check
+    if a.next == null {
+        print(0);             // 0
+    }
+
+    free(b);
+    free(a);
+}

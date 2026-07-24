@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rs16_errdec_test.tv — RS(300,281) ERROR decode over GF(2^16): the BinField<K!=8>
+// unlock's named consumer; this driver IS the carrier header (two data lines below).
+// @internal-design: ecc
+// Prints per case (same stream shape as rs_error_decode_test.tv): nu, the error
+// values (i32; > 255 proves 16-bit symbols), agree, ok; a refused case prints -1.
+
+type GF = BinField<16, 0x1100B>;               // x^16 + x^12 + x^3 + x + 1
+
+// Fermat exponent |GF(2^16)| - 2: carrier-instantiation data for bm's inverse.
+fn gf_qm2() -> i64 { return 65534; }
+
+import "../src/lib/ecc/rs_core.tv";        // rs_encode, rs_decode (carrier-free)
+import "../src/lib/nt/linrec.tv";          // bm<F>, fpow<F>
+import "../src/lib/ecc/rs_errdec_core.tv"; // syndromes -> bm -> Chien -> Forney
+
+// Encode `data`, corrupt at nerr positions, decode both ways, print the case
+// stream (the same shape as rs_error_decode_test.tv over GF(2^8)).
+fn run_case(data: *GF, k: i32, n: i32, epos: *i32, eadd: *GF, nerr: i32) {
+    let code: *GF = alloc(n);
+    rs_encode(data, k, code, n);
+    let recv: *GF = alloc(n);
+    var i: i32 = 0;
+    while i < n { recv[i] = code[i]; i = i + 1; }
+    var e: i32 = 0;
+    while e < nerr {
+        let p: i32 = epos[e];
+        recv[p] = recv[p] + eadd[e];        // inject error (XOR in char 2)
+        e = e + 1;
+    }
+
+    let dataF: *GF = alloc(k);
+    let errpos: *i32 = alloc(n);
+    let errval: *GF = alloc(n);
+    let nu: i32 = rs_decode_errors(recv, n, k, dataF, errpos, errval);
+    if nu < 0 {
+        print(0 - 1);                       // REFUSED
+    } else {
+        print(nu);
+        var l: i32 = 0;
+        while l < nu {
+            print(errval[l] as i32);        // recovered error value (== injected)
+            l = l + 1;
+        }
+        // cross-gate: independent erasure-reduction route on the located positions
+        let dataE: *GF = alloc(k);
+        let rc: i32 = rs_decode_erasure_at(recv, n, k, errpos, nu, dataE);
+        var agree: i32 = 1;
+        if rc != 0 { agree = 0; }
+        var c: i32 = 0;
+        while c < k {
+            if dataF[c] != dataE[c] { agree = 0; }
+            c = c + 1;
+        }
+        var ok: i32 = 1;
+        c = 0;
+        while c < k {
+            if dataF[c] != data[c] { ok = 0; }
+            c = c + 1;
+        }
+        print(agree);
+        print(ok);
+        free(dataE);
+    }
+    free(code);
+    free(recv);
+    free(dataF);
+    free(errpos);
+    free(errval);
+}
+
+fn main() -> i32 {
+    // ---- RS(300, 281) over GF(2^16): n > 255, t = 9 ------------------------
+    let k: i32 = 281;
+    let n: i32 = 300;
+    let data: *GF = alloc(k);
+    var i: i32 = 0;
+    while i < k {
+        // deterministic 16-bit pattern (values spread across the full width)
+        data[i] = ((i * 2957 + (i * i) * 31 + 12345) % 65536) as GF;
+        i = i + 1;
+    }
+
+    // 0 errors
+    let ep0: *i32 = alloc(1);
+    let ea0: *GF = alloc(1);
+    run_case(data, k, n, ep0, ea0, 0);
+
+    // 3 errors @7 @259 @290 (positions past 255 exercise the long codeword);
+    // values > 255 exercise the 16-bit symbol width
+    let ep3: *i32 = alloc(3);
+    let ea3: *GF = alloc(3);
+    ep3[0] = 7;   ea3[0] = 48879 as GF;     // 0xBEEF
+    ep3[1] = 259; ea3[1] = 4660 as GF;      // 0x1234
+    ep3[2] = 290; ea3[2] = 43981 as GF;     // 0xABCD
+    run_case(data, k, n, ep3, ea3, 3);
+
+    // 9 errors (= t, the correction ceiling), scattered incl. > 255 positions
+    let ep9: *i32 = alloc(9);
+    let ea9: *GF = alloc(9);
+    ep9[0] = 0;   ea9[0] = 257 as GF;
+    ep9[1] = 33;  ea9[1] = 65535 as GF;
+    ep9[2] = 77;  ea9[2] = 1 as GF;
+    ep9[3] = 128; ea9[3] = 32768 as GF;
+    ep9[4] = 200; ea9[4] = 511 as GF;
+    ep9[5] = 255; ea9[5] = 4369 as GF;      // 0x1111
+    ep9[6] = 256; ea9[6] = 61680 as GF;     // 0xF0F0
+    ep9[7] = 280; ea9[7] = 2 as GF;
+    ep9[8] = 299; ea9[8] = 999 as GF;
+    run_case(data, k, n, ep9, ea9, 9);
+
+    // 10 errors -> deterministic refusal (d = 20 > 2t+1 = 19)
+    let ep10: *i32 = alloc(10);
+    let ea10: *GF = alloc(10);
+    var e: i32 = 0;
+    while e < 10 {
+        ep10[e] = e * 29 + 3;
+        ea10[e] = ((e + 1) * 7777) as GF;
+        e = e + 1;
+    }
+    run_case(data, k, n, ep10, ea10, 10);
+
+    return 0;
+}

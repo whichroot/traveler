@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_cubic.tv — #[zk] cubic x^3+x+5 over baked Goldilocks: the compiler emits a
+// native cubic_check + a PLONK prover cubic_check_zk_prove.
+// Link: ntt.o + poseidon2.o + merkle.o + fri.o + plonk.o + zk_cubic.o
+// @internal-design: zk
+
+type Goldilocks = Field<18446744069414584321>;
+
+#[export zk]
+fn cubic_check(x: Goldilocks) -> Goldilocks {
+    let x2: Goldilocks = x * x;
+    let x3: Goldilocks = x2 * x;
+    return x3 + x + 5;
+}

@@ -1,0 +1,603 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// plonk.tv — PLONK with full permutation argument (Goldilocks): gate +
+// permutation + boundary identities; quotient computed on the 4n extended coset
+// domain, FRI-proven. Linking: ntt.o + poseidon2.o + merkle.o + fri.o + plonk.o.
+// @internal-design: crypto
+
+type Goldilocks = Field<18446744069414584321>;
+
+// ===== EXTERN DECLARATIONS =====
+
+// NTT
+extern "C" fn ntt_forward_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32);
+extern "C" fn ntt_inverse_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32);
+extern "C" fn ntt_coset_forward_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32, shift: Goldilocks);
+extern "C" fn ntt_coset_inverse_Field18446744069414584321(
+    data: *Goldilocks, log_n: i32, shift: Goldilocks);
+
+// Poseidon2
+extern "C" fn poseidon2_permute_8_Field18446744069414584321(
+    state: *Goldilocks, rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+// Transcript (from fri.o)
+extern "C" fn transcript_init(state: *Goldilocks);
+extern "C" fn transcript_absorb(
+    state: *Goldilocks, absorb_pos: *i32,
+    input: *Goldilocks, n: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+extern "C" fn transcript_squeeze(
+    state: *Goldilocks, absorb_pos: *i32,
+    out: *Goldilocks, n: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+// FRI
+extern "C" fn fri_prove(
+    coeffs: *Goldilocks, degree: i32, log_blowup: i32,
+    shift: Goldilocks, num_queries: i32,
+    roots: *Goldilocks, challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks, query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+extern "C" fn fri_verify(
+    degree: i32, log_blowup: i32, shift: Goldilocks,
+    num_queries: i32, n_rounds: i32,
+    roots: *Goldilocks, challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks, query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+
+// ===== CONSTANTS =====
+
+// Coset separators k1=13, k2=17 (wire-column identity; must not lie in the NTT
+// subgroup — safe: not powers of any root of unity). COSET_SHIFT = 7 (generator).
+
+// ===== HELPERS =====
+
+// Evaluate polynomial at point x via Horner's method.
+#[export]
+fn poly_eval(coeffs: *Goldilocks, degree: i32, x: Goldilocks) -> Goldilocks {
+    var result: Goldilocks = coeffs[degree];
+    var i: i32 = degree - 1;
+    while i >= 0 {
+        result = result * x + coeffs[i];
+        i = i - 1;
+    }
+    return result;
+}
+
+// Interpolate: trace-domain values → coefficients (inverse NTT).
+#[export]
+fn plonk_interpolate(values: *Goldilocks, log_n: i32) {
+    ntt_inverse_Field18446744069414584321(values, log_n);
+}
+
+// Primitive n-th root of unity for Goldilocks: omega_n = g^((p-1)/n), g = 7,
+// computed as g^(2^(64-log_n)) / g^(2^(32-log_n)) via repeated squaring.
+fn plonk_omega(log_n: i32) -> Goldilocks {
+    let g: Goldilocks = 7;
+    // g^(2^(64-log_n)): square g (64-log_n) times
+    var hi: Goldilocks = g;
+    let sq_hi: i32 = 64 - log_n;
+    for i in 0..sq_hi { hi = hi * hi; }
+    // g^(2^(32-log_n)): square g (32-log_n) times
+    var lo: Goldilocks = g;
+    let sq_lo: i32 = 32 - log_n;
+    for i in 0..sq_lo { lo = lo * lo; }
+    return hi / lo;
+}
+
+// Field exponentiation with i32 exponent.
+fn pow_field(base: Goldilocks, exp: i32) -> Goldilocks {
+    var result: Goldilocks = 1;
+    var b: Goldilocks = base;
+    var e: i32 = exp;
+    while e > 0 {
+        if (e & 1) == 1 {
+            result = result * b;
+        }
+        b = b * b;
+        e = e >> 1;
+    }
+    return result;
+}
+
+// Hash an array of field elements → single commitment via Poseidon2 sponge.
+fn plonk_hash(
+    data: *Goldilocks, n: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> Goldilocks {
+    let h_st: *Goldilocks = alloc(8);
+    let h_pos: *i32 = alloc(1);
+    transcript_init(h_st);
+    h_pos[0] = 0;
+    transcript_absorb(h_st, h_pos, data, n,
+        rc_init, rc_term, rc_int, diag);
+    let h_out: *Goldilocks = alloc(1);
+    transcript_squeeze(h_st, h_pos, h_out, 1,
+        rc_init, rc_term, rc_int, diag);
+    let result: Goldilocks = h_out[0];
+    free(h_st); free(h_pos); free(h_out);
+    return result;
+}
+
+// Hash the full circuit description (selectors + sigma) → single commitment.
+fn plonk_circuit_commit(
+    n: i32,
+    q_L: *Goldilocks, q_R: *Goldilocks, q_O: *Goldilocks,
+    q_M: *Goldilocks, q_C: *Goldilocks,
+    sigma_a: *Goldilocks, sigma_b: *Goldilocks, sigma_c: *Goldilocks,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> Goldilocks {
+    let h_st: *Goldilocks = alloc(8);
+    let h_pos: *i32 = alloc(1);
+    transcript_init(h_st);
+    h_pos[0] = 0;
+    transcript_absorb(h_st, h_pos, q_L, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, q_R, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, q_O, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, q_M, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, q_C, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, sigma_a, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, sigma_b, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(h_st, h_pos, sigma_c, n, rc_init, rc_term, rc_int, diag);
+    let h_out: *Goldilocks = alloc(1);
+    transcript_squeeze(h_st, h_pos, h_out, 1, rc_init, rc_term, rc_int, diag);
+    let result: Goldilocks = h_out[0];
+    free(h_st); free(h_pos); free(h_out);
+    return result;
+}
+
+// Run the PLONK Fiat-Shamir transcript through zeta; prover and verifier both
+// call it for identical challenges. out_ch: [0]=beta [1]=gamma [2]=alpha [3]=zeta.
+fn plonk_derive_challenges(
+    circuit_commit: Goldilocks,
+    w_commit: Goldilocks,
+    z_commit: Goldilocks,
+    fri_root: *Goldilocks,
+    out_ch: *Goldilocks,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) {
+    let ts: *Goldilocks = alloc(8);
+    let tp: *i32 = alloc(1);
+    transcript_init(ts);
+    tp[0] = 0;
+
+    // 1. Absorb circuit commitment
+    let cc_buf: *Goldilocks = alloc(1);
+    cc_buf[0] = circuit_commit;
+    transcript_absorb(ts, tp, cc_buf, 1, rc_init, rc_term, rc_int, diag);
+
+    // 2. Absorb witness commitment
+    cc_buf[0] = w_commit;
+    transcript_absorb(ts, tp, cc_buf, 1, rc_init, rc_term, rc_int, diag);
+
+    // 3. Squeeze beta, gamma
+    let bg: *Goldilocks = alloc(2);
+    transcript_squeeze(ts, tp, bg, 2, rc_init, rc_term, rc_int, diag);
+    out_ch[0] = bg[0];
+    out_ch[1] = bg[1];
+
+    // 4. Absorb Z commitment
+    cc_buf[0] = z_commit;
+    transcript_absorb(ts, tp, cc_buf, 1, rc_init, rc_term, rc_int, diag);
+
+    // 5. Squeeze alpha
+    transcript_squeeze(ts, tp, bg, 1, rc_init, rc_term, rc_int, diag);
+    out_ch[2] = bg[0];
+
+    // 6. Absorb FRI root (4 elements)
+    transcript_absorb(ts, tp, fri_root, 4, rc_init, rc_term, rc_int, diag);
+
+    // 7. Squeeze zeta
+    transcript_squeeze(ts, tp, bg, 1, rc_init, rc_term, rc_int, diag);
+    out_ch[3] = bg[0];
+
+    free(ts); free(tp); free(cc_buf); free(bg);
+}
+
+// Copy n elements from src to dst.
+fn copy_n(dst: *Goldilocks, src: *Goldilocks, n: i32) {
+    for i in 0..n { dst[i] = src[i]; }
+}
+
+// Zero-pad: copy n_src elements from src, then zero-fill to n_dst.
+fn pad_to(dst: *Goldilocks, src: *Goldilocks, n_src: i32, n_dst: i32) {
+    for i in 0..n_src { dst[i] = src[i]; }
+    for i in n_src..n_dst { dst[i] = 0; }
+}
+
+// ===== PLONK PROVE =====
+
+// eval_out layout (16 elements):
+//   [0] = w_commit     [1] = z_commit
+//   [2] = a(zeta)      [3] = b(zeta)      [4] = c(zeta)
+//   [5] = qL(zeta)     [6] = qR(zeta)     [7] = qO(zeta)
+//   [8] = qM(zeta)     [9] = qC(zeta)
+//   [10] = z(zeta)     [11] = z(omega*zeta)
+//   [12] = sigma_a(z)  [13] = sigma_b(z)  [14] = sigma_c(z)
+//   [15] = t(zeta)
+#[export]
+fn plonk_prove(
+    n_gates: i32,
+    log_n: i32,
+    q_L: *Goldilocks, q_R: *Goldilocks, q_O: *Goldilocks,
+    q_M: *Goldilocks, q_C: *Goldilocks,
+    wa: *Goldilocks, wb: *Goldilocks, wc: *Goldilocks,
+    sigma_a: *Goldilocks, sigma_b: *Goldilocks, sigma_c: *Goldilocks,
+    eval_out: *Goldilocks,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32 {
+    let n: i32 = 1 << log_n;
+    let n4: i32 = n * 4;
+    let log_n4: i32 = log_n + 2;
+    let coset_shift: Goldilocks = 7;
+    let k1: Goldilocks = 13;
+    let k2: Goldilocks = 17;
+
+    // ---- Step 0: Precompute omega powers on trace domain ----
+    let omega: Goldilocks = plonk_omega(log_n);
+    let omega_pow: *Goldilocks = alloc(n);
+    omega_pow[0] = 1;
+    for i in 1..n { omega_pow[i] = omega_pow[i - 1] * omega; }
+
+    // ---- Step 1: Commitments for Fiat-Shamir ----
+    // Circuit commitment (deterministic from public circuit)
+    let cc: Goldilocks = plonk_circuit_commit(n,
+        q_L, q_R, q_O, q_M, q_C, sigma_a, sigma_b, sigma_c,
+        rc_init, rc_term, rc_int, diag);
+
+    // Witness commitment: hash(wa || wb || wc)
+    // Absorb all three arrays into one sponge
+    let wh_st: *Goldilocks = alloc(8);
+    let wh_pos: *i32 = alloc(1);
+    transcript_init(wh_st);
+    wh_pos[0] = 0;
+    transcript_absorb(wh_st, wh_pos, wa, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(wh_st, wh_pos, wb, n, rc_init, rc_term, rc_int, diag);
+    transcript_absorb(wh_st, wh_pos, wc, n, rc_init, rc_term, rc_int, diag);
+    let wh_out: *Goldilocks = alloc(1);
+    transcript_squeeze(wh_st, wh_pos, wh_out, 1, rc_init, rc_term, rc_int, diag);
+    let w_commit: Goldilocks = wh_out[0];
+    free(wh_st); free(wh_pos); free(wh_out);
+    eval_out[0] = w_commit;
+
+    // ---- Step 2: Derive beta, gamma from a partial transcript ----
+    // (beta/gamma are needed now to compute Z; zeta is squeezed after FRI.)
+    let ts: *Goldilocks = alloc(8);
+    let tp: *i32 = alloc(1);
+    transcript_init(ts);
+    tp[0] = 0;
+    let tmp1: *Goldilocks = alloc(1);
+    tmp1[0] = cc;
+    transcript_absorb(ts, tp, tmp1, 1, rc_init, rc_term, rc_int, diag);
+    tmp1[0] = w_commit;
+    transcript_absorb(ts, tp, tmp1, 1, rc_init, rc_term, rc_int, diag);
+    let bg: *Goldilocks = alloc(2);
+    transcript_squeeze(ts, tp, bg, 2, rc_init, rc_term, rc_int, diag);
+    let beta: Goldilocks = bg[0];
+    let gamma: Goldilocks = bg[1];
+
+    // ---- Step 3: Compute grand product Z(x) ----
+    let z_vals: *Goldilocks = alloc(n);
+    z_vals[0] = 1;
+    for i in 0..(n - 1) {
+        let f_i: Goldilocks = (wa[i] + beta * omega_pow[i] + gamma)
+        * (wb[i] + beta * k1 * omega_pow[i] + gamma)
+        * (wc[i] + beta * k2 * omega_pow[i] + gamma);
+        let g_i: Goldilocks = (wa[i] + beta * sigma_a[i] + gamma)
+        * (wb[i] + beta * sigma_b[i] + gamma)
+        * (wc[i] + beta * sigma_c[i] + gamma);
+        z_vals[i + 1] = z_vals[i] * f_i / g_i;
+    }
+
+    // Z commitment
+    let z_commit: Goldilocks = plonk_hash(z_vals, n,
+        rc_init, rc_term, rc_int, diag);
+    eval_out[1] = z_commit;
+
+    // ---- Step 4: Derive alpha ----
+    tmp1[0] = z_commit;
+    transcript_absorb(ts, tp, tmp1, 1, rc_init, rc_term, rc_int, diag);
+    transcript_squeeze(ts, tp, tmp1, 1, rc_init, rc_term, rc_int, diag);
+    let alpha: Goldilocks = tmp1[0];
+
+    // (ts state is saved — we'll absorb FRI root and squeeze zeta after FRI)
+
+    // ---- Step 5: Interpolate all polynomials to coefficient form ----
+    let a_co: *Goldilocks = alloc(n); copy_n(a_co, wa, n);
+    let b_co: *Goldilocks = alloc(n); copy_n(b_co, wb, n);
+    let c_co: *Goldilocks = alloc(n); copy_n(c_co, wc, n);
+    let qL_co: *Goldilocks = alloc(n); copy_n(qL_co, q_L, n);
+    let qR_co: *Goldilocks = alloc(n); copy_n(qR_co, q_R, n);
+    let qO_co: *Goldilocks = alloc(n); copy_n(qO_co, q_O, n);
+    let qM_co: *Goldilocks = alloc(n); copy_n(qM_co, q_M, n);
+    let qC_co: *Goldilocks = alloc(n); copy_n(qC_co, q_C, n);
+    let sa_co: *Goldilocks = alloc(n); copy_n(sa_co, sigma_a, n);
+    let sb_co: *Goldilocks = alloc(n); copy_n(sb_co, sigma_b, n);
+    let sc_co: *Goldilocks = alloc(n); copy_n(sc_co, sigma_c, n);
+    let z_co: *Goldilocks = alloc(n); copy_n(z_co, z_vals, n);
+
+    plonk_interpolate(a_co, log_n);
+    plonk_interpolate(b_co, log_n);
+    plonk_interpolate(c_co, log_n);
+    plonk_interpolate(qL_co, log_n);
+    plonk_interpolate(qR_co, log_n);
+    plonk_interpolate(qO_co, log_n);
+    plonk_interpolate(qM_co, log_n);
+    plonk_interpolate(qC_co, log_n);
+    plonk_interpolate(sa_co, log_n);
+    plonk_interpolate(sb_co, log_n);
+    plonk_interpolate(sc_co, log_n);
+    plonk_interpolate(z_co, log_n);
+
+    // ---- Step 6: Evaluate all on 4n extended coset domain ----
+    let a_ext: *Goldilocks = alloc(n4); pad_to(a_ext, a_co, n, n4);
+    let b_ext: *Goldilocks = alloc(n4); pad_to(b_ext, b_co, n, n4);
+    let c_ext: *Goldilocks = alloc(n4); pad_to(c_ext, c_co, n, n4);
+    let qL_ext: *Goldilocks = alloc(n4); pad_to(qL_ext, qL_co, n, n4);
+    let qR_ext: *Goldilocks = alloc(n4); pad_to(qR_ext, qR_co, n, n4);
+    let qO_ext: *Goldilocks = alloc(n4); pad_to(qO_ext, qO_co, n, n4);
+    let qM_ext: *Goldilocks = alloc(n4); pad_to(qM_ext, qM_co, n, n4);
+    let qC_ext: *Goldilocks = alloc(n4); pad_to(qC_ext, qC_co, n, n4);
+    let sa_ext: *Goldilocks = alloc(n4); pad_to(sa_ext, sa_co, n, n4);
+    let sb_ext: *Goldilocks = alloc(n4); pad_to(sb_ext, sb_co, n, n4);
+    let sc_ext: *Goldilocks = alloc(n4); pad_to(sc_ext, sc_co, n, n4);
+    let z_ext: *Goldilocks = alloc(n4); pad_to(z_ext, z_co, n, n4);
+
+    ntt_coset_forward_Field18446744069414584321(a_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(b_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(c_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(qL_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(qR_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(qO_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(qM_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(qC_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(sa_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(sb_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(sc_ext, log_n4, coset_shift);
+    ntt_coset_forward_Field18446744069414584321(z_ext, log_n4, coset_shift);
+
+    // Z(omega*x): shift coefficients by omega^k before NTT
+    let zs_ext: *Goldilocks = alloc(n4);
+    var om: Goldilocks = 1;
+    for k in 0..n {
+        zs_ext[k] = z_co[k] * om;
+        om = om * omega;
+    }
+    for k in n..n4 { zs_ext[k] = 0; }
+    ntt_coset_forward_Field18446744069414584321(zs_ext, log_n4, coset_shift);
+
+    // L_1(x) = (1/n) * (1 + x + ... + x^{n-1})
+    let l1_ext: *Goldilocks = alloc(n4);
+    // Compute 1/n in the field
+    var n_field: Goldilocks = 1;
+    for i in 1..n { n_field = n_field + 1; }
+    let n_inv: Goldilocks = 1 / n_field;
+    for k in 0..n { l1_ext[k] = n_inv; }
+    for k in n..n4 { l1_ext[k] = 0; }
+    ntt_coset_forward_Field18446744069414584321(l1_ext, log_n4, coset_shift);
+
+    // Coset points (for identity polynomial id(x) = x)
+    let omega4n: Goldilocks = plonk_omega(log_n4);
+    let pts: *Goldilocks = alloc(n4);
+    var cp: Goldilocks = coset_shift;
+    for j in 0..n4 {
+        pts[j] = cp;
+        cp = cp * omega4n;
+    }
+
+    // Z_H(x) = x^n - 1 on extended domain
+    let zh_ext: *Goldilocks = alloc(n4);
+    for i in 0..n4 { zh_ext[i] = 0; }
+    zh_ext[0] = 0 - 1;
+    zh_ext[n] = 1;
+    ntt_coset_forward_Field18446744069414584321(zh_ext, log_n4, coset_shift);
+
+    // ---- Step 7: Compute combined quotient pointwise ----
+    let t_ext: *Goldilocks = alloc(n4);
+    for j in 0..n4 {
+        // Gate equation
+        let gate: Goldilocks = qL_ext[j] * a_ext[j]
+        + qR_ext[j] * b_ext[j]
+        + qO_ext[j] * c_ext[j]
+        + qM_ext[j] * a_ext[j] * b_ext[j]
+        + qC_ext[j];
+
+        // Permutation constraint: Z(omega*x)*g - Z(x)*f
+        let f_j: Goldilocks = (a_ext[j] + beta * pts[j] + gamma)
+        * (b_ext[j] + beta * k1 * pts[j] + gamma)
+        * (c_ext[j] + beta * k2 * pts[j] + gamma);
+        let g_j: Goldilocks = (a_ext[j] + beta * sa_ext[j] + gamma)
+        * (b_ext[j] + beta * sb_ext[j] + gamma)
+        * (c_ext[j] + beta * sc_ext[j] + gamma);
+        let perm: Goldilocks = zs_ext[j] * g_j - z_ext[j] * f_j;
+
+        // Boundary: L_1 * (Z - 1)
+        let bnd: Goldilocks = l1_ext[j] * (z_ext[j] - 1);
+
+        // Combined numerator, then divide by Z_H
+        t_ext[j] = (gate + alpha * perm + alpha * alpha * bnd) / zh_ext[j];
+    }
+
+    // Inverse coset NTT → quotient coefficients
+    ntt_coset_inverse_Field18446744069414584321(t_ext, log_n4, coset_shift);
+
+    // Free extended-domain buffers
+    free(a_ext); free(b_ext); free(c_ext);
+    free(qL_ext); free(qR_ext); free(qO_ext);
+    free(qM_ext); free(qC_ext);
+    free(sa_ext); free(sb_ext); free(sc_ext);
+    free(z_ext); free(zs_ext); free(l1_ext);
+    free(pts); free(zh_ext);
+
+    // ---- Step 8: FRI prove on quotient polynomial ----
+    // Quotient degree: perm term has degree 4(n-1), / Z_H(n) → 3n-4
+    let t_degree: i32 = 3 * n - 4;
+    fri_n_rounds[0] = fri_prove(
+        t_ext, t_degree, 1, coset_shift, num_queries,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        rc_init, rc_term, rc_int, diag);
+
+    // ---- Step 9: Derive zeta from transcript ----
+    // Absorb FRI root[0] (4 elements) into the PLONK transcript
+    let fri_root0: *Goldilocks = &fri_roots[0];
+    transcript_absorb(ts, tp, fri_root0, 4, rc_init, rc_term, rc_int, diag);
+    transcript_squeeze(ts, tp, tmp1, 1, rc_init, rc_term, rc_int, diag);
+    let zeta: Goldilocks = tmp1[0];
+
+    free(ts); free(tp); free(tmp1); free(bg);
+
+    // ---- Step 10: Evaluate all polynomials at zeta ----
+    eval_out[2] = poly_eval(a_co, n - 1, zeta);
+    eval_out[3] = poly_eval(b_co, n - 1, zeta);
+    eval_out[4] = poly_eval(c_co, n - 1, zeta);
+    eval_out[5] = poly_eval(qL_co, n - 1, zeta);
+    eval_out[6] = poly_eval(qR_co, n - 1, zeta);
+    eval_out[7] = poly_eval(qO_co, n - 1, zeta);
+    eval_out[8] = poly_eval(qM_co, n - 1, zeta);
+    eval_out[9] = poly_eval(qC_co, n - 1, zeta);
+    eval_out[10] = poly_eval(z_co, n - 1, zeta);
+    eval_out[11] = poly_eval(z_co, n - 1, omega * zeta);
+    eval_out[12] = poly_eval(sa_co, n - 1, zeta);
+    eval_out[13] = poly_eval(sb_co, n - 1, zeta);
+    eval_out[14] = poly_eval(sc_co, n - 1, zeta);
+    eval_out[15] = poly_eval(t_ext, t_degree, zeta);
+
+    // Cleanup
+    free(omega_pow); free(z_vals);
+    free(a_co); free(b_co); free(c_co);
+    free(qL_co); free(qR_co); free(qO_co);
+    free(qM_co); free(qC_co);
+    free(sa_co); free(sb_co); free(sc_co);
+    free(z_co); free(t_ext);
+
+    return 1;
+}
+
+// ===== PLONK VERIFY =====
+
+// Returns:
+//   1 = valid proof
+//   2 = equation check failed
+//   3 = FRI verification failed
+#[export]
+fn plonk_verify(
+    n_gates: i32,
+    log_n: i32,
+    q_L: *Goldilocks, q_R: *Goldilocks, q_O: *Goldilocks,
+    q_M: *Goldilocks, q_C: *Goldilocks,
+    sigma_a: *Goldilocks, sigma_b: *Goldilocks, sigma_c: *Goldilocks,
+    eval_out: *Goldilocks,
+    fri_n_rounds: i32,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32 {
+    let n: i32 = 1 << log_n;
+    let coset_shift: Goldilocks = 7;
+    let k1: Goldilocks = 13;
+    let k2: Goldilocks = 17;
+
+    // ---- Step 1: Reproduce PLONK Fiat-Shamir transcript ----
+    let cc: Goldilocks = plonk_circuit_commit(n,
+        q_L, q_R, q_O, q_M, q_C, sigma_a, sigma_b, sigma_c,
+        rc_init, rc_term, rc_int, diag);
+
+    let w_commit: Goldilocks = eval_out[0];
+    let z_commit: Goldilocks = eval_out[1];
+
+    let ch: *Goldilocks = alloc(4);
+    plonk_derive_challenges(cc, w_commit, z_commit, &fri_roots[0], ch,
+        rc_init, rc_term, rc_int, diag);
+    let beta: Goldilocks = ch[0];
+    let gamma: Goldilocks = ch[1];
+    let alpha: Goldilocks = ch[2];
+    let zeta: Goldilocks = ch[3];
+    free(ch);
+
+    // ---- Step 2: Extract evaluations ----
+    let a_z: Goldilocks = eval_out[2];
+    let b_z: Goldilocks = eval_out[3];
+    let c_z: Goldilocks = eval_out[4];
+    let qL_z: Goldilocks = eval_out[5];
+    let qR_z: Goldilocks = eval_out[6];
+    let qO_z: Goldilocks = eval_out[7];
+    let qM_z: Goldilocks = eval_out[8];
+    let qC_z: Goldilocks = eval_out[9];
+    let z_z: Goldilocks = eval_out[10];
+    let z_wz: Goldilocks = eval_out[11];
+    let sa_z: Goldilocks = eval_out[12];
+    let sb_z: Goldilocks = eval_out[13];
+    let sc_z: Goldilocks = eval_out[14];
+    let t_z: Goldilocks = eval_out[15];
+
+    // ---- Step 3: Compute combined equation ----
+    // Gate
+    let gate: Goldilocks = qL_z * a_z + qR_z * b_z + qO_z * c_z
+    + qM_z * a_z * b_z + qC_z;
+
+    // Permutation: Z(omega*zeta)*g(zeta) - Z(zeta)*f(zeta)
+    let f_z: Goldilocks = (a_z + beta * zeta + gamma)
+    * (b_z + beta * k1 * zeta + gamma)
+    * (c_z + beta * k2 * zeta + gamma);
+    let g_z: Goldilocks = (a_z + beta * sa_z + gamma)
+    * (b_z + beta * sb_z + gamma)
+    * (c_z + beta * sc_z + gamma);
+    let perm: Goldilocks = z_wz * g_z - z_z * f_z;
+
+    // Boundary: L_1(zeta) * (Z(zeta) - 1)
+    // L_1(zeta) = (zeta^n - 1) / (n * (zeta - 1))
+    let zeta_n: Goldilocks = pow_field(zeta, n);
+    var n_field: Goldilocks = 1;
+    for i in 1..n { n_field = n_field + 1; }
+    let l1_z: Goldilocks = (zeta_n - 1) / (n_field * (zeta - 1));
+    let bnd: Goldilocks = l1_z * (z_z - 1);
+
+    // LHS of equation
+    let lhs: Goldilocks = gate + alpha * perm + alpha * alpha * bnd;
+
+    // RHS: t(zeta) * Z_H(zeta), where Z_H(zeta) = zeta^n - 1
+    let zh_z: Goldilocks = zeta_n - 1;
+    let rhs: Goldilocks = t_z * zh_z;
+
+    if lhs != rhs {
+        return 2;
+    }
+
+    // ---- Step 4: FRI verification ----
+    let t_degree: i32 = 3 * n - 4;
+    let fri_ok: i32 = fri_verify(
+        t_degree, 1, coset_shift, num_queries, fri_n_rounds,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        rc_init, rc_term, rc_int, diag);
+    if fri_ok != 1 {
+        return 3;
+    }
+
+    return 1;
+}

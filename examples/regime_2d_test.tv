@@ -1,0 +1,429 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_2d_test.tv — 2D regime boundary detection (rows + columns of a 16x16
+// grid): topology, persistence, noise; extends regime_topology_test.tv to 2D.
+// @internal-design: regime (2D detection examples)
+//
+// Signals:
+//   1. Solid: f(r,c) = 10 + 2c + c(c-1)/2 + r. Degree 2 in c, degree 1 in r.
+//      Zero boundaries in any direction. The contractible case.
+//   2. Annulus: same background, hole at rows 5-10 cols 5-10 with h(r,c) = 80+3c+r.
+//      Row boundaries: entering residual=65 (structural), leaving=26 (structural).
+//      Col boundaries: entering residual=65 (offset), leaving=65 (offset).
+//      Persistence asymmetry between row and column is discovered, not enforced.
+//   3. Checkerboard: ((r+c)%2)*40+10. Maximal boundaries. Failure case:
+//      the framework should NOT produce clean topology from non-polynomial data.
+//
+// Links with poly_core.tv (two-file link).
+//
+// Test groups:
+//   1. Topology detection: 3 signals × 3 primes (9 tests)
+//   2. Persistence: annulus at 4 thresholds × 3 primes (12 tests)
+//   3. Persistence control: disk at threshold=0 × 3 primes (3 tests)
+//   4. Noise stability: annulus at 3 noise levels × 3 primes (9 tests)
+//
+// Expected output: 33 tests, 33 passed
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+fn wr(fd: i32, s: *u8) {
+    let len: usize = strlen(s);
+    write(fd, s, len);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// Import kernel functions (linked from poly_core.o)
+extern "C" fn regime_detect(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32;
+
+// Count ALL regime boundaries in a 1D signal by calling regime_detect
+// repeatedly, advancing past each boundary.
+fn count_boundaries(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32 {
+    var count: i32 = 0;
+    var offset: i32 = 0;
+    while n - offset > order + 1 {
+        let rem: i32 = n - offset;
+        let b: i32 = regime_detect(&data[offset], rem, order, threshold, p, reg);
+        if b >= rem { break; }
+        count = count + 1;
+        offset = offset + b;
+    }
+    return count;
+}
+
+// Scan all 16 rows of a 16x16 grid, return total boundary count.
+fn scan_rows(data: *i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32 {
+    var total: i32 = 0;
+    var r: i32 = 0;
+    while r < 16 {
+        let row_ptr: *i32 = &data[r * 16];
+        let b: i32 = count_boundaries(row_ptr, 16, order, threshold, p, reg);
+        total = total + b;
+        r = r + 1;
+    }
+    return total;
+}
+
+// Scan all 16 columns of a 16x16 grid, return total boundary count.
+// Columns are non-contiguous in row-major layout, so we copy each column
+// into a contiguous buffer before scanning.
+fn scan_cols(data: *i32, col_buf: *i32, order: i32, threshold: i32, p: i32, reg: *i32) -> i32 {
+    var total: i32 = 0;
+    var c: i32 = 0;
+    while c < 16 {
+        // Extract column c into contiguous buffer
+        var r: i32 = 0;
+        while r < 16 {
+            col_buf[r] = data[r * 16 + c];
+            r = r + 1;
+        }
+        let b: i32 = count_boundaries(col_buf, 16, order, threshold, p, reg);
+        total = total + b;
+        c = c + 1;
+    }
+    return total;
+}
+
+fn main() {
+    var tests: i32 = 0;
+    var passed: i32 = 0;
+
+    var primes: [i32; 3] = 0;
+    primes[0] = 251;
+    primes[1] = 65521;
+    primes[2] = 65537;
+
+    // Shared buffers
+    var reg: [i32; 3] = 0;
+    var col_buf: [i32; 16] = 0;
+
+    // ============================================================
+    //  SIGNAL CONSTRUCTION
+    // ============================================================
+
+    // Signal 1: Solid (contractible)
+    // f(r, c) = 10 + 2c + c*(c-1)/2 + r
+    // Degree 2 in c, degree 1 in r. Values: 10..160. All < 251.
+    var solid: [i32; 256] = 0;
+    var r: i32 = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            solid[r * 16 + c] = 10 + 2 * c + (c * (c - 1)) / 2 + r;
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Signal 2: Annulus (one hole)
+    // Background: same as solid.
+    // Hole (rows 5-10, cols 5-10): h(r, c) = 80 + 3c + r
+    var annulus: [i32; 256] = 0;
+    r = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            let bg: i32 = 10 + 2 * c + (c * (c - 1)) / 2 + r;
+            if r >= 5 {
+                if r <= 10 {
+                    if c >= 5 {
+                        if c <= 10 {
+                            annulus[r * 16 + c] = 80 + 3 * c + r;
+                        } else {
+                            annulus[r * 16 + c] = bg;
+                        }
+                    } else {
+                        annulus[r * 16 + c] = bg;
+                    }
+                } else {
+                    annulus[r * 16 + c] = bg;
+                }
+            } else {
+                annulus[r * 16 + c] = bg;
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Signal 3: Checkerboard (failure case)
+    // data[r*16+c] = ((r+c) % 2) * 40 + 10
+    // Alternates 10 and 50. Non-polynomial. Many boundaries.
+    var checker: [i32; 256] = 0;
+    r = 0;
+    while r < 16 {
+        var c: i32 = 0;
+        while c < 16 {
+            checker[r * 16 + c] = ((r + c) % 2) * 40 + 10;
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // ============================================================
+    //  GROUP 1: Topology Detection (threshold=0)
+    //
+    //  Solid: row=0, col=0 (one polynomial covers everything)
+    //  Annulus: row=12, col=12 (hole creates boundaries)
+    //  Checker: row>0, col>0 (many boundaries, no topology)
+    // ============================================================
+
+    var pi: i32 = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let sr: i32 = scan_rows(&solid[0], 2, 0, p, &reg[0]);
+        let sc: i32 = scan_cols(&solid[0], &col_buf[0], 2, 0, p, &reg[0]);
+        tests = tests + 1;
+        wr(1, "topo_solid row=");
+        wr_int(1, sr as i64);
+        wr(1, " col=");
+        wr_int(1, sc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        if sr == 0 {
+            if sc == 0 {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let sr: i32 = scan_rows(&annulus[0], 2, 0, p, &reg[0]);
+        let sc: i32 = scan_cols(&annulus[0], &col_buf[0], 2, 0, p, &reg[0]);
+        tests = tests + 1;
+        wr(1, "topo_annulus row=");
+        wr_int(1, sr as i64);
+        wr(1, " col=");
+        wr_int(1, sc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        if sr == 12 {
+            if sc == 12 {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // Checkerboard: verify boundaries exist (>0) and are field-invariant.
+    // Store first prime's result to compare against others.
+    var checker_row_ref: i32 = 0;
+    var checker_col_ref: i32 = 0;
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let sr: i32 = scan_rows(&checker[0], 2, 0, p, &reg[0]);
+        let sc: i32 = scan_cols(&checker[0], &col_buf[0], 2, 0, p, &reg[0]);
+        if pi == 0 {
+            checker_row_ref = sr;
+            checker_col_ref = sc;
+        }
+        tests = tests + 1;
+        wr(1, "topo_checker row=");
+        wr_int(1, sr as i64);
+        wr(1, " col=");
+        wr_int(1, sc as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        // Check: boundaries > 0 AND field-invariant (matches first prime)
+        if sr > 0 {
+            if sc > 0 {
+                if sr == checker_row_ref {
+                    if sc == checker_col_ref {
+                        wr(1, ": PASS\n");
+                        passed = passed + 1;
+                    } else {
+                        wr(1, ": FAIL\n");
+                    }
+                } else {
+                    wr(1, ": FAIL\n");
+                }
+            } else {
+                wr(1, ": FAIL\n");
+            }
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 2: Persistence (annulus threshold sweep)
+    //
+    //  Row entering residual = 65, leaving residual = 26.
+    //  Col entering residual = 65, leaving residual = 65.
+    //
+    //  The persistence profile is what the algebra produces.
+    //  We report the total and check field-invariance.
+    // ============================================================
+
+    var thresholds: [i32; 4] = 0;
+    thresholds[0] = 0;
+    thresholds[1] = 10;
+    thresholds[2] = 30;
+    thresholds[3] = 70;
+
+    // Pre-compute expected totals at each threshold from the first prime,
+    // then verify the other primes match.
+    var persist_ref: [i32; 4] = 0;
+
+    var ti: i32 = 0;
+    while ti < 4 {
+        let threshold: i32 = thresholds[ti];
+        var first_total: i32 = 0 - 1;
+
+        pi = 0;
+        while pi < 3 {
+            let p: i32 = primes[pi];
+            let sr: i32 = scan_rows(&annulus[0], 2, threshold, p, &reg[0]);
+            let sc: i32 = scan_cols(&annulus[0], &col_buf[0], 2, threshold, p, &reg[0]);
+            let total: i32 = sr + sc;
+
+            if pi == 0 {
+                first_total = total;
+                persist_ref[ti] = total;
+            }
+
+            tests = tests + 1;
+            wr(1, "persist t=");
+            wr_int(1, threshold as i64);
+            wr(1, " total=");
+            wr_int(1, total as i64);
+            wr(1, " p=");
+            wr_int(1, p as i64);
+            if total == first_total {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+
+            pi = pi + 1;
+        }
+        ti = ti + 1;
+    }
+
+    // ============================================================
+    //  GROUP 3: Persistence Control (disk at threshold=0)
+    //
+    //  Should be 0 at all thresholds. Verify at threshold=0 as
+    //  the strongest test (any residual would trigger).
+    // ============================================================
+
+    pi = 0;
+    while pi < 3 {
+        let p: i32 = primes[pi];
+        let sr: i32 = scan_rows(&solid[0], 2, 0, p, &reg[0]);
+        let sc: i32 = scan_cols(&solid[0], &col_buf[0], 2, 0, p, &reg[0]);
+        let total: i32 = sr + sc;
+        tests = tests + 1;
+        wr(1, "persist_disk t=0 total=");
+        wr_int(1, total as i64);
+        wr(1, " p=");
+        wr_int(1, p as i64);
+        if total == 0 {
+            wr(1, ": PASS\n");
+            passed = passed + 1;
+        } else {
+            wr(1, ": FAIL\n");
+        }
+        pi = pi + 1;
+    }
+
+    // ============================================================
+    //  GROUP 4: Noise Stability
+    //
+    //  Annulus + deterministic noise at increasing levels.
+    //  Threshold fixed at 10 (below both clean residuals: 26, 65).
+    //  Checks FIELD-INVARIANCE of the noisy count, not equality with
+    //  the clean count (rationale: @internal-design: regime, 2D examples).
+    //
+    //  Noise: (i * 7 + 13) % (max_noise + 1), added to annulus.
+    //  Deterministic: no RNG, reproducible across runs.
+    // ============================================================
+
+    var noise_levels: [i32; 3] = 0;
+    noise_levels[0] = 0;
+    noise_levels[1] = 5;
+    noise_levels[2] = 10;
+
+    var ni: i32 = 0;
+    while ni < 3 {
+        let noise_max: i32 = noise_levels[ni];
+
+        // Build noisy annulus
+        var noisy: [i32; 256] = 0;
+        var i: i32 = 0;
+        while i < 256 {
+            let noise: i32 = (i * 7 + 13) % (noise_max + 1);
+            noisy[i] = annulus[i] + noise;
+            i = i + 1;
+        }
+
+        // Field-invariance: first prime sets the reference, others must match.
+        var noise_ref: i32 = 0 - 1;
+
+        pi = 0;
+        while pi < 3 {
+            let p: i32 = primes[pi];
+            let sr: i32 = scan_rows(&noisy[0], 2, 10, p, &reg[0]);
+            let sc: i32 = scan_cols(&noisy[0], &col_buf[0], 2, 10, p, &reg[0]);
+            let total: i32 = sr + sc;
+
+            if pi == 0 {
+                noise_ref = total;
+            }
+
+            tests = tests + 1;
+            wr(1, "noise n=");
+            wr_int(1, noise_max as i64);
+            wr(1, " t=10 total=");
+            wr_int(1, total as i64);
+            wr(1, " p=");
+            wr_int(1, p as i64);
+            if total == noise_ref {
+                wr(1, ": PASS\n");
+                passed = passed + 1;
+            } else {
+                wr(1, ": FAIL\n");
+            }
+
+            pi = pi + 1;
+        }
+        ni = ni + 1;
+    }
+
+    // ============================================================
+    //  Summary
+    // ============================================================
+    wr_int(1, tests as i64);
+    wr(1, " tests, ");
+    wr_int(1, passed as i64);
+    wr(1, " passed\n");
+}

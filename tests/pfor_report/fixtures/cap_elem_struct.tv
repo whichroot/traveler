@@ -1,0 +1,22 @@
+// --pfor-report fixture: the post-U1 residual TYPE refusal. A struct-element
+// own-cell copy passes the independence proof (stride-1 injective write,
+// own-cell read, pure body) but its captures are *Pt — a struct element,
+// outside the admitted set (field/dyn/primitive). U1 lifted the field PROXY,
+// not default-deny: aggregate elements stay refused (layout + aliasing
+// opacity through the by-value ctx slot) until the worker protocol earns
+// them with a measured consumer. Verdict: `cap-elem`.
+struct Pt { x: i64, y: i64 }
+
+fn copy_pts(out: *Pt, a: *Pt, n: i32) {
+    for i in 0..n {
+        out[i] = a[i];
+    }
+}
+
+fn main() {
+    let n: i32 = 8;
+    let a: *Pt = alloc(n * 16);
+    let o: *Pt = alloc(n * 16);
+    copy_pts(o, a, n);
+    print(0);
+}

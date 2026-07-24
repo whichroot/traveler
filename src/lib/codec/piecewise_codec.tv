@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// piecewise_codec.tv — Piecewise polynomial compression over Field<65537>.
+// Pipeline: project 16-bit PCM -> field, forward-difference, center, Rice-code,
+// DP-optimal segment. All #[export] functions are ctypes-callable.
+// Spec §3.4 (Piecewise<F,d>), §10.1 (segmentation), §11 (continuation).
+// Design notes + rationale: @internal-design: codec.
+
+// This file is an import manifest: the codec is split into modules (each under
+// the 1500-line lib cap); Model A import splices them in original order,
+// byte-identical to the former monolith. Module map: @internal-design: codec.
+
+import "piecewise_core.tv";       // field, constants, forward diff, header opt, predictive, rice, segment cost, Segment
+import "piecewise_segment_a.tv";  // continuation + DP + greedy segmenters
+import "piecewise_segment_b.tv";  // gated + phase-space/particle mechanics + particle segmenter
+import "piecewise_segment_c.tv";  // particle_scan + greedy_bounded + unified
+import "piecewise_wire.tv";       // projection, dynamic prime, wire format, encode/decode, layered, verify

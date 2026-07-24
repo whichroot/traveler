@@ -1,0 +1,11 @@
+// Negative: BinField<K, P> where P's degree != K. The axiom gate demands the
+// reduction polynomial have degree exactly K (bit K set); 0x11B has degree 8.
+// (Pre-unlock this fixture asserted the blanket K != 8 refusal; the unlock
+// replaced that with per-axiom diagnostics — degree bound, degree match,
+// Rabin irreducibility.)
+binfield G = BinField<16, 0x11B>;
+
+fn main() {
+    let x: G = 5;
+    print(x);
+}

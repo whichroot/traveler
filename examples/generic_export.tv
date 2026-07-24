@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// generic_export.tv — Verify #[export] on generic functions
+//
+// Each monomorphized instance should get dso_local linkage.
+// Expected output:
+//   49
+//   54479
+
+type F251 = Field<251>;
+type F65521 = Field<65521>;
+
+#[export]
+fn exported_add<F: Field>(a: F, b: F) -> F {
+    return a + b;
+}
+
+fn main() {
+    let a: F251 = 200;
+    let b: F251 = 100;
+    let r1: F251 = exported_add(a, b);
+    print(r1);
+
+    let c: F65521 = 60000;
+    let d: F65521 = 60000;
+    let r2: F65521 = exported_add(c, d);
+    print(r2);
+}

@@ -1,0 +1,340 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// linrec.tv — INVERSE nt kernel: Berlekamp-Massey linear-recurrence recovery
+// (concrete bm_l over a lifting prime L + division-free carrier-generic bm<F>),
+// Hankel-rank check, Mobius/Liouville. tvc_self-only.
+// @internal-design: nt
+
+// ===== (1) CONCRETE GRAIN — modular arithmetic over a lifting prime L =====
+
+fn mod_l(x: i64, L: i64) -> i64 {
+    let r: i64 = x % L;
+    if r < 0 { return r + L; }
+    return r;
+}
+
+fn modpow_l(base: i64, e: i64, L: i64) -> i64 {
+    var r: i64 = 1;
+    var b: i64 = mod_l(base, L);
+    var ee: i64 = e;
+    while ee > 0 {
+        if (ee % 2) == 1 { r = (r * b) % L; }
+        b = (b * b) % L;
+        ee = ee / 2;
+    }
+    return r;
+}
+
+// modular inverse via Fermat: a^(L-2) mod L  (L prime, a != 0)
+fn inv_l(a: i64, L: i64) -> i64 {
+    return modpow_l(mod_l(a, L), L - 2, L);
+}
+
+// center a residue in [0,L) into (-L/2, L/2] — read the integer the field carries
+fn center(x: i64, L: i64) -> i64 {
+    let r: i64 = mod_l(x, L);
+    if r + r > L { return r - L; }
+    return r;
+}
+
+// ---- Berlekamp-Massey over F_L ------------------------------------------------
+// Input s[0..n-1]. Writes the connection polynomial C[0..Lstar] (C[0]=1, so that
+// sum_{i=0}^{Lstar} C[i]*s[j-i] = 0 for j >= Lstar). Returns Lstar (the order).
+#[export]
+fn bm_l(s: *i64, n: i32, L: i64, C: *i64) -> i32 {
+    let B: *i64 = alloc(n + 1);
+    let T: *i64 = alloc(n + 1);
+    var i: i32 = 0;
+    while i <= n { C[i] = 0; B[i] = 0; i = i + 1; }
+    C[0] = 1;
+    B[0] = 1;
+    var lstar: i32 = 0;      // current LFSR length
+    var m: i32 = 1;          // steps since last length change
+    var b: i64 = 1;          // last nonzero discrepancy
+    var nn: i32 = 0;
+    while nn < n {
+        // discrepancy d = s[nn] + sum_{j=1..lstar} C[j]*s[nn-j]
+        var d: i64 = mod_l(s[nn], L);
+        var j: i32 = 1;
+        while j <= lstar {
+            d = mod_l(d + C[j] * mod_l(s[nn - j], L), L);
+            j = j + 1;
+        }
+        if d == 0 {
+            m = m + 1;
+        } else {
+            let coef: i64 = mod_l(d * inv_l(b, L), L);
+            if lstar + lstar <= nn {
+                // length change: save C, update, then B <- old C
+                var k: i32 = 0;
+                while k <= n { T[k] = C[k]; k = k + 1; }
+                k = 0;
+                while k + m <= n {
+                    C[k + m] = mod_l(C[k + m] - coef * mod_l(B[k], L), L);
+                    k = k + 1;
+                }
+                lstar = nn + 1 - lstar;
+                k = 0;
+                while k <= n { B[k] = T[k]; k = k + 1; }
+                b = d;
+                m = 1;
+            } else {
+                var k: i32 = 0;
+                while k + m <= n {
+                    C[k + m] = mod_l(C[k + m] - coef * mod_l(B[k], L), L);
+                    k = k + 1;
+                }
+                m = m + 1;
+            }
+        }
+        nn = nn + 1;
+    }
+    free(B);
+    free(T);
+    return lstar;
+}
+
+// ---- Berlekamp-Massey linear-complexity PROFILE over F_L ----------------------
+// bm_l tracking the per-prefix complexity L(n), n = 1..N: reports the extremal
+// doubled deviation 2*L(n) - n (out[0] <- min, out[1] <- max). Returns L(N).
+#[export]
+fn bm_profile_l(s: *i64, n: i32, L: i64, out: *i64) -> i32 {
+    let B: *i64 = alloc(n + 1);
+    let C: *i64 = alloc(n + 1);
+    let T: *i64 = alloc(n + 1);
+    var i: i32 = 0;
+    while i <= n { C[i] = 0; B[i] = 0; i = i + 1; }
+    C[0] = 1;
+    B[0] = 1;
+    var lstar: i32 = 0;
+    var m: i32 = 1;
+    var b: i64 = 1;
+    var dmin: i64 = 1000000;
+    var dmax: i64 = 0 - 1000000;
+    var nn: i32 = 0;
+    while nn < n {
+        var d: i64 = mod_l(s[nn], L);
+        var j: i32 = 1;
+        while j <= lstar {
+            d = mod_l(d + C[j] * mod_l(s[nn - j], L), L);
+            j = j + 1;
+        }
+        if d == 0 {
+            m = m + 1;
+        } else {
+            let coef: i64 = mod_l(d * inv_l(b, L), L);
+            if lstar + lstar <= nn {
+                var k: i32 = 0;
+                while k <= n { T[k] = C[k]; k = k + 1; }
+                k = 0;
+                while k + m <= n {
+                    C[k + m] = mod_l(C[k + m] - coef * mod_l(B[k], L), L);
+                    k = k + 1;
+                }
+                lstar = nn + 1 - lstar;
+                k = 0;
+                while k <= n { B[k] = T[k]; k = k + 1; }
+                b = d;
+                m = 1;
+            } else {
+                var k: i32 = 0;
+                while k + m <= n {
+                    C[k + m] = mod_l(C[k + m] - coef * mod_l(B[k], L), L);
+                    k = k + 1;
+                }
+                m = m + 1;
+            }
+        }
+        // After processing s[0..nn], the complexity of the first (nn+1) symbols is
+        // lstar; track the doubled centered deviation 2*L(n) - n at n = nn+1.
+        let dev: i64 = 2 * (lstar as i64) - ((nn + 1) as i64);
+        if dev < dmin { dmin = dev; }
+        if dev > dmax { dmax = dev; }
+        nn = nn + 1;
+    }
+    out[0] = dmin;
+    out[1] = dmax;
+    free(B);
+    free(C);
+    free(T);
+    return lstar;
+}
+
+// ---- Hankel rank over F_L (the convergence check) -----------------------------
+// determinant mod L by Gaussian elimination (m destroyed), L prime.
+fn det_mod(m: *i64, k: i32, L: i64) -> i64 {
+    var det: i64 = 1;
+    var col: i32 = 0;
+    while col < k {
+        var piv: i32 = 0 - 1;
+        var r: i32 = col;
+        while r < k {
+            if piv < 0 {
+                if mod_l(m[r * k + col], L) != 0 { piv = r; }
+            }
+            r = r + 1;
+        }
+        if piv < 0 { return 0; }
+        if piv != col {
+            var c: i32 = 0;
+            while c < k {
+                let t: i64 = m[col * k + c];
+                m[col * k + c] = m[piv * k + c];
+                m[piv * k + c] = t;
+                c = c + 1;
+            }
+            det = mod_l(0 - det, L);
+        }
+        let pv: i64 = mod_l(m[col * k + col], L);
+        det = mod_l(det * pv, L);
+        let pinv: i64 = inv_l(pv, L);
+        var rr: i32 = col + 1;
+        while rr < k {
+            let factor: i64 = mod_l(mod_l(m[rr * k + col], L) * pinv, L);
+            if factor != 0 {
+                var c2: i32 = col;
+                while c2 < k {
+                    m[rr * k + c2] = mod_l(m[rr * k + c2] - factor * mod_l(m[col * k + c2], L), L);
+                    c2 = c2 + 1;
+                }
+            }
+            rr = rr + 1;
+        }
+        col = col + 1;
+    }
+    return det;
+}
+
+// Hankel rank: largest k with a nonzero leading kxk Hankel determinant (before
+// the first vanish). For a sum of L* distinct eigenpowers this equals L*.
+#[export]
+fn hankel_rank(s: *i64, n: i32, L: i64) -> i32 {
+    let kmax: i32 = (n + 1) / 2;
+    var rank: i32 = 0;
+    var k: i32 = 1;
+    var stop: i32 = 0;
+    while k <= kmax && stop == 0 {
+        let mm: *i64 = alloc(k * k);
+        var i: i32 = 0;
+        while i < k {
+            var j: i32 = 0;
+            while j < k {
+                mm[i * k + j] = s[i + j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        let d: i64 = det_mod(mm, k, L);
+        free(mm);
+        if d != 0 { rank = k; } else { stop = 1; }
+        k = k + 1;
+    }
+    return rank;
+}
+
+// mu(n): 0 if squareful, else (-1)^(distinct prime factors). mu(1) = 1. The
+// Dirichlet coefficients of 1/zeta — the number-field side of the classical edge.
+#[export]
+fn mobius(n: i32) -> i32 {
+    if n == 1 { return 1; }
+    var x: i32 = n;
+    var k: i32 = 0;
+    var p: i32 = 2;
+    while p * p <= x {
+        if x % p == 0 {
+            x = x / p;
+            k = k + 1;
+            if x % p == 0 { return 0; }     // p^2 | n  => squareful
+        }
+        p = p + 1;
+    }
+    if x > 1 { k = k + 1; }                 // one remaining prime factor
+    if k % 2 == 0 { return 1; }
+    return 0 - 1;
+}
+
+// lambda(n): Liouville function = (-1)^Omega(n), Omega = prime factors WITH
+// multiplicity (so lambda(4)=+1 where mu(4)=0). lambda(1)=1. Completely
+// multiplicative: lambda(qn) = lambda(q)*lambda(n).
+#[export]
+fn liouville(n: i32) -> i32 {
+    var x: i32 = n;
+    var k: i32 = 0;
+    var p: i32 = 2;
+    while p * p <= x {
+        while x % p == 0 { x = x / p; k = k + 1; }    // count WITH multiplicity
+        p = p + 1;
+    }
+    if x > 1 { k = k + 1; }                 // one remaining prime factor
+    if k % 2 == 0 { return 1; }
+    return 0 - 1;
+}
+
+// ===== (2) CARRIER-GENERIC GRAIN — bm<F> over any field, division-free =====
+
+// base^e by square-and-multiply, `*` only (no div). Caller passes e = |F| - 2.
+fn fpow<F: Field>(base: F, e: i64) -> F {
+    var r: F = 1 as F;
+    var b: F = base;
+    var ee: i64 = e;
+    while ee > 0 {
+        if (ee % 2) == 1 { r = r * b; }
+        b = b * b;
+        ee = ee / 2;
+    }
+    return r;
+}
+
+// Berlekamp-Massey over an arbitrary field F (bm_l's control flow; inverse via
+// fpow(b, qm2), qm2 = |F|-2). Caller owns C sized n+1; s[0..n-1] reduced in F.
+#[export]
+fn bm<F: Field>(s: *F, n: i32, C: *F, qm2: i64) -> i32 {
+    let B: *F = alloc(n + 1);
+    let T: *F = alloc(n + 1);
+    var i: i32 = 0;
+    while i <= n { C[i] = 0 as F; B[i] = 0 as F; i = i + 1; }
+    C[0] = 1 as F;
+    B[0] = 1 as F;
+    var lstar: i32 = 0;
+    var m: i32 = 1;
+    var b: F = 1 as F;          // last nonzero discrepancy (field element)
+    var nn: i32 = 0;
+    while nn < n {
+        var d: F = s[nn];
+        var j: i32 = 1;
+        while j <= lstar {
+            d = d + C[j] * s[nn - j];
+            j = j + 1;
+        }
+        if d == (0 as F) {
+            m = m + 1;
+        } else {
+            let coef: F = d * fpow(b, qm2);
+            if lstar + lstar <= nn {
+                var k: i32 = 0;
+                while k <= n { T[k] = C[k]; k = k + 1; }
+                k = 0;
+                while k + m <= n {
+                    C[k + m] = C[k + m] - coef * B[k];
+                    k = k + 1;
+                }
+                lstar = nn + 1 - lstar;
+                k = 0;
+                while k <= n { B[k] = T[k]; k = k + 1; }
+                b = d;
+                m = 1;
+            } else {
+                var k: i32 = 0;
+                while k + m <= n {
+                    C[k + m] = C[k + m] - coef * B[k];
+                    k = k + 1;
+                }
+                m = m + 1;
+            }
+        }
+        nn = nn + 1;
+    }
+    free(B);
+    free(T);
+    return lstar;
+}

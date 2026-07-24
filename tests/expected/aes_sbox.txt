@@ -1,0 +1,12 @@
+AES S-box: 256/256 correct
+gf_inv(0x57)=191
+gf_inv(0xFF)=28
+BinField cross-check: 8/8 correct
+202
+1
+141
+246
+191
+28
+131
+65

@@ -1,0 +1,410 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// tvfmt.tv — Traveler source formatter: canonical depth x 4 indentation +
+// trailing-whitespace strip; modes: FILE (stdout), --check, --migrate codemod.
+// @internal-design: tools
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn exit(code: i32);
+
+// ---- small helpers ----
+
+fn wr(fd: i32, s: *u8) {
+    var n: i32 = 0;
+    while s[n] != 0 { n = n + 1; }
+    write(fd, s, n as usize);
+}
+
+// ---- growable output buffer (dogfoods A6 realloc) ----
+
+var g_out: *u8 = null;
+var g_out_len: i32 = 0;
+var g_out_cap: i32 = 0;
+
+fn out_ensure(extra: i32) {
+    if g_out_len + extra <= g_out_cap { return; }
+    while g_out_len + extra > g_out_cap { g_out_cap = g_out_cap * 2; }
+    g_out = realloc(g_out, g_out_cap);
+}
+
+fn out_byte(b: u8) {
+    out_ensure(1);
+    g_out[g_out_len] = b;
+    g_out_len = g_out_len + 1;
+}
+
+// Append source bytes [start, end) verbatim.
+fn out_span(src: *u8, start: i32, end: i32) {
+    var p: i32 = start;
+    while p < end {
+        out_byte(src[p]);
+        p = p + 1;
+    }
+}
+
+fn out_spaces(n: i32) {
+    var i: i32 = 0;
+    while i < n {
+        out_byte(32);
+        i = i + 1;
+    }
+}
+
+// ---- formatter state (carried across lines) ----
+
+var g_depth: i32 = 0;          // running { ( [ nesting
+var g_comment_depth: i32 = 0;  // >0 = inside nestable /* */
+var g_in_string: i32 = 0;      // 1 = inside "..."
+
+// Scan one line's bytes [start, end) to update g_depth / g_comment_depth /
+// g_in_string; delimiters inside strings, chars, and comments are not counted.
+fn scan_line(src: *u8, start: i32, end: i32) {
+    var p: i32 = start;
+    while p < end {
+        let c: u8 = src[p];
+        // Inside a block comment: only /* (nest) and */ (unnest) matter.
+        if g_comment_depth > 0 {
+            if c == 47 && p + 1 < end && src[p + 1] == 42 {
+                g_comment_depth = g_comment_depth + 1;
+                p = p + 2;
+                continue;
+            }
+            if c == 42 && p + 1 < end && src[p + 1] == 47 {
+                g_comment_depth = g_comment_depth - 1;
+                p = p + 2;
+                continue;
+            }
+            p = p + 1;
+            continue;
+        }
+        // Inside a string: consume until unescaped ".
+        if g_in_string == 1 {
+            if c == 92 && p + 1 < end {
+                p = p + 2;
+                continue;
+            }
+            if c == 34 {
+                g_in_string = 0;
+                p = p + 1;
+                continue;
+            }
+            p = p + 1;
+            continue;
+        }
+        // Normal code.
+        // Line comment: rest of line is comment, no delimiters.
+        if c == 47 && p + 1 < end && src[p + 1] == 47 {
+            return;
+        }
+        // Block comment open.
+        if c == 47 && p + 1 < end && src[p + 1] == 42 {
+            g_comment_depth = g_comment_depth + 1;
+            p = p + 2;
+            continue;
+        }
+        // String open.
+        if c == 34 {
+            g_in_string = 1;
+            p = p + 1;
+            continue;
+        }
+        // Char literal: '<c>' or '\<c>'. Consume so e.g. '{' is not counted.
+        if c == 39 {
+            p = p + 1;
+            if p < end && src[p] == 92 { p = p + 2; }   // escape: skip backslash + char
+            else { p = p + 1; }                          // plain char
+            if p < end && src[p] == 39 { p = p + 1; }    // closing quote
+            continue;
+        }
+        // Delimiters.
+        if c == 123 || c == 40 || c == 91 {              // { ( [
+            g_depth = g_depth + 1;
+            p = p + 1;
+            continue;
+        }
+        if c == 125 || c == 41 || c == 93 {              // } ) ]
+            g_depth = g_depth - 1;
+            p = p + 1;
+            continue;
+        }
+        p = p + 1;
+    }
+}
+
+// Format the whole source buffer [0, n) into g_out.
+fn format_src(src: *u8, n: i32) {
+    var pos: i32 = 0;
+    while pos < n {
+        // Line is [line_start, line_end); newline (if any) at line_end.
+        let line_start: i32 = pos;
+        var line_end: i32 = pos;
+        while line_end < n && src[line_end] != 10 { line_end = line_end + 1; }
+
+        // A line that begins inside a block comment or string is a
+        // continuation: emit it verbatim so interior content is untouched.
+        let is_cont: i32 = g_comment_depth > 0 || g_in_string == 1;
+
+        // First non-whitespace column.
+        var fns: i32 = line_start;
+        while fns < line_end && (src[fns] == 32 || src[fns] == 9) { fns = fns + 1; }
+        let is_blank: i32 = (fns >= line_end);
+
+        if is_cont == 1 {
+            // Verbatim (do not touch comment/string interior).
+            out_span(src, line_start, line_end);
+        } else if is_blank == 1 {
+            // Blank line: emit nothing (no trailing indent).
+        } else {
+            // Compute indent from depth at line start; dedent if the first
+            // significant char is a closer.
+            var ind: i32 = g_depth;
+            let fc: u8 = src[fns];
+            if fc == 125 || fc == 41 || fc == 93 { ind = ind - 1; }
+            if ind < 0 { ind = 0; }
+            out_spaces(ind * 4);
+            // Trim trailing whitespace from the content.
+            var content_end: i32 = line_end;
+            while content_end > fns && (src[content_end - 1] == 32 || src[content_end - 1] == 9) {
+                content_end = content_end - 1;
+            }
+            out_span(src, fns, content_end);
+        }
+
+        // Preserve the newline if present.
+        if line_end < n { out_byte(10); }
+
+        // Update nesting state from the original line content.
+        scan_line(src, line_start, line_end);
+
+        // Advance past the newline.
+        if line_end < n { pos = line_end + 1; } else { pos = n; }
+    }
+}
+
+// ---- migration pre-pass (--migrate, syntax-modernization Phase 2) ----
+// Byte-level rewrite of deprecated spellings to their Phase-1 aliases,
+// preserving comment/string/char-literal interiors. Runs BEFORE format_src.
+
+var g_mig: *u8 = null;
+var g_mig_len: i32 = 0;
+
+fn mig_byte(b: u8) {
+    g_mig[g_mig_len] = b;
+    g_mig_len = g_mig_len + 1;
+}
+
+fn mig_str(s: *u8) {
+    var i: i32 = 0;
+    while s[i] != 0 { mig_byte(s[i]); i = i + 1; }
+}
+
+fn is_ident_start(c: u8) -> i32 {
+    if c >= 65 && c <= 90 { return 1; }    // A-Z
+    if c >= 97 && c <= 122 { return 1; }   // a-z
+    if c == 95 { return 1; }               // _
+    return 0;
+}
+
+fn is_ident_char(c: u8) -> i32 {
+    if is_ident_start(c) == 1 { return 1; }
+    if c >= 48 && c <= 57 { return 1; }    // 0-9
+    return 0;
+}
+
+// src[p..we) == NUL-terminated w, exactly (word already boundary-scanned).
+fn word_eq(src: *u8, p: i32, we: i32, w: *u8) -> i32 {
+    var i: i32 = 0;
+    while w[i] != 0 {
+        if p + i >= we { return 0; }
+        if src[p + i] != w[i] { return 0; }
+        i = i + 1;
+    }
+    if p + i == we { return 1; }
+    return 0;
+}
+
+// Rewrite src[0,n) into g_mig. Words are consumed whole (both boundaries), so
+// `sublet` / `mutate` / `field2` never match; `let` + same-line ws + `mut` -> `var`.
+fn migrate_src(src: *u8, n: i32) {
+    g_mig = alloc(n + 16);
+    g_mig_len = 0;
+    var p: i32 = 0;
+    var cdepth: i32 = 0;   // nestable /* */ depth
+    var instr: i32 = 0;    // inside "..."
+    while p < n {
+        let c: u8 = src[p];
+        // Block-comment interior: verbatim, tracking nesting only.
+        if cdepth > 0 {
+            if c == 47 && p + 1 < n && src[p + 1] == 42 {
+                cdepth = cdepth + 1;
+                mig_byte(47); mig_byte(42); p = p + 2; continue;
+            }
+            if c == 42 && p + 1 < n && src[p + 1] == 47 {
+                cdepth = cdepth - 1;
+                mig_byte(42); mig_byte(47); p = p + 2; continue;
+            }
+            mig_byte(c); p = p + 1; continue;
+        }
+        // String interior: verbatim until unescaped ".
+        if instr == 1 {
+            if c == 92 && p + 1 < n {
+                mig_byte(92); mig_byte(src[p + 1]); p = p + 2; continue;
+            }
+            if c == 34 { instr = 0; }
+            mig_byte(c); p = p + 1; continue;
+        }
+        // Line comment: verbatim to end of line.
+        if c == 47 && p + 1 < n && src[p + 1] == 47 {
+            while p < n && src[p] != 10 { mig_byte(src[p]); p = p + 1; }
+            continue;
+        }
+        if c == 47 && p + 1 < n && src[p + 1] == 42 {
+            cdepth = 1;
+            mig_byte(47); mig_byte(42); p = p + 2; continue;
+        }
+        if c == 34 { instr = 1; mig_byte(34); p = p + 1; continue; }
+        // Char literal: '<c>' / '\<c>' verbatim (same consume rule as scan_line).
+        if c == 39 {
+            mig_byte(39); p = p + 1;
+            if p < n && src[p] == 92 {
+                mig_byte(92); p = p + 1;
+                if p < n { mig_byte(src[p]); p = p + 1; }
+            } else {
+                if p < n { mig_byte(src[p]); p = p + 1; }
+            }
+            if p < n && src[p] == 39 { mig_byte(39); p = p + 1; }
+            continue;
+        }
+        // Identifier/keyword: consume the whole word, rewrite if deprecated.
+        if is_ident_start(c) == 1 {
+            var we: i32 = p + 1;
+            while we < n && is_ident_char(src[we]) == 1 { we = we + 1; }
+            if word_eq(src, p, we, "let") == 1 {
+                var q: i32 = we;
+                while q < n && (src[q] == 32 || src[q] == 9) { q = q + 1; }
+                var qe: i32 = q;
+                while qe < n && is_ident_char(src[qe]) == 1 { qe = qe + 1; }
+                if q > we && word_eq(src, q, qe, "mut") == 1 {
+                    mig_str("var");
+                    p = qe;
+                    continue;
+                }
+                mig_str("let");
+                p = we;
+                continue;
+            }
+            if word_eq(src, p, we, "field") == 1
+            || word_eq(src, p, we, "binfield") == 1
+            || word_eq(src, p, we, "extfield") == 1 {
+                // Rewrite ONLY the alias-decl form `field N = ...` (kw, ws,
+                // ident, ws*, '='); `field(p)` is the dyn CONSTRUCTOR builtin.
+                var q: i32 = we;
+                while q < n && (src[q] == 32 || src[q] == 9) { q = q + 1; }
+                if q < n && is_ident_start(src[q]) == 1 {
+                    var qe: i32 = q;
+                    while qe < n && is_ident_char(src[qe]) == 1 { qe = qe + 1; }
+                    var r: i32 = qe;
+                    while r < n && (src[r] == 32 || src[r] == 9) { r = r + 1; }
+                    if r < n && src[r] == 61 {
+                        mig_str("type");
+                        p = we;
+                        continue;
+                    }
+                }
+                while p < we { mig_byte(src[p]); p = p + 1; }
+                continue;
+            }
+            while p < we { mig_byte(src[p]); p = p + 1; }
+            continue;
+        }
+        mig_byte(c);
+        p = p + 1;
+    }
+}
+
+fn main(argc: i32, argv: **u8) {
+    var source_path: *u8 = null;
+    var check_mode: i32 = 0;
+    var migrate_mode: i32 = 0;
+    var ai: i32 = 1;
+    while ai < argc {
+        if str_eq(argv[ai], "--check") == 1 {
+            check_mode = 1;
+        } else {
+            if str_eq(argv[ai], "--migrate") == 1 {
+                migrate_mode = 1;
+            } else {
+                source_path = argv[ai];
+            }
+        }
+        ai = ai + 1;
+    }
+    if source_path == null {
+        wr(2, "usage: tvfmt [--check] FILE\n");
+        exit(2);
+    }
+
+    let fd: i32 = open(source_path, 0, 0);
+    if fd < 0 {
+        wr(2, "error: cannot open file\n");
+        exit(2);
+    }
+    let cap: i32 = 16777216;
+    let src: *u8 = alloc(cap);
+    let n: i64 = read_bytes(fd, src, cap);
+    close(fd);
+
+    // Init output buffer.
+    g_out_cap = 65536;
+    g_out = alloc(g_out_cap);
+    g_out_len = 0;
+
+    // --migrate: codemod pre-pass, then format. --check still compares g_out
+    // against the ORIGINAL input, so `--migrate --check` = migrated + formatted.
+    var fmt_src_ptr: *u8 = src;
+    var fmt_src_len: i32 = n as i32;
+    if migrate_mode == 1 {
+        migrate_src(src, n as i32);
+        fmt_src_ptr = g_mig;
+        fmt_src_len = g_mig_len;
+    }
+
+    format_src(fmt_src_ptr, fmt_src_len);
+
+    if check_mode == 1 {
+        // Already formatted iff output equals input byte-for-byte.
+        var same: i32 = 1;
+        if (g_out_len as i64) != n {
+            same = 0;
+        } else {
+            var i: i32 = 0;
+            while i < g_out_len {
+                if g_out[i] != src[i] { same = 0; i = g_out_len; }
+                i = i + 1;
+            }
+        }
+        if same == 1 {
+            exit(0);
+        } else {
+            wr(2, source_path);
+            wr(2, ": not formatted (run tvfmt to see canonical form)\n");
+            exit(1);
+        }
+    }
+
+    // Default: write formatted source to stdout.
+    write(1, g_out, g_out_len as usize);
+}
+
+// str_eq: byte-compare two NUL-terminated strings (no libc).
+fn str_eq(a: *u8, b: *u8) -> i32 {
+    var i: i32 = 0;
+    while a[i] != 0 && b[i] != 0 {
+        if a[i] != b[i] { return 0; }
+        i = i + 1;
+    }
+    if a[i] == 0 && b[i] == 0 { return 1; }
+    return 0;
+}

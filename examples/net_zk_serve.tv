@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// net_zk_serve.tv — THE Tier-0 flagship: the field stack over a socket — a
+// PLONK proof (cubic circuit x^3+x+5=35) proven+verified server-side, the
+// verdicts served over TCP as HTTP. tvc_self ONLY (imports net/).
+// @internal-design: net.
+//
+// Expected output:
+//   1     listener up on a kernel-assigned port
+//   2     server matched "GET /zk"
+//   1     body[0]: valid proof verifies       (over the wire)
+//   2     body[1]: tampered eval refused      (over the wire)
+//   700   the ? pipeline completed
+
+import "../src/lib/net/tcp.tv";
+
+type Goldilocks = Field<18446744069414584321>;
+
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+extern "C" fn plonk_prove(
+    n_gates: i32, log_n: i32,
+    q_L: *Goldilocks, q_R: *Goldilocks, q_O: *Goldilocks,
+    q_M: *Goldilocks, q_C: *Goldilocks,
+    wa: *Goldilocks, wb: *Goldilocks, wc: *Goldilocks,
+    sigma_a: *Goldilocks, sigma_b: *Goldilocks, sigma_c: *Goldilocks,
+    eval_out: *Goldilocks,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+extern "C" fn plonk_verify(
+    n_gates: i32, log_n: i32,
+    q_L: *Goldilocks, q_R: *Goldilocks, q_O: *Goldilocks,
+    q_M: *Goldilocks, q_C: *Goldilocks,
+    sigma_a: *Goldilocks, sigma_b: *Goldilocks, sigma_c: *Goldilocks,
+    eval_out: *Goldilocks,
+    fri_n_rounds: i32,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+
+// omega_8 = 7^((p-1)/8) over Goldilocks (see plonk_test.tv).
+fn compute_omega_8() -> Goldilocks {
+    let g: Goldilocks = 7;
+    var hi: Goldilocks = g;
+    for i in 0..61 { hi = hi * hi; }
+    var lo: Goldilocks = g;
+    for i in 0..29 { lo = lo * lo; }
+    return hi / lo;
+}
+
+// Prove the cubic circuit, verify (out[0]), tamper an eval, re-verify (out[1]) —
+// plonk_test's circuit verbatim; the point is WHERE the verdicts go: the socket.
+fn zk_prove_and_verify(out: *i32) {
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    let n: i32 = 8;
+    let log_n: i32 = 3;
+    let neg1: Goldilocks = 0 - 1;
+    let k1: Goldilocks = 13;
+    let k2: Goldilocks = 17;
+
+    let q_L: *Goldilocks = alloc(n);
+    let q_R: *Goldilocks = alloc(n);
+    let q_O: *Goldilocks = alloc(n);
+    let q_M: *Goldilocks = alloc(n);
+    let q_C: *Goldilocks = alloc(n);
+    for i in 0..n { q_L[i]=0; q_R[i]=0; q_O[i]=0; q_M[i]=0; q_C[i]=0; }
+    q_O[0] = neg1; q_M[0] = 1;
+    q_O[1] = neg1; q_M[1] = 1;
+    q_L[2] = 1; q_R[2] = 1; q_O[2] = neg1;
+    q_L[3] = 1; q_O[3] = neg1; q_C[3] = 5;
+
+    let wa: *Goldilocks = alloc(n);
+    let wb: *Goldilocks = alloc(n);
+    let wc: *Goldilocks = alloc(n);
+    for i in 0..n { wa[i]=0; wb[i]=0; wc[i]=0; }
+    wa[0]=3;  wb[0]=3;  wc[0]=9;
+    wa[1]=9;  wb[1]=3;  wc[1]=27;
+    wa[2]=27; wb[2]=3;  wc[2]=30;
+    wa[3]=30; wb[3]=0;  wc[3]=35;
+
+    let omega: Goldilocks = compute_omega_8();
+    let op: *Goldilocks = alloc(n);
+    op[0] = 1;
+    for i in 1..n { op[i] = op[i - 1] * omega; }
+
+    let sigma_a: *Goldilocks = alloc(n);
+    let sigma_b: *Goldilocks = alloc(n);
+    let sigma_c: *Goldilocks = alloc(n);
+    for i in 0..n {
+        sigma_a[i] = op[i];
+        sigma_b[i] = k1 * op[i];
+        sigma_c[i] = k2 * op[i];
+    }
+    sigma_a[0] = k1 * op[0];
+    sigma_b[0] = k1 * op[1];
+    sigma_b[1] = k1 * op[2];
+    sigma_b[2] = op[0];
+    sigma_c[0] = op[1];
+    sigma_a[1] = k2 * op[0];
+    sigma_c[1] = op[2];
+    sigma_a[2] = k2 * op[1];
+    sigma_c[2] = op[3];
+    sigma_a[3] = k2 * op[2];
+
+    let num_queries: i32 = 3;
+    let eval_out: *Goldilocks = alloc(16);
+    let fri_roots: *Goldilocks = alloc(128);
+    let fri_challenges: *Goldilocks = alloc(32);
+    let fri_final_poly: *Goldilocks = alloc(4);
+    let fri_query_values: *Goldilocks = alloc(512);
+    let fri_query_paths: *Goldilocks = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    plonk_prove(n, log_n, q_L, q_R, q_O, q_M, q_C,
+        wa, wb, wc, sigma_a, sigma_b, sigma_c,
+        eval_out,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        fri_n_rounds, num_queries,
+        rc_init, rc_term, rc_int, diag);
+
+    out[0] = plonk_verify(n, log_n,
+        q_L, q_R, q_O, q_M, q_C, sigma_a, sigma_b, sigma_c,
+        eval_out, fri_n_rounds[0],
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        num_queries,
+        rc_init, rc_term, rc_int, diag);
+
+    eval_out[2] = eval_out[2] + 1;   // tamper a(zeta)
+    out[1] = plonk_verify(n, log_n,
+        q_L, q_R, q_O, q_M, q_C, sigma_a, sigma_b, sigma_c,
+        eval_out, fri_n_rounds[0],
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths, fri_query_indices,
+        num_queries,
+        rc_init, rc_term, rc_int, diag);
+    free(op);
+}
+
+// ---- tiny HTTP byte helpers ----
+
+fn sputs(dst: *u8, off0: i32, s: *u8) -> i32 {
+    var off: i32 = off0;
+    var i: i32 = 0;
+    while s[i] != 0 {
+        dst[off] = s[i];
+        off = off + 1;
+        i = i + 1;
+    }
+    return off;
+}
+
+fn crlf(dst: *u8, off0: i32) -> i32 {
+    dst[off0] = 13;
+    dst[off0 + 1] = 10;
+    return off0 + 2;
+}
+
+// 1 if buf starts with the NUL-terminated prefix s.
+fn starts_with(buf: *u8, s: *u8) -> i32 {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        if buf[i] != s[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Index just past the first CRLFCRLF, or -1.
+fn body_start(buf: *u8, n: i32) -> i32 {
+    var i: i32 = 0;
+    while i + 3 < n {
+        if buf[i] == 13 && buf[i+1] == 10 && buf[i+2] == 13 && buf[i+3] == 10 {
+            return i + 4;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn run() -> Result<i64, NetError> {
+    let l: TcpListener = tcp_listen(0)?;
+    let port: i32 = tcp_port(l)?;
+    if port > 0 { print(1); }
+
+    // Client: send the request.
+    let c: TcpStream = tcp_connect_local(port)?;
+    let req: *u8 = alloc(64);
+    var roff: i32 = sputs(req, 0, "GET /zk HTTP/1.0");
+    roff = crlf(req, roff);
+    roff = crlf(req, roff);
+    tcp_write(c, req, roff as i64)?;
+
+    // Server: accept, read, route.
+    let srv: TcpStream = tcp_accept(l)?;
+    let rbuf: *u8 = alloc(512);
+    let got: i64 = tcp_read(srv, rbuf, 511)?;
+    if got > 0 && starts_with(rbuf, "GET /zk") == 1 { print(2); }
+
+    // The field stack runs server-side: prove, verify, tamper, re-verify.
+    let verdicts: *i32 = alloc(2);
+    zk_prove_and_verify(verdicts);
+
+    // Serve the verdicts as the HTTP body.
+    let resp: *u8 = alloc(128);
+    var off: i32 = sputs(resp, 0, "HTTP/1.0 200 OK");
+    off = crlf(resp, off);
+    off = sputs(resp, off, "Content-Length: 2");
+    off = crlf(resp, off);
+    off = crlf(resp, off);
+    resp[off] = (48 + verdicts[0]) as u8;
+    resp[off + 1] = (48 + verdicts[1]) as u8;
+    off = off + 2;
+    tcp_write(srv, resp, off as i64)?;
+
+    // Client: read the response, print the verdicts from the wire.
+    let cbuf: *u8 = alloc(512);
+    let cgot: i64 = tcp_read(c, cbuf, 511)?;
+    let bs: i32 = body_start(cbuf, cgot as i32);
+    if bs >= 0 {
+        print((cbuf[bs] as i32) - 48);
+        print((cbuf[bs + 1] as i32) - 48);
+    }
+
+    tcp_close(c);
+    tcp_close(srv);
+    listener_close(l);
+    free(req);
+    free(rbuf);
+    free(resp);
+    free(cbuf);
+    free(verdicts);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

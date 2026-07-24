@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_forward_sum.tv — the polycompress forward_sum kernel compiled to a ZK
+// circuit: #[export zk] emits forward_sum_3 (native) + forward_sum_3_zk_prove.
+// @internal-design: zk
+
+type Goldilocks = Field<18446744069414584321>;
+
+// Forward sum for a degree-2 polynomial (3 coefficients, 4 output points).
+// Newton basis f(x) = c0 + c1*x + c2*x*(x-1)/2; hand-unrolled register
+// advancement (reg[k] += reg[k+1]) in mutable variables.
+#[export zk]
+fn forward_sum_3(c0: Goldilocks, c1: Goldilocks, c2: Goldilocks,
+    o0: *Goldilocks, o1: *Goldilocks, o2: *Goldilocks, o3: *Goldilocks) {
+    var r0: Goldilocks = c0;
+    var r1: Goldilocks = c1;
+    var r2: Goldilocks = c2;
+
+    // Point 0: output r0, advance registers
+    let v0: Goldilocks = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    // Point 1
+    let v1: Goldilocks = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    // Point 2
+    let v2: Goldilocks = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    // Point 3
+    let v3: Goldilocks = r0;
+
+    return;
+}
+
+// Simpler version: just compute and return the sum of 4 evaluated points.
+// This has a scalar return value, which is easier to verify.
+#[export zk]
+fn forward_sum_check(c0: Goldilocks, c1: Goldilocks, c2: Goldilocks) -> Goldilocks {
+    var r0: Goldilocks = c0;
+    var r1: Goldilocks = c1;
+    var r2: Goldilocks = c2;
+
+    let v0: Goldilocks = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    let v1: Goldilocks = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    let v2: Goldilocks = r0;
+    r0 = r0 + r1;
+
+    let v3: Goldilocks = r0;
+
+    return v0 + v1 + v2 + v3;
+}

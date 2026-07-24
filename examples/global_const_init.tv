@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// Global initializers as compile-time constants (known-issues #52 gate):
+// literal, negated literal, `0 - 1` idiom, +|-|* folds, ident -> prior `let`
+// (incl. transitive). The old emitter SILENTLY zero-initialized non-literals.
+
+type F = Field<251>;
+
+let K: i32 = 7;
+let K2: i32 = K;              // transitive: ident -> ident -> literal
+let NEG: i32 = -1;            // unary-neg literal
+var g_a: i32 = K;             // ident
+var g_b: i32 = 0 - 1;         // the negative-sentinel idiom
+var g_c: i64 = 100 - 42;      // sub fold
+var g_d: i64 = 6 * 7;         // mul fold
+var g_e: i32 = K + 3;         // add fold with ident
+var g_f: i32 = NEG;           // ident -> negated literal
+var g_h: F = 300;             // field-reduced literal (300 mod 251 = 49)
+
+fn main() {
+    print(g_a);               // 7
+    print(g_b);               // -1
+    print(g_c);               // 58
+    print(g_d);               // 42
+    print(g_e);               // 10
+    print(g_f);               // -1
+    print(g_h);               // 49
+    print(K2);                // 7
+}

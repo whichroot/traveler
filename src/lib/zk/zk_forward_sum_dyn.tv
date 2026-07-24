@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_forward_sum_dyn.tv — the forward_sum kernel as a #[zk] circuit over a
+// RUNTIME prime: <dyn> emits native forward_sum_check_dyn + dyn-PLONK
+// forward_sum_check_zk_prove_dyn. See @internal-design: zk.
+// Link: plonk_dyn.o + zk_forward_sum_dyn.o + zk_forward_sum_dyn_test.o
+
+#[zk]
+fn forward_sum_check<F: Field>(c0: F, c1: F, c2: F) -> F {
+    var r0: F = c0;
+    var r1: F = c1;
+    var r2: F = c2;
+
+    let v0: F = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    let v1: F = r0;
+    r0 = r0 + r1;
+    r1 = r1 + r2;
+
+    let v2: F = r0;
+    r0 = r0 + r1;
+
+    let v3: F = r0;
+
+    return v0 + v1 + v2 + v3;
+}
+
+instantiate forward_sum_check<dyn>;

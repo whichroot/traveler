@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// syntax_print.tv — `print` is DE-RESERVED: an ordinary identifier that routes
+// to the stdout builtin BY NAME, and usable as a normal identifier (a param).
+// @internal-design: examples (syntax twins).
+//
+// Expected output:
+//   10
+//   42
+
+// `print` as a PARAMETER name — a reserved keyword could never be one.
+fn bump(print: i32) -> i32 {
+    return print + 1;      // `print` here is the local param, not the builtin
+}
+
+fn main() -> i32 {
+    print(10);             // builtin — ident-call routed to stdout by name
+    print(bump(41));       // 42
+    return 0;
+}

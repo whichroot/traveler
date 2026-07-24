@@ -1,0 +1,363 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// stream_protocol.tv — streaming protocol for the piecewise codec: accumulate
+// samples, particle_scan for boundaries, encode completed regimes as chunks
+// (chunk == regime; keyframes for late join). Two-file link with piecewise_codec.tv.
+// @internal-design: util
+
+// ===== POSIX / libc =====
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn strlen(s: *u8) -> usize;
+
+// ===== CODEC API (linked from piecewise_codec.tv) =====
+
+extern "C" fn particle_scan(samples: *i32, n: i32,
+    boundaries: *i32, max_boundaries: i32,
+    p: i32) -> i32;
+extern "C" fn pc_encode_layered(samples: *i32, n: i32, n_layers: i32,
+    out: *u8, max_out: i32) -> i32;
+extern "C" fn pc_decode_layered(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32) -> i32;
+extern "C" fn scan_max(data: *i32, n: i32) -> i32;
+extern "C" fn next_prime(min_val: i32) -> i32;
+
+// ===== Constants =====
+
+let SCAN_CADENCE: i32 = 16;    // MIN_SEGMENT — scan every this many new samples
+let MAX_REGIME: i32 = 8192;   // pre-allocated regime buffer capacity
+let CHUNK_CAPACITY: i32 = 65536;  // generous encode buffer per chunk
+
+// ===== StreamState =====
+
+struct StreamState {
+    // Regime buffer — accumulated samples for current regime
+    regime_buf: *i32,
+    regime_len: i32,
+    regime_capacity: i32,
+    samples_since_scan: i32,
+    // Configuration
+    n_layers: i32,
+    // Dynamic prime for particle_scan (0 = needs recompute)
+    scan_prime: i32,
+    // Lifetime counters
+    total_emitted: i32,
+    total_chunks: i32,
+    // Last encoded chunk
+    chunk_buf: *u8,
+    chunk_len: i32,
+    chunk_samples: i32,
+    chunk_capacity: i32,
+    // Latest keyframe for late join
+    keyframe_buf: *u8,
+    keyframe_len: i32,
+    keyframe_capacity: i32,
+    // Debug verification
+    verify_buf: *i32,
+    verify_errors: i32,
+    // Particle scan scratch
+    boundaries: *i32,
+    max_bounds: i32,
+}
+
+// ===== Print helpers (debug output to stderr, fd=2) =====
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+// ===== stream_init — allocate and initialize streaming state =====
+
+#[export]
+fn stream_init(n_layers: i32, max_regime: i32) -> *StreamState {
+    var cap: i32 = max_regime;
+    if cap < 256 { cap = 256; }
+
+    let state: *StreamState = alloc(1);
+
+    // Regime buffer
+    state.regime_buf = alloc(cap);
+    state.regime_len = 0;
+    state.regime_capacity = cap;
+    state.samples_since_scan = 0;
+
+    // Config
+    state.n_layers = n_layers;
+    state.scan_prime = 0;
+
+    // Counters
+    state.total_emitted = 0;
+    state.total_chunks = 0;
+
+    // Chunk buffer
+    state.chunk_buf = alloc(CHUNK_CAPACITY) as *u8;
+    state.chunk_len = 0;
+    state.chunk_samples = 0;
+    state.chunk_capacity = CHUNK_CAPACITY;
+
+    // Keyframe buffer
+    state.keyframe_buf = alloc(CHUNK_CAPACITY) as *u8;
+    state.keyframe_len = 0;
+    state.keyframe_capacity = CHUNK_CAPACITY;
+
+    // Verification buffer
+    state.verify_buf = alloc(cap);
+    state.verify_errors = 0;
+
+    // Particle scan scratch
+    state.max_bounds = cap / SCAN_CADENCE + 2;
+    state.boundaries = alloc(state.max_bounds);
+
+    return state;
+}
+
+// ===== stream_free — release all allocations =====
+
+#[export]
+fn stream_free(state: *StreamState) {
+    free(state.boundaries);
+    free(state.verify_buf);
+    free(state.keyframe_buf as *i32);
+    free(state.chunk_buf as *i32);
+    free(state.regime_buf);
+    free(state);
+}
+
+// ===== Internal: copy bytes (manual loop, no libc memcpy) =====
+
+fn copy_bytes(dst: *u8, src: *u8, n: i32) {
+    var i: i32 = 0;
+    while i < n {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+}
+
+// ===== Internal: shift regime buffer (manual memmove) =====
+
+fn shift_regime_buf(buf: *i32, start: i32, len: i32) {
+    // Move buf[start..start+len] to buf[0..len]
+    var i: i32 = 0;
+    while i < len {
+        buf[i] = buf[start + i];
+        i = i + 1;
+    }
+}
+
+// ===== Internal: encode a regime and verify =====
+
+fn encode_and_verify(state: *StreamState, samples: *i32, n_samples: i32) -> i32 {
+    let cbuf: *u8 = state.chunk_buf as *u8;
+    let vbuf: *i32 = state.verify_buf;
+    let kbuf: *u8 = state.keyframe_buf as *u8;
+
+    // Encode
+    let encoded_len: i32 = pc_encode_layered(samples, n_samples,
+        state.n_layers,
+        cbuf, state.chunk_capacity);
+    state.chunk_len = encoded_len;
+    state.chunk_samples = n_samples;
+
+    // Debug verification: decode and compare
+    let n_decoded: i32 = pc_decode_layered(cbuf, encoded_len, vbuf, n_samples);
+
+    var errors: i32 = 0;
+    if n_decoded != n_samples {
+        wr(2, "STREAM VERIFY COUNT ERR\n");
+        errors = 1;
+    } else {
+        var i: i32 = 0;
+        while i < n_samples {
+            if vbuf[i] != samples[i] {
+                errors = errors + 1;
+                if errors <= 3 {
+                    wr(2, "MISMATCH ");
+                    wr_int(2, i as i64);
+                    wr(2, " ");
+                    wr_int(2, samples[i] as i64);
+                    wr(2, " ");
+                    wr_int(2, vbuf[i] as i64);
+                    wr(2, "\n");
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    if errors > 0 {
+        state.verify_errors = state.verify_errors + errors;
+    }
+
+    // Copy to keyframe buffer
+    copy_bytes(kbuf, cbuf, encoded_len);
+    state.keyframe_len = encoded_len;
+
+    return encoded_len;
+}
+
+// ===== stream_push — accumulate one sample, scan when due =====
+//
+// Returns 0 = continue, 1 = chunk ready (call stream_get_chunk). Every
+// SCAN_CADENCE samples: particle_scan the whole buffer; an interior boundary
+// (n_bounds >= 2) encodes everything before it as a chunk, then trims.
+
+#[export]
+fn stream_push(state: *StreamState, sample: i32) -> i32 {
+    let rbuf: *i32 = state.regime_buf;
+    let bounds: *i32 = state.boundaries;
+
+    // Accumulate
+    if state.regime_len >= state.regime_capacity {
+        // Buffer full — force a chunk (safety valve)
+        encode_and_verify(state, rbuf, state.regime_len);
+        state.total_emitted = state.total_emitted + state.regime_len;
+        state.total_chunks = state.total_chunks + 1;
+        state.regime_len = 0;
+        state.scan_prime = 0;
+        // Store the new sample
+        rbuf[0] = sample;
+        state.regime_len = 1;
+        state.samples_since_scan = 1;
+        return 1;
+    }
+
+    rbuf[state.regime_len] = sample;
+    state.regime_len = state.regime_len + 1;
+    state.samples_since_scan = state.samples_since_scan + 1;
+
+    // Not enough new samples to scan yet
+    if state.samples_since_scan < SCAN_CADENCE {
+        return 0;
+    }
+
+    // Not enough total samples for meaningful scan
+    if state.regime_len < SCAN_CADENCE * 2 {
+        state.samples_since_scan = 0;
+        return 0;
+    }
+
+    // --- Scan ---
+    state.samples_since_scan = 0;
+
+    // Determine scan prime from current buffer contents
+    if state.scan_prime == 0 {
+        let mx: i32 = scan_max(rbuf, state.regime_len);
+        state.scan_prime = next_prime(mx + 1);
+    }
+
+    let n_bounds: i32 = particle_scan(rbuf, state.regime_len,
+        bounds, state.max_bounds,
+        state.scan_prime);
+
+    // Check for interior boundary (not the terminal one)
+    // particle_scan always returns at least 1 boundary (the terminal at regime_len)
+    // If n_bounds >= 2, the first boundary is interior
+    if n_bounds < 2 {
+        return 0;
+    }
+
+    let boundary_pos: i32 = bounds[0];
+
+    // Sanity: boundary must be meaningful
+    if boundary_pos < SCAN_CADENCE {
+        return 0;
+    }
+    if boundary_pos >= state.regime_len {
+        return 0;  // Not interior
+    }
+
+    // --- Encode the regime up to the boundary ---
+    encode_and_verify(state, rbuf, boundary_pos);
+    state.total_emitted = state.total_emitted + boundary_pos;
+    state.total_chunks = state.total_chunks + 1;
+
+    // --- Trim: shift remainder to front ---
+    let remaining: i32 = state.regime_len - boundary_pos;
+    shift_regime_buf(rbuf, boundary_pos, remaining);
+    state.regime_len = remaining;
+    state.scan_prime = 0;  // Recompute from new buffer contents
+
+    return 1;
+}
+
+// ===== stream_get_chunk — copy last encoded chunk to caller's buffer =====
+
+#[export]
+fn stream_get_chunk(state: *StreamState, out: *u8, max_out: i32) -> i32 {
+    let len: i32 = state.chunk_len;
+    if len > max_out { return 0; }
+    copy_bytes(out, state.chunk_buf as *u8, len);
+    return len;
+}
+
+// ===== stream_get_chunk_samples — samples in last emitted chunk =====
+
+#[export]
+fn stream_get_chunk_samples(state: *StreamState) -> i32 {
+    return state.chunk_samples;
+}
+
+// ===== stream_flush — encode remaining buffer as final chunk =====
+
+#[export]
+fn stream_flush(state: *StreamState, out: *u8, max_out: i32) -> i32 {
+    if state.regime_len == 0 { return 0; }
+
+    encode_and_verify(state, state.regime_buf, state.regime_len);
+    state.total_emitted = state.total_emitted + state.regime_len;
+    state.total_chunks = state.total_chunks + 1;
+    state.regime_len = 0;
+    state.scan_prime = 0;
+
+    let len: i32 = state.chunk_len;
+    if len > max_out { return 0; }
+    copy_bytes(out, state.chunk_buf as *u8, len);
+    return len;
+}
+
+// ===== stream_keyframe — latest keyframe for late join =====
+
+#[export]
+fn stream_keyframe(state: *StreamState, out: *u8, max_out: i32) -> i32 {
+    let len: i32 = state.keyframe_len;
+    if len == 0 { return 0; }
+    if len > max_out { return 0; }
+    copy_bytes(out, state.keyframe_buf as *u8, len);
+    return len;
+}
+
+// ===== stream_total_emitted — lifetime sample counter =====
+
+#[export]
+fn stream_total_emitted(state: *StreamState) -> i32 {
+    return state.total_emitted;
+}
+
+// ===== stream_total_chunks — lifetime chunk counter =====
+
+#[export]
+fn stream_total_chunks(state: *StreamState) -> i32 {
+    return state.total_chunks;
+}
+
+// ===== stream_verify_errors — lifetime verification error counter =====
+
+#[export]
+fn stream_verify_errors(state: *StreamState) -> i32 {
+    return state.verify_errors;
+}

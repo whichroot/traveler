@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dyn_regime_proof_test.tv — regime boundary proof over a runtime prime:
+// boundary forced iff Delta^d across it is nonzero, witnessed err*inv(err)==1.
+// @internal-design: zk
+//
+// Signal: two linear (order-2) regimes joined at index 4.
+//   regime 0: [10,13,16,19] (slope 3)   regime 1: [50,53,56,59] (slope 3)
+//
+// Test 1: segment 0 fits order 2            -> 1
+// Test 2: segment 1 fits order 2            -> 1
+// Test 3: boundary at index 4 is forced     -> 1   (err = 28 != 0)
+// Test 4: false boundary at index 2 fails   -> 0   (err = 0, no inverse)
+//
+// Expected output: 1 1 1 0
+
+// "Segment fits order d": the d-th forward difference vanishes over the
+// segment [a, a+len).  Pure field arithmetic; work is scratch (len slots).
+fn segment_fits<F: Field>(data: *F, a: i32, len: i32, d: i32, work: *F) -> i32 {
+    for i in 0..len { work[i] = data[a + i]; }
+    var rem: i32 = len;
+    var level: i32 = 0;
+    while level < d {
+        for j in 0..(rem - 1) {
+            work[j] = work[j + 1] - work[j];
+        }
+        rem = rem - 1;
+        level = level + 1;
+    }
+    // work[0..rem) now hold the d-th forward differences; must all be zero.
+    var ok: i32 = 1;
+    for i in 0..rem {
+        if work[i] != 0 { ok = 0; }
+    }
+    return ok;
+}
+
+// "Boundary at b is forced": Delta^d of the d+1 points ending at b is nonzero,
+// witnessed by err * inv(err) == 1 (false boundary: err == 0 -> chk 0 != 1).
+fn boundary_forced<F: Field>(data: *F, b: i32, d: i32, work: *F) -> i32 {
+    // Window of d+1 points crossing the boundary: data[b-d .. b].
+    for i in 0..(d + 1) { work[i] = data[b - d + i]; }
+    var rem: i32 = d + 1;
+    while rem > 1 {
+        for j in 0..(rem - 1) {
+            work[j] = work[j + 1] - work[j];
+        }
+        rem = rem - 1;
+    }
+    let err: F = work[0];
+    let inv: F = 1 / err;        // field inverse; inv(0) = 0
+    let chk: F = err * inv;      // 1 iff err != 0, else 0
+    if chk == 1 { return 1; }
+    return 0;
+}
+
+instantiate segment_fits<dyn>;
+instantiate boundary_forced<dyn>;
+
+fn main() -> i32 {
+    let f: Field = field(18446744069414584321);
+
+    // Two linear regimes joined at index 4.
+    let data: *i64 = alloc(8);
+    data[0] = 10; data[1] = 13; data[2] = 16; data[3] = 19;
+    data[4] = 50; data[5] = 53; data[6] = 56; data[7] = 59;
+
+    let work: *i64 = alloc(8);
+
+    // Test 1: segment 0 [0,4) fits order 2 (linear).
+    print(segment_fits_dyn(f, data, 0, 4, 2, work));
+
+    // Test 2: segment 1 [4,8) fits order 2 (linear).
+    print(segment_fits_dyn(f, data, 4, 4, 2, work));
+
+    // Test 3: boundary at index 4 is forced.
+    //   window data[2..4] = [16,19,50], Delta^2 = (50-19)-(19-16) = 28 != 0.
+    print(boundary_forced_dyn(f, data, 4, 2, work));
+
+    // Test 4: SOUNDNESS — false boundary at index 2 (smooth interior):
+    //   Delta^2 of [10,13,16] = 0; err = 0 has no inverse -> proof fails.
+    print(boundary_forced_dyn(f, data, 2, 2, work));
+
+    free(data);
+    free(work);
+    return 0;
+}

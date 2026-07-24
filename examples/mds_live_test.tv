@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mds_live_test.tv — B-MDS live-path gate: the name-blind selector
+// (poseidon2_diag_checked) driving the REAL dyn permutation over two primes.
+// @internal-design: crypto
+//
+// Expected output: 1 0 1 1   1 1 1 1
+//   Goldilocks:
+//     1  selector took the CANONICAL path (returned 0 tries)            -> print 1
+//     0  ...meaning >0 tries did NOT happen (canonical was valid)       -> print 0
+//     1  selected diagonal is MDS-valid (matrix form passes the check)  -> print 1
+//     1  permutation ran and matches the published Plonky3 vector       -> print 1
+//   BabyBear:
+//     1  selector took the REPAIR path (returned >0 tries)              -> print 1
+//     1  selected diagonal is MDS-valid over BabyBear (the repair works)-> print 1
+//     1  selected base != canonical base (genuinely different param)    -> print 1
+//     1  permutation ran to completion with the repaired diagonal       -> print 1
+//
+// 3-file link: mds_check.o + grain_lfsr.o + this.
+
+extern "C" fn poseidon2_diag_checked(f: Field, pp: i64, n: i32, t: i32, out: *i64) -> i32;
+extern "C" fn mds_check_diag_dyn(f: Field, pp: i64, v: *i64, t: i32) -> i32;
+extern "C" fn grain_generate(f: Field, n: i32, t: i32, rf: i32, rp: i32,
+    out: *i64, count: i32);
+
+// ---- Generic Poseidon2 core (identical to dyn_poseidon2_test.tv) ----
+
+fn sbox7<F: Field>(x: F) -> F {
+    let x2: F = x * x;
+    let x4: F = x2 * x2;
+    let x7: F = x4 * x2 * x;
+    return x7;
+}
+
+fn mds_mat4<F: Field>(s: *F) {
+    let s0: F = s[0]; let s1: F = s[1]; let s2: F = s[2]; let s3: F = s[3];
+    let t01: F  = s0 + s1;
+    let t23: F  = s2 + s3;
+    let t0123: F = t01 + t23;
+    let t01123: F = t0123 + s1;
+    let t01233: F = t0123 + s3;
+    s[0] = t01123 + t01;
+    s[1] = t01123 + s2 + s2;
+    s[2] = t01233 + t23;
+    s[3] = t01233 + s0 + s0;
+}
+
+fn mds_external_8<F: Field>(state: *F) {
+    mds_mat4(state);
+    let hi: *F = &state[4];
+    mds_mat4(hi);
+    let sum0: F = state[0] + state[4];
+    let sum1: F = state[1] + state[5];
+    let sum2: F = state[2] + state[6];
+    let sum3: F = state[3] + state[7];
+    state[0] = state[0] + sum0;
+    state[1] = state[1] + sum1;
+    state[2] = state[2] + sum2;
+    state[3] = state[3] + sum3;
+    state[4] = state[4] + sum0;
+    state[5] = state[5] + sum1;
+    state[6] = state[6] + sum2;
+    state[7] = state[7] + sum3;
+}
+
+fn mds_internal_8<F: Field>(state: *F, diag: *F) {
+    var sum: F = state[0];
+    for i in 1..8 {
+        sum = sum + state[i];
+    }
+    for i in 0..8 {
+        state[i] = state[i] * diag[i] + sum;
+    }
+}
+
+fn poseidon2_permute_8<F: Field>(
+    state: *F, rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    mds_external_8(state);
+    for r in 0..4 {
+        let base: i32 = r * 8;
+        for i in 0..8 {
+            state[i] = state[i] + rc_init[base + i];
+        }
+        for i in 0..8 {
+            state[i] = sbox7(state[i]);
+        }
+        mds_external_8(state);
+    }
+    for r in 0..22 {
+        state[0] = state[0] + rc_int[r];
+        state[0] = sbox7(state[0]);
+        mds_internal_8(state, diag);
+    }
+    for r in 0..4 {
+        let base: i32 = r * 8;
+        for i in 0..8 {
+            state[i] = state[i] + rc_term[base + i];
+        }
+        for i in 0..8 {
+            state[i] = sbox7(state[i]);
+        }
+        mds_external_8(state);
+    }
+}
+
+// Canonical base (for the "genuinely different" check on the BabyBear path).
+fn mds_canon_base8<F: Field>(out: *F) {
+    let zero: F = 0;
+    let one: F = 1;
+    let two: F = 2;
+    let three: F = 3;
+    let four: F = 4;
+    let half: F = one / two;
+    out[0] = zero - two;
+    out[1] = one;
+    out[2] = two;
+    out[3] = half;
+    out[4] = three;
+    out[5] = zero - half;
+    out[6] = zero - three;
+    out[7] = zero - four;
+}
+
+instantiate sbox7<dyn>;
+instantiate mds_mat4<dyn>;
+instantiate mds_external_8<dyn>;
+instantiate mds_internal_8<dyn>;
+instantiate poseidon2_permute_8<dyn>;
+instantiate mds_canon_base8<dyn>;
+
+// ---- Goldilocks branch ----------------------------------------------------
+// Selector returns 0 (canonical valid); selected diag drives the permutation
+// to the published Plonky3 width-8 vector.
+fn run_goldilocks() {
+    let p: i64 = 18446744069414584321;
+    let f: Field = field(p);
+    let n: i32 = 64;
+    let t: i32 = 8;
+
+    let base: *i64 = alloc(8);
+    let tries: i32 = poseidon2_diag_checked(f, p, n, t, base);
+
+    // (a) canonical path: tries == 0
+    if tries == 0 { print(1); } else { print(0); }
+    // (b) the repair path did NOT fire
+    if tries > 0 { print(1); } else { print(0); }
+
+    // (c) selected diagonal is MDS-valid (convert base -> matrix, check)
+    let v: *i64 = alloc(8);
+    let one_g: i64 = 1;
+    for i in 0..8 { v[i] = base[i] + one_g; }   // +1 reduces mod p inside the check
+    print(mds_check_diag_dyn(f, p, v, 8));
+
+    // (d) drive the real permutation with the selected diagonal; match Plonky3
+    let rc_init: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let rc_term: *i64 = alloc(32);
+    let raw: *i64 = alloc(86);
+    grain_generate(f, n, t, 8, 22, raw, 86);
+    for i in 0..32 { rc_init[i] = raw[i]; }
+    for i in 0..22 { rc_int[i]  = raw[32 + i]; }
+    for i in 0..32 { rc_term[i] = raw[54 + i]; }
+
+    let state: *i64 = alloc(8);
+    for i in 0..8 { state[i] = i as i64; }
+    poseidon2_permute_8_dyn(f, state, rc_init, rc_term, rc_int, base);
+
+    let expected: *i64 = alloc(8);
+    expected[0] = 0x020cf04a1b214d14;
+    expected[1] = 0x84e14aaaeacaed25;
+    expected[2] = 0x1ae0f640e81c7457;
+    expected[3] = 0xa4d204cbaeb0d8a5;
+    expected[4] = 0x0cf637b627b3a7ff;
+    expected[5] = 0x788d304d948b486b;
+    expected[6] = 0x7327133ea1949af4;
+    expected[7] = 0xf415abb924da395b;
+    var ok: i32 = 1;
+    for i in 0..8 { if state[i] != expected[i] { ok = 0; } }
+    print(ok);
+
+    free(base); free(v); free(rc_init); free(rc_int); free(rc_term);
+    free(raw); free(state); free(expected);
+}
+
+// ---- BabyBear branch ------------------------------------------------------
+// Selector returns >0 (canonical INVALID, repaired); selected diag is MDS,
+// differs from canonical, and drives a permutation to completion.
+fn run_babybear() {
+    let p: i64 = 2013265921;
+    let f: Field = field(p);
+    let n: i32 = 31;
+    let t: i32 = 8;
+
+    let base: *i64 = alloc(8);
+    let tries: i32 = poseidon2_diag_checked(f, p, n, t, base);
+
+    // (a) repair path fired: tries > 0
+    if tries > 0 { print(1); } else { print(0); }
+
+    // (b) selected diagonal is MDS-valid over BabyBear
+    let v: *i64 = alloc(8);
+    let one_b: i64 = 1;
+    for i in 0..8 { v[i] = base[i] + one_b; }
+    print(mds_check_diag_dyn(f, p, v, 8));
+
+    // (c) selected base differs from the canonical (broken) base
+    let canon: *i64 = alloc(8);
+    mds_canon_base8_dyn(f, canon);
+    var differ: i32 = 0;
+    for i in 0..8 { if base[i] != canon[i] { differ = 1; } }
+    print(differ);
+
+    // (d) permutation runs to completion with the repaired diagonal — the
+    //     liveness claim ((b) is the security claim; no published BB w8 vector).
+    let rc_init: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let rc_term: *i64 = alloc(32);
+    let raw: *i64 = alloc(86);
+    grain_generate(f, n, t, 8, 22, raw, 86);
+    for i in 0..32 { rc_init[i] = raw[i]; }
+    for i in 0..22 { rc_int[i]  = raw[32 + i]; }
+    for i in 0..32 { rc_term[i] = raw[54 + i]; }
+
+    let state: *i64 = alloc(8);
+    for i in 0..8 { state[i] = i as i64; }
+    poseidon2_permute_8_dyn(f, state, rc_init, rc_term, rc_int, base);
+    var live: i32 = 0;
+    for i in 0..8 { if state[i] != 0 { live = 1; } }
+    print(live);
+
+    free(base); free(v); free(canon); free(rc_init); free(rc_int);
+    free(rc_term); free(raw); free(state);
+}
+
+fn main() -> i32 {
+    run_goldilocks();
+    run_babybear();
+    return 0;
+}

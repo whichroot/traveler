@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// result.tv — the shared Result<T, E>: THE canonical fallible-return type for
+// the wrap layer (fs/, net/, time/). tvc_self ONLY (consumed via `import`).
+// @internal-design: core
+
+// A tagged union per concrete T/E; match (or the `?` operator) is the API.
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}

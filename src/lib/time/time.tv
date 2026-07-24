@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// time.tv — monotonic/wall clock + sleep over clock_gettime(2)/nanosleep(2):
+// i64 nanoseconds, Result at the membrane, allocation-free read path (gated).
+// @internal-design: time
+
+import "../core/result.tv";
+
+extern "C" fn clock_gettime(clk: i32, ts: *i64) -> i32;
+extern "C" fn nanosleep(req: *i64, rem: *i64) -> i32;
+extern "C" fn uname(buf: *u8) -> i32;
+
+enum TimeError {
+    OsDetect,
+    ClockFailed,
+    BadDuration,
+    SleepFailed,
+}
+
+// 0 = undetected, 1 = darwin, 2 = linux.
+var g_time_os: i32 = 0;
+
+// Detect the OS once via uname(2) sysname: 'D' (68) = Darwin, 'L' (76) =
+// Linux; cached. Buffer oversized for both utsname layouts.
+fn time_os() -> i32 {
+    if g_time_os != 0 { return g_time_os; }
+    let buf: *u8 = alloc(2048);
+    if uname(buf) != 0 {
+        free(buf);
+        return 0;
+    }
+    if buf[0] == 68 { g_time_os = 1; }
+    if buf[0] == 76 { g_time_os = 2; }
+    free(buf);
+    return g_time_os;
+}
+
+// Nanoseconds off CLOCK_MONOTONIC (steady, unaffected by wall-clock jumps;
+// epoch arbitrary — differences only). Needs the OS probe (clock id diverges).
+fn time_mono_ns() -> Result<i64, TimeError> {
+    let os: i32 = time_os();
+    if os == 0 { return Result::Err(TimeError::OsDetect); }
+    var clk: i32 = 1;                       // Linux CLOCK_MONOTONIC
+    if os == 1 { clk = 6; }                 // Darwin CLOCK_MONOTONIC
+    var ts: [i64; 2] = 0;                   // stack timespec (no heap traffic)
+    if clock_gettime(clk, &ts[0]) != 0 {
+        return Result::Err(TimeError::ClockFailed);
+    }
+    return Result::Ok(ts[0] * 1000000000 + ts[1]);
+}
+
+// Nanoseconds off CLOCK_REALTIME (wall clock, ns since the Unix epoch).
+// No OS probe needed — REALTIME is clock-id 0 on every target.
+fn time_wall_ns() -> Result<i64, TimeError> {
+    var ts: [i64; 2] = 0;                   // stack timespec (no heap traffic)
+    if clock_gettime(0, &ts[0]) != 0 {
+        return Result::Err(TimeError::ClockFailed);
+    }
+    return Result::Ok(ts[0] * 1000000000 + ts[1]);
+}
+
+// Whole seconds off CLOCK_REALTIME (Unix time). A convenience that avoids the
+// ns multiply where only coarse wall time is wanted.
+fn time_wall_sec() -> Result<i64, TimeError> {
+    var ts: [i64; 2] = 0;                   // stack timespec (no heap traffic)
+    if clock_gettime(0, &ts[0]) != 0 {
+        return Result::Err(TimeError::ClockFailed);
+    }
+    return Result::Ok(ts[0]);
+}
+
+// Sleep for at least `ns` nanoseconds (POSIX lower bound: may overshoot,
+// never undershoot on success). Negative refused; Ok(ns) on success.
+fn time_sleep_ns(ns: i64) -> Result<i64, TimeError> {
+    if ns < 0 { return Result::Err(TimeError::BadDuration); }
+    var req: [i64; 2] = 0;                  // stack timespec (no heap traffic)
+    req[0] = ns / 1000000000;
+    req[1] = ns % 1000000000;
+    if nanosleep(&req[0], null) != 0 {
+        return Result::Err(TimeError::SleepFailed);
+    }
+    return Result::Ok(ns);
+}
+
+// Sleep for at least `ms` milliseconds.
+fn time_sleep_ms(ms: i64) -> Result<i64, TimeError> {
+    return time_sleep_ns(ms * 1000000);
+}

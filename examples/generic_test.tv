@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// generic_test.tv — Test generic function monomorphization
+//
+// Tests fn<F: Field> with multiple field types.
+// Expected output:
+//   49
+//   54479
+//   212
+
+type F251 = Field<251>;
+type F65521 = Field<65521>;
+type GF256 = BinField<8, 0x11B>;
+
+fn generic_add<F: Field>(a: F, b: F) -> F {
+    return a + b;
+}
+
+fn generic_mul<F: Field>(a: F, b: F) -> F {
+    return a * b;
+}
+
+fn main() {
+    // Field<251>: 200 + 100 = 300 mod 251 = 49
+    let a: F251 = 200;
+    let b: F251 = 100;
+    let r1: F251 = generic_add(a, b);
+    print(r1);
+
+    // Field<65521>: 60000 + 60000 = 120000 mod 65521 = 54479
+    let c: F65521 = 60000;
+    let d: F65521 = 60000;
+    let r2: F65521 = generic_add(c, d);
+    print(r2);
+
+    // BinField<8, 0x11B>: 0x57 XOR 0x83 = 0xD4 = 212
+    let e: GF256 = 0x57;
+    let f: GF256 = 0x83;
+    let r3: GF256 = generic_add(e, f);
+    print(r3);
+}

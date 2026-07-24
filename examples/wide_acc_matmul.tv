@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wide_acc_matmul.tv — exact-arithmetic arc Stage B/W5: matmul with ~2^130 column
+// accumulators, computed hand-limbed (8x31-bit) AND native i256, cross-checked.
+// @internal-note: plan-exact-arithmetic-arc (Stages B/D);
+//         relocated header notes: @internal-design: util
+// @internal-oracle: wide_acc (bignum; the i256 decimals
+// are ground truth, the hand-limb form checked against i256 through requantize).
+
+// ---- base-2^31 wide-natural helpers (8 limbs = 248-bit capacity) ----
+
+// Add v (< 2^62) at limb `off`, propagating carry. Invariant: every limb < 2^31
+// on entry and exit, so a[i] + (cur & M) < 2^32 and cur>>31 stays i64-safe.
+fn w_addat(a: *i64, off: i32, v: i64) {
+    let m: i64 = 2147483647;        // 2^31 - 1
+    var cur: i64 = v;
+    var i: i32 = off;
+    while cur != 0 {
+        let s: i64 = a[i] + (cur & m);
+        a[i] = s & m;
+        cur = (cur >> 31) + (s >> 31);
+        i = i + 1;
+    }
+}
+
+fn w_zero(a: *i64) {
+    var i: i32 = 0;
+    while i < 8 { a[i] = 0; i = i + 1; }
+}
+
+// a += x*y, x,y < 2^62. Split each into two 31-bit halves (< 2^31), so every
+// partial product < 2^62 fits a signed i64 (base 2^32 would overflow here).
+fn w_muladd(a: *i64, x: i64, y: i64) {
+    let m: i64 = 2147483647;
+    let x0: i64 = x & m;
+    let x1: i64 = x >> 31;
+    let y0: i64 = y & m;
+    let y1: i64 = y >> 31;
+    w_addat(a, 0, x0 * y0);         // bit 0
+    w_addat(a, 1, x0 * y1);         // bit 31
+    w_addat(a, 1, x1 * y0);         // bit 31
+    w_addat(a, 2, x1 * y1);         // bit 62
+}
+
+// Shift the whole natural right by s bits (q whole limbs + r sub-limb).
+fn w_shr(a: *i64, s: i32) {
+    let m: i64 = 2147483647;
+    let q: i32 = s / 31;
+    let r: i32 = s - q * 31;
+    var i: i32 = 0;
+    while i < 8 {
+        if i + q < 8 { a[i] = a[i + q]; } else { a[i] = 0; }
+        i = i + 1;
+    }
+    if r > 0 {
+        i = 0;
+        while i < 8 {
+            let lo: i64 = a[i] >> r;
+            var hi: i64 = 0;
+            if i + 1 < 8 { hi = (a[i + 1] << (31 - r)) & m; }
+            a[i] = lo | hi;
+            i = i + 1;
+        }
+    }
+}
+
+// Low 63 bits as i64 (valid once the value has been requantized to fit i64).
+fn w_to_i64(a: *i64) -> i64 {
+    return a[0] + (a[1] << 31) + (a[2] << 62);
+}
+
+// bit length of a non-negative i256 (loop of constant >>1).
+fn i256_bitlen(x: i256) -> i64 {
+    var n: i64 = 0;
+    var v: i256 = x;
+    let z: i256 = 0 as i256;
+    while v > z { v = v >> 1; n = n + 1; }
+    return n;
+}
+
+// ---- the matmul inputs: narrow (<2^62), non-negative, deterministic ----
+fn av(i: i64, t: i64) -> i64 { return (1 << 62) - 1 - ((i * 7 + t * 3) % 1000); }
+fn bv(t: i64, j: i64) -> i64 { return (1 << 62) - 1 - ((t * 5 + j * 11) % 1000); }
+
+// One cell's FULL-WIDTH accumulator (~2^130, past i128). Pure (locals + pure av/bv
+// only), so the pfor walk proves through it — the i256 arithmetic is invisible.
+fn cell_acc(idx: i32) -> i256 {
+    let ii: i32 = idx / 4;
+    let i: i64 = ii as i64;
+    let j: i64 = (idx - ii * 4) as i64;
+    var acc: i256 = 0;
+    var t: i64 = 0;
+    while t < 64 {
+        acc = acc + (av(i, t) as i256) * (bv(t, j) as i256);
+        t = t + 1;
+    }
+    return acc;
+}
+
+// Requantize by 70, round half up (shift, not divide — #21's core). i32 in / i64
+// out: the wide value never crosses the capture protocol (i256 capture = cap-elem).
+fn cell(idx: i32) -> i64 {
+    let acc: i256 = cell_acc(idx);
+    let half: i256 = (1 as i256) << 69;
+    return ((acc + half) >> 70) as i64;
+}
+
+fn main() {
+    var maxbits: i64 = 0;
+    var checksum: i256 = 0;
+    var allmatch: i64 = 1;
+
+    // ---- (b) native i256 — the U1 consumer loop (Stage D's named flip): flat pure
+    // body, captures = out256 alone -> DISPATCHES under the lifted gate. ----
+    let out256: *i64 = alloc(16);
+    for idx in 0..16 {
+        out256[idx] = cell(idx);
+    }
+
+    // Full-width evidence, serial, same pure kernel (deterministic recompute):
+    print(cell_acc(0));      // two full-width accumulators (~2^130)
+    print(cell_acc(1));
+    var vi: i32 = 0;
+    while vi < 16 {
+        let bl: i64 = i256_bitlen(cell_acc(vi));
+        if bl > maxbits { maxbits = bl; }
+        vi = vi + 1;
+    }
+    print(maxbits);          // 130 (past i128 — the wide lane is load-bearing)
+
+    // ---- (a) hand-limb i64: the SAME matmul via w_muladd; pfor-refuses as a
+    // mutating call, NOT has_field (the Stage-E datapoint). Checked vs i256. ----
+    var idx2: i32 = 0;
+    while idx2 < 16 {
+        let ii: i32 = idx2 / 4;
+        let i: i64 = ii as i64;
+        let j: i64 = (idx2 - ii * 4) as i64;
+        var L: [i64; 8] = 0;
+        w_zero(&L[0]);
+        var t: i64 = 0;
+        while t < 64 {
+            w_muladd(&L[0], av(i, t), bv(t, j));
+            t = t + 1;
+        }
+        w_addat(&L[0], 2, 128);        // +2^69 = 1<<7 at limb 2 (2*31+7=69), round half up
+        w_shr(&L[0], 70);
+        let rqlimb: i64 = w_to_i64(&L[0]);
+        if rqlimb != out256[idx2] { allmatch = 0; }
+        checksum = checksum + (out256[idx2] as i256);
+        idx2 = idx2 + 1;
+    }
+    print(checksum);         // Σ requantized result over all 16 cells (full-width)
+    print(allmatch);         // 1 (hand-limb == i256 on all sixteen)
+
+    // ---- width certificate: drive the accumulator past 2^200 ----
+    var cert: i256 = 0;
+    var CL: [i64; 8] = 0;
+    w_zero(&CL[0]);
+    let unit: i256 = (1 as i256) << 195;
+    var c: i64 = 0;
+    while c < 64 {
+        cert = cert + unit;            // 64 * 2^195 = 2^201
+        w_addat(&CL[0], 6, 512);       // 2^195 = 1<<9 at limb 6 (6*31+9=195)
+        c = c + 1;
+    }
+    print(cert);                       // 2^201 full-width decimal
+    print(i256_bitlen(cert));          // 202 (past 2^200)
+
+    let chalf: i256 = (1 as i256) << 139;
+    let certrq256: i64 = ((cert + chalf) >> 140) as i64;
+    print(certrq256);
+
+    w_addat(&CL[0], 4, 32768);         // 2^139 = 1<<15 at limb 4 (4*31+15=139)
+    w_shr(&CL[0], 140);
+    let certrqlimb: i64 = w_to_i64(&CL[0]);
+    var certmatch: i64 = 1;
+    if certrqlimb != certrq256 { certmatch = 0; }
+    print(certmatch);                  // 1
+}

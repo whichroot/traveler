@@ -1,0 +1,11 @@
+# GitHub Linguist overrides — keep the repo language stats honest.
+#
+# The bootstrap IR is a Traveler-PRODUCED snapshot (the self-hosting trust
+# root), not hand-authored LLVM. Exclude it from language statistics so the
+# repo isn't reported as mostly LLVM.
+src/bootstrap/*.ll linguist-generated=true
+
+# The frozen C seed (src-legacy/) is the legacy backup bootstrap path, kept for
+# reference only — it is not the project's language. Mark it vendored so it
+# doesn't dominate the bar. (Remove this line if you'd rather it count as C.)
+src-legacy/** linguist-vendored=true

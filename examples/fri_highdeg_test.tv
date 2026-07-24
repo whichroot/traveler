@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fri_highdeg_test.tv — FRI proof for a degree-7 polynomial: 32-point LDE
+// domain (blowup 2), 4 fold rounds — the conjugate-pair (n/2) soundness regime.
+// @internal-design: crypto
+//
+// Expected output:
+//   1  (valid proof accepted)
+//   0  (tampered proof rejected)
+//
+// Linking: ntt.o + poseidon2.o + merkle.o + fri.o + this.o
+
+type Goldilocks = Field<18446744069414584321>;
+
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+extern "C" fn fri_prove(
+    coeffs: *Goldilocks, degree: i32, log_blowup: i32,
+    shift: Goldilocks, num_queries: i32,
+    roots: *Goldilocks, challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks, query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32;
+
+extern "C" fn fri_verify(
+    degree: i32, log_blowup: i32, shift: Goldilocks,
+    num_queries: i32, n_rounds: i32,
+    roots: *Goldilocks, challenges: *Goldilocks,
+    final_poly: *Goldilocks,
+    query_values: *Goldilocks, query_paths: *Goldilocks,
+    query_indices: *i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks
+) -> i32;
+
+fn main() -> i32 {
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    // Degree-7 polynomial: f(x) = 1 + 2x + 3x^2 + ... + 8x^7
+    let degree: i32 = 7;
+    let coeffs: *Goldilocks = alloc(8);
+    for i in 0..8 {
+        coeffs[i] = (i + 1) as Goldilocks;
+    }
+
+    let log_blowup: i32 = 2;   // 4x blowup → 32-point domain → 4 fold rounds
+    let shift: Goldilocks = 7;
+    let num_queries: i32 = 3;
+
+    // Proof buffers (generous allocation)
+    let roots: *Goldilocks = alloc(64);
+    let challenges: *Goldilocks = alloc(16);
+    let final_poly: *Goldilocks = alloc(4);
+    let query_values: *Goldilocks = alloc(1024);
+    let query_paths: *Goldilocks = alloc(16384);
+    let query_indices: *i32 = alloc(16);
+
+    // Prove
+    let n_rounds: i32 = fri_prove(coeffs, degree, log_blowup, shift, num_queries,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices,
+        rc_init, rc_term, rc_int, diag);
+
+    // Verify valid proof
+    let ok: i32 = fri_verify(degree, log_blowup, shift, num_queries, n_rounds,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices,
+        rc_init, rc_term, rc_int, diag);
+    print(ok as Goldilocks);  // Expected: 1
+
+    // Tamper with final polynomial and verify rejection
+    final_poly[0] = final_poly[0] + 1;
+    let bad: i32 = fri_verify(degree, log_blowup, shift, num_queries, n_rounds,
+        roots, challenges, final_poly,
+        query_values, query_paths, query_indices,
+        rc_init, rc_term, rc_int, diag);
+    print(bad as Goldilocks);  // Expected: 0
+
+    return 0;
+}

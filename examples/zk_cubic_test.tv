@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_cubic_test.tv — Test driver for #[zk] cubic_check
+//
+// Calls:
+//   1. cubic_check(3) natively → 35
+//   2. cubic_check_zk_prove(3, ...) → generates proof, returns 1
+//
+// Expected output: 35 1
+//
+// Linking: ntt.o + poseidon2.o + merkle.o + fri.o + plonk.o + zk_cubic.o + zk_cubic_test.o
+
+type Goldilocks = Field<18446744069414584321>;
+
+extern "C" fn poseidon2_init_goldilocks_8(
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks);
+
+// Native function (from zk_cubic.o)
+extern "C" fn cubic_check(x: Goldilocks) -> Goldilocks;
+
+// Auto-generated companion (from zk_cubic.o)
+extern "C" fn cubic_check_zk_prove(
+    x: Goldilocks,
+    eval_out: *Goldilocks,
+    fri_roots: *Goldilocks, fri_challenges: *Goldilocks,
+    fri_final_poly: *Goldilocks,
+    fri_query_values: *Goldilocks, fri_query_paths: *Goldilocks,
+    fri_query_indices: *i32, fri_n_rounds: *i32,
+    num_queries: i32,
+    rc_init: *Goldilocks, rc_term: *Goldilocks,
+    rc_int: *Goldilocks, diag: *Goldilocks) -> i32;
+
+fn main() -> i32 {
+    let rc_init: *Goldilocks = alloc(32);
+    let rc_term: *Goldilocks = alloc(32);
+    let rc_int: *Goldilocks = alloc(22);
+    let diag: *Goldilocks = alloc(8);
+    poseidon2_init_goldilocks_8(rc_init, rc_term, rc_int, diag);
+
+    // Test 1: Native execution
+    let result: Goldilocks = cubic_check(3);
+    print(result);  // Expected: 35
+
+    // Test 2: ZK proof generation
+    let num_queries: i32 = 3;
+    let eval_out: *Goldilocks = alloc(16);
+    let fri_roots: *Goldilocks = alloc(128);
+    let fri_challenges: *Goldilocks = alloc(32);
+    let fri_final_poly: *Goldilocks = alloc(4);
+    let fri_query_values: *Goldilocks = alloc(512);
+    let fri_query_paths: *Goldilocks = alloc(4096);
+    let fri_query_indices: *i32 = alloc(16);
+    let fri_n_rounds: *i32 = alloc(1);
+
+    let ok: i32 = cubic_check_zk_prove(3, eval_out,
+        fri_roots, fri_challenges, fri_final_poly,
+        fri_query_values, fri_query_paths,
+        fri_query_indices, fri_n_rounds, num_queries,
+        rc_init, rc_term, rc_int, diag);
+    print(ok);  // Expected: 1 (plonk_prove succeeded)
+
+    return 0;
+}

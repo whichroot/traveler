@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fn_pointer_fence.tv — the function-pointer parallelization fence (B2a Slice
+// 1). tvc_self ONLY: an indirect call is an unprovable callee, so its loop stays serial.
+// @internal-design: examples (fn_pointer_fence).
+//
+// Worker-count gate (exactly 1 worker in the module):
+//   - direct_loop -> 1 worker (parallelized)
+//   - map_loop    -> 0 workers (fenced: indirect call)
+
+type F = Field<251>;
+
+fn scale(x: F) -> F { return x * 2; }
+
+// Indirect call in the loop body -> MUST stay sequential (the fence).
+fn map_loop(data: *F, n: i32, f: fn(F) -> F) {
+    for i in 0..n {
+        data[i] = f(data[i]);
+    }
+}
+
+// Direct pure field op -> SHOULD parallelize (the control).
+fn direct_loop(data: *F, n: i32) {
+    for i in 0..n {
+        data[i] = data[i] * 2;
+    }
+}
+
+fn main() -> i32 {
+    return 0;
+}

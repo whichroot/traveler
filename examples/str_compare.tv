@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// str_compare.tv — String comparison without libc.
+//
+// Pure Traveler implementations of bytes_eq and str_eq for the
+// self-hosting compiler's keyword matching.
+//
+// Expected output: 1 0 0 0 1 1 0 1 0
+
+extern "C" fn putchar(c: i32) -> i32;
+
+fn str_len(s: *u8) -> i32 {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        i = i + 1;
+    }
+    return i;
+}
+
+fn bytes_eq(a: *u8, b: *u8, len: i32) -> i32 {
+    var i: i32 = 0;
+    while i < len {
+        if a[i] != b[i] {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn str_eq(a: *u8, b: *u8) -> i32 {
+    let la: i32 = str_len(a);
+    let lb: i32 = str_len(b);
+    if la != lb {
+        return 0;
+    }
+    return bytes_eq(a, b, la);
+}
+
+// Keyword lookup — the pattern the self-hosting lexer needs
+fn is_keyword(text: *u8) -> i32 {
+    if str_eq(text, "let") == 1 { return 1; }
+    if str_eq(text, "mut") == 1 { return 2; }
+    if str_eq(text, "fn") == 1 { return 3; }
+    if str_eq(text, "if") == 1 { return 4; }
+    if str_eq(text, "else") == 1 { return 5; }
+    if str_eq(text, "return") == 1 { return 6; }
+    if str_eq(text, "while") == 1 { return 7; }
+    if str_eq(text, "match") == 1 { return 8; }
+    return 0;
+}
+
+fn main() {
+    // bytes_eq tests
+    print(bytes_eq("hello", "hello", 5));  // 1 — equal
+    print(bytes_eq("hello", "world", 5));  // 0 — different
+    print(bytes_eq("hello", "help!", 5));   // 0 — differ at pos 3
+    print(bytes_eq("abc", "abcd", 4));      // 0 — 4th byte differs (c has \0, d has 'd')
+
+    // str_eq tests
+    print(str_eq("let", "let"));       // 1
+    print(str_eq("return", "return")); // 1
+    print(str_eq("let", "letx"));      // 0 — different length
+    print(str_eq("fn", "fn"));         // 1
+    print(str_eq("fn", "if"));         // 0
+
+    // Keyword lookup not printed — just verifying it compiles
+    // (the self-hosting lexer will use this pattern)
+}

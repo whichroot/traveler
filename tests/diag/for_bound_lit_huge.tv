@@ -1,0 +1,7 @@
+// #54: a bound literal >= 2^63 exceeds the i64 iteration space.
+fn main() -> i32 {
+    var c: i64 = 0;
+    for i in 0..9223372036854775808 { c = c + 1; }
+    print(c);
+    return 0;
+}

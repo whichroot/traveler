@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// zk_loop_dyn.tv — #[zk] forward-sum in a real `for i in 0..4` over a RUNTIME
+// prime (drives the AST_FOR arm of the dyn witness emitter). <dyn> emits native
+// forward_sum_loop_dyn + dyn-PLONK forward_sum_loop_zk_prove_dyn.
+// See @internal-design: zk. Link: plonk_dyn.o + zk_loop_dyn.o + zk_loop_dyn_test.o
+
+#[zk]
+fn forward_sum_loop<F: Field>(c0: F, c1: F, c2: F) -> F {
+    var r0: F = c0;
+    var r1: F = c1;
+    var r2: F = c2;
+    var sum: F = 0;
+
+    for i in 0..4 {
+        sum = sum + r0;
+        r0 = r0 + r1;
+        r1 = r1 + r2;
+    }
+
+    return sum;
+}
+
+instantiate forward_sum_loop<dyn>;

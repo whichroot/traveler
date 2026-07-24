@@ -1,0 +1,978 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_zk.tv — shared ZK regime composition: binds the canonical-segmentation
+// certificate to the dyn-FRI commitment stack over a runtime prime. Domain-
+// agnostic engine; one exported entry point, run_zk_domain().
+// @internal-design: regime
+
+// ===== GENERIC NTT (forward + coset forward; uses carrier roots) =====
+
+fn bit_rev(x: i32, bits: i32) -> i32 {
+    var r: i32 = 0;
+    var v: i32 = x;
+    for i in 0..bits {
+        r = (r << 1) | (v & 1);
+        v = v >> 1;
+    }
+    return r;
+}
+
+fn bit_reverse_swap<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    for i in 0..n {
+        let j: i32 = bit_rev(i, log_n);
+        if i < j {
+            let tmp: F = data[i];
+            data[i] = data[j];
+            data[j] = tmp;
+        }
+    }
+}
+
+fn ntt_forward<F: Field>(data: *F, log_n: i32) {
+    let n: i32 = 1 << log_n;
+    bit_reverse_swap(data, log_n);
+    for s in 0..log_n {
+        let m: i32 = 1 << (s + 1);
+        let half: i32 = m / 2;
+        let omega_m: F = __ntt_root(s);
+        var k: i32 = 0;
+        while k < n {
+            var w: F = 1;
+            for j in 0..half {
+                let u: F = data[k + j];
+                let v: F = w * data[k + j + half];
+                data[k + j] = u + v;
+                data[k + j + half] = u - v;
+                w = w * omega_m;
+            }
+            k = k + m;
+        }
+    }
+}
+
+fn ntt_coset_forward<F: Field>(data: *F, log_n: i32, shift: F) {
+    let n: i32 = 1 << log_n;
+    let sp: *F = alloc(n);
+    sp[0] = 1;
+    for i in 1..n {
+        sp[i] = sp[i - 1] * shift;
+    }
+    for i in 0..n {
+        data[i] = data[i] * sp[i];
+    }
+    free(sp);
+    ntt_forward(data, log_n);
+}
+
+// ===== GENERIC POSEIDON2 (permutation + compression + field-term diag) =====
+
+fn sbox7<F: Field>(x: F) -> F {
+    let x2: F = x * x;
+    let x4: F = x2 * x2;
+    let x7: F = x4 * x2 * x;
+    return x7;
+}
+
+fn mds_mat4<F: Field>(s: *F) {
+    let s0: F = s[0]; let s1: F = s[1]; let s2: F = s[2]; let s3: F = s[3];
+    let t01: F  = s0 + s1;
+    let t23: F  = s2 + s3;
+    let t0123: F = t01 + t23;
+    let t01123: F = t0123 + s1;
+    let t01233: F = t0123 + s3;
+    s[0] = t01123 + t01;
+    s[1] = t01123 + s2 + s2;
+    s[2] = t01233 + t23;
+    s[3] = t01233 + s0 + s0;
+}
+
+fn mds_external_8<F: Field>(state: *F) {
+    mds_mat4(state);
+    let hi: *F = &state[4];
+    mds_mat4(hi);
+    let sum0: F = state[0] + state[4];
+    let sum1: F = state[1] + state[5];
+    let sum2: F = state[2] + state[6];
+    let sum3: F = state[3] + state[7];
+    state[0] = state[0] + sum0;
+    state[1] = state[1] + sum1;
+    state[2] = state[2] + sum2;
+    state[3] = state[3] + sum3;
+    state[4] = state[4] + sum0;
+    state[5] = state[5] + sum1;
+    state[6] = state[6] + sum2;
+    state[7] = state[7] + sum3;
+}
+
+fn mds_internal_8<F: Field>(state: *F, diag: *F) {
+    var sum: F = state[0];
+    for i in 1..8 {
+        sum = sum + state[i];
+    }
+    for i in 0..8 {
+        state[i] = state[i] * diag[i] + sum;
+    }
+}
+
+fn poseidon2_permute_8<F: Field>(
+    state: *F, rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    mds_external_8(state);
+    for r in 0..4 {
+        let base: i32 = r * 8;
+        for i in 0..8 { state[i] = state[i] + rc_init[base + i]; }
+        for i in 0..8 { state[i] = sbox7(state[i]); }
+        mds_external_8(state);
+    }
+    for r in 0..22 {
+        state[0] = state[0] + rc_int[r];
+        state[0] = sbox7(state[0]);
+        mds_internal_8(state, diag);
+    }
+    for r in 0..4 {
+        let base: i32 = r * 8;
+        for i in 0..8 { state[i] = state[i] + rc_term[base + i]; }
+        for i in 0..8 { state[i] = sbox7(state[i]); }
+        mds_external_8(state);
+    }
+}
+
+fn poseidon2_compress<F: Field>(
+    left: *F, right: *F, out: *F,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    let state: *F = alloc(8);
+    for i in 0..4 { state[i] = left[i]; }
+    for i in 0..4 { state[4 + i] = right[i]; }
+    poseidon2_permute_8(state, rc_init, rc_term, rc_int, diag);
+    for i in 0..4 { out[i] = state[i]; }
+    free(state);
+}
+
+fn poseidon2_diag<F: Field>(diag: *F) {
+    let zero: F = 0;
+    let one: F = 1;
+    let two: F = 2;
+    let three: F = 3;
+    let four: F = 4;
+    let half: F = one / two;
+    diag[0] = zero - two;
+    diag[1] = one;
+    diag[2] = two;
+    diag[3] = half;
+    diag[4] = three;
+    diag[5] = zero - half;
+    diag[6] = zero - three;
+    diag[7] = zero - four;
+}
+
+// ===== GENERIC MERKLE =====
+
+fn merkle_build<F: Field>(
+    leaves: *F, n_leaves: i32, tree: *F,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    for i in 0..n_leaves {
+        let src: i32 = i * 4;
+        let dst: i32 = (n_leaves + i) * 4;
+        for j in 0..4 { tree[dst + j] = leaves[src + j]; }
+    }
+    var k: i32 = n_leaves - 1;
+    while k >= 1 {
+        let left: *F = &tree[(2 * k) * 4];
+        let right: *F = &tree[(2 * k + 1) * 4];
+        let out: *F = &tree[k * 4];
+        poseidon2_compress(left, right, out, rc_init, rc_term, rc_int, diag);
+        k = k - 1;
+    }
+}
+
+fn merkle_open<F: Field>(tree: *F, n_leaves: i32, idx: i32, path: *F) -> i32 {
+    var pos: i32 = n_leaves + idx;
+    var depth: i32 = 0;
+    while pos > 1 {
+        let sibling: i32 = pos ^ 1;
+        let src: i32 = sibling * 4;
+        let dst: i32 = depth * 4;
+        for j in 0..4 { path[dst + j] = tree[src + j]; }
+        pos = pos / 2;
+        depth = depth + 1;
+    }
+    return depth;
+}
+
+fn merkle_verify<F: Field>(
+    root: *F, leaf: *F, idx: i32, n_leaves: i32,
+    path: *F, path_len: i32,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) -> i32 {
+    let current: *F = alloc(4);
+    let tmp: *F = alloc(4);
+    for j in 0..4 { current[j] = leaf[j]; }
+    var pos: i32 = n_leaves + idx;
+    for d in 0..path_len {
+        let sib: *F = &path[d * 4];
+        if (pos & 1) == 0 {
+            poseidon2_compress(current, sib, tmp, rc_init, rc_term, rc_int, diag);
+        } else {
+            poseidon2_compress(sib, current, tmp, rc_init, rc_term, rc_int, diag);
+        }
+        for j in 0..4 { current[j] = tmp[j]; }
+        pos = pos / 2;
+    }
+    var ok: i32 = 1;
+    for j in 0..4 {
+        if current[j] != root[j] { ok = 0; }
+    }
+    free(current);
+    free(tmp);
+    return ok;
+}
+
+// ===== GENERIC FRI: transcript, hashing, fold, twiddle, prove, verify =====
+
+fn transcript_init<F: Field>(state: *F) {
+    for i in 0..8 { state[i] = 0; }
+}
+
+fn transcript_absorb<F: Field>(
+    state: *F, absorb_pos: *i32, input: *F, n: i32,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    for i in 0..n {
+        let pos: i32 = absorb_pos[0];
+        state[pos] = state[pos] + input[i];
+        absorb_pos[0] = pos + 1;
+        if absorb_pos[0] == 4 {
+            poseidon2_permute_8(state, rc_init, rc_term, rc_int, diag);
+            absorb_pos[0] = 0;
+        }
+    }
+}
+
+fn transcript_squeeze<F: Field>(
+    state: *F, absorb_pos: *i32, out: *F, n: i32,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    if absorb_pos[0] != 0 {
+        poseidon2_permute_8(state, rc_init, rc_term, rc_int, diag);
+        absorb_pos[0] = 0;
+    }
+    var squeeze_pos: i32 = 0;
+    for i in 0..n {
+        if squeeze_pos == 4 {
+            poseidon2_permute_8(state, rc_init, rc_term, rc_int, diag);
+            squeeze_pos = 0;
+        }
+        out[i] = state[squeeze_pos];
+        squeeze_pos = squeeze_pos + 1;
+    }
+}
+
+fn fri_hash_pair<F: Field>(
+    v_left: F, v_right: F, out: *F,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    let state: *F = alloc(8);
+    state[0] = v_left;
+    state[1] = v_right;
+    for i in 2..8 { state[i] = 0; }
+    poseidon2_permute_8(state, rc_init, rc_term, rc_int, diag);
+    for i in 0..4 { out[i] = state[i]; }
+    free(state);
+}
+
+fn fri_hash_layer<F: Field>(
+    evals: *F, n: i32, digests: *F,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) {
+    let half: i32 = n / 2;
+    for i in 0..half {
+        let out: *F = &digests[i * 4];
+        fri_hash_pair(evals[i], evals[i + half], out,
+            rc_init, rc_term, rc_int, diag);
+    }
+}
+
+fn fri_fold_layer<F: Field>(
+    evals: *F, log_n: i32, beta: F, shift: F, folded: *F
+) {
+    let n: i32 = 1 << log_n;
+    let half: i32 = n / 2;
+    let inv2: F = 1 / 2;
+    let inv_tw: *F = alloc(half);
+    let inv_shift: F = 1 / shift;
+    let inv_omega: F = __ntt_inv_root(log_n - 1);
+    inv_tw[0] = inv_shift;
+    for i in 1..half {
+        inv_tw[i] = inv_tw[i - 1] * inv_omega;
+    }
+    for i in 0..half {
+        let sum: F = evals[i] + evals[i + half];
+        let diff: F = evals[i] - evals[i + half];
+        folded[i] = (sum + beta * diff * inv_tw[i]) * inv2;
+    }
+    free(inv_tw);
+}
+
+fn fri_twiddle<F: Field>(pair_idx: i32, log_n: i32, shift: F) -> F {
+    let omega: F = __ntt_root(log_n - 1);
+    var w: F = 1;
+    var base: F = omega;
+    var exp: i32 = pair_idx;
+    while exp > 0 {
+        if (exp & 1) == 1 {
+            w = w * base;
+        }
+        base = base * base;
+        exp = exp >> 1;
+    }
+    return shift * w;
+}
+
+fn fri_prove<F: Field>(
+    coeffs: *F, degree: i32, log_blowup: i32, shift: F, num_queries: i32,
+    roots: *F, challenges: *F, final_poly: *F,
+    query_values: *F, query_paths: *F, query_indices: *i32,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) -> i32 {
+    var log_n: i32 = 0;
+    var tmp: i32 = degree;
+    while tmp > 0 {
+        log_n = log_n + 1;
+        tmp = tmp >> 1;
+    }
+    log_n = log_n + log_blowup;
+    let n: i32 = 1 << log_n;
+    let max_total: i32 = 2 * n;
+    let all_evals: *F = alloc(max_total);
+
+    for i in 0..(degree + 1) { all_evals[i] = coeffs[i]; }
+    for i in (degree + 1)..n { all_evals[i] = 0; }
+    ntt_coset_forward(all_evals, log_n, shift);
+
+    let ts: *F = alloc(8);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let max_depth: i32 = log_n;
+    var cur_off: i32 = 0;
+    var cur_log: i32 = log_n;
+    var n_rounds: i32 = 0;
+    var cur_shift: F = shift;
+
+    let digests: *F = alloc((n / 2) * 4);
+    let tree: *F = alloc(n * 4);
+
+    while (1 << cur_log) > 1 {
+        let cur_n: i32 = 1 << cur_log;
+        let n_leaves: i32 = cur_n / 2;
+        let cur_evals: *F = &all_evals[cur_off];
+
+        fri_hash_layer(cur_evals, cur_n, digests, rc_init, rc_term, rc_int, diag);
+        merkle_build(digests, n_leaves, tree, rc_init, rc_term, rc_int, diag);
+        let root: *F = &tree[4];
+        for j in 0..4 { roots[n_rounds * 4 + j] = root[j]; }
+
+        transcript_absorb(ts, ts_pos, root, 4, rc_init, rc_term, rc_int, diag);
+
+        let challenge: *F = alloc(1);
+        transcript_squeeze(ts, ts_pos, challenge, 1, rc_init, rc_term, rc_int, diag);
+        challenges[n_rounds] = challenge[0];
+
+        if (1 << (cur_log - 1)) > 1 {
+            let next_off: i32 = cur_off + cur_n;
+            let next_evals: *F = &all_evals[next_off];
+            fri_fold_layer(cur_evals, cur_log, challenge[0], cur_shift, next_evals);
+            cur_off = next_off;
+        } else {
+            let next: *F = alloc(1);
+            fri_fold_layer(cur_evals, cur_log, challenge[0], cur_shift, next);
+            final_poly[0] = next[0];
+            free(next);
+        }
+
+        free(challenge);
+        cur_shift = cur_shift * cur_shift;
+        cur_log = cur_log - 1;
+        n_rounds = n_rounds + 1;
+    }
+
+    let q_raw: *F = alloc(num_queries);
+    transcript_squeeze(ts, ts_pos, q_raw, num_queries, rc_init, rc_term, rc_int, diag);
+    for q in 0..num_queries {
+        let idx: i32 = q_raw[q] as i32;
+        let mask: i32 = (1 << log_n) - 1;
+        query_indices[q] = idx & mask;
+    }
+    free(q_raw);
+
+    var rnd_off: i32 = 0;
+    var rnd_log: i32 = log_n;
+    for r in 0..n_rounds {
+        let rnd_n: i32 = 1 << rnd_log;
+        let rnd_leaves: i32 = rnd_n / 2;
+        let rnd_evals: *F = &all_evals[rnd_off];
+
+        fri_hash_layer(rnd_evals, rnd_n, digests, rc_init, rc_term, rc_int, diag);
+        merkle_build(digests, rnd_leaves, tree, rc_init, rc_term, rc_int, diag);
+
+        for q in 0..num_queries {
+            let qi: i32 = query_indices[q];
+            let rnd_half: i32 = rnd_n / 2;
+            let pair_idx: i32 = qi & (rnd_half - 1);
+
+            let v_off: i32 = (q * n_rounds + r) * 2;
+            query_values[v_off] = rnd_evals[pair_idx];
+            query_values[v_off + 1] = rnd_evals[pair_idx + rnd_half];
+
+            let path_off: i32 = (q * n_rounds + r) * max_depth * 4;
+            let path_buf: *F = &query_paths[path_off];
+            merkle_open(tree, rnd_leaves, pair_idx, path_buf);
+        }
+
+        rnd_off = rnd_off + rnd_n;
+        rnd_log = rnd_log - 1;
+    }
+
+    free(all_evals);
+    free(digests);
+    free(tree);
+    free(ts);
+    free(ts_pos);
+    return n_rounds;
+}
+
+fn fri_verify<F: Field>(
+    degree: i32, log_blowup: i32, shift: F, num_queries: i32, n_rounds: i32,
+    roots: *F, challenges: *F, final_poly: *F,
+    query_values: *F, query_paths: *F, query_indices: *i32,
+    rc_init: *F, rc_term: *F, rc_int: *F, diag: *F
+) -> i32 {
+    var log_n: i32 = 0;
+    var tmp: i32 = degree;
+    while tmp > 0 {
+        log_n = log_n + 1;
+        tmp = tmp >> 1;
+    }
+    log_n = log_n + log_blowup;
+    let max_depth: i32 = log_n;
+
+    let ts: *F = alloc(8);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init(ts);
+    ts_pos[0] = 0;
+
+    let challenge_check: *F = alloc(1);
+    for r in 0..n_rounds {
+        let root: *F = &roots[r * 4];
+        transcript_absorb(ts, ts_pos, root, 4, rc_init, rc_term, rc_int, diag);
+        transcript_squeeze(ts, ts_pos, challenge_check, 1, rc_init, rc_term, rc_int, diag);
+        if challenge_check[0] != challenges[r] {
+            free(ts); free(ts_pos); free(challenge_check);
+            return 0;
+        }
+    }
+
+    let q_raw: *F = alloc(num_queries);
+    transcript_squeeze(ts, ts_pos, q_raw, num_queries, rc_init, rc_term, rc_int, diag);
+    let mask: i32 = (1 << log_n) - 1;
+    for q in 0..num_queries {
+        let expected_idx: i32 = (q_raw[q] as i32) & mask;
+        if expected_idx != query_indices[q] {
+            free(ts); free(ts_pos); free(challenge_check);
+            free(q_raw);
+            return 0;
+        }
+    }
+    free(q_raw);
+    free(challenge_check);
+    free(ts);
+    free(ts_pos);
+
+    let inv2: F = 1 / 2;
+    let leaf_digest: *F = alloc(4);
+
+    for q in 0..num_queries {
+        let qi: i32 = query_indices[q];
+        var cur_shift: F = shift;
+        var cur_log: i32 = log_n;
+
+        for r in 0..n_rounds {
+            let cur_half: i32 = (1 << cur_log) / 2;
+            let pair_idx: i32 = qi & (cur_half - 1);
+            let v_off: i32 = (q * n_rounds + r) * 2;
+            let v_left: F = query_values[v_off];
+            let v_right: F = query_values[v_off + 1];
+
+            fri_hash_pair(v_left, v_right, leaf_digest, rc_init, rc_term, rc_int, diag);
+
+            let rnd_n: i32 = 1 << cur_log;
+            let rnd_leaves: i32 = rnd_n / 2;
+            let path_off: i32 = (q * n_rounds + r) * max_depth * 4;
+            let path_buf: *F = &query_paths[path_off];
+            let root: *F = &roots[r * 4];
+
+            var path_len: i32 = 0;
+            var pl_tmp: i32 = rnd_leaves;
+            while pl_tmp > 1 {
+                path_len = path_len + 1;
+                pl_tmp = pl_tmp / 2;
+            }
+
+            let mk_ok: i32 = merkle_verify(
+                root, leaf_digest, pair_idx, rnd_leaves,
+                path_buf, path_len, rc_init, rc_term, rc_int, diag);
+            if mk_ok != 1 {
+                free(leaf_digest);
+                return 0;
+            }
+
+            let tw: F = fri_twiddle(pair_idx, cur_log, cur_shift);
+            let inv_tw: F = 1 / tw;
+            let beta: F = challenges[r];
+
+            let sum: F = v_left + v_right;
+            let diff: F = v_left - v_right;
+            let expected: F = (sum + beta * diff * inv_tw) * inv2;
+
+            if r < n_rounds - 1 {
+                let next_half: i32 = cur_half / 2;
+                let next_v_off: i32 = (q * n_rounds + (r + 1)) * 2;
+                let actual_left: F = query_values[next_v_off];
+                let actual_right: F = query_values[next_v_off + 1];
+                if pair_idx < next_half {
+                    if expected != actual_left {
+                        free(leaf_digest);
+                        return 0;
+                    }
+                } else {
+                    if expected != actual_right {
+                        free(leaf_digest);
+                        return 0;
+                    }
+                }
+            } else {
+                if expected != final_poly[0] {
+                    free(leaf_digest);
+                    return 0;
+                }
+            }
+
+            cur_shift = cur_shift * cur_shift;
+            cur_log = cur_log - 1;
+        }
+    }
+
+    free(leaf_digest);
+    return 1;
+}
+
+// ===== CANONICAL REGIME SEGMENTATION (the algebraic certificate) =====
+
+// Mirrors regime_fri.tv, defined in-file so the composition functions below can
+// call the <dyn> instances directly. Fit/boundary semantics: see regime_fri.tv.
+
+fn fdiff<F: Field>(data: *F, a: i32, len: i32, m: i32, work: *F) -> i32 {
+    for i in 0..len { work[i] = data[a + i]; }
+    var rem: i32 = len;
+    var level: i32 = 0;
+    while level < m {
+        for j in 0..(rem - 1) {
+            work[j] = work[j + 1] - work[j];
+        }
+        rem = rem - 1;
+        level = level + 1;
+    }
+    return rem;
+}
+
+fn seg_fits<F: Field>(data: *F, a: i32, len: i32, deg: i32, work: *F) -> i32 {
+    if len <= deg + 1 { return 1; }
+    let rem: i32 = fdiff(data, a, len, deg + 1, work);
+    var ok: i32 = 1;
+    for i in 0..rem {
+        if work[i] != 0 { ok = 0; }
+    }
+    return ok;
+}
+
+fn boundary_forced<F: Field>(data: *F, b: i32, deg: i32, work: *F) -> i32 {
+    fdiff(data, b - deg - 1, deg + 2, deg + 1, work);
+    let err: F = work[0];
+    let inv: F = 1 / err;
+    let chk: F = err * inv;
+    if chk == 1 { return 1; }
+    return 0;
+}
+
+fn regime_prove<F: Field>(
+    data: *F, n: i32, deg: i32, cert: *i64, work: *F
+) -> i32 {
+    var nseg: i32 = 0;
+    var start: i32 = 0;
+    while start < n {
+        var len: i32 = deg + 1;
+        if start + len > n { len = n - start; }
+        while (start + len) < n {
+            let test_len: i32 = len + 1;
+            if seg_fits(data, start, test_len, deg, work) == 0 { break; }
+            len = test_len;
+        }
+        cert[nseg * 3] = start as i64;
+        cert[nseg * 3 + 1] = len as i64;
+        cert[nseg * 3 + 2] = deg as i64;
+        nseg = nseg + 1;
+        start = start + len;
+    }
+    return nseg;
+}
+
+fn regime_verify<F: Field>(
+    data: *F, n: i32, cert: *i64, nseg: i32, work: *F
+) -> i32 {
+    var expect_start: i32 = 0;
+    for k in 0..nseg {
+        let s: i32 = cert[k * 3] as i32;
+        let len: i32 = cert[k * 3 + 1] as i32;
+        let d: i32 = cert[k * 3 + 2] as i32;
+        if s != expect_start { return 0; }
+        if len < 1 { return 0; }
+        if seg_fits(data, s, len, d, work) == 0 { return 0; }
+        let b: i32 = s + len;
+        if b < n {
+            if boundary_forced(data, b, d, work) == 0 { return 0; }
+        }
+        expect_start = b;
+    }
+    if expect_start != n { return 0; }
+    return 1;
+}
+
+// ===== DYN INSTANTIATIONS =====
+
+instantiate fdiff<dyn>;
+instantiate seg_fits<dyn>;
+instantiate boundary_forced<dyn>;
+instantiate regime_prove<dyn>;
+instantiate regime_verify<dyn>;
+instantiate bit_reverse_swap<dyn>;
+instantiate ntt_forward<dyn>;
+instantiate ntt_coset_forward<dyn>;
+instantiate sbox7<dyn>;
+instantiate mds_mat4<dyn>;
+instantiate mds_external_8<dyn>;
+instantiate mds_internal_8<dyn>;
+instantiate poseidon2_permute_8<dyn>;
+instantiate poseidon2_compress<dyn>;
+instantiate poseidon2_diag<dyn>;
+instantiate merkle_build<dyn>;
+instantiate merkle_open<dyn>;
+instantiate merkle_verify<dyn>;
+instantiate transcript_init<dyn>;
+instantiate transcript_absorb<dyn>;
+instantiate transcript_squeeze<dyn>;
+instantiate fri_hash_pair<dyn>;
+instantiate fri_hash_layer<dyn>;
+instantiate fri_fold_layer<dyn>;
+instantiate fri_twiddle<dyn>;
+instantiate fri_prove<dyn>;
+instantiate fri_verify<dyn>;
+
+// ===== ROUND CONSTANTS (Goldilocks, Plonky3) =====
+
+fn fill_rc(rc_init: *i64, rc_term: *i64, rc_int: *i64) {
+    rc_init[0]  = 0xdd5743e7f2a5a5d9; rc_init[1]  = 0xcb3a864e58ada44b;
+    rc_init[2]  = 0xffa2449ed32f8cdc; rc_init[3]  = 0x42025f65d6bd13ee;
+    rc_init[4]  = 0x7889175e25506323; rc_init[5]  = 0x34b98bb03d24b737;
+    rc_init[6]  = 0xbdcc535ecc4faa2a; rc_init[7]  = 0x5b20ad869fc0d033;
+    rc_init[8]  = 0xf1dda5b9259dfcb4; rc_init[9]  = 0x27515210be112d59;
+    rc_init[10] = 0x4227d1718c766c3f; rc_init[11] = 0x26d333161a5bd794;
+    rc_init[12] = 0x49b938957bf4b026; rc_init[13] = 0x4a56b5938b213669;
+    rc_init[14] = 0x1120426b48c8353d; rc_init[15] = 0x6b323c3f10a56cad;
+    rc_init[16] = 0xce57d6245ddca6b2; rc_init[17] = 0xb1fc8d402bba1eb1;
+    rc_init[18] = 0xb5c5096ca959bd04; rc_init[19] = 0x6db55cd306d31f7f;
+    rc_init[20] = 0xc49d293a81cb9641; rc_init[21] = 0x1ce55a4fe979719f;
+    rc_init[22] = 0xa92e60a9d178a4d1; rc_init[23] = 0x002cc64973bcfd8c;
+    rc_init[24] = 0xcea721cce82fb11b; rc_init[25] = 0xe5b55eb8098ece81;
+    rc_init[26] = 0x4e30525c6f1ddd66; rc_init[27] = 0x43c6702827070987;
+    rc_init[28] = 0xaca68430a7b5762a; rc_init[29] = 0x3674238634df9c93;
+    rc_init[30] = 0x88cee1c825e33433; rc_init[31] = 0xde99ae8d74b57176;
+
+    rc_term[0]  = 0x014ef1197d341346; rc_term[1]  = 0x9725e20825d07394;
+    rc_term[2]  = 0xfdb25aef2c5bae3b; rc_term[3]  = 0xbe5402dc598c971e;
+    rc_term[4]  = 0x93a5711f04cdca3d; rc_term[5]  = 0xc45a9a5b2f8fb97b;
+    rc_term[6]  = 0xfe8946a924933545; rc_term[7]  = 0x2af997a27369091c;
+    rc_term[8]  = 0xaa62c88e0b294011; rc_term[9]  = 0x058eb9d810ce9f74;
+    rc_term[10] = 0xb3cb23eced349ae4; rc_term[11] = 0xa3648177a77b4a84;
+    rc_term[12] = 0x43153d905992d95d; rc_term[13] = 0xf4e2a97cda44aa4b;
+    rc_term[14] = 0x5baa2702b908682f; rc_term[15] = 0x082923bdf4f750d1;
+    rc_term[16] = 0x98ae09a325893803; rc_term[17] = 0xf8a6475077968838;
+    rc_term[18] = 0xceb0735bf00b2c5f; rc_term[19] = 0x0a1a5d953888e072;
+    rc_term[20] = 0x2fcb190489f94475; rc_term[21] = 0xb5be06270dec69fc;
+    rc_term[22] = 0x739cb934b09acf8b; rc_term[23] = 0x537750b75ec7f25b;
+    rc_term[24] = 0xe9dd318bae1f3961; rc_term[25] = 0xf7462137299efe1a;
+    rc_term[26] = 0xb1f6b8eee9adb940; rc_term[27] = 0xbdebcc8a809dfe6b;
+    rc_term[28] = 0x40fc1f791b178113; rc_term[29] = 0x3ac1c3362d014864;
+    rc_term[30] = 0x9a016184bdb8aeba; rc_term[31] = 0x95f2394459fbc25e;
+
+    rc_int[0]  = 0x488897d85ff51f56; rc_int[1]  = 0x1140737ccb162218;
+    rc_int[2]  = 0xa7eeb9215866ed35; rc_int[3]  = 0x9bd2976fee49fcc9;
+    rc_int[4]  = 0xc0c8f0de580a3fcc; rc_int[5]  = 0x4fb2dae6ee8fc793;
+    rc_int[6]  = 0x343a89f35f37395b; rc_int[7]  = 0x223b525a77ca72c8;
+    rc_int[8]  = 0x56ccb62574aaa918; rc_int[9]  = 0xc4d507d8027af9ed;
+    rc_int[10] = 0xa080673cf0b7e95c; rc_int[11] = 0xf0184884eb70dcf8;
+    rc_int[12] = 0x044f10b0cb3d5c69; rc_int[13] = 0xe9e3f7993938f186;
+    rc_int[14] = 0x1b761c80e772f459; rc_int[15] = 0x606cec607a1b5fac;
+    rc_int[16] = 0x14a0c2e1d45f03cd; rc_int[17] = 0x4eace8855398574f;
+    rc_int[18] = 0xf905ca7103eff3e6; rc_int[19] = 0xf8c8f8d20862c059;
+    rc_int[20] = 0xb524fe8bdd678e5a; rc_int[21] = 0xfbb7865901a1ec41;
+}
+
+// ===== COMPOSITION: commit + Fiat-Shamir freeze + per-segment FRI =====
+
+// FRI parameters for an order-1 (piecewise-linear) segment certificate.
+// degree=1, log_blowup=2 -> log_n=3, n=8, n_rounds=3.  Uniform across segments.
+//   FRI_DEG=1  FRI_LB=2  FRI_NQ=2  FRI_MAXR=3  FRI_MAXD=3  FRI_SHIFT=7
+
+// Merkle-commit the data: each data point is a leaf (value in slot 0, zero pad).
+// n_leaves must be a power of two. Writes the root (4 field elems) to data_root.
+fn commit_data(
+    f: Field, data: *i64, n_leaves: i32,
+    leaves: *i64, tree: *i64, data_root: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) {
+    for i in 0..n_leaves {
+        leaves[i * 4] = data[i];
+        leaves[i * 4 + 1] = 0;
+        leaves[i * 4 + 2] = 0;
+        leaves[i * 4 + 3] = 0;
+    }
+    merkle_build_dyn(f, leaves, n_leaves, tree, rc_init, rc_term, rc_int, diag);
+    for j in 0..4 { data_root[j] = tree[4 + j]; }
+}
+
+// Fiat-Shamir FREEZE: absorb data_root (4) + flattened descriptor (nseg*3),
+// squeeze a 4-elem fingerprint binding the pair BEFORE any FRI challenge.
+fn make_fingerprint(
+    f: Field, data_root: *i64, cert: *i64, nseg: i32, fp: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) {
+    let ts: *i64 = alloc(8);
+    let ts_pos: *i32 = alloc(1);
+    transcript_init_dyn(f, ts);
+    ts_pos[0] = 0;
+    transcript_absorb_dyn(f, ts, ts_pos, data_root, 4, rc_init, rc_term, rc_int, diag);
+    transcript_absorb_dyn(f, ts, ts_pos, cert, nseg * 3, rc_init, rc_term, rc_int, diag);
+    transcript_squeeze_dyn(f, ts, ts_pos, fp, 4, rc_init, rc_term, rc_int, diag);
+    free(ts);
+    free(ts_pos);
+}
+
+// Per-segment FRI low-degree proofs.  For segment k the Newton coefficients
+// [c0, c1] = [data[start], forward_diff(data[start..start+2])] describe a
+// degree-1 polynomial; fri_prove binds it cryptographically.  Proof data for
+// every segment is stored into the flat per-segment arrays (indexed by k).
+fn prove_segments(
+    f: Field, data: *i64, cert: *i64, nseg: i32,
+    seg_roots: *i64, seg_chal: *i64, seg_final: *i64,
+    seg_qval: *i64, seg_qpath: *i64, seg_qidx: *i32, seg_nr: *i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) {
+    let coeffs: *i64 = alloc(2);
+    let work: *i64 = alloc(4);
+    for k in 0..nseg {
+        let start: i32 = cert[k * 3] as i32;
+        coeffs[0] = data[start];
+        fdiff_dyn(f, data, start, 2, 1, work);
+        coeffs[1] = work[0];
+
+        let roots: *i64 = &seg_roots[k * 12];          // FRI_MAXR*4
+        let chal: *i64 = &seg_chal[k * 3];             // FRI_MAXR
+        let final_poly: *i64 = &seg_final[k];          // 1
+        let qval: *i64 = &seg_qval[k * 12];            // FRI_NQ*FRI_MAXR*2
+        let qpath: *i64 = &seg_qpath[k * 72];          // FRI_NQ*FRI_MAXR*FRI_MAXD*4
+        let qidx: *i32 = &seg_qidx[k * 2];             // FRI_NQ
+
+        let nr: i32 = fri_prove_dyn(
+            f, coeffs, 1, 2, 7, 2,
+            roots, chal, final_poly, qval, qpath, qidx,
+            rc_init, rc_term, rc_int, diag);
+        seg_nr[k] = nr;
+    }
+    free(coeffs);
+    free(work);
+}
+
+// Verify all per-segment FRI proofs.  Returns 1 iff every segment verifies.
+fn verify_segments(
+    f: Field, cert: *i64, nseg: i32,
+    seg_roots: *i64, seg_chal: *i64, seg_final: *i64,
+    seg_qval: *i64, seg_qpath: *i64, seg_qidx: *i32, seg_nr: *i32,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) -> i32 {
+    var ok: i32 = 1;
+    for k in 0..nseg {
+        let roots: *i64 = &seg_roots[k * 12];
+        let chal: *i64 = &seg_chal[k * 3];
+        let final_poly: *i64 = &seg_final[k];
+        let qval: *i64 = &seg_qval[k * 12];
+        let qpath: *i64 = &seg_qpath[k * 72];
+        let qidx: *i32 = &seg_qidx[k * 2];
+        let nr: i32 = seg_nr[k];
+
+        let v: i32 = fri_verify_dyn(
+            f, 1, 2, 7, 2, nr,
+            roots, chal, final_poly, qval, qpath, qidx,
+            rc_init, rc_term, rc_int, diag);
+        if v != 1 { ok = 0; }
+    }
+    return ok;
+}
+
+// Full verification: replay all four layers over the (possibly tampered) data,
+// certificate, fingerprint, and FRI proofs.  Returns 1 iff all pass.
+fn regime_zk_verify(
+    f: Field, data: *i64, n: i32, n_leaves: i32, cert: *i64, nseg: i32,
+    committed_root: *i64, committed_fp: *i64,
+    seg_roots: *i64, seg_chal: *i64, seg_final: *i64,
+    seg_qval: *i64, seg_qpath: *i64, seg_qidx: *i32, seg_nr: *i32,
+    leaves: *i64, tree: *i64, work: *i64,
+    rc_init: *i64, rc_term: *i64, rc_int: *i64, diag: *i64
+) -> i32 {
+    // (a) recompute data_root, check == committed root.
+    let root2: *i64 = alloc(4);
+    commit_data(f, data, n_leaves, leaves, tree, root2, rc_init, rc_term, rc_int, diag);
+    var root_ok: i32 = 1;
+    for j in 0..4 {
+        if root2[j] != committed_root[j] { root_ok = 0; }
+    }
+    free(root2);
+    if root_ok == 0 { return 0; }
+
+    // (b) recompute the binding fingerprint, check == committed fingerprint.
+    let fp2: *i64 = alloc(4);
+    make_fingerprint(f, committed_root, cert, nseg, fp2, rc_init, rc_term, rc_int, diag);
+    var fp_ok: i32 = 1;
+    for j in 0..4 {
+        if fp2[j] != committed_fp[j] { fp_ok = 0; }
+    }
+    free(fp2);
+    if fp_ok == 0 { return 0; }
+
+    // (c) algebraic certificate: fit + forced boundary + exact partition.
+    if regime_verify_dyn(f, data, n, cert, nseg, work) != 1 { return 0; }
+
+    // (d) per-segment FRI low-degree proofs.
+    if verify_segments(f, cert, nseg, seg_roots, seg_chal, seg_final,
+        seg_qval, seg_qpath, seg_qidx, seg_nr,
+        rc_init, rc_term, rc_int, diag) != 1 { return 0; }
+
+    return 1;
+}
+
+// ===== EXPORTED ENTRY POINT: the domain-agnostic ZK regime proof =====
+
+// run_zk_domain proves+verifies a canonical order-1 segmentation of data[0..n)
+// (n_leaves a power of two >= n; padding beyond n is committed, not segmented),
+// then runs the three soundness tampers. Caller passes the prime as plain i64
+// (the carrier is built internally via field(p)). Results in out[0..5]:
+//   out[0] = nseg          (number of canonical segments)
+//   out[1] = honest verify (1)
+//   out[2] = data tamper   (0)
+//   out[3] = descriptor tamper (0)
+//   out[4] = FRI tamper    (0)
+
+#[export]
+fn run_zk_domain(p: i64, data: *i64, n: i32, n_leaves: i32, out: *i64) {
+    let f: Field = field(p);
+
+    let rc_init: *i64 = alloc(32);
+    let rc_term: *i64 = alloc(32);
+    let rc_int: *i64 = alloc(22);
+    let diag: *i64 = alloc(8);
+    fill_rc(rc_init, rc_term, rc_int);
+    poseidon2_diag_dyn(f, diag);
+
+    let cert: *i64 = alloc(n * 3);
+    let work: *i64 = alloc(n);
+    let leaves: *i64 = alloc(n_leaves * 4);
+    let tree: *i64 = alloc(n_leaves * 8);
+    let data_root: *i64 = alloc(4);
+    let fp: *i64 = alloc(4);
+
+    // Per-segment FRI proof storage (upper-bounded by n segments).
+    let seg_roots: *i64 = alloc(n * 12);
+    let seg_chal: *i64 = alloc(n * 3);
+    let seg_final: *i64 = alloc(n);
+    let seg_qval: *i64 = alloc(n * 12);
+    let seg_qpath: *i64 = alloc(n * 72);
+    let seg_qidx: *i32 = alloc(n * 2);
+    let seg_nr: *i32 = alloc(n);
+
+    // ---- PROVE ----
+    // 1. commit the data (all n_leaves leaves).
+    commit_data(f, data, n_leaves, leaves, tree, data_root, rc_init, rc_term, rc_int, diag);
+    // 2. canonical order-1 segmentation over [0, n).
+    let nseg: i32 = regime_prove_dyn(f, data, n, 1, cert, work);
+    out[0] = nseg as i64;
+    // 3. Fiat-Shamir freeze: bind data_root + descriptor.
+    make_fingerprint(f, data_root, cert, nseg, fp, rc_init, rc_term, rc_int, diag);
+    // 4. per-segment FRI low-degree proofs.
+    prove_segments(f, data, cert, nseg,
+        seg_roots, seg_chal, seg_final, seg_qval, seg_qpath, seg_qidx, seg_nr,
+        rc_init, rc_term, rc_int, diag);
+
+    // ---- VERIFY (honest) -> 1 ----
+    out[1] = regime_zk_verify(
+        f, data, n, n_leaves, cert, nseg, data_root, fp,
+        seg_roots, seg_chal, seg_final, seg_qval, seg_qpath, seg_qidx, seg_nr,
+        leaves, tree, work, rc_init, rc_term, rc_int, diag) as i64;
+
+    // ---- SOUNDNESS 1: tamper the DATA -> root mismatch -> 0 ----
+    let ti: i32 = n / 2;
+    let saved: i64 = data[ti];
+    data[ti] = data[ti] + 1;
+    out[2] = regime_zk_verify(
+        f, data, n, n_leaves, cert, nseg, data_root, fp,
+        seg_roots, seg_chal, seg_final, seg_qval, seg_qpath, seg_qidx, seg_nr,
+        leaves, tree, work, rc_init, rc_term, rc_int, diag) as i64;
+    data[ti] = saved;
+
+    // ---- SOUNDNESS 2: tamper the DESCRIPTOR -> fingerprint mismatch -> 0 ----
+    // Extend the first segment by one sample past its forced boundary (requires
+    // at least two segments; every real domain here has nseg >= 2).
+    if nseg >= 2 {
+        let len0: i64 = cert[1];
+        let s1: i64 = cert[3];
+        let l1: i64 = cert[4];
+        cert[1] = len0 + 1;
+        cert[3] = s1 + 1;
+        cert[4] = l1 - 1;
+        out[3] = regime_zk_verify(
+            f, data, n, n_leaves, cert, nseg, data_root, fp,
+            seg_roots, seg_chal, seg_final, seg_qval, seg_qpath, seg_qidx, seg_nr,
+            leaves, tree, work, rc_init, rc_term, rc_int, diag) as i64;
+        cert[1] = len0;
+        cert[3] = s1;
+        cert[4] = l1;
+    } else {
+        out[3] = 0;
+    }
+
+    // ---- SOUNDNESS 3: tamper a FRI PROOF -> fri_verify fails -> 0 ----
+    seg_final[0] = seg_final[0] + 1;
+    out[4] = regime_zk_verify(
+        f, data, n, n_leaves, cert, nseg, data_root, fp,
+        seg_roots, seg_chal, seg_final, seg_qval, seg_qpath, seg_qidx, seg_nr,
+        leaves, tree, work, rc_init, rc_term, rc_int, diag) as i64;
+    seg_final[0] = seg_final[0] - 1;
+
+    free(rc_init); free(rc_term); free(rc_int); free(diag);
+    free(cert); free(work); free(leaves); free(tree);
+    free(data_root); free(fp);
+    free(seg_roots); free(seg_chal); free(seg_final);
+    free(seg_qval); free(seg_qpath); free(seg_qidx); free(seg_nr);
+}

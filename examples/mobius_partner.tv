@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mobius_partner.tv — Mobius W-B P4: the Partner-Lemma exhaustive (F_2, q in {3,5}):
+// every (Z)-solution checked for singleton U_{q^2}-fibers via H_R no-simple-root.
+// @internal-design: nt; @internal-note: plan-mobius-inclusion B3.
+
+import "../src/lib/nt/polyfield.tv";   // pf_radical, pf_powmod_x, pf_charpoly, pf_no_simple_root
+import "../src/lib/nt/linalg.tv";      // la_nullspace
+import "../src/lib/nt/linrec.tv";      // bm
+
+type F2 = Field<2>;
+type G = BinField<8, 0x11B>;
+
+// Partner test on a nonzero F_2 sequence a (complexity <= L). Returns 1 if the
+// solution has NO singleton U_{q^2}-fiber, else 0.
+fn partner_ok(a: *F2, nterms: i32, q: i32) -> i32 {
+    // minpoly g = reversal of the bm connection polynomial
+    let C: *F2 = alloc(nterms + 1);
+    let Lm: i32 = bm(a, nterms, C, 0);
+    if Lm == 0 { free(C); return 1; }             // zero/empty: vacuous
+    let g: *F2 = alloc(Lm + 1);
+    var i: i32 = 0;
+    while i <= Lm { g[i] = C[Lm - i]; i = i + 1; }  // g monic, g[Lm]=1
+
+    // rad(g) over F_2 (prime field: p-th-root branch exact)
+    let rad: *F2 = alloc(Lm + 1);
+    let dr1: i32 = pf_radical(g, Lm + 1, 2, rad, 0);
+    let d: i32 = dr1 - 1;                           // deg rad = # distinct freqs
+    if d <= 0 { free(C); free(g); free(rad); return 1; }
+
+    // x^{q^2} action matrix M (d x d over F_2): column i = x^{q^2 + i} mod rad
+    let qq: i64 = (q as i64) * (q as i64);
+    let M: *F2 = alloc(d * d);
+    let col: *F2 = alloc(d);
+    var ci: i32 = 0;
+    while ci < d {
+        pf_powmod_x(qq + (ci as i64), rad, dr1, col, 0);
+        var r: i32 = 0;
+        while r < d { M[r * d + ci] = col[r]; r = r + 1; }
+        ci = ci + 1;
+    }
+
+    // lift M to GF(256), charpoly there (needs d+1 distinct points), downcast
+    let Mb: *G = alloc(d * d);
+    var k: i32 = 0;
+    while k < d * d {
+        if M[k] == (0 as F2) { Mb[k] = 0 as G; } else { Mb[k] = 1 as G; }
+        k = k + 1;
+    }
+    let Hb: *G = alloc(d + 1);
+    pf_charpoly(Mb, d, Hb, 254);
+    let H: *F2 = alloc(d + 1);
+    var h: i32 = 0;
+    while h <= d {
+        if Hb[h] == (0 as G) { H[h] = 0 as F2; } else { H[h] = 1 as F2; }
+        h = h + 1;
+    }
+
+    let res: i32 = pf_no_simple_root(H, d + 1, 2, 0);
+    free(C); free(g); free(rad); free(M); free(col); free(Mb); free(Hb); free(H);
+    return res;
+}
+
+// open-addressing hash set over i64 signatures; returns 1 if newly inserted.
+fn hs_insert(htab: *i64, cap: i32, sig: i64) -> i32 {
+    var h: i32 = ((sig ^ (sig >> 20) ^ (sig >> 40)) & ((cap - 1) as i64)) as i32;
+    var guard: i32 = 0;
+    while guard < cap {
+        if htab[h] == (0 - 1) { htab[h] = sig; return 1; }
+        if htab[h] == sig { return 0; }
+        h = h + 1;
+        if h == cap { h = 0; }
+        guard = guard + 1;
+    }
+    return 0;
+}
+
+fn run_partner(q: i32) {
+    let qq: i32 = q * q;
+    let NGEN: i32 = qq * 26 + 8;               // covers a_{q^2 k}=0 window + bm
+    var instances: i32 = 0;
+    var distinct: i32 = 0;
+    var viol: i32 = 0;
+    let HCAP: i32 = 131072;                     // > max distinct, power of two
+    let htab: *i64 = alloc(HCAP);
+    var hi: i32 = 0;
+    while hi < HCAP { htab[hi] = 0 - 1; hi = hi + 1; }
+
+    var L: i32 = 1;
+    while L <= 12 {
+        let B: *F2 = alloc(NGEN * L);
+        let a: *F2 = alloc(NGEN);
+        // square-vanishing window: a_{q^2 k}=0 for k=1..2L
+        let winK: i32 = 2 * L;
+        let M: *F2 = alloc(winK * L);
+        let ns: *F2 = alloc(L * L);
+
+        let masks: i32 = 1 << (L - 1);
+        var mask: i32 = 0;
+        while mask < masks {
+            // build B
+            var n: i32 = 0;
+            while n < NGEN {
+                var j: i32 = 0;
+                while j < L { B[n * L + j] = 0 as F2; j = j + 1; }
+                if n < L { B[n * L + n] = 1 as F2; }
+                else {
+                    var ii: i32 = 1;
+                    while ii <= L {
+                        var bit: i32 = 0;
+                        if ii == L { bit = 1; } else { bit = (mask >> (ii - 1)) & 1; }
+                        if bit == 1 {
+                            var j2: i32 = 0;
+                            while j2 < L { B[n * L + j2] = B[n * L + j2] + B[(n - ii) * L + j2]; j2 = j2 + 1; }
+                        }
+                        ii = ii + 1;
+                    }
+                }
+                n = n + 1;
+            }
+            // constraints a_{q^2 k}=0, k=0..winK-1 (same k-in-[0,2L-1] window
+            // convention as the coset exhaustive; includes a_0=0)
+            var row: i32 = 0;
+            var kk: i32 = 0;
+            while kk < winK {
+                let idx: i32 = qq * kk;
+                var c: i32 = 0;
+                while c < L { M[row * L + c] = B[idx * L + c]; c = c + 1; }
+                row = row + 1;
+                kk = kk + 1;
+            }
+            let dim: i32 = la_nullspace(M, row, L, 0, ns);
+            let combos: i32 = 1 << dim;
+            var combo: i32 = 1;
+            while combo < combos {
+                var n2: i32 = 0;
+                while n2 < NGEN {
+                    var acc: F2 = 0 as F2;
+                    var jb: i32 = 0;
+                    while jb < dim {
+                        if ((combo >> jb) & 1) == 1 {
+                            var jc: i32 = 0;
+                            while jc < L {
+                                if ns[jb * L + jc] == (1 as F2) { acc = acc + B[n2 * L + jc]; }
+                                jc = jc + 1;
+                            }
+                        }
+                        jb = jb + 1;
+                    }
+                    a[n2] = acc;
+                    n2 = n2 + 1;
+                }
+                instances = instances + 1;
+                if partner_ok(a, 2 * L + 2, q) == 0 { viol = viol + 1; }
+                // distinct-sequence signature (complexity <= L, 63-bit prefix faithful)
+                var sig: i64 = 0;
+                var si: i32 = 0;
+                while si < 63 {
+                    if a[si] == (1 as F2) { sig = sig | (1 << (si as i64)); }
+                    si = si + 1;
+                }
+                distinct = distinct + hs_insert(htab, HCAP, sig);
+                combo = combo + 1;
+            }
+            mask = mask + 1;
+        }
+        free(B); free(a); free(M); free(ns);
+        L = L + 1;
+    }
+    free(htab);
+    print(q);
+    print(instances);
+    print(distinct);
+    print(viol);
+}
+
+fn main() {
+    run_partner(3);   // reference 31,232 ; zero violations
+    run_partner(5);   // reference 15,439 ; zero violations
+}

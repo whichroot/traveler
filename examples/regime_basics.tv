@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// regime_basics.tv — Regime detection via Register composition
+//
+// Two linear segments joined at a break:
+//   Segment 1: slope 3, starting at 10 → [10, 13, 16, 19]
+//   Segment 2: slope 3, starting at 50 → [50, 53, 56, 59]
+//
+// A Register<F, 1> with coefficients [10, 3] predicts the first segment.
+// When prediction fails (residual > threshold), a regime boundary is detected.
+// No builtin regime_detect — the register runs, the data disagrees, the boundary emerges.
+//
+// Expected output: 4 50 53 56
+
+type F = Field<251>;
+
+fn abs_centered(x: F) -> F {
+    // Balanced representation: if x > p/2, return p - x
+    if x > 125 {
+        return 0 - x;
+    }
+    return x;
+}
+
+fn main() {
+    // Two linear regimes with a discontinuity at index 4
+    var data: [F; 8] = 0;
+    data[0] = 10; data[1] = 13; data[2] = 16; data[3] = 19;
+    data[4] = 50; data[5] = 53; data[6] = 56; data[7] = 59;
+
+    // Register predicts the first regime: linear, starting at 10, slope 3
+    var reg: Register<F, 1> = register(10, 3);
+    let threshold: F = 5;
+    var boundary: i32 = 0 - 1;
+
+    // Run register forward, compare prediction to data
+    var i: i32 = 0;
+    while i < 8 {
+        let predicted: F = advance(reg);
+        let residual: F = abs_centered(data[i] - predicted);
+        if residual > threshold {
+            boundary = i;
+            break;
+        }
+        i = i + 1;
+    }
+
+    print(boundary);  // 4 — the regime boundary
+
+    // Re-initialize register from the new regime's data
+    // At index 4: value=50, next value=53, so slope = 53-50 = 3
+    var reg2: Register<F, 1> = register(50, 3);
+
+    // Verify the new register predicts the second regime
+    let v0: F = advance(reg2);
+    let v1: F = advance(reg2);
+    let v2: F = advance(reg2);
+
+    print(v0);  // 50
+    print(v1);  // 53
+    print(v2);  // 56
+}

@@ -1,0 +1,49 @@
+// pfor_race_const_idx.tv — HOLE 1: constant write index (reduction race)
+//
+// acc[0] = acc[0] + slow(a[i]) — the write index is a literal.  Every
+// iteration hits the same cell: the maximally non-injective index map.
+// Parallel dispatch turns the reduction into a multi-thread RMW race.
+//
+// slow() is genuinely pure and returns its input unchanged; it exists to
+// widen the load->store window so the race manifests reliably.
+//
+// Canonical reproducer: examples/race2.tv
+//   serial   (TRAVELER_THREADS=1):  200000
+//   parallel (TRAVELER_THREADS=32): ~10K, nondeterministic
+//
+// MUST NOT PARALLELIZE.  Expected workers: 0.  Expected output: 50000.
+
+field F = Field<2013265921>;
+
+// Pure busy-work that returns its input untouched.
+fn slow(x: F) -> F {
+    let mut a: F = x;
+    let mut k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let a: *F = alloc(n);
+    let acc: *F = alloc(1);
+
+    // Serial fills (while loops are never pfor candidates)
+    let mut w: i32 = 0;
+    while w < n {
+        a[w] = 1;
+        w = w + 1;
+    }
+    acc[0] = 0;
+
+    // RACE: reduction into one cell
+    for i in 0..n {
+        acc[0] = acc[0] + slow(a[i]);
+    }
+
+    print(acc[0]);
+    return 0;
+}

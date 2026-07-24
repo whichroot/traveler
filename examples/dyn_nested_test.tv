@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dyn_nested_test.tv — dyn nesting gate: nested generic calls under one <dyn>
+// instance, arity-2 field(p, data_max), and carrier member access (f.p etc.).
+// @internal-design: core
+//
+// Expected output:
+//   216 43445 251 125 1 1 65537 32768 4 2
+
+// Two-level generic helper chain.  No Field params anywhere — the
+// carrier is invisible at every level.
+fn helper_add<F: Field>(a: F, b: F) -> F {
+    return a + b;
+}
+
+fn helper_weight<F: Field>(a: F, w: F) -> F {
+    let t: F = helper_add(a, w);
+    return t * w;
+}
+
+fn outer_sum<F: Field>(data: *F, n: i32, w: F) -> F {
+    var acc: F = 0;
+    var i: i32 = 0;
+    while i < n {
+        acc = helper_add(acc, helper_weight(data[i], w));
+        i = i + 1;
+    }
+    return acc;
+}
+
+instantiate outer_sum<dyn>;
+
+fn main() {
+    // ---- Test 1: nested dyn calls, p=251 ----
+    let f: Field = field(251);
+    let buf: *i64 = alloc(4);
+    buf[0] = 10; buf[1] = 20; buf[2] = 30; buf[3] = 40;
+    // (12*2)+(22*2)+(32*2)+(42*2) = 24+44+64+84 = 216
+    let r: i64 = outer_sum_dyn(f, buf, 4, 2);
+    print(r);  // 216
+
+    // ---- Test 2: same instance, runtime prime swap, 16-bit width ----
+    let f2: Field = field(65521);
+    let buf2: *i64 = alloc(2);
+    buf2[0] = 60000; buf2[1] = 60000;
+    // (60002*2)*2 entries = 120004 mod 65521 = 54483 each;
+    // 54483+54483 = 108966 mod 65521 = 43445
+    let r2: i64 = outer_sum_dyn(f2, buf2, 2, 2);
+    print(r2);  // 43445
+
+    // ---- Test 3: carrier member access, arity-1 ----
+    let g: Field = field(251);
+    print(g.p);          // 251
+    print(g.half_p);     // 125
+    print(g.elem_bytes); // 1
+    print(g.data_bytes); // 1 (derived from p-1=250 <= 255)
+
+    // ---- Test 4: arity-2 field(): data_bytes decoupled ----
+    // p=65537 -> elem_bytes=4 (p > 65536), data_max=65535 -> data_bytes=2
+    let h: Field = field(65537, 65535);
+    print(h.p);          // 65537
+    print(h.half_p);     // 32768
+    print(h.elem_bytes); // 4
+    print(h.data_bytes); // 2
+
+    free(buf);
+    free(buf2);
+}

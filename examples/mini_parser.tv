@@ -1,0 +1,450 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// mini_parser.tv — recursive-descent parser written in Traveler: the second
+// self-hosting leg after mini_lexer; prints the AST as an S-expression.
+//
+// Subset handled:
+//   let x: i32 = expr;
+//   fn name(params) -> type { body }
+//   return expr;
+//   Binary expressions: +, -, *, <, >, ==, !=
+//   Integer literals, identifiers, parenthesized expressions
+//   Function calls: name(args)
+//
+// Expected output for "let x: i32 = 2 + 3 * 4;":
+//   (let x (add (int 2) (mul (int 3) (int 4))))
+//
+// Uses global mutable state (same pattern as tvc.c).
+
+extern "C" fn putchar(c: i32) -> i32;
+
+// ---- Token kinds (must match mini_lexer) ----
+// 0=EOF 1=INT 2=IDENT 3=KW_LET 4=KW_FN 5=KW_IF
+// 20=LPAREN 21=RPAREN 22=LBRACE 23=RBRACE 24=SEMI 25=COLON
+// 26=COMMA 27=ASSIGN 28=PLUS 29=MINUS 30=STAR 31=SLASH
+// 32=LT 33=GT 34=DOT 9=KW_RETURN
+// 40=EQ 41=NEQ
+
+// ---- AST node kinds ----
+// 1=INT_LIT 2=IDENT 3=BINARY 4=LET 5=CALL 6=RETURN
+
+struct Token {
+    kind: i32,
+    start: i32,
+    len: i32,
+    int_val: i32,
+}
+
+struct ASTNode {
+    kind: i32,
+    int_val: i32,
+    op: i32,
+    left: *ASTNode,
+    right: *ASTNode,
+    name_start: i32,
+    name_len: i32,
+}
+
+// ---- Global parser state ----
+var g_src: *u8 = null;
+var g_tokens: *Token = null;
+var g_pos: i32 = 0;
+var g_ntokens: i32 = 0;
+
+// ---- Lexer (simplified, inlined) ----
+
+fn is_alpha(c: i32) -> i32 {
+    if c >= 'a' && c <= 'z' { return 1; }
+    if c >= 'A' && c <= 'Z' { return 1; }
+    if c == '_' { return 1; }
+    return 0;
+}
+
+fn is_digit(c: i32) -> i32 {
+    if c >= '0' && c <= '9' { return 1; }
+    return 0;
+}
+
+fn is_space(c: i32) -> i32 {
+    if c == ' ' || c == '\n' || c == '\t' || c == '\r' { return 1; }
+    return 0;
+}
+
+fn slice_eq(buf: *u8, start: i32, len: i32, kw: *u8, kwlen: i32) -> i32 {
+    if len != kwlen { return 0; }
+    var i: i32 = 0;
+    while i < len {
+        if buf[start + i] != kw[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn lex_all(src: *u8, src_len: i32) {
+    g_tokens = alloc(256);
+    g_ntokens = 0;
+    var p: i32 = 0;
+
+    while p < src_len {
+        var c: i32 = src[p];
+        if c == 0 { break; }
+        // Skip whitespace
+        while p < src_len && is_space(c) == 1 {
+            p = p + 1;
+            if p < src_len { c = src[p]; } else { c = 0; }
+        }
+        if p >= src_len || c == 0 { break; }
+        // Skip comments
+        if c == '/' && p + 1 < src_len {
+            let c2: i32 = src[p + 1];
+            if c2 == '/' {
+                while p < src_len {
+                    let lc: i32 = src[p];
+                    if lc == '\n' { break; }
+                    p = p + 1;
+                }
+                while p < src_len {
+                    c = src[p];
+                    if is_space(c) != 1 { break; }
+                    p = p + 1;
+                }
+                if p >= src_len { break; }
+            }
+        }
+        if p >= src_len { break; }
+        c = src[p];
+        if c == 0 { break; }
+
+        let idx: i32 = g_ntokens;
+        g_tokens[idx].int_val = 0;
+        let ch: i32 = c;
+
+        // == and !=
+        var next_ch: i32 = 0;
+        if p + 1 < src_len { next_ch = src[p + 1]; }
+        if ch == '=' && next_ch == '=' {
+            g_tokens[idx].kind = 40; g_tokens[idx].start = p; g_tokens[idx].len = 2;
+            p = p + 2; g_ntokens = g_ntokens + 1;
+        } else if ch == '!' && next_ch == '=' {
+            g_tokens[idx].kind = 41; g_tokens[idx].start = p; g_tokens[idx].len = 2;
+            p = p + 2; g_ntokens = g_ntokens + 1;
+        } else if ch == '(' { g_tokens[idx].kind = 20; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == ')' { g_tokens[idx].kind = 21; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '{' { g_tokens[idx].kind = 22; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '}' { g_tokens[idx].kind = 23; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == ';' { g_tokens[idx].kind = 24; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == ':' { g_tokens[idx].kind = 25; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == ',' { g_tokens[idx].kind = 26; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '=' { g_tokens[idx].kind = 27; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '+' { g_tokens[idx].kind = 28; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '-' { g_tokens[idx].kind = 29; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '*' { g_tokens[idx].kind = 30; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '<' { g_tokens[idx].kind = 32; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if ch == '>' { g_tokens[idx].kind = 33; g_tokens[idx].start = p; g_tokens[idx].len = 1; p = p + 1; g_ntokens = g_ntokens + 1;
+        } else if is_digit(ch) == 1 {
+            let start: i32 = p;
+            var num: i32 = 0;
+            var dc: i32 = src[p];
+            while p < src_len && is_digit(dc) == 1 {
+                num = num * 10 + dc - '0';
+                p = p + 1;
+                if p < src_len { dc = src[p]; } else { dc = 0; }
+            }
+            g_tokens[idx].kind = 1;
+            g_tokens[idx].start = start;
+            g_tokens[idx].len = p - start;
+            g_tokens[idx].int_val = num;
+            g_ntokens = g_ntokens + 1;
+        } else if is_alpha(ch) == 1 {
+            let start: i32 = p;
+            var ac: i32 = src[p];
+            while p < src_len && (is_alpha(ac) == 1 || is_digit(ac) == 1) {
+                p = p + 1;
+                if p < src_len { ac = src[p]; } else { ac = 0; }
+            }
+            g_tokens[idx].start = start;
+            g_tokens[idx].len = p - start;
+            if slice_eq(src, start, g_tokens[idx].len, "let", 3) == 1 { g_tokens[idx].kind = 3; }
+            else if slice_eq(src, start, g_tokens[idx].len, "fn", 2) == 1 { g_tokens[idx].kind = 4; }
+            else if slice_eq(src, start, g_tokens[idx].len, "return", 6) == 1 { g_tokens[idx].kind = 9; }
+            else { g_tokens[idx].kind = 2; }
+            g_ntokens = g_ntokens + 1;
+        } else {
+            p = p + 1; // skip unknown
+        }
+    }
+    // Append EOF
+    g_tokens[g_ntokens].kind = 0;
+    g_tokens[g_ntokens].start = p;
+    g_tokens[g_ntokens].len = 0;
+    g_ntokens = g_ntokens + 1;
+}
+
+// ---- Parser helpers ----
+
+fn peek() -> i32 {
+    return g_tokens[g_pos].kind;
+}
+
+fn advance() {
+    g_pos = g_pos + 1;
+}
+
+fn expect(kind: i32) {
+    if peek() != kind {
+        print("parse error: unexpected token");
+    }
+    advance();
+}
+
+fn make_node(kind: i32) -> *ASTNode {
+    let n: *ASTNode = alloc(1);
+    n.kind = kind;
+    n.int_val = 0;
+    n.op = 0;
+    n.left = null;
+    n.right = null;
+    n.name_start = 0;
+    n.name_len = 0;
+    return n;
+}
+
+// ---- Recursive descent parser ----
+
+// Forward declarations not needed — Traveler registers all fns first.
+
+fn parse_primary() -> *ASTNode {
+    let k: i32 = peek();
+
+    // Integer literal
+    if k == 1 {
+        let n: *ASTNode = make_node(1);
+        n.int_val = g_tokens[g_pos].int_val;
+        advance();
+        return n;
+    }
+
+    // Identifier (or function call)
+    if k == 2 {
+        let n: *ASTNode = make_node(2);
+        n.name_start = g_tokens[g_pos].start;
+        n.name_len = g_tokens[g_pos].len;
+        advance();
+
+        // Check for function call: ident(args)
+        if peek() == 20 {
+            advance(); // skip (
+            n.kind = 5; // CALL
+            // Parse first argument if present
+            if peek() != 21 {
+                n.left = parse_expr();
+            }
+            expect(21); // )
+        }
+        return n;
+    }
+
+    // Parenthesized expression
+    if k == 20 {
+        advance(); // skip (
+        let n: *ASTNode = parse_expr();
+        expect(21); // )
+        return n;
+    }
+
+    // Fallback
+    let n: *ASTNode = make_node(0);
+    advance();
+    return n;
+}
+
+fn parse_mul() -> *ASTNode {
+    var left: *ASTNode = parse_primary();
+    while peek() == 30 {
+        let op: i32 = 30;
+        advance();
+        let right: *ASTNode = parse_primary();
+        let n: *ASTNode = make_node(3);
+        n.op = op;
+        n.left = left;
+        n.right = right;
+        left = n;
+    }
+    return left;
+}
+
+fn parse_add() -> *ASTNode {
+    var left: *ASTNode = parse_mul();
+    while peek() == 28 || peek() == 29 {
+        let op: i32 = peek();
+        advance();
+        let right: *ASTNode = parse_mul();
+        let n: *ASTNode = make_node(3);
+        n.op = op;
+        n.left = left;
+        n.right = right;
+        left = n;
+    }
+    return left;
+}
+
+fn parse_cmp() -> *ASTNode {
+    var left: *ASTNode = parse_add();
+    while peek() == 32 || peek() == 33 || peek() == 40 || peek() == 41 {
+        let op: i32 = peek();
+        advance();
+        let right: *ASTNode = parse_add();
+        let n: *ASTNode = make_node(3);
+        n.op = op;
+        n.left = left;
+        n.right = right;
+        left = n;
+    }
+    return left;
+}
+
+fn parse_expr() -> *ASTNode {
+    return parse_cmp();
+}
+
+fn parse_let() -> *ASTNode {
+    expect(3); // let
+    let n: *ASTNode = make_node(4);
+    n.name_start = g_tokens[g_pos].start;
+    n.name_len = g_tokens[g_pos].len;
+    advance(); // name
+
+    // Optional ": type"
+    if peek() == 25 {
+        advance(); // :
+        advance(); // type name (skip for now)
+    }
+
+    expect(27); // =
+    n.left = parse_expr();
+    expect(24); // ;
+    return n;
+}
+
+fn parse_return() -> *ASTNode {
+    expect(9); // return
+    let n: *ASTNode = make_node(6);
+    n.left = parse_expr();
+    expect(24); // ;
+    return n;
+}
+
+// ---- AST printer ----
+
+fn print_slice(start: i32, len: i32) {
+    var i: i32 = 0;
+    while i < len {
+        putchar(g_src[start + i]);
+        i = i + 1;
+    }
+}
+
+fn print_int_inline(x: i32) {
+    if x < 0 {
+        putchar('-');
+        // Handle negative (simplified — works for small numbers)
+        print_int_inline(0 - x);
+        return;
+    }
+    if x >= 10 {
+        print_int_inline(x / 10);
+    }
+    putchar('0' + x % 10);
+}
+
+fn print_ast(n: *ASTNode) {
+    if n == null { return; }
+
+    if n.kind == 1 {
+        // INT_LIT
+        putchar('(');
+        putchar('i'); putchar('n'); putchar('t'); putchar(' ');
+        print_int_inline(n.int_val);
+        putchar(')');
+        return;
+    }
+
+    if n.kind == 2 {
+        // IDENT
+        print_slice(n.name_start, n.name_len);
+        return;
+    }
+
+    if n.kind == 3 {
+        // BINARY
+        putchar('(');
+        if n.op == 28 { putchar('a'); putchar('d'); putchar('d'); }
+        if n.op == 29 { putchar('s'); putchar('u'); putchar('b'); }
+        if n.op == 30 { putchar('m'); putchar('u'); putchar('l'); }
+        if n.op == 32 { putchar('l'); putchar('t'); }
+        if n.op == 33 { putchar('g'); putchar('t'); }
+        if n.op == 40 { putchar('e'); putchar('q'); }
+        putchar(' ');
+        print_ast(n.left);
+        putchar(' ');
+        print_ast(n.right);
+        putchar(')');
+        return;
+    }
+
+    if n.kind == 4 {
+        // LET
+        putchar('(');
+        putchar('l'); putchar('e'); putchar('t'); putchar(' ');
+        print_slice(n.name_start, n.name_len);
+        putchar(' ');
+        print_ast(n.left);
+        putchar(')');
+        return;
+    }
+
+    if n.kind == 5 {
+        // CALL
+        putchar('(');
+        putchar('c'); putchar('a'); putchar('l'); putchar('l'); putchar(' ');
+        print_slice(n.name_start, n.name_len);
+        if n.left != null {
+            putchar(' ');
+            print_ast(n.left);
+        }
+        putchar(')');
+        return;
+    }
+
+    if n.kind == 6 {
+        // RETURN
+        putchar('(');
+        putchar('r'); putchar('e'); putchar('t'); putchar(' ');
+        print_ast(n.left);
+        putchar(')');
+        return;
+    }
+}
+
+fn main() {
+    g_src = "let x: i32 = 2 + 3 * 4;";
+    let src_len: i32 = 24;
+
+    lex_all(g_src, src_len);
+    g_pos = 0;
+
+    let ast: *ASTNode = parse_let();
+    print_ast(ast);
+    putchar('\n');
+    // Expected: (let x (add (int 2) (mul (int 3) (int 4))))
+
+    // Test 2: expression with comparison
+    g_src = "let y: i32 = a + b == 10;";
+    lex_all(g_src, 25);
+    g_pos = 0;
+
+    let ast2: *ASTNode = parse_let();
+    print_ast(ast2);
+    putchar('\n');
+    // Expected: (let y (eq (add a b) (int 10)))
+}

@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// nn_kit_gate.tv — parity gate for the ported gpt-2 fixed-point NN kit.
+// Values pinned from gpt-2-research/field/fixed_point.py (the oracle):
+// fixed_exp / gelu_one / softmax_fp / linear_fp at scale S=2^16.
+import "../src/lib/nn/fixed.tv";
+import "../src/lib/nn/linear.tv";
+
+fn main() {
+    // fixed_exp(x_q, scale_bits): e^(x_q/2^16), scale 2^16
+    print(fixed_exp(0 - 65536, 16));   // e^-1  -> 24109
+    print(fixed_exp(0 - 32768, 16));   // e^-.5 -> 39750
+    print(fixed_exp(0, 16));           // e^0   -> 65536
+
+    // gelu_one(x) at scale 2^16
+    print(gelu_one(65536));            // gelu(1.0)  -> 55127
+    print(gelu_one(0 - 65536));        // gelu(-1.0) -> -10409
+    print(gelu_one(131072));           // gelu(2.0)  -> 128097
+
+    // softmax_fp over [0, S, 2S] at scale_bits=16 -> probs (scale S)
+    let sc: *i64 = alloc(24);
+    let so: *i64 = alloc(24);
+    sc[0] = 0; sc[1] = 65536; sc[2] = 131072;
+    softmax_fp(sc, so, 1, 3, 16);
+    print(so[0]);   // 5900
+    print(so[1]);   // 16038
+    print(so[2]);   // 43597
+
+    // linear_fp: x=[S,2S], W=I, b=0 -> [S, 2S]
+    let x: *i64 = alloc(16);
+    let wI: *i64 = alloc(32);
+    let bz: *i64 = alloc(16);
+    let y: *i64 = alloc(16);
+    x[0] = 65536; x[1] = 131072;
+    wI[0] = 65536; wI[1] = 0; wI[2] = 0; wI[3] = 65536;
+    bz[0] = 0; bz[1] = 0;
+    linear_fp(x, wI, bz, y, 1, 2, 2);
+    print(y[0]);    // 65536
+    print(y[1]);    // 131072
+
+    // linear_fp: mixed weights + bias -> [229376, 131072]
+    let wM: *i64 = alloc(32);
+    let bM: *i64 = alloc(16);
+    wM[0] = 32768; wM[1] = 65536; wM[2] = 65536; wM[3] = 32768;
+    bM[0] = 65536; bM[1] = 0;
+    linear_fp(x, wM, bM, y, 1, 2, 2);
+    print(y[0]);    // 229376
+    print(y[1]);    // 131072
+}

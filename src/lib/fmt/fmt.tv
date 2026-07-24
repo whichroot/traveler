@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// fmt.tv — the reusable number/string formatting layer: append decimal
+// integers and JSON-escaped text onto an owned Str. The piece the compiler's
+// private wr_int/fmt_u64 could never be (those write to an fd); this composes
+// into a buffer, so json/ and the lab harness can BUILD a line before it is
+// written. tvc_self ONLY. design: @internal-design: fmt
+//
+// All entry points are `fmt_push_*(s, …)` — append onto `s`, no allocation of
+// their own beyond Str's realloc-doubling; the caller owns `s`.
+
+import "../collections/string.tv";
+
+// Append the decimal representation of an unsigned 64-bit int (recursive
+// high-digit-first; a bare 0 prints "0").
+fn fmt_push_u64(s: *Str, n: u64) {
+    if n >= 10 {
+        fmt_push_u64(s, n / 10);
+    }
+    str_push(s, ((n % 10) + 48) as u8);
+}
+
+// Append the decimal representation of a signed 64-bit int. INT64_MIN is exact:
+// `0 - n` wraps to INT64_MIN and `as u64` reinterprets the bits to 2^63, which
+// IS |INT64_MIN| — so no special case is needed (two's-complement, wrap-defined).
+fn fmt_push_i64(s: *Str, n: i64) {
+    if n < 0 {
+        str_push(s, 45);                 // '-'
+        fmt_push_u64(s, (0 - n) as u64);
+        return;
+    }
+    fmt_push_u64(s, n as u64);
+}
+
+// Append every byte of a NUL-terminated C string (raw, no escaping).
+fn fmt_push_cstr(s: *Str, c: *u8) {
+    var i: i32 = 0;
+    while c[i] != 0 {
+        str_push(s, c[i]);
+        i = i + 1;
+    }
+}
+
+// One lowercase hex digit for a nibble 0..15.
+fn fmt_push_hex_nibble(s: *Str, v: i32) {
+    if v < 10 {
+        str_push(s, (v + 48) as u8);        // 0-9
+    } else {
+        str_push(s, (v - 10 + 97) as u8);   // a-f
+    }
+}
+
+// Append a NUL-terminated C string with JSON string-escaping applied (the
+// contents BETWEEN the quotes — the caller writes the quotes). Escapes the two
+// mandatory chars (" and \), the common shorthands (\n \r \t), and every other
+// control byte < 0x20 as \u00XX. Bytes >= 0x20 pass through (UTF-8 stays valid).
+fn fmt_push_json_escaped(s: *Str, c: *u8) {
+    var i: i32 = 0;
+    while c[i] != 0 {
+        let b: u8 = c[i];
+        if b == 34 {                         // "
+            str_push(s, 92); str_push(s, 34);
+        } else if b == 92 {                  // backslash
+            str_push(s, 92); str_push(s, 92);
+        } else if b == 10 {                  // \n
+            str_push(s, 92); str_push(s, 110);
+        } else if b == 13 {                  // \r
+            str_push(s, 92); str_push(s, 114);
+        } else if b == 9 {                   // \t
+            str_push(s, 92); str_push(s, 116);
+        } else if b < 32 {                   // other control -> \u00XX
+            str_push(s, 92); str_push(s, 117);   // \u
+            str_push(s, 48); str_push(s, 48);    // 00
+            fmt_push_hex_nibble(s, (b / 16) as i32);
+            fmt_push_hex_nibble(s, (b % 16) as i32);
+        } else {
+            str_push(s, b);
+        }
+        i = i + 1;
+    }
+}

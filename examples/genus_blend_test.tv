@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// genus_blend_test.tv — hermetic validation of the nseg(d) blend instrument:
+// synthetic controls with known answers, field-invariant across 3 primes.
+// @internal-design: genus (blend fingerprint / nseg(d) sweep)
+//
+// Controls (N=64 samples each):
+//   parab   = one exact degree-2 polynomial  -> nseg collapses to 1 at d>=2
+//   twoarc  = two degree-2 arcs glued         -> nseg plateaus at 2 for all d>=2
+//   line    = one exact degree-1 polynomial   -> nseg collapses to 1 at d>=1
+//   noise   = m/(d+1) trivial bound sanity     -> nseg == ceil(64/(d+1)) (no struct)
+//
+// Tests (each 1 = pass):
+//   1. parab collapses to 1 at d=2, stays 1 through d=8                  -> 1
+//   2. parab is field-invariant across all 3 fields, every degree       -> 1
+//   3. twoarc plateaus at 2 for d=2..8 (never collapses to 1)           -> 1
+//   4. twoarc is field-invariant                                        -> 1
+//   5. line collapses to 1 at d=1                                       -> 1
+//   6. noise tracks the trivial bound ceil(64/(d+1)) (no structure)     -> 1
+//
+// Expected output: 1 1 1 1 1 1
+//
+// Two-file link: regime_fri.o + genus_blend_test.o (tvc_self-only).
+
+extern "C" fn regime_prove_dyn(
+    f: Field, data: *i64, n: i32, deg: i32, cert: *i64, work: *i64) -> i32;
+
+// nseg at one (field, degree).
+fn nseg_at(f: Field, prof: *i64, m: i32, d: i32, cert: *i64, work: *i64) -> i32 {
+    return regime_prove_dyn(f, prof, m, d, cert, work);
+}
+
+fn main() -> i32 {
+    let gold: Field = field(18446744069414584321);
+    let baby: Field = field(2013265921);
+    let small: Field = field(65537);
+
+    let m: i32 = 64;
+    let cert: *i64 = alloc(m * 3);
+    let work: *i64 = alloc(m);
+    let prof: *i64 = alloc(m);
+
+    // ---- parab: exact degree-2 ----
+    var t: i32 = 0;
+    while t < m {
+        let u: i64 = (t - 32) as i64;
+        prof[t] = u * u;
+        t = t + 1;
+    }
+    // Test 1: collapses to 1 at d=2..8 (Goldilocks)
+    var t1: i32 = 1;
+    var d: i32 = 2;
+    while d < 9 {
+        if nseg_at(gold, prof, m, d, cert, work) != 1 { t1 = 0; }
+        d = d + 1;
+    }
+    print(t1);
+
+    // Test 2: field-invariant for every degree 0..8
+    var t2: i32 = 1;
+    d = 0;
+    while d < 9 {
+        let g: i32 = nseg_at(gold, prof, m, d, cert, work);
+        let b: i32 = nseg_at(baby, prof, m, d, cert, work);
+        let s: i32 = nseg_at(small, prof, m, d, cert, work);
+        if g != b { t2 = 0; }
+        if g != s { t2 = 0; }
+        d = d + 1;
+    }
+    print(t2);
+
+    // ---- twoarc: two degree-2 arcs glued ----
+    t = 0;
+    while t < m {
+        if t < 32 {
+            let u1: i64 = (t - 16) as i64;
+            prof[t] = u1 * u1;
+        } else {
+            let u2: i64 = (t - 48) as i64;
+            prof[t] = u2 * u2;
+        }
+        t = t + 1;
+    }
+    // Test 3: plateaus at exactly 2 for d=2..8 (never collapses to 1)
+    var t3: i32 = 1;
+    d = 2;
+    while d < 9 {
+        if nseg_at(gold, prof, m, d, cert, work) != 2 { t3 = 0; }
+        d = d + 1;
+    }
+    print(t3);
+
+    // Test 4: twoarc field-invariant
+    var t4: i32 = 1;
+    d = 0;
+    while d < 9 {
+        let g4: i32 = nseg_at(gold, prof, m, d, cert, work);
+        let b4: i32 = nseg_at(baby, prof, m, d, cert, work);
+        let s4: i32 = nseg_at(small, prof, m, d, cert, work);
+        if g4 != b4 { t4 = 0; }
+        if g4 != s4 { t4 = 0; }
+        d = d + 1;
+    }
+    print(t4);
+
+    // ---- line: exact degree-1 ----
+    t = 0;
+    while t < m {
+        prof[t] = (3 * t + 5) as i64;
+        t = t + 1;
+    }
+    // Test 5: collapses to 1 at d=1..8
+    var t5: i32 = 1;
+    d = 1;
+    while d < 9 {
+        if nseg_at(gold, prof, m, d, cert, work) != 1 { t5 = 0; }
+        d = d + 1;
+    }
+    print(t5);
+
+    // ---- noise: alternating extremes, no polynomial structure ----
+    // value jumps 0 / 1000 each step -> no degree-d window beyond the trivial
+    // d+1 fit ever extends, so nseg == ceil(m/(d+1)) (the trivial bound).
+    t = 0;
+    while t < m {
+        if (t & 1) == 0 { prof[t] = 0; } else { prof[t] = 1000; }
+        t = t + 1;
+    }
+    // Test 6: nseg tracks ceil(64/(d+1)) for d=1..4 (structure-free signature)
+    var t6: i32 = 1;
+    d = 1;
+    while d < 5 {
+        let want: i32 = (m + d) / (d + 1);   // ceil(m/(d+1))
+        if nseg_at(gold, prof, m, d, cert, work) != want { t6 = 0; }
+        d = d + 1;
+    }
+    print(t6);
+
+    free(cert); free(work); free(prof);
+    return 0;
+}

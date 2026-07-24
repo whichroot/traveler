@@ -1,0 +1,556 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wav_compress.tv — Standalone WAV compressor/decompressor
+//
+// Two-file link: this file provides main() and WAV I/O.
+// piecewise_codec.tv provides the compression codec via #[export] functions.
+// @internal-design: codec
+//
+// Usage:
+//   wav_compress <input.wav> <output.pc>       # compress
+//   wav_compress -d <input.pc> <output.wav>    # decompress
+//
+// Build:
+//   tvc_self piecewise_codec.tv -o /tmp/codec.ll
+//   tvc_self wav_compress.tv -o /tmp/wc.ll
+//   llc -O2 -filetype=obj /tmp/codec.ll -o /tmp/codec.o
+//   llc -O2 -filetype=obj /tmp/wc.ll -o /tmp/wc.o
+//   clang /tmp/codec.o /tmp/wc.o -o /tmp/wav_compress
+//
+// .pc file format (PCWV):
+//   "PCWV" (4 bytes)           magic
+//   num_channels (2 bytes LE)
+//   sample_rate (4 bytes LE)
+//   bits_per_sample (2 bytes LE)
+//   num_frames (4 bytes LE)    per channel
+//   For each channel:
+//     pcpw_size (4 bytes LE)   size of following PCPW data
+//     [PCPW data]              output of pc_encode()
+
+// ============================================================
+//  POSIX I/O
+// ============================================================
+
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn creat(path: *u8, mode: i32) -> i32;
+extern "C" fn strlen(s: *u8) -> usize;
+extern "C" fn exit(code: i32);
+extern "C" fn malloc(n: usize) -> *u8;
+extern "C" fn free(p: *u8);
+
+// ============================================================
+//  CODEC API (linked from piecewise_codec.tv)
+// ============================================================
+
+struct Segment {
+    start: i32,
+    length: i32,
+    order: i32,
+    n_headers: i32,
+    h0: i32,
+    h1: i32,
+    h2: i32,
+    h3: i32,
+    h4: i32,
+    h5: i32,
+    h6: i32,
+    res_offset: i32,
+    res_count: i32,
+    encoded_bits: i64,
+    is_cont: i32,
+    is_predictive: i32,
+}
+
+extern "C" fn pc_project_to_field(signed_samples: *i16, n: i32,
+    field_samples: *i32) -> i32;
+extern "C" fn pc_project_from_field(field_samples: *i32, n: i32,
+    signed_samples: *i16);
+extern "C" fn pc_segment_greedy(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32;
+extern "C" fn pc_segment_gated(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32;
+extern "C" fn pc_segment_particle(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32;
+extern "C" fn pc_segment_unified(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    p: i32) -> i32;
+extern "C" fn pc_encode(segments: *Segment, n_segs: i32,
+    residuals_buf: *i32, total_samples: i32,
+    out: *u8, capacity: i32,
+    p: i32) -> i32;
+extern "C" fn pc_decode(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32,
+    p: i32) -> i32;
+
+// ============================================================
+//  FIELD ARITHMETIC (for mid-side stereo)
+//  P = 65537 structural: Fermat prime 2^16+1 makes 16-bit PCM projection
+//  lossless by construction; BAKED Field<65537> ops (see @internal-design: codec).
+// ============================================================
+
+type WCField = Field<65537>;
+let WC_P: i32 = 65537;   // codec ABI argument (pc_encode/pc_decode take p: i32)
+
+fn field_sub_local(a: i32, b: i32) -> i32 {
+    let av: WCField = a as WCField;
+    let bv: WCField = b as WCField;
+    return (av - bv) as i32;
+}
+
+// ============================================================
+//  WRITE HELPERS
+// ============================================================
+
+fn wr(fd: i32, s: *u8) {
+    let n: usize = strlen(s);
+    write(fd, s, n);
+}
+
+fn wr_int(fd: i32, n: i64) {
+    if n < 0 {
+        write(fd, "-", 1);
+        wr_int(fd, 0 - n);
+        return;
+    }
+    if n >= 10 {
+        wr_int(fd, n / 10);
+    }
+    var d: [u8; 1] = 0;
+    d[0] = ((n % 10) + 48) as u8;
+    write(fd, &d[0], 1);
+}
+
+fn str_eq(a: *u8, b: *u8) -> i32 {
+    var i: i32 = 0;
+    while a[i] != 0 && b[i] != 0 {
+        if a[i] != b[i] { return 0; }
+        i = i + 1;
+    }
+    if a[i] != b[i] { return 0; }
+    return 1;
+}
+
+// ============================================================
+//  LITTLE-ENDIAN HELPERS
+// ============================================================
+
+fn write_le_u16(buf: *u8, pos: i32, val: i32) {
+    buf[pos] = (val & 255) as u8;
+    buf[pos + 1] = ((val >> 8) & 255) as u8;
+}
+
+fn write_le_u32(buf: *u8, pos: i32, val: i32) {
+    buf[pos] = (val & 255) as u8;
+    buf[pos + 1] = ((val >> 8) & 255) as u8;
+    buf[pos + 2] = ((val >> 16) & 255) as u8;
+    buf[pos + 3] = ((val >> 24) & 255) as u8;
+}
+
+fn read_le_u16(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256;
+}
+
+fn read_le_u32(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+    + (buf[pos + 2] as i32) * 65536 + (buf[pos + 3] as i32) * 16777216;
+}
+
+// ============================================================
+//  WAV I/O
+// ============================================================
+
+// Write a standard 44-byte PCM WAV header.
+fn write_wav_header(fd: i32, num_channels: i32, sample_rate: i32, num_frames: i32) {
+    var hdr: [u8; 44] = 0;
+    // RIFF chunk
+    hdr[0] = 82; hdr[1] = 73; hdr[2] = 70; hdr[3] = 70;  // "RIFF"
+    let data_size: i32 = num_frames * num_channels * 2;
+    write_le_u32(&hdr[0], 4, 36 + data_size);               // chunk size
+    hdr[8] = 87; hdr[9] = 65; hdr[10] = 86; hdr[11] = 69;  // "WAVE"
+    // fmt sub-chunk
+    hdr[12] = 102; hdr[13] = 109; hdr[14] = 116; hdr[15] = 32; // "fmt "
+    write_le_u32(&hdr[0], 16, 16);                            // subchunk1 size
+    write_le_u16(&hdr[0], 20, 1);                              // audio format (PCM)
+    write_le_u16(&hdr[0], 22, num_channels);
+    write_le_u32(&hdr[0], 24, sample_rate);
+    let byte_rate: i32 = sample_rate * num_channels * 2;
+    write_le_u32(&hdr[0], 28, byte_rate);
+    let block_align: i32 = num_channels * 2;
+    write_le_u16(&hdr[0], 32, block_align);
+    write_le_u16(&hdr[0], 34, 16);                            // bits per sample
+    // data sub-chunk
+    hdr[36] = 100; hdr[37] = 97; hdr[38] = 116; hdr[39] = 97; // "data"
+    write_le_u32(&hdr[0], 40, data_size);
+    write(fd, &hdr[0], 44);
+}
+
+// ============================================================
+//  PCWV HEADER (wrapper around PCPW for WAV metadata)
+// ============================================================
+
+// Write PCWV header: magic + WAV metadata + stereo_mode. Returns bytes written (17).
+// stereo_mode: 0 = independent, 1 = left-side (L, L-R)
+fn write_pcwv_header(fd: i32, num_channels: i32, sample_rate: i32,
+    bits: i32, num_frames: i32, stereo_mode: i32) -> i32 {
+    var hdr: [u8; 17] = 0;
+    hdr[0] = 80; hdr[1] = 67; hdr[2] = 87; hdr[3] = 86;  // "PCWV"
+    write_le_u16(&hdr[0], 4, num_channels);
+    write_le_u32(&hdr[0], 6, sample_rate);
+    write_le_u16(&hdr[0], 10, bits);
+    write_le_u32(&hdr[0], 12, num_frames);
+    hdr[16] = stereo_mode as u8;
+    write(fd, &hdr[0], 17);
+    return 17;
+}
+
+// ============================================================
+//  WAV CHUNK SCANNER
+// ============================================================
+
+// Find the "data" chunk in a RIFF/WAV file. Scans chunks starting at offset 12.
+// Returns the offset of the first byte of audio data (i.e., chunk header + 8).
+// Sets data_size_out[0] to the chunk's declared size.
+fn find_data_chunk(buf: *u8, file_size: i32, data_size_out: *i32) -> i32 {
+    var pos: i32 = 12;  // skip RIFF header (12 bytes)
+    while pos < file_size - 8 {
+        let tag_d: i32 = buf[pos] as i32;       // 'd' = 100
+        let tag_a: i32 = buf[pos + 1] as i32;   // 'a' = 97
+        let tag_t: i32 = buf[pos + 2] as i32;   // 't' = 116
+        let tag_a2: i32 = buf[pos + 3] as i32;  // 'a' = 97
+        let chunk_size: i32 = read_le_u32(buf, pos + 4);
+        if tag_d == 100 && tag_a == 97 && tag_t == 116 && tag_a2 == 97 {
+            data_size_out[0] = chunk_size;
+            return pos + 8;
+        }
+        // Advance to next chunk (chunks are 2-byte aligned)
+        pos = pos + 8 + chunk_size;
+        if (chunk_size % 2) == 1 { pos = pos + 1; }
+    }
+    return 0;  // not found
+}
+
+// ============================================================
+//  ENCODE: WAV -> .pc
+// ============================================================
+
+fn encode_wav(in_path: *u8, out_path: *u8) {
+    // Open and read entire WAV file
+    let fd: i32 = open(in_path, 0, 0);
+    if fd < 0 {
+        wr(2, "error: cannot open input file\n");
+        exit(1);
+    }
+    let buf: *u8 = malloc(67108864);  // 64 MB max
+    let file_size: i64 = read_bytes(fd, buf, 67108864);
+    close(fd);
+
+    // Parse WAV header (fmt fields are always at fixed offsets 22-35)
+    let num_channels: i32 = read_le_u16(buf, 22);
+    let sample_rate: i32 = read_le_u32(buf, 24);
+    let bits: i32 = read_le_u16(buf, 34);
+
+    wr(2, "WAV: ");
+    wr_int(2, num_channels as i64); wr(2, "ch ");
+    wr_int(2, sample_rate as i64); wr(2, "Hz ");
+    wr_int(2, bits as i64); wr(2, "bit ");
+    wr_int(2, file_size); wr(2, " bytes\n");
+
+    if bits != 16 {
+        wr(2, "error: only 16-bit PCM supported\n");
+        exit(1);
+    }
+
+    // Scan for the data chunk (handles non-standard headers, FLLR padding, etc.)
+    var data_size_arr: [i32; 1] = 0;
+    let data_offset: i32 = find_data_chunk(buf, file_size as i32, &data_size_arr[0]);
+    let data_size: i32 = data_size_arr[0];
+    if data_offset == 0 {
+        wr(2, "error: no data chunk found in WAV\n");
+        exit(1);
+    }
+    let num_samples: i32 = data_size / 2;
+    let num_frames: i32 = num_samples / num_channels;
+
+    wr(2, "Frames: "); wr_int(2, num_frames as i64);
+    wr(2, "  Channels: "); wr_int(2, num_channels as i64); wr(2, "\n");
+
+    // Open output
+    let out_fd: i32 = creat(out_path, 438);
+    if out_fd < 0 {
+        wr(2, "error: cannot create output file\n");
+        exit(1);
+    }
+
+    // Mid-side stereo: for stereo files, compress (L, L-R) instead of (L, R).
+    // Only apply when channels are correlated (side energy < right energy).
+    var stereo_mode: i32 = 0;
+    if num_channels == 2 {
+        // Estimate correlation: compare energy of R vs (L-R) on first 10000 frames
+        var energy_r: i64 = 0;
+        var energy_side: i64 = 0;
+        var probe_n: i32 = 10000;
+        if probe_n > num_frames { probe_n = num_frames; }
+        var pi: i32 = 0;
+        while pi < probe_n {
+            let l_off: i32 = data_offset + (pi * 2) * 2;
+            let r_off: i32 = data_offset + (pi * 2 + 1) * 2;
+            let lo_l: i32 = buf[l_off] as i32;
+            let hi_l: i32 = buf[l_off + 1] as i32;
+            var lv: i32 = lo_l + hi_l * 256;
+            if lv >= 32768 { lv = lv - 65536; }
+            let lo_r: i32 = buf[r_off] as i32;
+            let hi_r: i32 = buf[r_off + 1] as i32;
+            var rv: i32 = lo_r + hi_r * 256;
+            if rv >= 32768 { rv = rv - 65536; }
+            let diff: i32 = lv - rv;
+            if rv < 0 { energy_r = energy_r + (0 - rv) as i64; }
+            else { energy_r = energy_r + rv as i64; }
+            if diff < 0 { energy_side = energy_side + (0 - diff) as i64; }
+            else { energy_side = energy_side + diff as i64; }
+            pi = pi + 1;
+        }
+        if energy_side * 4 < energy_r {
+            stereo_mode = 1;
+            wr(2, "mid-side: ON (side/R energy = ");
+            wr_int(2, energy_side * 100 / (energy_r + 1));
+            wr(2, "%)\n");
+        } else {
+            wr(2, "mid-side: OFF (uncorrelated)\n");
+        }
+    }
+
+    // Write PCWV header
+    write_pcwv_header(out_fd, num_channels, sample_rate, bits, num_frames, stereo_mode);
+
+    // Process each channel
+    let samples_i16: *i16 = malloc(num_frames * 2) as *i16;
+    let field_samples: *i32 = malloc(num_frames * 4) as *i32;
+    let max_segs: i32 = num_frames / 16 + 1;
+    let segments: *Segment = malloc(max_segs * 72) as *Segment;
+    let residuals: *i32 = malloc(num_frames * 4) as *i32;
+    let encode_buf: *u8 = malloc(num_frames * 4);
+
+    // For mid-side: need left channel field values to compute side channel
+    let left_field: *i32 = malloc(num_frames * 4) as *i32;
+
+    var ch: i32 = 0;
+    while ch < num_channels {
+        // Deinterleave this channel into i16 buffer
+        var i: i32 = 0;
+        while i < num_frames {
+            let byte_off: i32 = data_offset + (i * num_channels + ch) * 2;
+            let lo: i32 = buf[byte_off] as i32;
+            let hi: i32 = buf[byte_off + 1] as i32;
+            var val: i32 = lo + hi * 256;
+            if val >= 32768 { val = val - 65536; }
+            samples_i16[i] = val as i16;
+            i = i + 1;
+        }
+
+        // Project to field
+        pc_project_to_field(samples_i16, num_frames, field_samples);
+
+        // Mid-side transform: ch0 = L (unchanged), ch1 = L - R (side channel)
+        if stereo_mode == 1 {
+            if ch == 0 {
+                // Save left channel field values for side computation
+                i = 0;
+                while i < num_frames {
+                    left_field[i] = field_samples[i];
+                    i = i + 1;
+                }
+            }
+            if ch == 1 {
+                // Replace R with (L - R) in field arithmetic
+                i = 0;
+                while i < num_frames {
+                    field_samples[i] = field_sub_local(left_field[i], field_samples[i]);
+                    i = i + 1;
+                }
+            }
+        }
+
+        // Segment (greedy default; unified/particle/gated available as alternatives)
+        let n_segs: i32 = pc_segment_greedy(field_samples, num_frames,
+            segments, max_segs,
+            residuals, num_frames,
+            WC_P);
+
+        // Encode to PCPW
+        let encoded_len: i32 = pc_encode(segments, n_segs, residuals,
+            num_frames, encode_buf,
+            num_frames * 4,
+            WC_P);
+
+        // Write per-channel: pcpw_size (4 bytes) + PCPW data
+        var sz_buf: [u8; 4] = 0;
+        write_le_u32(&sz_buf[0], 0, encoded_len);
+        write(out_fd, &sz_buf[0], 4);
+        write(out_fd, encode_buf, encoded_len as usize);
+
+        wr(2, "  ch"); wr_int(2, ch as i64);
+        wr(2, ": "); wr_int(2, n_segs as i64); wr(2, " segments, ");
+        wr_int(2, encoded_len as i64); wr(2, " bytes\n");
+
+        ch = ch + 1;
+    }
+
+    close(out_fd);
+
+    // Report totals
+    wr(2, "PCM: "); wr_int(2, data_size as i64); wr(2, " bytes\n");
+
+    free(buf as *u8);
+    free(left_field as *u8);
+    free(samples_i16 as *u8);
+    free(field_samples as *u8);
+    free(segments as *u8);
+    free(residuals as *u8);
+    free(encode_buf);
+
+    wr(2, "wrote "); wr(2, out_path); wr(2, "\n");
+}
+
+// ============================================================
+//  DECODE: .pc -> WAV
+// ============================================================
+
+fn decode_pc(in_path: *u8, out_path: *u8) {
+    // Read .pc file
+    let fd: i32 = open(in_path, 0, 0);
+    if fd < 0 {
+        wr(2, "error: cannot open input file\n");
+        exit(1);
+    }
+    let buf: *u8 = malloc(67108864);  // 64 MB max
+    let file_size: i64 = read_bytes(fd, buf, 67108864);
+    close(fd);
+
+    // Parse PCWV header
+    if buf[0] != 80 || buf[1] != 67 || buf[2] != 87 || buf[3] != 86 {
+        wr(2, "error: not a PCWV file\n");
+        exit(1);
+    }
+    let num_channels: i32 = read_le_u16(buf, 4);
+    let sample_rate: i32 = read_le_u32(buf, 6);
+    let bits: i32 = read_le_u16(buf, 10);
+    let num_frames: i32 = read_le_u32(buf, 12);
+    let stereo_mode: i32 = buf[16] as i32;  // 0 = independent, 1 = left-side
+
+    wr(2, "PCWV: ");
+    wr_int(2, num_channels as i64); wr(2, "ch ");
+    wr_int(2, sample_rate as i64); wr(2, "Hz ");
+    wr_int(2, bits as i64); wr(2, "bit ");
+    wr_int(2, num_frames as i64); wr(2, " frames");
+    if stereo_mode == 1 { wr(2, " [mid-side]"); }
+    wr(2, "\n");
+
+    // Open output WAV
+    let out_fd: i32 = creat(out_path, 438);
+    if out_fd < 0 {
+        wr(2, "error: cannot create output file\n");
+        exit(1);
+    }
+
+    // Write WAV header
+    write_wav_header(out_fd, num_channels, sample_rate, num_frames);
+
+    // Decode each channel, then reverse mid-side if needed
+    let total_samples: i32 = num_frames * num_channels;
+    let interleaved: *i16 = malloc(total_samples * 2) as *i16;
+    let field_samples: *i32 = malloc(num_frames * 4) as *i32;
+    let samples_i16: *i16 = malloc(num_frames * 2) as *i16;
+
+    // For mid-side decode: need left channel field values
+    let left_field_dec: *i32 = malloc(num_frames * 4) as *i32;
+
+    var pos: i32 = 17;  // past PCWV header (17 bytes now)
+    var ch: i32 = 0;
+    while ch < num_channels {
+        // Read pcpw_size
+        let pcpw_size: i32 = read_le_u32(buf, pos);
+        pos = pos + 4;
+
+        // Decode PCPW -> field samples
+        let n_decoded: i32 = pc_decode(&buf[pos], pcpw_size, field_samples, num_frames, WC_P);
+        pos = pos + pcpw_size;
+
+        // Mid-side reverse transform
+        if stereo_mode == 1 {
+            if ch == 0 {
+                // Save left channel field values
+                var i: i32 = 0;
+                while i < n_decoded {
+                    left_field_dec[i] = field_samples[i];
+                    i = i + 1;
+                }
+            }
+            if ch == 1 {
+                // Reconstruct R = L - side = L - (L - R) = R
+                var i: i32 = 0;
+                while i < n_decoded {
+                    field_samples[i] = field_sub_local(left_field_dec[i], field_samples[i]);
+                    i = i + 1;
+                }
+            }
+        }
+
+        // Project from field -> signed i16
+        pc_project_from_field(field_samples, n_decoded, samples_i16);
+
+        // Interleave this channel into output buffer
+        var i: i32 = 0;
+        while i < n_decoded {
+            interleaved[i * num_channels + ch] = samples_i16[i];
+            i = i + 1;
+        }
+
+        wr(2, "  ch"); wr_int(2, ch as i64);
+        wr(2, ": "); wr_int(2, n_decoded as i64); wr(2, " samples decoded\n");
+
+        ch = ch + 1;
+    }
+
+    // Write interleaved sample data
+    write(out_fd, interleaved as *u8, (total_samples * 2) as usize);
+    close(out_fd);
+
+    free(buf);
+    free(left_field_dec as *u8);
+    free(interleaved as *u8);
+    free(field_samples as *u8);
+    free(samples_i16 as *u8);
+
+    wr(2, "wrote "); wr(2, out_path); wr(2, "\n");
+}
+
+// ============================================================
+//  MAIN
+// ============================================================
+
+fn main(argc: i32, argv: **u8) {
+    if argc < 3 {
+        wr(2, "usage: wav_compress <input.wav> <output.pc>\n");
+        wr(2, "       wav_compress -d <input.pc> <output.wav>\n");
+        exit(1);
+    }
+
+    if str_eq(argv[1], "-d") == 1 {
+        if argc < 4 {
+            wr(2, "usage: wav_compress -d <input.pc> <output.wav>\n");
+            exit(1);
+        }
+        decode_pc(argv[2], argv[3]);
+    } else {
+        encode_wav(argv[1], argv[2]);
+    }
+}
