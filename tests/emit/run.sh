@@ -1,5 +1,6 @@
 #!/bin/bash
-# --emit driver gate (plan-self-improving-lab, the one-shot compile slice).
+# --emit driver gate: one command compiles source to obj/exe.
+# @internal-note: plan-self-improving-lab.
 #
 # Proves that `tvc x.tv -o x --emit exe` turns source into a runnable native
 # binary in ONE call (obj = stops at the object; ir = the default IR-only path,

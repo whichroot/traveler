@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// net_loopback.tv — net/ TCP wrap layer, single-process loopback (Tier 0):
+// net_loopback.tv — net/ TCP wrap layer, single-process loopback:
 // ephemeral-port listen, connect-to-self over 127.0.0.1, echo through `?`.
 // tvc_self ONLY (imports net/). Design: @internal-design: net.
 //

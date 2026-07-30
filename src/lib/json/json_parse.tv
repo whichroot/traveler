@@ -78,7 +78,7 @@ fn json_ws(d: *Json) {
 // Scan a "…" string starting at the opening quote; return the raw span in
 // span_off/span_len (via out pointers) and leave pos past the closing quote.
 // Backslash escapes are skipped during scanning so an escaped quote does not end
-// the span early (the span is stored RAW — unescaping is a later slice).
+// the span early (the span is stored RAW — unescaping is deliberately deferred).
 fn json_scan_string(d: *Json, span_off: *i32, span_len: *i32) {
     d.pos = d.pos + 1;                       // consume opening quote
     let start: i32 = d.pos;

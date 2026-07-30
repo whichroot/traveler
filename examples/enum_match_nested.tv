@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// enum_match_nested.tv — nested match + aggregate enum payloads (known-issues
-// #31). tvc_self ONLY (gated in tests/dynfield/run.sh; not seed surface).
+// enum_match_nested.tv — nested match + aggregate enum payloads
+// (@internal-note: known-issues #31). tvc_self ONLY (gated in tests/dynfield/run.sh; not seed surface).
 // @internal-design: examples (enum_match_nested, #31).
 //
 // Expected output:

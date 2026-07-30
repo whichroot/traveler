@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// Global initializers as compile-time constants (known-issues #52 gate):
+// Global initializers as compile-time constants (gate for @internal-note: known-issues #52):
 // literal, negated literal, `0 - 1` idiom, +|-|* folds, ident -> prior `let`
 // (incl. transitive). The old emitter SILENTLY zero-initialized non-literals.
 

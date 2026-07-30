@@ -321,7 +321,8 @@ parity_single satotate_horizontal
 parity_single satotate_cm_gauss
 parity_single satotate_cm_eisenstein
 
-# Mobius linear-complexity (W-B P5): the extremal-horizon witnesses F(L). The
+# Mobius linear-complexity (@internal-note: plan-mobius-inclusion, W-B P5):
+# the extremal-horizon witnesses F(L). The
 # lone STANDALONE mobius example (the rest are import-based, tvc_self-only) — a
 # pure squarefree-arithmetic fact, so it runs on both compilers. 1_{n==a mod d}
 # dies at the first non-squarefree term: F(1)=3, F(2)=8, F(4)=26, F(6)=124,

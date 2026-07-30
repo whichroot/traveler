@@ -2,7 +2,7 @@
 // field type — Field/BinField/ExtField, deriving the kind from the RHS). A
 // general Rust-style alias to a primitive/struct is NEW semantics (not an alias
 // of existing syntax) and is a separately-gated future feature, so it is refused
-// here with a clean diagnostic. plan-syntax-modernization Phase 1.
+// here with a clean diagnostic. @internal-note: plan-syntax-modernization (Phase 1).
 type Byte = u8;
 
 fn main() -> i32 {

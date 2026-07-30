@@ -2,7 +2,7 @@
 // Author: Matt Flores
 // neuron_read_test.tv — PROBE P1 (hermetic): read a trained neuron's ridge
 // response with the exact regime segmenter; ReLU kink recovered, tanh shatters.
-// @internal-design: regime (neuron read; memo-2026-06-16 §7)
+// @internal-design: regime (neuron read); @internal-note: memo-2026-06-16 (§7)
 //
 // Embeds the oracle's (neuron_read_oracle.py) exact integer activations: one
 // ReLU ridge (kink on sample 8) and one smooth tanh ridge.

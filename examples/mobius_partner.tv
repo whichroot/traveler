@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// mobius_partner.tv — Mobius W-B P4: the Partner-Lemma exhaustive (F_2, q in {3,5}):
+// mobius_partner.tv — Mobius paper: the Partner-Lemma exhaustive (F_2, q in {3,5}):
 // every (Z)-solution checked for singleton U_{q^2}-fibers via H_R no-simple-root.
-// @internal-design: nt; @internal-note: plan-mobius-inclusion B3.
+// @internal-design: nt; @internal-note: plan-mobius-inclusion (W-B P4, B3).
 
 import "../src/lib/nt/polyfield.tv";   // pf_radical, pf_powmod_x, pf_charpoly, pf_no_simple_root
 import "../src/lib/nt/linalg.tv";      // la_nullspace

@@ -3,7 +3,7 @@
 // computed bound -> %t0 i32 -> llc reject; param bound -> %t0 ptr-typed by luck
 // -> llc-accepted SIGSEGV. Three bound shapes over a global *i64 + a global
 // scalar capture; all three loops must DISPATCH and run bit-identically at any
-// thread count. Analysis: devnotes known-issues #53.
+// thread count. Analysis: @internal-note: known-issues #53.
 let G1: i32 = 8;
 let G2: i32 = 16;
 var g_arr: *i64 = null;

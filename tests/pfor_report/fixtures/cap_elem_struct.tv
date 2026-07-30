@@ -1,4 +1,6 @@
-// --pfor-report fixture: the post-U1 residual TYPE refusal. A struct-element
+// --pfor-report fixture: the residual TYPE refusal after U1, the
+// primitive-capture dispatch lift (@internal-note: plan-exact-arithmetic-arc,
+// Stage D). A struct-element
 // own-cell copy passes the independence proof (stride-1 injective write,
 // own-cell read, pure body) but its captures are *Pt — a struct element,
 // outside the admitted set (field/dyn/primitive). U1 lifted the field PROXY,

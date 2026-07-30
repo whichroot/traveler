@@ -20,7 +20,7 @@ extern "C" fn unlink(path: *u8) -> i32;
 // RUNNING host, not the canonical (darwin) triple the module preamble pins.
 extern "C" fn uname(buf: *u8) -> i32;
 // FILE*-family externs used ONLY by the eval engine's host-native builtin
-// whitelist (E2a) — the evaluator process forwards fs.tv's membrane calls.
+// whitelist — the evaluator process forwards fs.tv's membrane calls.
 extern "C" fn fopen(path: *u8, mode: *u8) -> *u8;
 extern "C" fn fread(buf: *u8, size: i64, count: i64, f: *u8) -> i64;
 extern "C" fn fwrite(buf: *u8, size: i64, count: i64, f: *u8) -> i64;
@@ -28,7 +28,7 @@ extern "C" fn fclose(f: *u8) -> i32;
 extern "C" fn fseek(f: *u8, off: i64, whence: i32) -> i32;
 extern "C" fn ftell(f: *u8) -> i64;
 extern "C" fn ferror(f: *u8) -> i32;
-// Host stdio externs for the evaluator's print path (E2a): routed through libc
+// Host stdio externs for the evaluator's print path: routed through libc
 // putchar/puts to inherit exact stdio buffering. Non-variadic on purpose (varargs ABI).
 extern "C" fn putchar(c: i32) -> i32;
 extern "C" fn puts(s: *u8) -> i32;
@@ -143,12 +143,12 @@ let TOK_KW_INSTANTIATE: i32 = 83;
 let TOK_KW_IMPORT: i32 = 84;
 let TOK_KW_TRAIT: i32 = 85;
 let TOK_KW_IMPL: i32 = 86;
-// Wide integer surface types (division-free; see plan-wide-int-surface-types).
+// Wide integer surface types (division-free). @internal-note: plan-wide-int-surface-types.
 let TOK_TY_I128: i32 = 87;
 let TOK_TY_U128: i32 = 88;
 let TOK_TY_I256: i32 = 89;
 let TOK_TY_U256: i32 = 90;
-// Surface-ergonomics aliases (plan-syntax-modernization Phase 1).
+// Surface-ergonomics aliases. @internal-note: plan-syntax-modernization (Phase 1).
 let TOK_KW_VAR: i32 = 91;    // `var` == `let mut` (mutable binding alias)
 let TOK_KW_TYPE: i32 = 92;   // `type N = <FieldTy>;` == field/binfield/extfield decl
 // Compound assignment `x op= e` (+= .. >>=): one token kind, binary OP code in
@@ -1608,7 +1608,10 @@ let PFR_WILD_READ: i32 = 16;       // unclassifiable read on a written array
 let PFR_RAW: i32 = 17;             // read-after-write not own-cell/disjoint
 let PFR_READS_OVERFLOW: i32 = 18;  // read footprint table overflow + a write
 let PFR_DYN_CAPTURE: i32 = 19;     // implicit dyn __field capture overflow
-let PFR_NOT_FIELD: i32 = 20;       // RETIRED by U1 (Stage D): the gate no longer
+let PFR_NOT_FIELD: i32 = 20;       // RETIRED by U1, the primitive-capture
+                                   // dispatch lift (@internal-note:
+                                   // plan-exact-arithmetic-arc, Stage D):
+                                   // the gate no longer
 // requires a field capture. Code+name kept for
 // report-contract stability; unreachable.
 let PFR_NO_CAPTURES: i32 = 21;     // independent, but zero captures (gate)
@@ -3896,7 +3899,7 @@ fn parse_struct_decl() -> i32 {
 fn parse_global_let() -> i32 {
     let ln: i32 = p_cur_line();
     let cl: i32 = p_cur_col();
-    // `var` alias (plan-syntax-modernization Phase 1): a top-level `var` is
+    // `var` alias (@internal-note: plan-syntax-modernization, Phase 1): a top-level `var` is
     // `let mut` (mutable global) — same AST_LET, flags bit0=1.
     var is_var: i32 = 0;
     if p_peek() == TOK_KW_VAR { is_var = 1; }
@@ -6242,8 +6245,9 @@ fn emit_field_funcs(fi: i32) {
 // Runtime-prime ops: modulus from a %__Field carrier, constants late-bound.
 // Six functions, once per module. Carrier layout + boundaries: @internal-design: core.
 
-// Emit the %__Field / %__FieldWide carrier types. %__Field index 6 (NTT blob,
-// Phase 7a) is append-only so GEP indices 0-5 never move. See @internal-design: core.
+// Emit the %__Field / %__FieldWide carrier types. %__Field index 6 (the NTT
+// blob; @internal-note: plan-phase7-dyn-crypto, 7a) is append-only so GEP
+// indices 0-5 never move. See @internal-design: core.
 fn emit_dynfield_type() {
     ir_wr("\n; --- dynamic field carrier ---\n");
     // { i64 p, i64 half_p, i32 elem_bytes, i32 data_bytes, i64 mlo, i64 mhi, ptr ntt_blob }
@@ -12926,9 +12930,10 @@ fn pfor_add_capture(pf: *PForState, name: i32, type_off: i32, reg: i32, is_alloc
     return 1;
 }
 
-// U1: the CLOSED set of primitive types admissible as capture scalars/pointer
-// elements (via negativa — the unknown-type fallback would silently admit).
-// Extend only with a consumer + report-diff audit: optimization-ownership.md.
+// U1 (the capture lift): the CLOSED set of primitive types admissible as
+// capture scalars/pointer elements (via negativa — the unknown-type fallback
+// would silently admit). Extend only with a consumer + report-diff audit.
+// @internal-design: optimization-ownership.
 fn pfor_prim_int(type_off: i32) -> i32 {
     if type_off == NULL_STR { return 0; }
     let s: *u8 = &g_strings[type_off];
@@ -18005,7 +18010,7 @@ fn discover_types_in_node(node: i32) {
 // Handles: int literal; `lit - lit` / `lit + lit` / `lit * lit` folded (the
 // `0 - 1` negative idiom); ident -> a PRIOR non-mut top-level `let` (recursive,
 // index-decreasing so cycle-free). ok_io[0]=1 on success, 0 = not a constant
-// (caller diagnoses; the old behavior was a SILENT zero — known-issues #52).
+// (caller diagnoses; the old behavior was a SILENT zero — @internal-note: known-issues #52).
 fn global_const_init(prog: i32, upto: i32, ginit: i32, ok_io: *i32) -> u64 {
     let kind: i32 = g_nodes[ginit].kind;
     if kind == AST_LIT_INT {
@@ -18348,7 +18353,7 @@ fn codegen_program(prog: i32) {
                 ir_wr("null");
             } else {
                 // constant-resolved (lit / +-* fold / prior-let); refuse loudly —
-                // the old fallthrough SILENTLY zero-initialized (known-issues #52)
+                // the old fallthrough SILENTLY zero-initialized (@internal-note: known-issues #52)
                 var gok: i32 = 0;
                 var gval: u64 = global_const_init(prog, di, ginit, &gok);
                 if gok == 0 {
@@ -18974,7 +18979,7 @@ fn lw_struct_field_off(si: i32, fidx: i32, line: i32, col: i32) -> i32 {
     return off;
 }
 
-// Aggregate = concrete/instance struct type OR enum instance (E2c).
+// Aggregate = concrete/instance struct type OR enum instance.
 fn lw_is_agg(t: i32) -> i32 {
     if t == NULL_STR { return 0; }
     if resolve_struct_type(t) >= 0 { return 1; }
@@ -19829,7 +19834,7 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
                 g_eir[e].type_off = str_intern("ptr");
                 return LowVal { e: e, type_off: str_intern("ptr") };
             }
-            // &s.member arrives with structs (E2b).
+            // &s.member arrives with structs.
             ev_refuse("address-of", ln, cl);
         }
         let operand: LowVal = lower_expr(g_nodes[node].child0, ctx_type);
@@ -20567,7 +20572,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             g_eir[ev_e].nargs = 2;
             return LowVal { e: ev_e, type_off: ev_alias };
         }
-        // A callee that is a local VARIABLE: closure call (E2e) or
+        // A callee that is a local VARIABLE: closure call or
         // fn-pointer call (refused — genuinely indirect).
         let lvi: i32 = lw_find(call_name);
         if lvi >= 0 {
@@ -22396,7 +22401,7 @@ fn ev_expr(e: i32, fr: *EvFrame) -> EvalVal {
         return EvalVal { tag: g_evg_tags[gi], type_off: g_evg_types[gi], bits: g_evg_bits[gi] };
     }
 
-    // ---- Address-of (E2a): host addresses of the value cells ----
+    // ---- Address-of: host addresses of the value cells ----
     if kind == EIR_ADDR_LOCAL {
         let s: i32 = g_eir[e].a;
         let fbits: *u64 = fr.sbits;
@@ -22762,7 +22767,7 @@ fn ev_expr(e: i32, fr: *EvFrame) -> EvalVal {
         return EvalVal { tag: ev_tag_for_type(g_eir[e].type_off), type_off: g_eir[e].type_off, bits: raw };
     }
 
-    // ---- Aggregates (E2b) ----
+    // ---- Aggregates ----
     if kind == EIR_MEMBER {
         let base: EvalVal = ev_expr(g_eir[e].a, fr);
         if fr.unwinding == 1 { return base; }
@@ -24789,7 +24794,8 @@ fn main(argc: i32, argv: **u8) {
             // Refuses loudly (exit 97), never misevaluates; gate tests/eval_diff/.
             g_eval_mode = 1;
         } else if str_eq(argv[ai], "--repl") == 1 {
-            // --repl (E3): a persistent session over the same evaluator.
+            // --repl: a persistent session over the same evaluator
+            // (@internal-note: plan-eval-engine, E3).
             g_repl_mode = 1;
         } else if str_eq(argv[ai], "--emit-gpu") == 1 {
             // --emit-gpu (Stage 0): emit an AMDGPU device module of the
@@ -25011,7 +25017,7 @@ fn main(argc: i32, argv: **u8) {
     // direction; burning it makes both null conventions genuinely correct.
     let node_sentinel: i32 = node_alloc(AST_PROGRAM, 0, 0);
 
-    // --repl (E3): the arenas above are the session's; everything else below is
+    // --repl: the arenas above are the session's; everything else below is
     // the one-shot file pipeline. repl_main never returns.
     if g_repl_mode == 1 {
         repl_main();

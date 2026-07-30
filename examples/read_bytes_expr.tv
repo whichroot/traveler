@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
 //
-// Gate for known-issues #62: read_bytes' BUFFER argument may be any pointer
+// Gate for @internal-note: known-issues #62: read_bytes' BUFFER argument may be any pointer
 // expression, not only a plain identifier.
 //
 // The defect: the read_bytes builtin resolved its buffer via

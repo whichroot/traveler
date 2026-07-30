@@ -280,7 +280,8 @@ if [ -x "$STAGE1" ]; then
 fi
 
 # ------------------------------------------------------------
-#  U1 (Stage D, exact-arithmetic arc): the lifted dispatch gate —
+#  U1, the lifted dispatch gate (@internal-note: plan-exact-arithmetic-arc,
+#  Stage D) —
 #  primitive-element loops. Asserted against stage1 ONLY: the frozen C seed
 #  keeps the pre-U1 gate (field-only dispatch) by design, so its worker
 #  counts would be vacuously 0 here; dual parity remains output-level.

@@ -1051,7 +1051,8 @@ if [ "$FRI_OK" = "1" ]; then
 fi
 if [ "$FRI_OK" = "0" ]; then FAILURES="$FAILURES fri"; fi
 
-# ---- Phase 7d-L1 slice gate: dyn_regime_proof_test (tvc_self ONLY) ----
+# ---- dyn regime-proof gate: dyn_regime_proof_test (tvc_self ONLY)
+#      (@internal-note: plan-phase7-dyn-crypto, 7d-L1) ----
 # Regime boundary proof: a segmentation is canonical iff each segment is
 # low-degree (d-th forward difference vanishes) AND each boundary is FORCED
 # (d-th difference across the boundary is nonzero, witnessed by err*inv==1).

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// wire.tv — Phase 3 of the observe-learn audio codec: the real bitstream.
+// wire.tv — the observe-learn audio codec's bitstream layer: the real wire.
 // Encoder writes the choices the cost model made (argmin surfaces from
 // learn.tv); decoder replays them from the wire — scorers never run on decode.
 // @internal-design: util (Phase 3 + wire v2/v3, the lossy layer)

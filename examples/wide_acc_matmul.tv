@@ -110,8 +110,9 @@ fn main() {
     var checksum: i256 = 0;
     var allmatch: i64 = 1;
 
-    // ---- (b) native i256 — the U1 consumer loop (Stage D's named flip): flat pure
-    // body, captures = out256 alone -> DISPATCHES under the lifted gate. ----
+    // ---- (b) native i256 — the primitive-capture consumer loop (@internal-note:
+    // plan-exact-arithmetic-arc, U1/Stage D): flat pure body, captures = out256
+    // alone -> DISPATCHES under the lifted gate. ----
     let out256: *i64 = alloc(16);
     for idx in 0..16 {
         out256[idx] = cell(idx);

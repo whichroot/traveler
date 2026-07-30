@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// crtsolve.tv -- multi-modular EXACT integer linear solve (the F1 Stage-3 seed).
+// crtsolve.tv -- multi-modular EXACT integer linear solve.
+// @internal-note: plan-elimination-engine (the Stage-3 seed).
 //
 // Solve A w = b over the rationals for integer A (n x n), b: per 31-bit prime p,
 // one-pass Gaussian elimination mod p yields (det_p, w_p); Cramer residues

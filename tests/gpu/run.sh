@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage-0 GPU device-codegen gate (plan-gpu-purity-runtime).
+# Stage-0 GPU device-codegen gate. @internal-note: plan-gpu-purity-runtime.
 #
 # Proves that a proven-parallel pfor worker re-emits as a valid device kernel on
 # BOTH device targets, with NO GPU hardware:

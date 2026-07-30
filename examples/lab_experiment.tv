@@ -112,7 +112,7 @@ fn run(reqp: *u8, outdir: *u8, seed: i32) -> Result<i64, FsError> {
 
     // Read + parse the request, then do the whole run INSIDE the Ok arm — so the
     // telos/run_id owned copies are `var` INITIALIZERS (never struct-var
-    // reassignments, which tvc_self mis-codegens today; see known-issues #51).
+    // reassignments, which tvc_self mis-codegens today; @internal-note: known-issues #51).
     let text: Str = fs_read_to_string(reqp)?;
     match json_parse(text.data, text.len) {
         Result::Ok(doc) => {

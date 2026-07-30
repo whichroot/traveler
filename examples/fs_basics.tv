@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// fs_basics.tv — the fs/ wrap layer end-to-end (systems-interface Tier 0):
+// fs_basics.tv — the fs/ wrap layer end-to-end:
 // write/exists/size/read-back/append through `?`, then the Err arm by kind.
 // tvc_self ONLY (imports fs/). Design: @internal-design: fs.
 //

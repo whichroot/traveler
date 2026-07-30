@@ -1,4 +1,6 @@
-// pfor_u1_overflow_det.tv — U1 (Stage D) overflow-determinism gate.
+// pfor_u1_overflow_det.tv — overflow-determinism gate for U1, the
+// primitive-capture dispatch lift (@internal-note: plan-exact-arithmetic-arc,
+// Stage D).
 // Traveler i64 codegen emits plain add/mul (NO nsw/nuw flags): overflow is
 // DEFINED two's-complement wrap, so an overflowing iteration computes the
 // same value serial or parallel — wrap cannot threaten dispatch soundness.

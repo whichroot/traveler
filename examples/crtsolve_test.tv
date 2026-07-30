@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// crtsolve_test.tv -- the gate for src/lib/nt/crtsolve.tv (the F1 Stage-3 seed:
-// multi-modular exact integer linear solve, "precision = prime count").
+// crtsolve_test.tv -- the gate for src/lib/nt/crtsolve.tv (multi-modular exact
+// integer linear solve, "precision = prime count").
+// @internal-note: plan-elimination-engine (the Stage-3 seed).
 //   (1) 2x2 known-rational system: w = (4/5, 7/5) -> Q20 ints 838861/1468006,
 //       det bits 3, sign +1 -- hand-checkable exactness.
 //   (2) n=12 deterministic integer system: full pipeline, status 0 = the

@@ -90,7 +90,7 @@ if [ "$cand_out" = "$safe_out" ]; then
   echo "OK: i128 -O2 separate-object path matches safe path (fold hazard NOT present)"
 else
   echo "WARN: i128 -O2 separate-object path DIVERGES — issue #15 fold hazard is LIVE."
-  echo "      Workaround: llvm-link IR modules before llc -O2 (see known-issues #15)."
+  echo "      Workaround: llvm-link IR modules before llc -O2 (issue #15)."
 fi
 
 # --- #15 narrow-tier regression guard (toolchain-independent) ------------------
@@ -98,8 +98,8 @@ fi
 # (__field_init's Barrett factor + __mr_powmod's Miller-Rabin modmul) previously
 # used udiv/urem i128, which llc lowers to the __udivti3/__umodti3 C division
 # libcalls. Those are universally provided (never the #15 __udivei4 link wall),
-# but the path was made libcall-free by symmetry (2026-07-04, known-issues #15
-# follow-up) via the shared @__udivrem_128 bit-serial long division. A
+# but the path was made libcall-free by symmetry (@internal-note: known-issues
+# #15 follow-up) via the shared @__udivrem_128 bit-serial long division. A
 # reintroduced i128 udiv/urem here would resurrect those libcalls; assert zero,
 # and that the division-free helper loop (dv.head:) is present. The runtime is
 # emitted into every program, so a.ll carries the full construction path.

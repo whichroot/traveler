@@ -1,7 +1,7 @@
 // Negative: `let` bindings are immutable (spec §4.4). Reassigning one is an
 // error — the binding must be declared `var` (or `let mut`). This restores the
 // enforcement the frozen C seed always performed but tvc_self had dropped.
-// plan-syntax-modernization Phase 1 (strict `let`).
+// Strict `let` gate. @internal-note: plan-syntax-modernization (Phase 1).
 fn main() -> i32 {
     let x: i32 = 1;
     x = 2;

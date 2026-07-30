@@ -3,7 +3,7 @@
 // declared `i32` stays an integer — mixing it with an extension element needs an
 // explicit `n as E`. An aggregate {iN,iN} can't be compared/combined with a
 // scalar, so this must be diagnosed, not emit invalid IR (extractvalue on a
-// scalar). plan-extfield-operand-symmetry, Part 2.
+// scalar). @internal-note: plan-extfield-operand-symmetry (Part 2).
 field F251 = Field<251>;
 extfield E = ExtField<Field<251>, 2>;
 

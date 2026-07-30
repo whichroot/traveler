@@ -4,7 +4,7 @@
 // scalar values onto an owned Str. Deliberately low-level (token appenders, not
 // a document builder) so it stays tiny and the caller keeps full control of
 // shape — the lab's event/heartbeat/final records are fixed-shape and need no
-// more. Parsing (request.json) is a separate slice. tvc_self ONLY.
+// more. Parsing lives in json_parse.tv, a separate module. tvc_self ONLY.
 // @internal-design: json
 
 import "../collections/string.tv";

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// mobius_signed.tv — Mobius W-B P4: the signed (q=2) exhaustive over F_3 — impose
+// mobius_signed.tv — Mobius paper: the signed (q=2) exhaustive over F_3 — impose
 // a_{4n}=0 + a_{2n}=-a_n directly, verify four properties on all 182 solutions.
-// @internal-design: nt; @internal-note: plan-mobius-inclusion B3.
+// @internal-design: nt; @internal-note: plan-mobius-inclusion (W-B P4, B3).
 
 import "../src/lib/nt/linalg.tv";     // la_nullspace
 import "../src/lib/nt/linrec.tv";     // bm

@@ -400,7 +400,7 @@ test_single edge_cases
 #
 # tvc_self-ONLY (compile_obj_self, not test_single): the fix landed in
 # tvc_self.tv, and the frozen C seed additionally emits invalid IR for this file
-# ("zext i64 %tN to i64" — a no-op cast LLVM rejects; see known-issues #61), so
+# ("zext i64 %tN to i64" — a no-op cast LLVM rejects; @internal-note: known-issues #61), so
 # it is not dual-parity eligible. Deliberately NOT added to run_dual.sh.
 compile_obj_self field_signed_cast
 link_objs field_signed_cast field_signed_cast
@@ -503,7 +503,7 @@ compile_obj_self collide
 link_objs collide collide
 run_test collide "$TIMEOUT_SINGLE"
 
-# Surface ergonomics (plan-syntax-modernization Phase 1) — additive aliases that
+# Surface ergonomics (@internal-note: plan-syntax-modernization, Phase 1) — additive aliases that
 # lower to existing AST nodes, so both compilers must agree (dual-parity) and the
 # IR must match the old spelling (proven by the codegen-diff twin).
 test_single syntax_var        # `var` == `let mut`
@@ -589,7 +589,7 @@ test_single weil_zeta_g2
 # RH = spectrum on |z|=sqrt p. The lifting-prime coordinate (recovery needs L>range,
 # L!=p; over F_p the constant term p vanishes) is the RNS move in number theory.
 # @internal-oracle: weil_recover_ec.
-# Import-based since the nt promotion (2026-07-01): imports src/lib/nt/{curve,linrec}.tv
+# Import-based: imports src/lib/nt/{curve,linrec}.tv
 # (Model A) so it is tvc_self-built, not seed-parity. Golden byte-identical = the
 # refactor certificate. (Not in run_dual.sh — import is tvc_self-only.)
 compile_obj_self weil_recover_ec
@@ -688,7 +688,7 @@ run_test perfect_square "$TIMEOUT_SINGLE"
 compile_obj_self mobius_cutoff
 link_objs mobius_cutoff mobius_cutoff
 run_test mobius_cutoff "$TIMEOUT_SINGLE"
-# The two W-A primitive selftests, gated (closing the @internal-note: plan-parallel-windows
+# Two primitive selftests, gated (@internal-note: plan-parallel-windows, W-A
 # section-0 loose end). lnbounds_selftest: the directed ln bounds bracket true ln
 # (lower <= true <= upper, gap ~1 micro) for ln2/3/10/43/62. wideint_selftest: the
 # 31-bit-limb mul/cmp three ways (exact 2^122 identity in the high limbs, native-i64
@@ -713,10 +713,11 @@ compile_obj_self mobius_profile
 link_objs mobius_profile mobius_profile
 run_test mobius_profile "$TIMEOUT_MULTI"
 
-# Mobius W-B P3 infra: carrier-generic dense linear algebra (src/lib/nt/linalg.tv)
+# Mobius-paper infrastructure (@internal-note: plan-mobius-inclusion, W-B P3):
+# carrier-generic dense linear algebra (src/lib/nt/linalg.tv)
 # + univariate poly algebra (src/lib/nt/polyfield.tv) — consumers #3/#4 of the nt
-# carrier contract, grounded over Field<p> AND BinField<8,0x11B> per the rung
-# discipline. nt_linalg: rank/nullity/A·v==0 (the admissible-solution kernel op).
+# carrier contract, grounded over Field<p> AND BinField<8,0x11B> (each new
+# consumer must run on both carriers). nt_linalg: rank/nullity/A·v==0 (the admissible-solution kernel op).
 # nt_polyfield: mul/divmod/gcd/deriv/eval/x^e-mod-g + charpoly(companion(g))==g
 # (eval-interp charpoly, char-agnostic). Both tvc_self-only (import, Model A).
 # @internal-note: plan-mobius-inclusion B2 (P3). Design: @internal-design: nt.
@@ -727,7 +728,8 @@ compile_obj_self nt_polyfield
 link_objs nt_polyfield nt_polyfield
 run_test nt_polyfield "$TIMEOUT_SINGLE"
 # crtsolve: multi-modular EXACT integer linear solve (src/lib/nt/crtsolve.tv) —
-# the F1 elimination-engine Stage-3 SEED, first consumer = Wanderer's exact PST
+# the elimination-engine seed (@internal-note: plan-elimination-engine, Stage 3);
+# first consumer = Wanderer's exact PST
 # base. Per-prime cs_elim (31-bit primes: every product < 2^62, pure i64) +
 # Cramer det/num residues + Garner CRT reconstruction (imports rns_dyn's wide
 # limb kit — the GPT-2 RNS kernel reused) + Q20 by limb long division + FRESH-
@@ -746,7 +748,8 @@ compile_obj_self nt_radical
 link_objs nt_radical nt_radical
 run_test nt_radical "$TIMEOUT_SINGLE"
 
-# Mobius W-B P4: the Section-6 exhaustive corroborations over F_2 / F_3. Oracle =
+# Mobius paper (@internal-note: plan-mobius-inclusion, W-B P4): the Section-6
+# exhaustive corroborations over F_2 / F_3. Oracle =
 # ZERO violations (a count difference vs the paper is an enumeration-convention
 # finding). mobius_coset: Lemma-cosets promotion + coset structure — reproduces
 # 1,085 instances / 112 distinct (q=3) and 148 (q=5) EXACTLY, zero violations;
@@ -785,7 +788,8 @@ compile_obj_self mobius_coeff
 link_objs mobius_coeff mobius_coeff
 run_test mobius_coeff "$TIMEOUT_MULTI"
 
-# Mobius W-B P5: the local model + extremal horizon (Theorem "Local" / F(L)).
+# Mobius paper (@internal-note: plan-mobius-inclusion, W-B P5): the local model
+# + extremal horizon (Theorem "Local" / F(L)).
 # mobius_local: the principal-class minimum frequency count 2q-delta0-delta1.
 # Constructs the A=1 extremal (Step 4 of the proof), verifies (Z)/(S)/(W) on
 # Z/q^2, counts its Fourier support by an exact DFT over the carrier field.
@@ -1147,13 +1151,14 @@ compile_obj_self wide_print
 link_objs wide_print wide_print
 run_test wide_print "$TIMEOUT_SINGLE"
 
-# Wide-accumulator consumer (exact-arithmetic arc, Stage B / window W5): a 2x
+# Wide-accumulator consumer: a 2x
 # nested 4x4 matmul over NARROW (<2^62) i64 inputs whose column sums reach ~2^130
 # (PAST i128), requantized by a constant right-shift (round half up — division-
 # free, #21's core preserved). Computed TWO ways that must agree: hand-limbed
 # 8x31-bit-limb naturals AND a native i256 accumulator; a width certificate then
 # drives both past 2^200. Bit-exact vs a Python bignum oracle
-# (@internal-oracle: wide_acc). POST-U1 (Stage D): the i256 output loop is a
+# (@internal-oracle: wide_acc). After U1, the primitive-capture dispatch lift
+# (Stage D): the i256 output loop is a
 # flat pure body (cell() hoisted) and DISPATCHES — the named Stage-D consumer,
 # measured ~8.3x at 14 threads on the scaled idiom, bit-identical across thread
 # counts; the hand-limb loop stays serial (mutating-call — the Stage-E datapoint).
@@ -1351,7 +1356,7 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     fi
 fi
 
-# --- GPU Stage-0 device codegen gate (plan-gpu-purity-runtime) ---
+# --- GPU Stage-0 device codegen gate (@internal-note: plan-gpu-purity-runtime) ---
 # Re-emits a proven-parallel pfor worker as an amdgpu_kernel and asserts llc
 # lowers it to a valid gfx1100 code object (no GPU hardware). Skips cleanly if
 # the local llc lacks the amdgcn target. tvc_self-only (--emit-gpu).

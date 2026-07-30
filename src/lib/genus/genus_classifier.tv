@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// genus_classifier.tv — Phase 2: nearest-signature MNIST classifier (13-int
+// genus_classifier.tv — nearest-signature MNIST classifier (13-int
 // L1+L3 feature vector); each inference emits a ZK argmin certificate (a chain
 // of leq dominance proofs, zk_range.tv, over the runtime prime).
 // @internal-design: genus

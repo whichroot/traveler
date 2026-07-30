@@ -1,5 +1,6 @@
-// pfor_u1_i64_scatter.tv — U1 (Stage D) via-negativa: non-injective write,
-// i64 flavor. out[i / 2] maps two iterations onto one cell — an RMW race
+// pfor_u1_i64_scatter.tv — via-negativa for U1, the primitive-capture dispatch
+// lift (@internal-note: plan-exact-arithmetic-arc, Stage D): non-injective
+// write, i64 flavor. out[i / 2] maps two iterations onto one cell — an RMW race
 // under parallel dispatch. The write-index classifier refuses it
 // (`noninjective`) regardless of element type; U1 changes nothing here.
 // Mirrors pfor_race_noninjective.tv (the Field<> original).

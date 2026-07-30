@@ -183,7 +183,8 @@ fn format_src(src: *u8, n: i32) {
     }
 }
 
-// ---- migration pre-pass (--migrate, syntax-modernization Phase 2) ----
+// ---- migration pre-pass (--migrate; @internal-note: plan-syntax-modernization,
+//      Phase 2) ----
 // Byte-level rewrite of deprecated spellings to their Phase-1 aliases,
 // preserving comment/string/char-literal interiors. Runs BEFORE format_src.
 

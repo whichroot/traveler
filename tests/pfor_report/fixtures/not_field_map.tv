@@ -2,7 +2,8 @@
 // analysis proves independence (stride-1 injective write, own-cell reads, pure
 // body); pre-U1 the dispatch gate refused it anyway because the captured
 // arrays are i64, not a field type — verdict `not-field`, the type-proxy.
-// Stage D (U1, the has_field gate lift) LANDED: this shape now DISPATCHES —
+// Stage D (U1, the has_field gate lift; @internal-note:
+// plan-exact-arithmetic-arc) LANDED: this shape now DISPATCHES —
 // kept as the U1 positive control (a `not-field` verdict here, or lost
 // dispatch, is a gate regression).
 fn scale(out: *i64, a: *i64, n: i32) {

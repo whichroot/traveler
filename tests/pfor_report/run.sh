@@ -8,7 +8,9 @@
 #      This turns the race catalogue into a reason-labeled oracle.
 #   2. BASELINE: the whole compiling corpus (reused from codegen_diff) is run
 #      through the mode and projected to a line/col-stripped, sorted golden of
-#      per-loop verdicts. Stage D (U1) LANDED against this instrument: the
+#      per-loop verdicts. U1, the primitive-capture dispatch lift
+#      (@internal-note: plan-exact-arithmetic-arc, Stage D), LANDED against
+#      this instrument: the
 #      audited diff flipped exactly the 65 `not-field` records (18 files) to
 #      dispatched, nothing else — the baseline now tracks POST-U1 dispatch
 #      decisions, with `cap-elem` as the residual type refusal.

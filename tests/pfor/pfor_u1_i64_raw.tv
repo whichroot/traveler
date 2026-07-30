@@ -1,4 +1,6 @@
-// pfor_u1_i64_raw.tv — U1 (Stage D) via-negativa: the RAW hazard, i64 flavor.
+// pfor_u1_i64_raw.tv — via-negativa for U1, the primitive-capture dispatch
+// lift (@internal-note: plan-exact-arithmetic-arc, Stage D): the RAW hazard,
+// i64 flavor.
 // U1 lifted the TYPE gate, not the independence proof: out[i] = out[i+1] + a[i]
 // still reads a cell that a DIFFERENT iteration writes — refused (`raw`),
 // exactly as the Field<> original (pfor_race_raw.tv). The i64 demonstrators

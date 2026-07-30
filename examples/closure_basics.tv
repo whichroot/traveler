@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// closure_basics.tv — B2-closures minimal vertical slice: non-capturing,
+// closure_basics.tv — closures, the minimal vertical slice: non-capturing,
 // by-value capture, generic HOF pass-down, block body with control flow.
-// @internal-design: examples (closure_basics).
+// @internal-design: examples (closure_basics); @internal-note:
+// plan-language-maturity-roadmap (B2).
 //
 // Expected output: 42 105 11 42 9
 

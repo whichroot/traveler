@@ -1,4 +1,5 @@
-// pfor_u1_i64_map.tv — U1 (Stage D) positive control: the flip-set shape.
+// pfor_u1_i64_map.tv — positive control for U1, the primitive-capture dispatch
+// lift (@internal-note: plan-exact-arithmetic-arc, Stage D): the flip-set shape.
 // An element-independent i64 own-cell map: stride-1 injective write, own-cell
 // read, pure body, every capture primitive (out/a: *i64, k: i64 scalar).
 // Pre-U1 this exact shape was refused `not-field` (the type-proxy); post-U1

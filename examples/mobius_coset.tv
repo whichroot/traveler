@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// mobius_coset.tv — Mobius W-B P4: the coset-support exhaustive (F_2, q in {3,5}):
+// mobius_coset.tv — Mobius paper: the coset-support exhaustive (F_2, q in {3,5}):
 // PROMOTION + COSET verified over every admissible deg<=12 recurrence, counts gated.
-// @internal-design: nt (Mobius arc); @internal-note: plan-mobius-inclusion B3.
+// @internal-design: nt (Mobius arc); @internal-note: plan-mobius-inclusion (W-B P4, B3).
 
 import "../src/lib/nt/linalg.tv";     // la_nullspace
 import "../src/lib/nt/linrec.tv";     // bm

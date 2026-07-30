@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// mobius_coeff.tv — Mobius W-B B6: the F_2^60 coefficient-function closure — the
+// mobius_coeff.tv — Mobius paper: the F_2^60 coefficient-function closure — the
 // STRONG Lemma 5.1(c) (q=3/F_2) checked per solution over 15 exact BinField<m>
 // splitting-field carriers. tvc_self-only (import).
-// @internal-design: nt (Mobius W-B, B6 section); @internal-note: plan-mobius-inclusion.
+// @internal-design: nt (Mobius W-B, B6 section); @internal-note: plan-mobius-inclusion (W-B B6).
 
 import "../src/lib/nt/linalg.tv";     // la_fpow, la_solve
 import "../src/lib/nt/linrec.tv";     // bm

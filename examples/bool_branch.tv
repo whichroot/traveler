@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// bool_branch.tv — gate for known-issues #34: a STORED `bool` as an if/while
+// bool_branch.tv — gate for @internal-note: known-issues #34: a STORED `bool` as an if/while
 // condition, plus the return-path sibling (`-> bool` returning a comparison).
 // @internal-design: examples (bool_branch, #34).
 

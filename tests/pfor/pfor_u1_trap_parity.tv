@@ -1,4 +1,5 @@
-// pfor_u1_trap_parity.tv — U1 (Stage D) trap-ordering gate.
+// pfor_u1_trap_parity.tv — trap-ordering gate for U1, the primitive-capture
+// dispatch lift (@internal-note: plan-exact-arithmetic-arc, Stage D).
 // Integer division is ADMITTED in dispatched bodies; its by-zero behavior is
 // platform semantics (AArch64: x/0 == 0, no trap; x86-64: SIGFPE aborts).
 // The SPEC this gate pins: the parallel OUTCOME equals the serial OUTCOME —

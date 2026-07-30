@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// mobius_local.tv — Mobius W-B P5: Theorem "Local" — principal-class minimum Fourier
+// mobius_local.tv — Mobius paper: Theorem "Local" — principal-class minimum Fourier
 // support 2q - delta_0 - delta_1 via exact DFT per carrier. tvc_self-only (import).
-// @internal-design: nt; @internal-note: plan-mobius-inclusion B4.
+// @internal-design: nt; @internal-note: plan-mobius-inclusion (W-B P5, B4).
 // Output rows are 5 ints: q, p, k, value, status  (status 1 = reachable+verified
 // [value = computed support], -1 = refused [value = 2q-delta from the theorem]).
 
