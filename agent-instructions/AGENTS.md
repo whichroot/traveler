@@ -88,6 +88,7 @@ Read-only compiler query modes (parse/analyze, no program emitted):
 | `--pfor-report` | One JSON record per `for` loop: did it parallelize, and if not, the reason. |
 | `--eval` | Run in a tree-walking interpreter (no LLVM). |
 | `--emit-gpu` | Re-emit elementwise parallel loops as AMD GCN kernels (early). |
+| `--emit-gpu-nvptx` | Same, NVIDIA target: `nvptx64-nvidia-cuda` PTX kernels (early). |
 | `-target <triple>` | Cross-compile IR (default `arm64-apple-darwin`). |
 
 ---
@@ -397,7 +398,9 @@ Key signatures (grep the module file for the full set — every module is plain
 - **ecc:** `rs_encode<F>` `rs_decode<F>` (+ syndrome/Berlekamp-Massey error decode).
 - **nt:** `bm<F>` (Berlekamp-Massey); `la_nullspace`/`la_solve`; `sqrt_mod`.
 
-GPU codegen (`--emit-gpu`) is early-stage.
+GPU codegen (`--emit-gpu` for AMD GCN, `--emit-gpu-nvptx` for NVIDIA) is
+early-stage: device-module emission only, gated by `llc` lowering — there is no
+runtime, no launch, no host-device transfer yet.
 
 ---
 
