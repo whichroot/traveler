@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// field_signed_cast.tv — regression gate for #60: signed integer -> Field<p>.
+//
+// A negative i64 cast into a prime field used to emit a plain `urem`, which
+// reads the two's-complement pattern as unsigned: `(-5) as Field<251>` landed
+// on 64 instead of 246, because (2^64 - 5) mod 251 = 64. Silent — no
+// diagnostic, and subsequent field arithmetic did not renormalize it. The
+// `signed(x) as F` round trip, which is the only idiom for leaving the field
+// and coming back, was broken for every negative value at every field width.
+//
+// Reference in every case is field negation `0 - (mag as F)`, which was always
+// correct. Every line prints 1 for PASS.
+//
+// Guards the fix at emit_implicit_convert (baked) and the ev_convert /
+// EIR_DYNRED mirrors (eval), so the eval-diff oracle covers it too.
+
+type F8  = Field<251>;
+type F16 = Field<65521>;
+type F32 = Field<4294967291>;
+type F64 = Field<18446744073709551557>;
+
+struct S64 { a: F64 }
+
+fn ret64(n: i64) -> F64 { return n as F64; }
+fn takes64(x: F64) -> F64 { return x; }
+
+fn eq8(a: F8, b: F8) -> i32    { if a == b { return 1; } return 0; }
+fn eq16(a: F16, b: F16) -> i32 { if a == b { return 1; } return 0; }
+fn eq32(a: F32, b: F32) -> i32 { if a == b { return 1; } return 0; }
+fn eq64(a: F64, b: F64) -> i32 { if a == b { return 1; } return 0; }
+
+fn main() {
+    let n: i64 = 0 - 5;
+    let w8:  F8  = 0 - 5;
+    let w16: F16 = 0 - 5;
+    let w32: F32 = 0 - 5;
+    let w64: F64 = 0 - 5;
+
+    // every field width
+    print(eq8 (n as F8,  w8 ));
+    print(eq16(n as F16, w16));
+    print(eq32(n as F32, w32));
+    print(eq64(n as F64, w64));
+
+    // every syntactic context that funnels through the conversion
+    print(eq64(ret64(n), w64));
+    print(eq64(takes64(n as F64), w64));
+    let s: S64 = S64 { a: n as F64 };
+    print(eq64(s.a, w64));
+    var arr: [F64; 4] = 0;
+    arr[0] = n as F64;
+    print(eq64(arr[0], w64));
+    print(eq64((n as F64) + 0, w64));
+
+    // narrower signed sources (sext, then reduce)
+    let i32v: i32 = 0 - 5;
+    let i16v: i16 = 0 - 5;
+    let i8v:  i8  = 0 - 5;
+    print(eq64(i32v as F64, w64));
+    print(eq64(i16v as F64, w64));
+    print(eq64(i8v  as F64, w64));
+
+    // the signed() round trip — the idiom that was broken
+    print(eq64(signed(w64) as F64, w64));
+    print(eq32(signed(w32) as F32, w32));
+
+    // magnitude bands. p = 2^64 - 59 for F64, so |v| <= 59 and |v| > 59 took
+    // different wrong values before the fix.
+    let a3: F64 = 0 - 3;
+    print(eq64((0 - 3) as F64, a3));
+    let a1m: F64 = 0 - 1000000;
+    let m1: i64 = 0 - 1000000;
+    print(eq64(m1 as F64, a1m));
+    let a4g: F64 = 0 - 4000000000;
+    let m2: i64 = 0 - 4000000000;
+    print(eq64(m2 as F64, a4g));
+
+    // -p must reduce to 0, not to p (the rmag == 0 arm)
+    let mp: i64 = 0 - 251;
+    let z8: F8 = 0;
+    print(eq8(mp as F8, z8));
+
+    // CONTROLS — unsigned and non-negative paths must be byte-unchanged
+    let pos: i64 = 5;
+    let p8: F8 = 5;
+    print(eq8(pos as F8, p8));
+    let big: i64 = 300;
+    let b8: F8 = 49;
+    print(eq8(big as F8, b8));
+    let uv: u32 = 300;
+    print(eq8(uv as F8, b8));
+    let zero: i64 = 0;
+    print(eq8(zero as F8, z8));
+}

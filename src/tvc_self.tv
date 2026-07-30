@@ -7849,6 +7849,70 @@ fn register_is_dyn(type_off: i32) -> i32 {
     return 0;
 }
 
+// Write the modulus operand: a runtime register when preg >= 0 (dyn carrier),
+// else the baked prime literal of field `fi`.
+fn emit_mod_operand(fi: i32, preg: i32) {
+    if preg >= 0 {
+        ir_wr_reg(preg);
+    } else {
+        ir_wr_prime(fi);
+    }
+}
+
+// #60: reduce a SIGNED i64 in `vreg` to the canonical residue [0, p).
+//
+// A plain `urem` is WRONG here: it reads the two's-complement pattern of a
+// negative value as a huge unsigned number, so `(-5) as Field<251>` lands on
+// 64 instead of 246 ((2^64-5) mod 251). Silent — nothing downstream
+// renormalizes it.
+//
+// `srem` is NOT the fix either. For a wide prime (p >= 2^63, e.g. the 64-bit
+// prime 2^64-59) the modulus's own i64 bit pattern is negative, so `srem`
+// would divide by -59. Instead reduce the MAGNITUDE with an unsigned `urem`
+// (correct for every p, since ir_wr_prime emits p as an unsigned literal) and
+// reflect it back across p when the source was negative:
+//
+//     mag  = |v|                       (sub 0,v wraps -2^63 to 2^63 = |v|)
+//     rmag = mag urem p
+//     res  = v < 0 ? (rmag == 0 ? 0 : p - rmag) : rmag
+//
+// The rmag == 0 arm matters: -p must map to 0, not to p.
+// Mirrors `canon()` in src/lib/float/embed.tv, which had it right all along.
+fn emit_signed_field_reduce(vreg: i32, fi: i32, preg: i32) -> i32 {
+    let isneg: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(isneg); ir_wr(" = icmp slt i64 ");
+    ir_wr_reg(vreg); ir_wr(", 0\n");
+
+    let negv: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(negv); ir_wr(" = sub i64 0, ");
+    ir_wr_reg(vreg); ir_wr("\n");
+
+    let mag: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(mag); ir_wr(" = select i1 "); ir_wr_reg(isneg);
+    ir_wr(", i64 "); ir_wr_reg(negv); ir_wr(", i64 "); ir_wr_reg(vreg); ir_wr("\n");
+
+    let rmag: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(rmag); ir_wr(" = urem i64 ");
+    ir_wr_reg(mag); ir_wr(", "); emit_mod_operand(fi, preg); ir_wr("\n");
+
+    let pm: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(pm); ir_wr(" = sub i64 ");
+    emit_mod_operand(fi, preg); ir_wr(", "); ir_wr_reg(rmag); ir_wr("\n");
+
+    let isz: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(isz); ir_wr(" = icmp eq i64 ");
+    ir_wr_reg(rmag); ir_wr(", 0\n");
+
+    let negr: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(negr); ir_wr(" = select i1 "); ir_wr_reg(isz);
+    ir_wr(", i64 0, i64 "); ir_wr_reg(pm); ir_wr("\n");
+
+    let res: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(res); ir_wr(" = select i1 "); ir_wr_reg(isneg);
+    ir_wr(", i64 "); ir_wr_reg(negr); ir_wr(", i64 "); ir_wr_reg(rmag); ir_wr("\n");
+    return res;
+}
+
 // Emit implicit widening/narrowing if src and dst IR types differ.
 // Returns the (possibly new) register holding the converted value.
 fn emit_implicit_convert(src_reg: i32, src_type: i32, dst_type: i32) -> i32 {
@@ -7881,9 +7945,17 @@ fn emit_implicit_convert(src_reg: i32, src_type: i32, dst_type: i32) -> i32 {
                 }
                 ir_wr_type(src_type); ir_wr(" "); ir_wr_reg(src_reg); ir_wr(" to i64\n");
             }
-            let icr: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(icr); ir_wr(" = urem i64 ");
-            ir_wr_reg(icw); ir_wr(", "); ir_wr_prime(ic_pfi); ir_wr("\n");
+            // #60: a signed source needs signed reduction; `urem` alone reads a
+            // negative two's-complement pattern as unsigned. Unsigned sources
+            // keep the single-urem path (byte-unchanged).
+            var icr: i32 = 0;
+            if type_is_signed(src_type) == 1 {
+                icr = emit_signed_field_reduce(icw, ic_pfi, 0 - 1);
+            } else {
+                icr = ir_tmp();
+                ir_wr("  "); ir_wr_reg(icr); ir_wr(" = urem i64 ");
+                ir_wr_reg(icw); ir_wr(", "); ir_wr_prime(ic_pfi); ir_wr("\n");
+            }
             if dst_bits < 64 {
                 let ict: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(ict); ir_wr(" = trunc i64 ");
@@ -10098,9 +10170,17 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let p: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(p); ir_wr(" = load i64, ptr ");
             ir_wr_reg(pp); ir_wr("\n");
-            let r: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(r); ir_wr(" = urem i64 ");
-            ir_wr_reg(raw); ir_wr(", "); ir_wr_reg(p); ir_wr("\n");
+            // #60: a NEGATIVE literal needs signed reduction against the runtime
+            // p. The literal is compile-time known, so non-negative ones keep the
+            // single-urem path and their IR is byte-unchanged.
+            var r: i32 = 0;
+            if (val as i64) < 0 {
+                r = emit_signed_field_reduce(raw, 0 - 1, p);
+            } else {
+                r = ir_tmp();
+                ir_wr("  "); ir_wr_reg(r); ir_wr(" = urem i64 ");
+                ir_wr_reg(raw); ir_wr(", "); ir_wr_reg(p); ir_wr("\n");
+            }
             return IRValue { reg: r, type_off: eff_type };
         }
         // If context is a field type, apply safe modulation
@@ -11400,15 +11480,28 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     let avb: i32 = type_bits(av_type);
                     if avb > 0 && avb < 64 {
                         let avw: i32 = ir_tmp();
-                        ir_wr("  "); ir_wr_reg(avw); ir_wr(" = zext ");
+                        ir_wr("  "); ir_wr_reg(avw);
+                        // #60: widen by SOURCE signedness. This site used to zext
+                        // unconditionally, so a negative i32 coefficient became a
+                        // huge positive before reduction.
+                        if type_is_signed(av_type) == 1 {
+                            ir_wr(" = sext ");
+                        } else {
+                            ir_wr(" = zext ");
+                        }
                         ir_wr_type(av_type); ir_wr(" "); ir_wr_reg(av_reg);
                         ir_wr(" to i64\n");
                         av_reg = avw;
                     }
-                    // Reduce mod p
-                    let avr: i32 = ir_tmp();
-                    ir_wr("  "); ir_wr_reg(avr); ir_wr(" = urem i64 ");
-                    ir_wr_reg(av_reg); ir_wr(", "); ir_wr_reg(dpv); ir_wr("\n");
+                    // Reduce mod p (#60: signed sources need signed reduction)
+                    var avr: i32 = 0;
+                    if type_is_signed(av_type) == 1 {
+                        avr = emit_signed_field_reduce(av_reg, 0 - 1, dpv);
+                    } else {
+                        avr = ir_tmp();
+                        ir_wr("  "); ir_wr_reg(avr); ir_wr(" = urem i64 ");
+                        ir_wr_reg(av_reg); ir_wr(", "); ir_wr_reg(dpv); ir_wr("\n");
+                    }
                     // GEP into the coefficient array (struct index 1)
                     let agep: i32 = ir_tmp();
                     ir_wr("  "); ir_wr_reg(agep); ir_wr(" = getelementptr ");
@@ -12377,9 +12470,15 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let cp: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(cp); ir_wr(" = load i64, ptr ");
             ir_wr_reg(cpp); ir_wr("\n");
-            let cr: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(cr); ir_wr(" = urem i64 ");
-            ir_wr_reg(wide); ir_wr(", "); ir_wr_reg(cp); ir_wr("\n");
+            // #60: signed sources need signed reduction against the runtime p.
+            var cr: i32 = 0;
+            if type_is_signed(inner.type_off) == 1 {
+                cr = emit_signed_field_reduce(wide, 0 - 1, cp);
+            } else {
+                cr = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = urem i64 ");
+                ir_wr_reg(wide); ir_wr(", "); ir_wr_reg(cp); ir_wr("\n");
+            }
             return IRValue { reg: cr, type_off: target_type };
         }
         // ptr <-> int
@@ -13766,9 +13865,14 @@ fn codegen_stmt(stmt: i32) {
             let lp: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(lp); ir_wr(" = load i64, ptr ");
             ir_wr_reg(lpp); ir_wr("\n");
-            store_reg = ir_tmp();
-            ir_wr("  "); ir_wr_reg(store_reg); ir_wr(" = urem i64 ");
-            ir_wr_reg(lwide); ir_wr(", "); ir_wr_reg(lp); ir_wr("\n");
+            // #60: signed sources need signed reduction against the runtime p.
+            if type_is_signed(val.type_off) == 1 {
+                store_reg = emit_signed_field_reduce(lwide, 0 - 1, lp);
+            } else {
+                store_reg = ir_tmp();
+                ir_wr("  "); ir_wr_reg(store_reg); ir_wr(" = urem i64 ");
+                ir_wr_reg(lwide); ir_wr(", "); ir_wr_reg(lp); ir_wr("\n");
+            }
         } else if actual_type != NULL_STR && val.type_off != NULL_STR {
             store_reg = emit_implicit_convert(val.reg, val.type_off, actual_type);
         }
@@ -21512,6 +21616,23 @@ fn ev_memcpy(dst: u64, src: u64, n: i32) {
 // Conversion semantics (emit_implicit_convert + AST_CAST mirror): width trunc
 // / sext-zext by SOURCE signedness; ptr<->int retags; a narrow BinField dst
 // canonicalizes with the low-K mask.
+// #60 (eval mirror of emit_signed_field_reduce): canonical residue [0, p) of a
+// value whose SOURCE type is signed. `w64 % p` alone is wrong — it reads the
+// two's-complement pattern as unsigned. Reduce the magnitude, then reflect
+// across p; `0 - w64` in u64 wrapping IS |v|, and it handles -2^63 without a
+// negate overflow (the magnitude idiom, cf. #55). rm == 0 must map to 0, not p.
+//
+// The caller MUST gate on type_is_signed(src): a u64 with the high bit set is
+// a large positive number, not a negative one.
+fn ev_signed_reduce(w64: u64, p: u64) -> u64 {
+    let sv: i64 = w64 as i64;
+    if sv >= 0 { return w64 % p; }
+    let mag: u64 = 0 - w64;
+    let rm: u64 = mag % p;
+    if rm == 0 { return 0; }
+    return p - rm;
+}
+
 fn ev_convert(bits_in: u64, src_t: i32, dst_t: i32) -> u64 {
     let sb: i32 = type_bits(src_t);
     let db: i32 = type_bits(dst_t);
@@ -21527,6 +21648,10 @@ fn ev_convert(bits_in: u64, src_t: i32, dst_t: i32) -> u64 {
         if g_fields[cv_pfi].field_kind == FIELD_KIND_PRIME {
             if find_field_by_alias(src_t) < 0 {
                 let cvw64: u64 = ev_convert(bits_in, src_t, str_intern("i64"));
+                // #60: signed sources need signed reduction.
+                if type_is_signed(src_t) == 1 {
+                    return ev_signed_reduce(cvw64, g_fields[cv_pfi].prime);
+                }
                 return cvw64 % g_fields[cv_pfi].prime;
             }
         }
@@ -22286,6 +22411,10 @@ fn ev_expr(e: i32, fr: *EvFrame) -> EvalVal {
         if fr.unwinding == 1 { return sv; }
         let w64: u64 = ev_convert(sv.bits, g_eir[e].aux_type, str_intern("i64"));
         let p: u64 = ev_dyn_p(fr, g_eir[e].b);
+        // #60: signed sources need signed reduction (mirrors the dyn codegen).
+        if type_is_signed(g_eir[e].aux_type) == 1 {
+            return EvalVal { tag: EV_INT, type_off: g_eir[e].type_off, bits: ev_signed_reduce(w64, p) };
+        }
         return EvalVal { tag: EV_INT, type_off: g_eir[e].type_off, bits: w64 % p };
     }
 

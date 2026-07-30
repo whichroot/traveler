@@ -392,6 +392,19 @@ echo ""
 # Field arithmetic
 test_single field_basics
 test_single edge_cases
+# #60 gate: signed integer -> Field<p>. A negative source used to emit a plain
+# `urem`, reading the two's-complement pattern as unsigned ((-5) as Field<251>
+# gave 64, not 246). Silent miscompile; the `signed(x) as F` round trip was
+# broken at every field width and in every syntactic context. Covers the baked
+# path (emit_implicit_convert) plus unsigned/non-negative controls.
+#
+# tvc_self-ONLY (compile_obj_self, not test_single): the fix landed in
+# tvc_self.tv, and the frozen C seed additionally emits invalid IR for this file
+# ("zext i64 %tN to i64" — a no-op cast LLVM rejects; see known-issues #61), so
+# it is not dual-parity eligible. Deliberately NOT added to run_dual.sh.
+compile_obj_self field_signed_cast
+link_objs field_signed_cast field_signed_cast
+run_test field_signed_cast "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.

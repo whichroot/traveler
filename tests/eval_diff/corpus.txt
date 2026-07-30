@@ -107,3 +107,4 @@ examples/wide_merkle_test.tv    # Merkle over the wide carrier
 examples/wide_poseidon2_test.tv # Poseidon2 over the wide carrier
 examples/wide_fri_test.tv       # FRI over the wide carrier
 examples/mobius_cutoff.tv       # the Remark-3.4 machine check: native i128/i256 endpoints
+examples/field_signed_cast.tv   # #60: signed int -> Field<p>, eval must mirror codegen
