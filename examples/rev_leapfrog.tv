@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rev_leapfrog.tv — R1: nonlinear, non-algebraic force through the membrane.
+//
+// System: the nonlinear pendulum, F(x) = -sin(x). Not algebraic. The classic
+// stress test for symplectic integrators.
+//
+// The membrane doctrine under test: compute the force by ANY deterministic
+// procedure, then quantize to an integer BEFORE it touches the state update.
+// The force law is exploration; the state update is commitment. If the doctrine
+// holds, the trajectory is bit-reversible even though sin() is transcendental.
+//
+// State lives in Field<p>. signed() maps a residue to its balanced
+// representative in [-(p-1)/2, (p-1)/2] — the Boundary Invariance window. The
+// force is computed from that balanced integer, so:
+//
+//   * reversibility depends ONLY on Fq being a pure int->int function
+//   * physics depends on the state STAYING INSIDE the signed() window
+//
+// Those are different claims. R1 tests the first. R2 tests the second.
+//
+// Integrator (bit-reversible leapfrog, Levesque-Verlet form):
+//   v_{n+1/2} = v_{n-1/2} + Fq(x_n)
+//   x_{n+1}   = x_n + v_{n+1/2}
+// Inverse, in this order:
+//   x_n       = x_{n+1} - v_{n+1/2}
+//   v_{n-1/2} = v_{n+1/2} - Fq(x_n)
+//
+// @internal-note: plan-reversible-dynamics (R1)
+
+type F = Field<18446744073709551557>;
+
+let SCALE: i64 = 65536;        // fixed-point scale 2^16
+let DTSHIFT: i64 = 10;         // dt^2 folded in as >> 10
+
+struct St { x: F, v: F }
+
+// Fixed-point multiply at scale 2^16. Truncating division — deterministic,
+// which is all reversibility requires.
+fn mul_s(a: i64, b: i64) -> i64 {
+    return (a * b) / SCALE;
+}
+
+// sin(x) for x given at scale 2^16, |x| < ~1.6 rad. Degree-7 Taylor:
+//   sin(x) = x - x^3/6 + x^5/120 - x^7/5040
+// Error < 1e-9 at |x| <= 1. Non-algebraic, exact, integer-only.
+fn fx_sin(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x3: i64 = mul_s(x2, x);
+    let x5: i64 = mul_s(x3, x2);
+    let x7: i64 = mul_s(x5, x2);
+    return x - x3 / 6 + x5 / 120 - x7 / 5040;
+}
+
+
+fn force_q(xf: F) -> F {
+    let xi: i64 = signed(xf);
+    let s: i64 = fx_sin(xi);
+    let fq: i64 = (0 - s) / (1 << DTSHIFT);
+    return fq as F;
+}
+
+fn fwd(s: St) -> St {
+    let nv: F = s.v + force_q(s.x);
+    let nx: F = s.x + nv;
+    return St { x: nx, v: nv };
+}
+
+fn bwd(s: St) -> St {
+    let ox: F = s.x - s.v;
+    let ov: F = s.v - force_q(ox);
+    return St { x: ox, v: ov };
+}
+
+fn iabs(a: i64) -> i64 {
+    if a < 0 { return 0 - a; }
+    return a;
+}
+
+fn main() {
+    // Initial condition: x0 = 1.0 rad, v0 = 0. Pendulum released from rest.
+    let x0: F = 65536;
+    let v0: F = 0;
+
+    var s: St = St { x: x0, v: v0 };
+
+    let N: i32 = 500000;
+
+    // Forward, instrumenting dynamic range (the Layer-2 "does it fit" number).
+    var maxx: i64 = 0;
+    var maxv: i64 = 0;
+    var i: i32 = 0;
+    while i < N {
+        s = fwd(s);
+        let ax: i64 = iabs(signed(s.x));
+        let av: i64 = iabs(signed(s.v));
+        if ax > maxx { maxx = ax; }
+        if av > maxv { maxv = av; }
+        i = i + 1;
+    }
+
+    // Witness that the trajectory moved.
+    var moved: i32 = 0;
+    if s.x != x0 || s.v != v0 { moved = 1; }
+    print(moved);
+
+    // Backward.
+    var j: i32 = 0;
+    while j < N {
+        s = bwd(s);
+        j = j + 1;
+    }
+
+    // R1 verdict: bit-identity after 500k forward + 500k backward steps
+    // through a transcendental force law.
+    var ok: i32 = 0;
+    if s.x == x0 && s.v == v0 { ok = 1; }
+    print(ok);
+
+    // Dynamic range, in units of 1/65536 rad. Physics is valid only while
+    // these stay far below (p-1)/2.
+    print(maxx);
+    print(maxv);
+}

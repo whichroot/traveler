@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rev_adjoint.tv — R3, THE CRUX: a gradient through a simulation with no tape.
+//
+// This is the rung the whole hypothesis lives or dies on. Everything before it
+// (R0/R1/R2) established that the trajectory is exactly reversible AND
+// physically faithful. R3 asks whether that buys the thing float cannot buy:
+// reverse-mode differentiation in O(1) memory.
+//
+// Standard reverse-mode must STORE the forward trajectory, because float
+// addition is not a group and the states cannot be recovered. Memory grows as
+// O(steps). Griewank's `revolve` checkpointing exists solely to trade that
+// memory back for recompute. If the forward map is exactly invertible, the tape
+// is unnecessary: rewind the state and propagate the adjoint in the same loop.
+//
+// Loss L = x_N. Wanted: dL/dx0 and dL/dv0.
+//
+// Forward map in real units (dt = 1/32, f(x) = -sin x):
+//   v' = v + dt*f(x)
+//   x' = x + dt*v'
+// Jacobian J = [[1 + dt^2 f'(x), dt], [dt f'(x), 1]],  f'(x) = -cos x
+// Adjoint  lambda_n = J^T lambda_{n+1}:
+//   lx_n = (1 + dt^2 c) lx + dt c lv
+//   lv_n = dt lx + lv                      (both from the OLD lx, lv)
+//
+// TWO kill conditions are under test here:
+//   Kill A (magnitude): adjoints grow with the Lyapunov exponent; single-modulus
+//     accumulation wraps. Reported as max|lambda| against (p-1)/2.
+//   Kill B (the staircase): the true derivative of a QUANTIZED force is zero
+//     almost everywhere. We differentiate the underlying smooth force instead
+//     (straight-through). If the quantization step is coarse relative to the
+//     gradient signal, the recovered gradient is noise and H2 dies even with
+//     perfect arithmetic. Reported by comparison against the float64 oracle.
+//
+// @internal-note: plan-reversible-dynamics (R3)
+
+type F = Field<18446744073709551557>;
+
+let XS: i64 = 16777216;            // 1 << 24, position scale
+let VSHIFT: i64 = 10;              // 2*m, dt = 2^-5
+let LS: i64 = 1073741824;          // 1 << 30, adjoint scale
+let NSTEP: i32 = 200;              // ~one pendulum period
+
+struct St { x: F, v: F }
+struct Adj { lx: i64, lv: i64 }
+
+fn mul_s(a: i64, b: i64) -> i64 { return (a * b) / XS; }
+
+fn fx_sin(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x3: i64 = mul_s(x2, x);
+    let x5: i64 = mul_s(x3, x2);
+    let x7: i64 = mul_s(x5, x2);
+    return x - x3 / 6 + x5 / 120 - x7 / 5040;
+}
+
+fn fx_cos(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x4: i64 = mul_s(x2, x2);
+    let x6: i64 = mul_s(x4, x2);
+    return XS - x2 / 2 + x4 / 24 - x6 / 720;
+}
+
+
+fn force_q(xf: F) -> F {
+    let xi: i64 = signed(xf);
+    return (0 - fx_sin(xi)) as F;
+}
+
+fn fwd(s: St) -> St {
+    let nv: F = s.v + force_q(s.x);
+    let shift: i64 = signed(nv) / (1 << VSHIFT);
+    let nx: F = s.x + (shift as F);
+    return St { x: nx, v: nv };
+}
+
+fn bwd(s: St) -> St {
+    let shift: i64 = signed(s.v) / (1 << VSHIFT);
+    let ox: F = s.x - (shift as F);
+    let ov: F = s.v - force_q(ox);
+    return St { x: ox, v: ov };
+}
+
+// One adjoint step, given f'(x_n) = -cos(x_n) as `ci` at scale XS.
+// dt = 1/32, dt^2 = 1/1024.
+fn adj_step(a: Adj, ci: i64) -> Adj {
+    let t1: i64 = (ci * a.lx) / (1024 * XS);   // dt^2 * c * lx
+    let t2: i64 = (ci * a.lv) / (32 * XS);     // dt   * c * lv
+    let nlx: i64 = a.lx + t1 + t2;
+    let nlv: i64 = a.lv + a.lx / 32;
+    return Adj { lx: nlx, lv: nlv };
+}
+
+fn iabs(a: i64) -> i64 { if a < 0 { return 0 - a; } return a; }
+
+fn main() {
+    let x0: F = 16777216;          // 1.0 rad
+    let v0: F = 0;
+
+    // ---- forward pass, storing a tape ONLY for the cross-check -------------
+    var tape_x: [i64; 256] = 0;
+    var tape_v: [i64; 256] = 0;
+
+    var s: St = St { x: x0, v: v0 };
+    tape_x[0] = signed(s.x);
+    tape_v[0] = signed(s.v);
+
+    var i: i32 = 0;
+    while i < NSTEP {
+        s = fwd(s);
+        tape_x[i + 1] = signed(s.x);
+        tape_v[i + 1] = signed(s.v);
+        i = i + 1;
+    }
+    print(signed(s.x));            // x_N, the loss value
+    print(signed(s.v));
+
+    // ---- (1) REVERSAL-BASED ADJOINT — no tape read ------------------------
+    // The state is rewound by bwd() in the same loop that propagates lambda.
+    // Memory is O(1): one St, one Adj, regardless of NSTEP.
+    var a: Adj = Adj { lx: LS, lv: 0 };        // dL/dx_N = 1, dL/dv_N = 0
+    var r: St = s;
+    var maxl: i64 = LS;
+
+    var k: i32 = 0;
+    while k < NSTEP {
+        r = bwd(r);
+        let ci: i64 = 0 - fx_cos(signed(r.x));  // f'(x) = -cos x
+        a = adj_step(a, ci);
+        let m1: i64 = iabs(a.lx);
+        let m2: i64 = iabs(a.lv);
+        if m1 > maxl { maxl = m1; }
+        if m2 > maxl { maxl = m2; }
+        k = k + 1;
+    }
+
+    // The rewind must land exactly on the initial condition.
+    var land: i32 = 0;
+    if r.x == x0 && r.v == v0 { land = 1; }
+    print(land);
+
+    print(a.lx);                   // dL/dx0 * 2^30
+    print(a.lv);                   // dL/dv0 * 2^30
+
+    // ---- (2) TAPE-BASED ADJOINT — same arithmetic, stored states ----------
+    // Must be BIT-IDENTICAL to (1). This is the proof that the rewind carries
+    // the same information the tape does.
+    var b: Adj = Adj { lx: LS, lv: 0 };
+    var t: i32 = NSTEP;
+    while t > 0 {
+        let ci: i64 = 0 - fx_cos(tape_x[t - 1]);
+        b = adj_step(b, ci);
+        t = t - 1;
+    }
+
+    var same: i32 = 0;
+    if b.lx == a.lx && b.lv == a.lv { same = 1; }
+    print(same);
+
+    // ---- Kill A instrumentation -------------------------------------------
+    // max|lambda| against the field's balanced half-width (p-1)/2.
+    // p = 18446744073709551557 -> (p-1)/2 = 9223372036854775778.
+    print(maxl);
+}

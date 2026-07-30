@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rev_stdmap.tv — R3b: Kill A on purpose. Where does the tape-free adjoint wrap?
+//
+// R3 passed on the pendulum, but the pendulum is REGULAR: its adjoint stayed
+// O(1), so Kill A (magnitude wrap) was never actually tested. Kill A only bites
+// when the adjoint grows exponentially, i.e. in a CHAOTIC system. So use the
+// canonical one.
+//
+// Chirikov standard map (the kicked rotor):
+//     p' = p + K sin(theta)
+//     theta' = theta + p'
+// Chaotic for K > ~0.97. Note it is ALREADY two shears — the same structure the
+// leapfrog has — so it is exactly reversible over the field by construction, and
+// its phase space is literally a torus, which is what Z/pZ is. The field is the
+// natural home for this map, not an approximation of it.
+//
+// Jacobian: J = [[1 + K cos t, 1], [K cos t, 1]], det = 1 exactly.
+// Adjoint:  lt_n = (1 + K cos t) lt + K cos t * lp
+//           lp_n = lt + lp
+//
+// The adjoint grows as exp(lyapunov * n). The question this file answers is a
+// NUMBER: how many steps before |lambda| exhausts the field's balanced window,
+// and how does that compare to float64's exponent range.
+//
+// Instrumentation caps at 2^38 (so the ci*lambda product cannot overflow i64),
+// then the measured growth rate extrapolates to the true 2^63 wall.
+//
+// @internal-note: plan-reversible-dynamics (R3b)
+
+type F = Field<18446744073709551557>;
+
+let XS: i64 = 16777216;              // 1 << 24
+let PI_Q: i64 = 52707178;            // round(pi * 2^24)
+let TWOPI_Q: i64 = 105414357;        // round(2*pi * 2^24)
+let KQ: i64 = 25165824;              // K = 1.5 at scale 2^24
+let LS: i64 = 1073741824;            // 1 << 30, adjoint scale
+let CAP: i64 = 274877906944;         // 2^38, instrumentation ceiling
+
+struct St { t: F, p: F }
+struct Adj { lt: i64, lp: i64 }
+
+fn mul_s(a: i64, b: i64) -> i64 { return (a * b) / XS; }
+
+// Reduce to [-pi, pi] at scale 2^24. Exact integer arithmetic.
+fn wrap_pi(x: i64) -> i64 {
+    var r: i64 = x % TWOPI_Q;
+    if r > PI_Q { r = r - TWOPI_Q; }
+    if r < (0 - PI_Q) { r = r + TWOPI_Q; }
+    return r;
+}
+
+// sin on [-pi, pi], degree-11 Taylor.
+fn fx_sin(xin: i64) -> i64 {
+    let x: i64 = wrap_pi(xin);
+    let x2: i64 = mul_s(x, x);
+    let x3: i64 = mul_s(x2, x);
+    let x5: i64 = mul_s(x3, x2);
+    let x7: i64 = mul_s(x5, x2);
+    let x9: i64 = mul_s(x7, x2);
+    let x11: i64 = mul_s(x9, x2);
+    return x - x3 / 6 + x5 / 120 - x7 / 5040 + x9 / 362880 - x11 / 39916800;
+}
+
+// cos on [-pi, pi], degree-10 Taylor.
+fn fx_cos(xin: i64) -> i64 {
+    let x: i64 = wrap_pi(xin);
+    let x2: i64 = mul_s(x, x);
+    let x4: i64 = mul_s(x2, x2);
+    let x6: i64 = mul_s(x4, x2);
+    let x8: i64 = mul_s(x6, x2);
+    let x10: i64 = mul_s(x8, x2);
+    return XS - x2 / 2 + x4 / 24 - x6 / 720 + x8 / 40320 - x10 / 3628800;
+}
+
+
+// K*sin(theta), quantized. The membrane.
+fn kick(tf: F) -> F {
+    let ti: i64 = signed(tf);
+    return mul_s(KQ, fx_sin(ti)) as F;
+}
+
+fn fwd(s: St) -> St {
+    let np: F = s.p + kick(s.t);
+    let nt: F = s.t + np;
+    return St { t: nt, p: np };
+}
+
+fn bwd(s: St) -> St {
+    let ot: F = s.t - s.p;
+    let op: F = s.p - kick(ot);
+    return St { t: ot, p: op };
+}
+
+fn iabs(a: i64) -> i64 { if a < 0 { return 0 - a; } return a; }
+
+fn main() {
+    let t0: F = 8388608;             // theta0 = 0.5 rad
+    let p0: F = 3355443;             // p0 = 0.2
+
+    let N: i32 = 400;
+
+    var s: St = St { t: t0, p: p0 };
+    var i: i32 = 0;
+    while i < N {
+        s = fwd(s);
+        i = i + 1;
+    }
+
+    // Reversibility still exact in the chaotic regime? This is the striking
+    // part: chaos destroys float trajectories in ~50 steps, but exact
+    // reversibility does not care about Lyapunov exponents at all.
+    var r: St = s;
+    var j: i32 = 0;
+    while j < N {
+        r = bwd(r);
+        j = j + 1;
+    }
+    var land: i32 = 0;
+    if r.t == t0 && r.p == p0 { land = 1; }
+    print(land);
+
+    // ---- adjoint, rewinding, watching |lambda| grow ------------------------
+    var a: Adj = Adj { lt: LS, lp: 0 };
+    var q: St = s;
+    var blown: i32 = 0;              // step at which |lambda| passed 2^38
+    var maxl: i64 = LS;
+
+    var k: i32 = 0;
+    while k < N {
+        q = bwd(q);
+        let ci: i64 = mul_s(KQ, fx_cos(signed(q.t)));   // K cos(theta)
+        let nlt: i64 = a.lt + (ci * a.lt) / XS + (ci * a.lp) / XS;
+        let nlp: i64 = a.lt + a.lp;
+        a = Adj { lt: nlt, lp: nlp };
+
+        let m: i64 = iabs(a.lt) + iabs(a.lp);
+        if m > maxl { maxl = m; }
+        if m > CAP && blown == 0 { blown = k + 1; }
+        if m > CAP {
+            // stop before ci*lambda can overflow i64
+            print(blown);
+            print(maxl);
+            return;
+        }
+        k = k + 1;
+    }
+
+    print(0);                        // never blew
+    print(maxl);
+}

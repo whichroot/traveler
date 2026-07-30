@@ -1,0 +1,191 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rev_adjoint_cost.tv — R4: the honest baseline.
+//
+// Reversal-based adjoints must not be compared against a naive full tape. The
+// real alternative float users reach for is CHECKPOINTING (Griewank's
+// `revolve`): store c snapshots, recompute each segment on the way back. So all
+// three strategies are implemented here over identical arithmetic and timed
+// against each other:
+//
+//   1. FULL TAPE     memory O(N)       work ~2x forward   (fwd+store, adj)
+//   2. CHECKPOINTED  memory O(2*sqrt N) work ~3x forward   (fwd, refwd, adj)
+//   3. REVERSAL      memory O(1)       work ~2x forward   (fwd, bwd+adj)
+//
+// All three must produce a BIT-IDENTICAL gradient, since they differ only in
+// how x_n is obtained on the backward pass. That equality is the correctness
+// check; the timings are the claim.
+//
+// @internal-note: plan-reversible-dynamics (R4)
+
+extern "C" fn clock_gettime(clk: i32, ts: *i64) -> i32;
+
+type F = Field<18446744073709551557>;
+
+let XS: i64 = 16777216;
+let VSHIFT: i64 = 10;
+let LS: i64 = 262144;              // 1 << 18, adjoint scale (kept small so the
+                                   // pendulum's secular adjoint growth over
+                                   // 200k steps cannot overflow the i64 product)
+let NSTEP: i32 = 200000;
+let SEG: i32 = 400;                // SEG*NSEG must equal NSTEP EXACTLY, else the
+let NSEG: i32 = 500;               // checkpointed run integrates a different
+                                   // number of steps and the gradients diverge
+                                   // (caught by the agree12 check: 447*448 =
+                                   // 200256 != 200000). 400*500 = 200000.
+
+struct St { x: F, v: F }
+struct Adj { lx: i64, lv: i64 }
+
+fn mul_s(a: i64, b: i64) -> i64 { return (a * b) / XS; }
+
+fn fx_sin(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x3: i64 = mul_s(x2, x);
+    let x5: i64 = mul_s(x3, x2);
+    let x7: i64 = mul_s(x5, x2);
+    return x - x3 / 6 + x5 / 120 - x7 / 5040;
+}
+
+fn fx_cos(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x4: i64 = mul_s(x2, x2);
+    let x6: i64 = mul_s(x4, x2);
+    return XS - x2 / 2 + x4 / 24 - x6 / 720;
+}
+
+
+fn force_q(xf: F) -> F {
+    return (0 - fx_sin(signed(xf))) as F;
+}
+
+fn fwd(s: St) -> St {
+    let nv: F = s.v + force_q(s.x);
+    let shift: i64 = signed(nv) / (1 << VSHIFT);
+    return St { x: s.x + (shift as F), v: nv };
+}
+
+fn bwd(s: St) -> St {
+    let shift: i64 = signed(s.v) / (1 << VSHIFT);
+    let ox: F = s.x - (shift as F);
+    return St { x: ox, v: s.v - force_q(ox) };
+}
+
+fn adj_step(a: Adj, xi: i64) -> Adj {
+    let ci: i64 = 0 - fx_cos(xi);
+    let t1: i64 = (ci * a.lx) / (1024 * XS);
+    let t2: i64 = (ci * a.lv) / (32 * XS);
+    return Adj { lx: a.lx + t1 + t2, lv: a.lv + a.lx / 32 };
+}
+
+fn now_us() -> i64 {
+    let ts: *i64 = alloc(2);
+    clock_gettime(6, ts);
+    let r: i64 = ts[0] * 1000000 + ts[1] / 1000;
+    free(ts);
+    return r;
+}
+
+fn main() {
+    let x0: F = 16777216;
+    let v0: F = 0;
+
+    // ================= 1. FULL TAPE =====================================
+    let t0: i64 = now_us();
+    let tape: *i64 = alloc(200001);
+    var s: St = St { x: x0, v: v0 };
+    tape[0] = signed(s.x);
+    var i: i32 = 0;
+    while i < NSTEP {
+        s = fwd(s);
+        tape[i + 1] = signed(s.x);
+        i = i + 1;
+    }
+    var a1: Adj = Adj { lx: LS, lv: 0 };
+    var t: i32 = NSTEP;
+    while t > 0 {
+        a1 = adj_step(a1, tape[t - 1]);
+        t = t - 1;
+    }
+    free(tape);
+    let t1: i64 = now_us();
+
+    // ================= 2. CHECKPOINTED (revolve-style, 2-level) =========
+    // Store NSEG checkpoints on the way out; on the way back, restore each
+    // checkpoint and recompute its segment into a small local tape.
+    let ck_x: *i64 = alloc(500);
+    let ck_v: *i64 = alloc(500);
+    let seg: *i64 = alloc(500);
+
+    var s2: St = St { x: x0, v: v0 };
+    var c: i32 = 0;
+    while c < NSEG {
+        ck_x[c] = signed(s2.x);
+        ck_v[c] = signed(s2.v);
+        var k: i32 = 0;
+        while k < SEG {
+            s2 = fwd(s2);
+            k = k + 1;
+        }
+        c = c + 1;
+    }
+    var a2: Adj = Adj { lx: LS, lv: 0 };
+    var cb: i32 = NSEG - 1;
+    while cb >= 0 {
+        var rs: St = St { x: ck_x[cb] as F, v: ck_v[cb] as F };
+        var k2: i32 = 0;
+        while k2 < SEG {
+            seg[k2] = signed(rs.x);
+            rs = fwd(rs);
+            k2 = k2 + 1;
+        }
+        var b: i32 = SEG;
+        while b > 0 {
+            a2 = adj_step(a2, seg[b - 1]);
+            b = b - 1;
+        }
+        cb = cb - 1;
+    }
+    free(ck_x); free(ck_v); free(seg);
+    let t2: i64 = now_us();
+
+    // ================= 3. REVERSAL (no tape at all) =====================
+    var s3: St = St { x: x0, v: v0 };
+    var i3: i32 = 0;
+    while i3 < NSTEP {
+        s3 = fwd(s3);
+        i3 = i3 + 1;
+    }
+    var a3: Adj = Adj { lx: LS, lv: 0 };
+    var r3: St = s3;
+    var k3: i32 = 0;
+    while k3 < NSTEP {
+        r3 = bwd(r3);
+        a3 = adj_step(a3, signed(r3.x));
+        k3 = k3 + 1;
+    }
+    let t3: i64 = now_us();
+
+    // ---- correctness: all three must agree exactly ----------------------
+    var agree12: i32 = 0;
+    if a1.lx == a2.lx && a1.lv == a2.lv { agree12 = 1; }
+    var agree13: i32 = 0;
+    if a1.lx == a3.lx && a1.lv == a3.lv { agree13 = 1; }
+    print(agree12);
+    print(agree13);
+
+    // rewind must land on the initial condition
+    var land: i32 = 0;
+    if r3.x == x0 && r3.v == v0 { land = 1; }
+    print(land);
+
+    // ---- timings, microseconds ------------------------------------------
+    print(t1 - t0);        // full tape
+    print(t2 - t1);        // checkpointed
+    print(t3 - t2);        // reversal
+
+    // ---- memory, in 8-byte words ----------------------------------------
+    print(200001);         // full tape
+    print(1400);           // checkpointed: 2*NSEG + SEG
+    print(2);              // reversal: one St
+}

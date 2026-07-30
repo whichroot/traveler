@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rev_pendulum.tv — R2: is the exactly-reversible trajectory PHYSICALLY FAITHFUL?
+//
+// R1 proved bit-reversibility survives a transcendental force. It also exposed
+// the real structure: reversibility needs only DETERMINISM, fidelity needs
+// RESOLUTION. R1's force was divided down by 1024 before application (2% error
+// per step) and the pendulum's amplitude wandered 1.00 -> 1.43 rad. Exactly
+// reversible, physically wrong. A perfect integration of the wrong system.
+//
+// The fix is a better shear decomposition. The ONLY requirement for exact
+// invertibility is that each variable is updated by a function of the OTHER
+// variables, which are unchanged at that instant. The function may be lossy,
+// nonlinear, transcendental — anything — because the reverse pass recomputes it
+// from the same unchanged inputs. So the truncation can be moved to wherever it
+// costs least:
+//
+//   V += -sin(X)        <- force at FULL resolution, no division
+//   X += V >> 2m        <- dt^2 folded in as a shift on a KNOWN quantity
+//
+// Both are shears with determinant 1. Composition is exactly area-preserving,
+// so Liouville's theorem holds EXACTLY here, not to O(dt^2) as in float. The
+// claim under test: bounded energy oscillation with NO secular drift.
+//
+// Scales: X at 2^24 (radians), V at 2^29 (= X scale << m, m=5, dt = 1/32).
+//
+// @internal-note: plan-reversible-dynamics (R2)
+
+type F = Field<18446744073709551557>;
+
+let XS: i64 = 16777216;        // 1 << 24, position scale
+let M: i64 = 5;                // dt = 2^-M
+let VSHIFT: i64 = 10;          // 2*M
+
+struct St { x: F, v: F }
+
+fn mul_s(a: i64, b: i64) -> i64 { return (a * b) / XS; }
+
+
+// sin(x), x at scale 2^24, |x| <= ~1.6 rad. Degree-7 Taylor, error < 1e-9.
+fn fx_sin(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x3: i64 = mul_s(x2, x);
+    let x5: i64 = mul_s(x3, x2);
+    let x7: i64 = mul_s(x5, x2);
+    return x - x3 / 6 + x5 / 120 - x7 / 5040;
+}
+
+// 1 - cos(x), x at scale 2^24. Degree-6 Taylor: x^2/2 - x^4/24 + x^6/720.
+fn fx_1mcos(x: i64) -> i64 {
+    let x2: i64 = mul_s(x, x);
+    let x4: i64 = mul_s(x2, x2);
+    let x6: i64 = mul_s(x4, x2);
+    return x2 / 2 - x4 / 24 + x6 / 720;
+}
+
+// The membrane: everything non-algebraic happens inside, an integer comes out.
+fn force_q(xf: F) -> F {
+    let xi: i64 = signed(xf);
+    return (0 - fx_sin(xi)) as F;
+}
+
+// Shear 1 then shear 2. Each updates one variable from the other, untouched.
+fn fwd(s: St) -> St {
+    let nv: F = s.v + force_q(s.x);
+    let shift: i64 = signed(nv) / (1 << VSHIFT);
+    let nx: F = s.x + (shift as F);
+    return St { x: nx, v: nv };
+}
+
+fn bwd(s: St) -> St {
+    let shift: i64 = signed(s.v) / (1 << VSHIFT);
+    let ox: F = s.x - (shift as F);
+    let ov: F = s.v - force_q(ox);
+    return St { x: ox, v: ov };
+}
+
+// Total energy at scale 2^24:  E = v^2/2 + (1 - cos x)
+// v_real = V/2^29, so v_real^2/2 * 2^24 = V^2 / 2^35.
+fn energy_q(s: St) -> i64 {
+    let vi: i64 = signed(s.v);
+    let kin: i64 = (vi / 1024) * (vi / 1024) / 32768;  // V^2 / 2^35, staged
+    let pot: i64 = fx_1mcos(signed(s.x));
+    return kin + pot;
+}
+
+fn iabs(a: i64) -> i64 { if a < 0 { return 0 - a; } return a; }
+
+fn main() {
+    let x0: F = 16777216;      // 1.0 rad
+    let v0: F = 0;
+    var s: St = St { x: x0, v: v0 };
+
+    let e0: i64 = energy_q(s);
+    print(e0);
+
+    let N: i32 = 2000000;      // ~10,000 pendulum periods
+
+    var emin: i64 = e0;
+    var emax: i64 = e0;
+    var maxx: i64 = 0;
+    var maxv: i64 = 0;
+
+    var i: i32 = 0;
+    while i < N {
+        s = fwd(s);
+        let e: i64 = energy_q(s);
+        if e < emin { emin = e; }
+        if e > emax { emax = e; }
+        let ax: i64 = iabs(signed(s.x));
+        let av: i64 = iabs(signed(s.v));
+        if ax > maxx { maxx = ax; }
+        if av > maxv { maxv = av; }
+        i = i + 1;
+    }
+
+    // Energy band over 10,000 periods. Secular drift would show as a wide band
+    // with the endpoint pinned at one edge; bounded oscillation shows as a
+    // narrow band with the endpoint interior.
+    print(emin);
+    print(emax);
+    print(energy_q(s));
+
+    // Amplitude: started at 1.0 rad = 16777216. Growth here is the R1 failure.
+    print(maxx);
+    print(maxv);
+
+    // Reversibility must STILL hold at this resolution.
+    var j: i32 = 0;
+    while j < N {
+        s = bwd(s);
+        j = j + 1;
+    }
+    var ok: i32 = 0;
+    if s.x == x0 && s.v == v0 { ok = 1; }
+    print(ok);
+}

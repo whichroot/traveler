@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// rev_roundtrip.tv — R0, the null test for reversible field dynamics.
+//
+// Two claims, both cheap, both able to kill the whole program if false:
+//
+//   R0a  Sigma/Delta are mutually inverse IN EMITTED CODE, not just in spec 17.
+//        Advance a Register d+1 cells forward n times; undo by differencing.
+//
+//   R0b  The leapfrog shear map over Field<p> is exactly invertible.
+//        v' = v - k*x  ;  x' = x + v'   has determinant 1 (composition of two
+//        shears) — which is precisely why leapfrog is symplectic. Over a field
+//        that determinant being a unit means the map is a bijection, so N steps
+//        forward then N steps back must return the ORIGINAL bits.
+//
+// Expected: 1 1 1 1 (all PASS) plus a nonzero displacement witness, proving the
+// trajectory actually moved and this is not a trivial identity.
+//
+// @internal-note: plan-reversible-dynamics (R0)
+
+type F = Field<4294967291>;
+
+struct St { x: F, v: F }
+
+// One leapfrog step. Harmonic force F(x) = -k*x (linear, so R0 stays a pure
+// algebra test; the nonlinear force law enters at R1).
+fn fwd(s: St, k: F) -> St {
+    let nv: F = s.v - k * s.x;
+    let nx: F = s.x + nv;
+    return St { x: nx, v: nv };
+}
+
+// The exact inverse. Note it is WRITTEN here; at R3+ the claim is that the
+// compiler could derive it, because det = 1 is decidable.
+fn bwd(s: St, k: F) -> St {
+    let ox: F = s.x - s.v;
+    let ov: F = s.v + k * ox;
+    return St { x: ox, v: ov };
+}
+
+fn main() {
+    // ---- R0a: Sigma/Delta mutual inversion ----------------------------------
+    // Register [10,4,2] advanced 5 times, then the value sequence differenced
+    // back to the originating coefficients.
+    var reg: Register<F, 2> = register(10, 4, 2);
+    let a0: F = advance(reg);
+    let a1: F = advance(reg);
+    let a2: F = advance(reg);
+
+    // First differences, then second: Delta undoes Sigma.
+    let d1a: F = a1 - a0;
+    let d1b: F = a2 - a1;
+    let d2: F = d1b - d1a;
+
+    var ok_a: i32 = 0;
+    let ten: F = 10;
+    let four: F = 4;
+    let two: F = 2;
+    if a0 == ten && d1a == four && d2 == two { ok_a = 1; }
+    print(ok_a);
+
+    // ---- R0b: leapfrog round-trip ------------------------------------------
+    let k: F = 3;
+    let x0: F = 1000;
+    let v0: F = 7;
+
+    var s: St = St { x: x0, v: v0 };
+
+    // 1000 steps forward.
+    var i: i32 = 0;
+    while i < 1000 {
+        s = fwd(s, k);
+        i = i + 1;
+    }
+
+    // Witness: the state genuinely moved (guards against a trivial identity).
+    var moved: i32 = 0;
+    if s.x != x0 || s.v != v0 { moved = 1; }
+    print(moved);
+
+    // 1000 steps back.
+    var j: i32 = 0;
+    while j < 1000 {
+        s = bwd(s, k);
+        j = j + 1;
+    }
+
+    var ok_b: i32 = 0;
+    if s.x == x0 && s.v == v0 { ok_b = 1; }
+    print(ok_b);
+
+    // ---- R0c: long run, 1e6 steps ------------------------------------------
+    // If any information leaks per step, a million steps will expose it.
+    var t: St = St { x: 123456, v: 654321 };
+    let tx0: F = t.x;
+    let tv0: F = t.v;
+
+    var m: i32 = 0;
+    while m < 1000000 {
+        t = fwd(t, k);
+        m = m + 1;
+    }
+    var n: i32 = 0;
+    while n < 1000000 {
+        t = bwd(t, k);
+        n = n + 1;
+    }
+
+    var ok_c: i32 = 0;
+    if t.x == tx0 && t.v == tv0 { ok_c = 1; }
+    print(ok_c);
+}
