@@ -54,6 +54,15 @@ fn main() {
   and PLONK are all in the library, all generic over the field, all working
   over a prime chosen at runtime.
 
+## How to use Traveler with an AI agent
+
+Give the agent the language, one clear goal, and the prompt file that matches
+your task. For example, say: "Improve this kernel with Traveler" and give the
+agent the correct file from [`agent-instructions/`](agent-instructions/). The
+directory contains the agent guidance that the language uses. See
+[`agent-instructions/AGENTS.md`](agent-instructions/AGENTS.md) for the
+conventions.
+
 ## The four operations
 
 The kernel everything else is built on (`src/lib/core/poly_core.tv`) is four
