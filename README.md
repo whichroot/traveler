@@ -152,10 +152,11 @@ itself).
 
 ## Status
 
-`v0.1.0` - Early Alpha. For research purposes only.
+`v0.1.0-alpha` - Early Alpha. For research purposes only.
 
-Developed privately pre-0.2; public history begins at the `v0.2.0` root commit
-and proceeds as tagged release drops.
+Developed privately; this repository begins at a single root commit. The public
+history is intentionally squashed — it carries the engineering state, not the
+commit-by-commit record of how it was reached.
 
 ## Disclaimer
     Traveler is an [alpha] product; ZK-proof infra is unverified by a third party at this time.
