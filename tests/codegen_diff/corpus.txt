@@ -272,3 +272,4 @@ examples/for_i64_bounds.tv              # 54: bound width adoption (i64/usize/u3
 tests/pfor/pfor_i64_bounds.tv           # 54: i64-bound dispatched loop (__parallel_for_i64)
 examples/i64min_print.tv                # 55: INT64_MIN literal/print (wr_int/fmt_i64 magnitude fix)
 examples/wide_literal_casts.tv          # 56: text-wide literals via let-annotation + completed as-cast rule
+examples/read_bytes_expr.tv             # 62: read_bytes buffer arg is a general pointer expression

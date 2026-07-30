@@ -1,0 +1,9 @@
+var acc = 0;
+for i in 0..5 { acc = acc + i; }
+acc
+var k = 0;
+while k < 3 { k = k + 1; }
+k
+let flag: bool = 3 > 2;
+flag
+if flag { print(111); } else { print(222); }

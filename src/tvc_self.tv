@@ -35,6 +35,17 @@ extern "C" fn puts(s: *u8) -> i32;
 // abort parity: compiled abort() dies by SIGABRT WITHOUT flushing stdio —
 // _exit(134) mirrors both the discarded buffer and the shell's 128+6.
 extern "C" fn _exit(code: i32);
+// E3 (--repl) only. The session contains a bad cell by VALIDATING it in a
+// forked child: the child parses/registers/lowers against a copy-on-write
+// image and dies on any error, so the parent's registries are untouched and
+// the session survives. The child NEVER evaluates, so no side effect runs
+// twice. fflush(null) before the fork is load-bearing — an inherited stdout
+// buffer would otherwise be flushed by BOTH processes (duplicated output).
+// isatty gates prompts so a piped session stays byte-deterministic.
+extern "C" fn fork() -> i32;
+extern "C" fn waitpid(pid: i32, status: *i32, options: i32) -> i32;
+extern "C" fn isatty(fd: i32) -> i32;
+extern "C" fn fflush(f: *u8) -> i32;
 
 // ===== TOKEN KIND CONSTANTS (0-79 original; 80-82 appended for extfield/register) =====
 
@@ -11864,16 +11875,36 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         // read_bytes(fd, buf, n) builtin -> call @read(i32, ptr, i64)
         if str_eq(&g_strings[call_name], "read_bytes") == 1 {
             let rb_fd: IRValue = codegen_expr(g_args[g_nodes[node].args_start], str_intern("i32"));
-            // buf argument: for array types, alloca IS the buffer address;
-            // for pointer types, must LOAD the pointer value from the alloca
+            // buf argument. IDENTIFIER fast path (byte-identical to the
+            // pre-#62 emission): an array's alloca IS the buffer address, but a
+            // pointer local must be LOADED out of its alloca first.
+            //
+            // #62: ANY other pointer expression (&buf[i], a member, a call
+            // result) used to take this same path — `name0` on a non-ident node
+            // is not a name, so sym_find returned a STALE symbol (or -1, i.e. a
+            // g_syms[-1] read) and the emitted @read silently got the WRONG
+            // buffer. The eval engine already lowered this argument as a general
+            // expression, so the two semantics had genuinely diverged; the fix
+            // makes codegen agree with the evaluator.
             let buf_node: i32 = g_args[g_nodes[node].args_start + 1];
-            let buf_name: i32 = g_nodes[buf_node].name0;
-            let buf_si: i32 = sym_find(buf_name);
-            var buf_reg: i32 = g_syms[buf_si].reg;
-            if type_is_ptr(g_syms[buf_si].type_off) == 1 && g_syms[buf_si].is_alloca == 1 {
-                buf_reg = ir_tmp();
-                ir_wr("  "); ir_wr_reg(buf_reg); ir_wr(" = load ptr, ptr ");
-                ir_wr_reg(g_syms[buf_si].reg); ir_wr("\n");
+            var buf_reg: i32 = 0 - 1;
+            if g_nodes[buf_node].kind == AST_IDENT {
+                let buf_name: i32 = g_nodes[buf_node].name0;
+                let buf_si: i32 = sym_find(buf_name);
+                if buf_si < 0 {
+                    diag_error_at(g_nodes[buf_node].line, g_nodes[buf_node].col,
+                        "undefined variable in the read_bytes buffer argument");
+                    exit(1);
+                }
+                buf_reg = g_syms[buf_si].reg;
+                if type_is_ptr(g_syms[buf_si].type_off) == 1 && g_syms[buf_si].is_alloca == 1 {
+                    buf_reg = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(buf_reg); ir_wr(" = load ptr, ptr ");
+                    ir_wr_reg(g_syms[buf_si].reg); ir_wr("\n");
+                }
+            } else {
+                let rb_buf: IRValue = codegen_expr(buf_node, str_intern("*u8"));
+                buf_reg = rb_buf.reg;
             }
             let rb_n: IRValue = codegen_expr(g_args[g_nodes[node].args_start + 2], str_intern("i64"));
             var n_reg: i32 = rb_n.reg;
@@ -18678,6 +18709,14 @@ var g_lw_slots: *i32 = null;
 var g_lw_reprs: *i32 = null;
 var g_lw_last_repr: i32 = 0;
 var g_lw_count: i32 = 0;
+// Scope FLOOR: lw_find never scans below it. A function body must not see the
+// caller's bindings, which the one-shot driver got by resetting the symbol map
+// to 0 — fine when the only "caller" is the whole program, fatal for an E3
+// session, where index 0 holds the SESSION's persistent bindings and resetting
+// would overwrite them. The floor gives a body an isolated window ABOVE the
+// session's entries instead. In --eval the floor is always 0, so the one-shot
+// path is unchanged.
+var g_lw_floor: i32 = 0;
 var g_lw_scope: *i32 = null;
 var g_lw_depth: i32 = 0;
 var g_lw_nslots: i32 = 0;
@@ -18780,9 +18819,10 @@ fn lw_add(name: i32, type_off: i32) -> i32 {
 }
 
 // Reverse scan (shadowing, sym_find parity). Returns map index or -1.
+// Stops at the scope floor so a function body cannot resolve a caller's name.
 fn lw_find(name: i32) -> i32 {
     var i: i32 = g_lw_count - 1;
-    while i >= 0 {
+    while i >= g_lw_floor {
         if str_eq(&g_strings[g_lw_names[i]], &g_strings[name]) == 1 {
             return i;
         }
@@ -19449,8 +19489,11 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
             return LowVal { e: e, type_off: g_evg_types[gi] };
         }
         // An unresolved ident here is a fn-pointer use (refused) or unreachable
-        // — the codegen pass already validated the program.
+        // — the codegen pass already validated the program. In a REPL cell
+        // there IS no prior codegen pass, so this is the user's typo: report it
+        // as a diagnostic rather than an invariant breach.
         if find_func(g_nodes[node].name0) >= 0 { ev_refuse("fn-pointer", ln, cl); }
+        if g_repl_mode == 1 { repl_user_error("undefined variable", ln, cl); }
         ev_internal("unresolved identifier");
     }
 
@@ -19757,6 +19800,7 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
                 }
                 // &function_name -> fn pointer: uncovered.
                 if find_func(an) >= 0 { ev_refuse("fn-pointer", ln, cl); }
+                if g_repl_mode == 1 { repl_user_error("undefined variable", ln, cl); }
                 ev_internal("address-of unresolved identifier");
             }
             if g_nodes[ac].kind == AST_INDEX {
@@ -20894,6 +20938,7 @@ fn lower_stmt(stmt: i32) -> i32 {
             g_eir[e].type_off = gt;
             return e;
         }
+        if g_repl_mode == 1 { repl_user_error("assignment to an undefined variable", ln, cl); }
         ev_internal("assignment to unresolved variable");
     }
 
@@ -21267,7 +21312,9 @@ fn lw_lower_fn_body(efidx: i32) {
             mgi = mgi + 1;
         }
     }
-    g_lw_count = 0;
+    // Start the body's symbol window at the floor lw_drain installed (0 for the
+    // one-shot driver, the session's high-water mark under --repl).
+    g_lw_count = g_lw_floor;
     g_lw_depth = 0;
     g_lw_nslots = 0;
     g_lw_narrs = 0;
@@ -21375,7 +21422,7 @@ fn lw_lower_clo_body(efidx: i32) {
         gi = gi + 1;
     }
     let cbase: i32 = roff + 5 + cngen * 2;
-    g_lw_count = 0;
+    g_lw_count = g_lw_floor;
     g_lw_depth = 0;
     g_lw_nslots = 0;
     g_lw_narrs = 0;
@@ -21470,16 +21517,38 @@ fn lw_lower_clo_body(efidx: i32) {
 }
 
 // Drain the pending-function work list to a fixed point.
+// Each body lowers in an ISOLATED window above the caller's scope, and the
+// caller's lowering state is restored afterwards. Bodies never nest (lw_fn only
+// QUEUES), so one save/restore per body is sufficient. Under --eval the caller
+// is the whole program and every saved value is 0 — the one-shot path is
+// bit-for-bit what it was before the floor existed.
 fn lw_drain() {
     while g_lw_npending > 0 {
         g_lw_npending = g_lw_npending - 1;
         let efidx: i32 = g_lw_pending[g_lw_npending];
         if g_evfuncs[efidx].state == 0 {
+            let s_floor: i32 = g_lw_floor;
+            let s_count: i32 = g_lw_count;
+            let s_depth: i32 = g_lw_depth;
+            let s_nslots: i32 = g_lw_nslots;
+            let s_narrs: i32 = g_lw_narrs;
+            let s_loop: i32 = g_lw_loop_depth;
+            let s_ret: i32 = g_lw_ret_type;
+            let s_repr: i32 = g_lw_last_repr;
+            g_lw_floor = g_lw_count;
             if g_evfuncs[efidx].fci < 0 - 1 {
                 lw_lower_clo_body(efidx);
             } else {
                 lw_lower_fn_body(efidx);
             }
+            g_lw_floor = s_floor;
+            g_lw_count = s_count;
+            g_lw_depth = s_depth;
+            g_lw_nslots = s_nslots;
+            g_lw_narrs = s_narrs;
+            g_lw_loop_depth = s_loop;
+            g_lw_ret_type = s_ret;
+            g_lw_last_repr = s_repr;
         }
     }
 }
@@ -22001,6 +22070,14 @@ fn ev_put_padded9(v: u64) {
 // Unsigned decimal + '\n' of the raw pattern — output-identical to the
 // compiled @__print_iN double-dabble helper (plain unsigned decimal).
 fn ev_w_print(x: *u64, nbits: i32) {
+    ev_w_print_raw(x, nbits);
+    let nl: i32 = putchar(10);
+}
+
+// The decimal body without the trailing newline (E3's renderer prints a
+// ` : Type` suffix after the digits). Split out verbatim — ev_w_print keeps
+// its exact observable output.
+fn ev_w_print_raw(x: *u64, nbits: i32) {
     var limbs: [u32; 8] = 0;
     let nl32: i32 = nbits / 32;
     var i: i32 = 0;
@@ -22037,7 +22114,6 @@ fn ev_w_print(x: *u64, nbits: i32) {
             c = c - 1;
         }
     }
-    let nl: i32 = putchar(10);
 }
 
 // ---- field_wide: the multi-limb runtime carrier + ops ----
@@ -23234,8 +23310,9 @@ fn ev_builtin(e: i32, fr: *EvFrame) -> EvalVal {
         return EvalVal { tag: EV_INT, type_off: g_eir[e].type_off, bits: wn as u64 };
     }
     if eb == EB_READ_BYTES {
-        // NB read_bytes' buf arg must be a plain identifier (codegen resolves
-        // it via sym_find) — a cast expression there compiles to garbage. Bind first.
+        // (Pre-#62 this note read "the buf arg must be a plain identifier" —
+        // that was a codegen DEFECT, not a language rule, and is now fixed at
+        // the root. The local bind stays: it is the seed-dialect idiom.)
         let rb_buf: *u8 = a1 as *u8;
         let rn: i64 = read_bytes(ev_sext(a0, 32) as i32, rb_buf, a2 as i64);
         return EvalVal { tag: EV_INT, type_off: g_eir[e].type_off, bits: rn as u64 };
@@ -23867,6 +23944,695 @@ fn ev_program(prog: i32) {
     exit(0);
 }
 
+// ===== E3: THE REPL SESSION (--repl) =====
+// A PERSISTENT, in-process session over the same EIR + evaluator the --eval
+// oracle uses. The three structural decisions (@internal-note: plan-eval-engine, E3):
+//
+//   1. State is APPENDED, never replayed. A cell's statements lower into the
+//      session's lowering scope (g_lw_*, never reset between cells) and execute
+//      against ONE long-lived EvFrame. So a side effect runs exactly once —
+//      the accumulate-and-recompile shape (which re-prints every earlier line)
+//      is refused.
+//   2. A bad cell is contained by a FORKED VALIDATOR. The child parses,
+//      registers and lowers against a copy-on-write image and dies on any
+//      error; the parent's registries never saw it. On success the parent
+//      replays the SAME deterministic work (parse -> register -> lower) and is
+//      the only process that evaluates. The child never evaluates, so nothing
+//      is executed twice.
+//   3. The session itself runs as a child of a supervisor, so `:reset` is a
+//      genuine fresh image (the pristine post-startup state), not a hand-rolled
+//      un-registration of append-only arenas.
+//
+// Definitions are append-only: redefining a fn/type/field is refused BY the
+// compiler's own duplicate guard (a clean diagnostic), and `:reset` is the
+// sanctioned way back. Runtime bindings still shadow naturally — lw_find's
+// reverse scan already implements exactly that.
+
+let REPL_LINE_CAP: i32 = 65536;
+let REPL_CELL_CAP: i32 = 1048576;
+let REPL_TOK_CAP: i32 = 65536;
+let REPL_SLOT_INIT: i32 = 256;
+// :reset — the session child exits with this status; the supervisor forks a
+// fresh session off the pristine image.
+let REPL_RESET_CODE: i32 = 90;
+
+var g_repl_mode: i32 = 0;
+var g_repl_frame: *EvFrame = null;
+var g_repl_slotcap: i32 = 0;
+var g_repl_tty: i32 = 0;
+// Cell result channel: repl_prepare -> repl_run.
+var g_repl_kind: i32 = 0;        // 0 = nothing/rejected, 1 = statements, 2 = decls
+var g_repl_stmts: i32 = 0;       // g_evargs base of the lowered statement list
+var g_repl_nstmts: i32 = 0;
+var g_repl_expr: i32 = -1;       // trailing expression (the echo), or -1
+var g_repl_expr_type: i32 = -1;
+// Evaluator-global capacity (ev_build_globals sizes exactly; the REPL appends).
+var g_evg_cap: i32 = 0;
+
+// ---- stdout discipline ----
+// EVERYTHING the session prints goes through libc putchar, because the
+// evaluator's own print builtin does (E2a's stdio law). Mixing wr(1,...) —
+// a raw write(2) — with the buffered path would interleave out of order.
+
+// A USER-level error inside a cell (an undefined name, a bad assignment
+// target). It is a diagnostic — file:line:col + caret — and rejects the cell,
+// NOT an ev_internal: the one-shot driver can assume codegen already validated
+// the program, but a REPL statement cell has no such pass in front of it.
+fn repl_user_error(msg: *u8, line: i32, col: i32) {
+    diag_error_at(line, col, msg);
+    exit(1);
+}
+
+fn repl_put(s: *u8) {
+    var i: i32 = 0;
+    while s[i] != 0 {
+        let c: i32 = putchar(s[i] as i32);
+        i = i + 1;
+    }
+}
+
+fn repl_flush() {
+    let r: i32 = fflush(null);
+}
+
+// ---- cell input ----
+
+// Read one line from stdin into buf (NUL-terminated, newline stripped).
+// Returns the length, or -1 at EOF with nothing read.
+fn repl_read_line(buf: *u8, cap: i32) -> i32 {
+    var n: i32 = 0;
+    var ch: [u8; 1] = 0;
+    while n < cap - 1 {
+        let r: i64 = read_bytes(0, &ch[0], 1);
+        if r <= 0 {
+            if n == 0 { return 0 - 1; }
+            buf[n] = 0;
+            return n;
+        }
+        if ch[0] == 10 {
+            buf[n] = 0;
+            return n;
+        }
+        buf[n] = ch[0];
+        n = n + 1;
+    }
+    buf[n] = 0;
+    return n;
+}
+
+// Net bracket depth of a cell (0 = complete). Strings, char literals, line
+// comments and nestable block comments are skipped, so a brace inside them
+// never holds the cell open. Negative clamps to 0 — an unbalanced closer is
+// the PARSER's error to report, not a reason to keep reading.
+fn repl_balance(buf: *u8, len: i32) -> i32 {
+    var depth: i32 = 0;
+    var bc: i32 = 0;
+    var i: i32 = 0;
+    while i < len {
+        let c: u8 = buf[i];
+        if bc > 0 {
+            if c == 47 && i + 1 < len && buf[i + 1] == 42 { bc = bc + 1; i = i + 2; continue; }
+            if c == 42 && i + 1 < len && buf[i + 1] == 47 { bc = bc - 1; i = i + 2; continue; }
+            i = i + 1;
+            continue;
+        }
+        if c == 47 && i + 1 < len && buf[i + 1] == 47 {
+            while i < len && buf[i] != 10 { i = i + 1; }
+            continue;
+        }
+        if c == 47 && i + 1 < len && buf[i + 1] == 42 { bc = 1; i = i + 2; continue; }
+        if c == 34 {
+            i = i + 1;
+            while i < len && buf[i] != 34 {
+                if buf[i] == 92 { i = i + 1; }
+                i = i + 1;
+            }
+            i = i + 1;
+            continue;
+        }
+        if c == 39 {
+            i = i + 1;
+            while i < len && buf[i] != 39 {
+                if buf[i] == 92 { i = i + 1; }
+                i = i + 1;
+            }
+            i = i + 1;
+            continue;
+        }
+        if c == 123 || c == 40 || c == 91 { depth = depth + 1; }
+        if c == 125 || c == 41 || c == 93 { depth = depth - 1; }
+        i = i + 1;
+    }
+    if depth < 0 { return 0; }
+    return depth;
+}
+
+// Index of the last non-whitespace byte, or -1.
+fn repl_last_significant(buf: *u8, len: i32) -> i32 {
+    var i: i32 = len - 1;
+    while i >= 0 {
+        let c: u8 = buf[i];
+        if c != 32 && c != 9 && c != 10 && c != 13 { return i; }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+// ---- session frame ----
+
+fn repl_frame_ensure(n: i32) {
+    if n <= g_repl_slotcap { return; }
+    var nc: i32 = g_repl_slotcap;
+    if nc < 1 { nc = REPL_SLOT_INIT; }
+    while nc < n { nc = nc * 2; }
+    let fr: *EvFrame = g_repl_frame;
+    let ot: *i32 = fr.stags;
+    let nt2: *i32 = realloc(ot, nc);
+    fr.stags = nt2;
+    let oy: *i32 = fr.stypes;
+    let ny: *i32 = realloc(oy, nc);
+    fr.stypes = ny;
+    let ob: *u64 = fr.sbits;
+    let nb: *u64 = realloc(ob, nc);
+    fr.sbits = nb;
+    // A fresh slot must read as VOID: EIR_LET_ARR keys buffer REUSE off
+    // (tag == EV_PTR && bits != 0), so uninitialized memory could alias a
+    // stale host pointer.
+    var i: i32 = g_repl_slotcap;
+    while i < nc {
+        nt2[i] = EV_VOID;
+        ny[i] = NULL_STR;
+        nb[i] = 0;
+        i = i + 1;
+    }
+    g_repl_slotcap = nc;
+}
+
+// ---- the Debug renderer (compiler-owned; NOT user-overridable) ----
+// Deliberately an INSPECTION facility, not a formatting contract: it reads the
+// value + its concrete type and never runs user code, so echoing can neither
+// fail nor produce a side effect. User-facing `Display` is a separate language
+// track; when it lands the REPL can call it EXPLICITLY rather than silently
+// changing what the default echo means.
+
+fn repl_render(tag: i32, type_off: i32, bits: u64) {
+    if tag == EV_VOID { return; }
+    if type_off != NULL_STR && str_eq(&g_strings[type_off], "bool") == 1 {
+        if bits != 0 { repl_put("true : bool\n"); } else { repl_put("false : bool\n"); }
+        return;
+    }
+    if tag == EV_FIELD {
+        ev_put_u64(bits);
+    } else if tag == EV_WIDE {
+        ev_w_print_raw(bits as *u64, type_bits(type_off));
+    } else if tag == EV_PTR {
+        // Addresses are nondeterministic, so a pointer renders structurally.
+        // Aggregates print as their type until the recursive renderer lands.
+        if bits == 0 { repl_put("null"); } else { repl_put("<value>"); }
+    } else {
+        let w: i32 = type_bits(type_off);
+        if type_is_signed(type_off) == 1 {
+            ev_put_i64(ev_sext(bits, w));
+        } else {
+            ev_put_u64(bits);
+        }
+    }
+    repl_put(" : ");
+    if type_off != NULL_STR {
+        repl_put(&g_strings[type_off]);
+    } else {
+        repl_put("?");
+    }
+    repl_put("\n");
+}
+
+// ---- cell classification ----
+// A cell is a DECLARATION batch or a STATEMENT batch. `let`/`var` deliberately
+// route to STATEMENTS: in a session they are persistent bindings, not the
+// constant-initializer-only module globals the top-level parser would make.
+fn repl_cell_is_decl(toks: *Token, nt: i32) -> i32 {
+    if nt <= 0 { return 0; }
+    let k: i32 = toks[0].kind;
+    if k == TOK_KW_FN { return 1; }
+    if k == TOK_KW_STRUCT { return 1; }
+    if k == TOK_KW_ENUM { return 1; }
+    if k == TOK_KW_TRAIT { return 1; }
+    if k == TOK_KW_IMPL { return 1; }
+    if k == TOK_KW_EXTERN { return 1; }
+    if k == TOK_KW_IMPORT { return 1; }
+    if k == TOK_KW_INSTANTIATE { return 1; }
+    if k == TOK_KW_TYPE { return 1; }
+    if k == TOK_KW_BINFIELD { return 1; }
+    if k == TOK_KW_EXTFIELD { return 1; }
+    if k == TOK_KW_PUB { return 1; }
+    if k == TOK_HASH_LBRACKET { return 1; }
+    if k == TOK_KW_FIELD {
+        // `field(p)` is the dyn-carrier CONSTRUCTOR (an expression);
+        // `field F = Field<251>;` is a declaration.
+        if nt > 1 && toks[1].kind == TOK_LPAREN { return 0; }
+        return 1;
+    }
+    return 0;
+}
+
+// Append a decl batch's top-level `let`s to the evaluator's global slots
+// (ev_build_globals sizes exactly for a whole program; a session grows).
+fn repl_globals_add(prog: i32) {
+    let ndecls: i32 = g_nodes[prog].nargs;
+    let dbase: i32 = g_nodes[prog].args_start;
+    var di: i32 = 0;
+    while di < ndecls {
+        let gd: i32 = g_args[dbase + di];
+        if g_nodes[gd].kind == AST_LET {
+            if g_nevg >= g_evg_cap {
+                var nc: i32 = g_evg_cap;
+                if nc < 16 { nc = 16; }
+                nc = nc * 2;
+                g_evg_names = realloc(g_evg_names, nc);
+                g_evg_types = realloc(g_evg_types, nc);
+                g_evg_tags = realloc(g_evg_tags, nc);
+                g_evg_bits = realloc(g_evg_bits, nc);
+                g_evg_cap = nc;
+            }
+            let gname: i32 = g_nodes[gd].name0;
+            let gtype: i32 = g_nodes[gd].name1;
+            let ginit: i32 = g_nodes[gd].child0;
+            let gl: i32 = g_nodes[gd].line;
+            let gc: i32 = g_nodes[gd].col;
+            lw_check_scalar_type(gtype, gl, gc);
+            if type_is_array(gtype) == 1 { ev_refuse("array-global", gl, gc); }
+            if lw_is_agg(gtype) == 1 { ev_refuse("aggregate-global", gl, gc); }
+            if type_bits(gtype) > 64 { ev_refuse("wide-global", gl, gc); }
+            var bits: u64 = 0;
+            var tag: i32 = ev_tag_for_type(gtype);
+            if tag == EV_VOID { tag = EV_INT; }
+            if g_nodes[ginit].kind != AST_NULL {
+                var gok: i32 = 0;
+                bits = global_const_init(prog, di, ginit, &gok);
+                if gok == 0 { ev_refuse("global-init", gl, gc); }
+                let gfi: i32 = find_field_by_alias(gtype);
+                if gfi >= 0 {
+                    bits = bits % g_fields[gfi].prime;
+                } else {
+                    bits = ev_mask(bits, type_bits(gtype));
+                }
+            }
+            g_evg_names[g_nevg] = gname;
+            g_evg_types[g_nevg] = gtype;
+            g_evg_tags[g_nevg] = tag;
+            g_evg_bits[g_nevg] = bits;
+            g_nevg = g_nevg + 1;
+        }
+        di = di + 1;
+    }
+}
+
+// ---- prepare: parse -> register -> lower (NO evaluation) ----
+// Runs identically in the validating child and in the parent; it is the exact
+// work the fork contains. Leaves g_repl_kind = 0 if the cell was rejected.
+fn repl_prepare(src: *u8, len: i32) {
+    g_repl_kind = 0;
+    g_repl_expr = 0 - 1;
+    g_repl_expr_type = 0 - 1;
+    g_repl_nstmts = 0;
+    g_diag_count = 0;
+    g_diag_mute = 0;
+
+    let toks: *Token = alloc(REPL_TOK_CAP);
+    let nt: i32 = lex(src, len, toks, REPL_TOK_CAP);
+    if nt <= 1 { return; }
+
+    g_tokens = toks;
+    g_ntokens = nt;
+    g_tok_pos = 0;
+    g_src_buf = src;
+    g_src_len = len;
+    g_src_name = "<repl>";
+
+    if repl_cell_is_decl(toks, nt) == 1 {
+        let prog: i32 = parse_program();
+        if g_diag_count > 0 { return; }
+        // The real registration passes: the cell gets the compiler's own
+        // diagnostics, and the duplicate-definition guard IS the append-only
+        // policy (redefining a fn is refused, `:reset` is the way back).
+        codegen_program(prog);
+        if g_diag_count > 0 { return; }
+        repl_globals_add(prog);
+        g_repl_kind = 2;
+        return;
+    }
+
+    // Statement / expression cell.
+    var scratch: *i32 = alloc(nt + 1);
+    var n: i32 = 0;
+    while p_peek() != TOK_EOF {
+        let before: i32 = g_tok_pos;
+        scratch[n] = parse_stmt();
+        n = n + 1;
+        if g_diag_count > 0 { free(scratch); return; }
+        if g_tok_pos == before { p_advance(); }
+    }
+    if n == 0 { free(scratch); return; }
+
+    g_lw_active = 1;
+    g_lw_ret_type = NULL_STR;
+    g_lw_loop_depth = 0;
+    g_lw_last_repr = REPR_UNKNOWN;
+
+    var lowered: *i32 = alloc(n + 1);
+    var nl: i32 = 0;
+    var i: i32 = 0;
+    while i < n {
+        let st: i32 = scratch[i];
+        if g_nodes[st].kind == AST_RETURN {
+            diag_error_at(g_nodes[st].line, g_nodes[st].col,
+                "`return` has no enclosing function in a REPL cell");
+            free(lowered);
+            free(scratch);
+            return;
+        }
+        // A trailing expression statement is the cell's VALUE — lowered as an
+        // expression so the session can echo it. Anywhere else it is a plain
+        // statement (evaluated for its effect).
+        if i == n - 1 && g_nodes[st].kind == AST_EXPR_STMT {
+            let lv: LowVal = lower_expr(g_nodes[st].child0, NULL_STR);
+            g_repl_expr = lv.e;
+            g_repl_expr_type = lv.type_off;
+        } else {
+            lowered[nl] = lower_stmt(st);
+            nl = nl + 1;
+        }
+        i = i + 1;
+    }
+    let base: i32 = g_nevargs;
+    i = 0;
+    while i < nl {
+        evargs_push(lowered[i]);
+        i = i + 1;
+    }
+    free(lowered);
+    free(scratch);
+    // Bodies referenced by this cell (incl. newly monomorphized instances).
+    lw_drain();
+    g_repl_stmts = base;
+    g_repl_nstmts = nl;
+    g_repl_kind = 1;
+}
+
+// ---- run: the ONLY process that evaluates ----
+fn repl_run() {
+    if g_repl_kind != 1 { return; }
+    repl_frame_ensure(g_lw_nslots);
+    let fr: *EvFrame = g_repl_frame;
+    fr.unwinding = 0;
+    var i: i32 = 0;
+    while i < g_repl_nstmts {
+        let rc: i32 = ev_stmt(g_evargs[g_repl_stmts + i], fr);
+        if rc != 0 { break; }
+        i = i + 1;
+    }
+    if g_repl_expr >= 0 && fr.unwinding == 0 {
+        let v: EvalVal = ev_expr(g_repl_expr, fr);
+        repl_render(v.tag, v.type_off, v.bits);
+    }
+    fr.unwinding = 0;
+}
+
+// ---- the forked validator ----
+// Returns 0 = the cell is good (the parent may replay + evaluate), 1 = it was
+// rejected (the child already printed the diagnostic; the session is untouched).
+fn repl_validate(src: *u8, len: i32) -> i32 {
+    repl_flush();
+    let pid: i32 = fork();
+    if pid == 0 {
+        repl_prepare(src, len);
+        if g_repl_kind == 0 { _exit(1); }
+        _exit(0);
+    }
+    if pid < 0 {
+        // No containment available; run inline rather than refuse the cell.
+        return 0;
+    }
+    var st: [i32; 1] = 0;
+    let w: i32 = waitpid(pid, &st[0], 0);
+    let raw: i32 = st[0];
+    if (raw & 127) != 0 {
+        repl_put("session: cell aborted (the compiler died on this input)\n");
+        return 1;
+    }
+    let code: i32 = (raw >> 8) & 255;
+    if code != 0 { return 1; }
+    return 0;
+}
+
+// ---- commands ----
+
+fn repl_help() {
+    repl_put("Traveler REPL — a persistent algebraic session.\n\n");
+    repl_put("  <expr>            evaluate and echo `value : Type`\n");
+    repl_put("  let x = ...       bind (persists across cells; shadowing allowed)\n");
+    repl_put("  var x = ...       mutable binding\n");
+    repl_put("  fn / struct / enum / type / trait / impl / extern / import\n");
+    repl_put("                    declarations (append-only — see :reset)\n\n");
+    repl_put("  :help             this text\n");
+    repl_put("  :type <expr>      the concrete type of <expr>, evaluating nothing\n");
+    repl_put("  :reset            start a fresh session image\n");
+    repl_put("  :quit             leave (Ctrl-D also works)\n\n");
+    repl_put("Definitions cannot be redefined: a name is registered once, so\n");
+    repl_put("`fn f` twice is refused. :reset is the sanctioned way back.\n");
+}
+
+// `:type <expr>` — answered in a FORKED child so the query itself cannot
+// register a monomorph or grow the session's arenas.
+fn repl_type_of(src: *u8, len: i32) {
+    repl_flush();
+    let pid: i32 = fork();
+    if pid == 0 {
+        repl_prepare(src, len);
+        if g_repl_kind != 1 || g_repl_expr < 0 {
+            if g_diag_count == 0 {
+                repl_put("session: :type expects a single expression\n");
+            }
+            repl_flush();
+            _exit(1);
+        }
+        if g_repl_expr_type != NULL_STR {
+            repl_put(&g_strings[g_repl_expr_type]);
+        } else {
+            repl_put("?");
+        }
+        repl_put("\n");
+        repl_flush();
+        _exit(0);
+    }
+    if pid < 0 { return; }
+    var st: [i32; 1] = 0;
+    let w: i32 = waitpid(pid, &st[0], 0);
+}
+
+// Dispatch a `:` command. Returns 0 = not a command, 1 = handled, 2 = quit.
+fn repl_command(buf: *u8, len: i32) -> i32 {
+    if len <= 0 { return 0; }
+    if buf[0] != 58 { return 0; }
+    // Split the verb from its argument.
+    var e: i32 = 1;
+    while e < len && buf[e] != 32 && buf[e] != 9 { e = e + 1; }
+    let vlen: i32 = e - 1;
+    var arg: *u8 = &buf[e];
+    while arg[0] == 32 || arg[0] == 9 { arg = &arg[1]; }
+
+    if vlen == 4 && bytes_eq(&buf[1], "quit", 4) == 1 { return 2; }
+    if vlen == 1 && bytes_eq(&buf[1], "q", 1) == 1 { return 2; }
+    if vlen == 4 && bytes_eq(&buf[1], "help", 4) == 1 { repl_help(); return 1; }
+    if vlen == 1 && bytes_eq(&buf[1], "h", 1) == 1 { repl_help(); return 1; }
+    if vlen == 5 && bytes_eq(&buf[1], "reset", 5) == 1 {
+        repl_flush();
+        _exit(REPL_RESET_CODE);
+    }
+    if vlen == 4 && bytes_eq(&buf[1], "type", 4) == 1 {
+        let alen: i32 = str_len(arg);
+        if alen == 0 {
+            repl_put("session: :type needs an expression\n");
+            return 1;
+        }
+        // The expression cell the query lowers (statement-shaped, so the
+        // trailing-expression rule makes it the cell's value).
+        let cell: *u8 = alloc(alen + 4);
+        var ci: i32 = 0;
+        while ci < alen { cell[ci] = arg[ci]; ci = ci + 1; }
+        cell[alen] = 10;
+        cell[alen + 1] = 59;
+        cell[alen + 2] = 0;
+        repl_type_of(cell, alen + 2);
+        free(cell);
+        return 1;
+    }
+    repl_put("session: unknown command (try :help)\n");
+    return 1;
+}
+
+// ---- the session loop (runs as the supervisor's child) ----
+fn repl_session() {
+    // Eval-engine arenas — the ev_program init, but session-lifetime.
+    g_cap_eir = EIR_INIT_CAP;
+    g_eir = alloc(g_cap_eir);
+    g_neir = 0;
+    g_cap_evargs = EVARGS_INIT_CAP;
+    g_evargs = alloc(g_cap_evargs);
+    g_nevargs = 0;
+    g_evfuncs = alloc(MAX_EVFUNCS);
+    g_nevfuncs = 0;
+    g_lw_names = alloc(MAX_LW_SYMS);
+    g_lw_types = alloc(MAX_LW_SYMS);
+    g_lw_slots = alloc(MAX_LW_SYMS);
+    g_lw_reprs = alloc(MAX_LW_SYMS);
+    g_lw_scope = alloc(MAX_LW_DEPTH);
+    g_lw_pending = alloc(MAX_EVFUNCS);
+    g_lw_npending = 0;
+    g_lw_last_repr = REPR_UNKNOWN;
+    g_lw_active = 1;
+    // The session's own (never-popped) lowering scope: cell bindings append
+    // here and outlive the cell, which is exactly REPL persistence.
+    g_lw_count = 0;
+    g_lw_depth = 0;
+    g_lw_nslots = 0;
+    g_lw_narrs = 0;
+    lw_push_scope();
+
+    g_evg_cap = 16;
+    g_evg_names = alloc(g_evg_cap);
+    g_evg_types = alloc(g_evg_cap);
+    g_evg_tags = alloc(g_evg_cap);
+    g_evg_bits = alloc(g_evg_cap);
+    g_nevg = 0;
+
+    g_repl_frame = ev_frame_new(REPL_SLOT_INIT, 64);
+    g_repl_slotcap = 0;
+    repl_frame_ensure(REPL_SLOT_INIT);
+
+    // Registration runs the real codegen passes; their IR is discarded.
+    g_ir_fd = creat("/dev/null", 438);
+    if g_ir_fd < 0 {
+        repl_put("session: cannot open /dev/null\n");
+        repl_flush();
+        _exit(1);
+    }
+
+    let line: *u8 = alloc(REPL_LINE_CAP);
+    let cell: *u8 = alloc(REPL_CELL_CAP);
+
+    if g_repl_tty == 1 {
+        repl_put("Traveler REPL. :help for commands, :quit to leave.\n");
+    }
+
+    while 1 == 1 {
+        var clen: i32 = 0;
+        cell[0] = 0;
+        var complete: i32 = 0;
+        var eof: i32 = 0;
+        while complete == 0 {
+            if g_repl_tty == 1 {
+                if clen == 0 { repl_put("tv> "); } else { repl_put("  | "); }
+                repl_flush();
+            }
+            let n: i32 = repl_read_line(line, REPL_LINE_CAP);
+            if n < 0 {
+                eof = 1;
+                complete = 1;
+            } else {
+                if clen + n + 2 >= REPL_CELL_CAP {
+                    repl_put("session: cell too large\n");
+                    clen = 0;
+                    cell[0] = 0;
+                    complete = 1;
+                } else {
+                    var i: i32 = 0;
+                    while i < n {
+                        cell[clen] = line[i];
+                        clen = clen + 1;
+                        i = i + 1;
+                    }
+                    cell[clen] = 10;
+                    clen = clen + 1;
+                    cell[clen] = 0;
+                    // A `:` command is always one line.
+                    if cell[0] == 58 {
+                        complete = 1;
+                    } else if repl_balance(cell, clen) <= 0 {
+                        complete = 1;
+                    }
+                }
+            }
+        }
+        if eof == 1 {
+            if g_repl_tty == 1 { repl_put("\n"); }
+            repl_flush();
+            return;
+        }
+        let sig: i32 = repl_last_significant(cell, clen);
+        if sig < 0 { continue; }
+
+        if cell[0] == 58 {
+            // Terminate at the last significant byte: the command's argument is
+            // read as a C string, so a trailing newline would become part of it.
+            cell[sig + 1] = 0;
+            let cr: i32 = repl_command(cell, sig + 1);
+            repl_flush();
+            if cr == 2 { return; }
+            continue;
+        }
+
+        // Cell-boundary semicolon: a session line is a complete unit, so the
+        // terminator is implied. Appended on its OWN line so a trailing `//`
+        // comment cannot swallow it.
+        var flen: i32 = sig + 1;
+        let last: u8 = cell[sig];
+        if last != 59 && last != 125 {
+            cell[flen] = 10;
+            flen = flen + 1;
+            cell[flen] = 59;
+            flen = flen + 1;
+            cell[flen] = 0;
+        } else {
+            cell[flen] = 0;
+        }
+
+        if repl_validate(cell, flen) == 0 {
+            repl_prepare(cell, flen);
+            repl_run();
+        }
+        repl_flush();
+    }
+}
+
+// The supervisor: the session runs as a CHILD so `:reset` is a genuinely
+// fresh image (this process has evaluated nothing), rather than an attempt to
+// un-register append-only arenas.
+fn repl_main() {
+    g_repl_tty = 0;
+    if isatty(0) == 1 { g_repl_tty = 1; }
+    while 1 == 1 {
+        repl_flush();
+        let pid: i32 = fork();
+        if pid == 0 {
+            repl_session();
+            repl_flush();
+            _exit(0);
+        }
+        if pid < 0 {
+            // No fork: run the session inline (no :reset, no containment).
+            repl_session();
+            exit(0);
+        }
+        var st: [i32; 1] = 0;
+        let w: i32 = waitpid(pid, &st[0], 0);
+        let raw: i32 = st[0];
+        if (raw & 127) != 0 { exit(1); }
+        let code: i32 = (raw >> 8) & 255;
+        if code != REPL_RESET_CODE { exit(code); }
+    }
+}
+
 // ===== NATIVE-EMISSION DRIVER (--emit obj|exe) =====
 // So `tvc x.tv -o x --emit exe` yields a runnable binary in one call instead of
 // the stage1 -> llc -> cc dance. IR streams to a temp .ll; llc reads the target
@@ -23984,6 +24750,8 @@ fn drv_emit(ll_path: *u8, out_path: *u8, mode: i32) -> i32 {
 fn main(argc: i32, argv: **u8) {
     if argc < 2 {
         wr(2, "usage: tvc_self <source.tv> [-o output.ll]\n");
+        wr(2, "       tvc_self --repl            (interactive session)\n");
+        wr(2, "       tvc_self --eval <source.tv>\n");
         exit(1);
     }
 
@@ -24020,6 +24788,9 @@ fn main(argc: i32, argv: **u8) {
             // --eval: run through the Traveler IR evaluator instead of LLVM.
             // Refuses loudly (exit 97), never misevaluates; gate tests/eval_diff/.
             g_eval_mode = 1;
+        } else if str_eq(argv[ai], "--repl") == 1 {
+            // --repl (E3): a persistent session over the same evaluator.
+            g_repl_mode = 1;
         } else if str_eq(argv[ai], "--emit-gpu") == 1 {
             // --emit-gpu (Stage 0): emit an AMDGPU device module of the
             // elementwise-class pfor workers. Rides the /dev/null codegen pass.
@@ -24076,23 +24847,38 @@ fn main(argc: i32, argv: **u8) {
         }
         ai = ai + 1;
     }
-    if source_path == null {
+    if source_path == null && g_repl_mode == 0 {
         wr(2, "error: no source file\n");
         exit(1);
     }
 
+    // --repl with no file: nothing to read, but the arenas below are still the
+    // session's. A bare `--repl` reads its program from the session, not disk.
+    if source_path == null {
+        source_path = "<repl>";
+    }
+
     // Open and read source file
-    let fd: i32 = open(source_path, 0, 0);
-    if fd < 0 {
-        wr(2, "error: cannot open file\n");
-        exit(1);
+    var fd: i32 = 0 - 1;
+    if g_repl_mode == 0 {
+        fd = open(source_path, 0, 0);
+        if fd < 0 {
+            wr(2, "error: cannot open file\n");
+            exit(1);
+        }
     }
     // Source read buffer: 16 MB fixed cap (arenas grow, this doesn't — sizing
     // by fstat is a follow-up). Oversize truncates to a clean parse error.
     let SRC_CAP: i32 = 16777216;
     let src: *u8 = alloc(SRC_CAP);
-    let n: i64 = read_bytes(fd, src, SRC_CAP);
-    close(fd);
+    var n: i64 = 0;
+    if g_repl_mode == 0 {
+        n = read_bytes(fd, src, SRC_CAP);
+        close(fd);
+    } else {
+        // --repl reads its program from the session, not from disk.
+        src[0] = 0;
+    }
 
     // Wire diagnostic source context (filename + buffer + length); imported
     // files swap it transiently inside imp_lex_file.
@@ -24116,15 +24902,18 @@ fn main(argc: i32, argv: **u8) {
 
     // Lex the main file plus all (transitively) imported files into one
     // merged token stream (Model A source inclusion).
-    let ntok: i32 = lex_with_imports(source_path, tokens, tok_cap);
-    if ntok < 0 {
-        wr(2, "error: import resolution failed\n");
-        exit(1);
-    }
+    var ntok: i32 = 0;
+    if g_repl_mode == 0 {
+        ntok = lex_with_imports(source_path, tokens, tok_cap);
+        if ntok < 0 {
+            wr(2, "error: import resolution failed\n");
+            exit(1);
+        }
 
-    wr(2, "tokens: ");
-    wr_int(2, ntok as i64);
-    wr(2, "\n");
+        wr(2, "tokens: ");
+        wr_int(2, ntok as i64);
+        wr(2, "\n");
+    }
 
     // Initialise arenas. MAX_* are the INITIAL capacities for the growable
     // arenas (A6); the live g_cap_* track current size and double via realloc.
@@ -24221,6 +25010,13 @@ fn main(argc: i32, argv: **u8) {
     // slots make 0 a de-facto null that analyzer walks shortcut in the UNSAFE
     // direction; burning it makes both null conventions genuinely correct.
     let node_sentinel: i32 = node_alloc(AST_PROGRAM, 0, 0);
+
+    // --repl (E3): the arenas above are the session's; everything else below is
+    // the one-shot file pipeline. repl_main never returns.
+    if g_repl_mode == 1 {
+        repl_main();
+        exit(0);
+    }
 
     // Parse
     let prog: i32 = parse_program();

@@ -405,6 +405,13 @@ test_single edge_cases
 compile_obj_self field_signed_cast
 link_objs field_signed_cast field_signed_cast
 run_test field_signed_cast "$TIMEOUT_SINGLE"
+# #62 gate: read_bytes' BUFFER argument may be any pointer expression. The
+# builtin used to resolve it with sym_find(node.name0) — meaningless on a
+# non-identifier node, so &buf[i] / a call result silently read into the WRONG
+# buffer (or indexed g_syms[-1]). tvc_self-only: the fix is in tvc_self.tv.
+compile_obj_self read_bytes_expr
+link_objs read_bytes_expr read_bytes_expr
+run_test read_bytes_expr "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.
@@ -1388,6 +1395,18 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     else
         FAIL=$((FAIL + 1))
         FAILURES="$FAILURES eval_diff"
+    fi
+fi
+
+# --- REPL session gate (E3: persistence + error containment) ---
+if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
+    echo ""
+    echo "=== REPL session (tests/repl/run.sh) ==="
+    if "$SCRIPT_DIR/repl/run.sh"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES repl"
     fi
 fi
 

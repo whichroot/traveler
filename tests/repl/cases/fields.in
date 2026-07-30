@@ -1,0 +1,11 @@
+type F = Field<251>;
+let a: F = 100;
+let b: F = 200;
+a + b
+a * b
+a - b
+a / b
+signed(a + b)
+type G = Field<65521>;
+let g: G = 70000;
+g

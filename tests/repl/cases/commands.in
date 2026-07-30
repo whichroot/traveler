@@ -1,0 +1,13 @@
+let a = 1;
+:type a
+:type a + 1
+type F = Field<251>;
+let q: F = 3;
+:type q
+:bogus
+:type
+a
+:reset
+a
+let a = 42;
+a

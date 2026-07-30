@@ -1,0 +1,14 @@
+let x = 5;
+x + 1
+let y = ;
+x + 2
+undefined_name
+x + 3
+z = 1;
+x + 4
+nosuchfn(3)
+x + 5
+fn f() -> i32 { return 1; }
+f()
+fn f() -> i32 { return 2; }
+f()

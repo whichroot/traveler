@@ -1,0 +1,13 @@
+fn sq(x: i32) -> i32 { return x * x; }
+sq(9)
+fn fact(n: i32) -> i32 {
+  if n <= 1 { return 1; }
+  return n * fact(n - 1);
+}
+fact(6)
+struct Pt { x: i32, y: i32 }
+let p = Pt { x: 3, y: 4 };
+p.x * p.y
+fn id<T>(v: T) -> T { return v; }
+let r: i32 = id(41);
+r + 1

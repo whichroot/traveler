@@ -1,0 +1,10 @@
+i32
+i32
+F
+session: unknown command (try :help)
+session: :type needs an expression
+1 : i32
+<repl>:1:1: error: undefined variable
+a
+^
+42 : i32

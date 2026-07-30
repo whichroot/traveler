@@ -1,0 +1,23 @@
+6 : i32
+<repl>:1:9: error: expected an expression, found ';'
+let y = ;
+        ^
+<repl>:1:10: error: expected ';', found end of file
+let y = ;
+         ^
+7 : i32
+<repl>:1:1: error: undefined variable
+undefined_name
+^
+8 : i32
+<repl>:1:1: error: assignment to an undefined variable
+z = 1;
+^
+9 : i32
+eval-refused: uncovered-call 'nosuchfn' at <repl>:1:1
+10 : i32
+1 : i32
+<repl>:1:1: error: duplicate function definition (already defined, possibly via import)
+fn f() -> i32 { return 2; }
+^
+1 : i32

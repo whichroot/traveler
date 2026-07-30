@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+//
+// Gate for known-issues #62: read_bytes' BUFFER argument may be any pointer
+// expression, not only a plain identifier.
+//
+// The defect: the read_bytes builtin resolved its buffer via
+// `sym_find(g_nodes[buf_node].name0)`. On a non-identifier node `name0` is not
+// a name, so sym_find returned a STALE symbol — or -1, i.e. a `g_syms[-1]`
+// out-of-bounds read — and the emitted `@read` silently received the WRONG
+// pointer. Miscompile-class: no diagnostic, no crash, just bytes landing in
+// another buffer.
+//
+// It stayed invisible because every in-tree caller passed a bare identifier
+// (the self-selecting corpus, again). The EVAL engine had already lowered this
+// argument as a general expression, so eval and codegen genuinely disagreed —
+// the differential oracle would have caught it the moment one corpus program
+// used `&buf[i]`, and none did.
+//
+// Covered here: bare identifier (the fast path), &buf[0], &buf[i] with a
+// runtime index, a cast expression, and an array-typed local.
+
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn creat(path: *u8, mode: i32) -> i32;
+extern "C" fn open(path: *u8, flags: i32, mode: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+
+// Identity on a pointer — puts a CALL in the buffer argument position.
+fn pass(p: *u8) -> *u8 { return p; }
+
+fn main() -> i32 {
+    let path: *u8 = "/tmp/tv_read_bytes_expr.bin";
+
+    // Author a known 8-byte payload: 'A'..'H'.
+    let fd: i32 = creat(path, 438);
+    if fd < 0 { print(0 - 1); return 1; }
+    let src: *u8 = alloc(8);
+    var i: i32 = 0;
+    while i < 8 {
+        src[i] = (65 + i) as u8;
+        i = i + 1;
+    }
+    let wn: i64 = write(fd, src, 8);
+    let wc: i32 = close(fd);
+
+    // (a) plain identifier — the byte-identical fast path.
+    let f1: i32 = open(path, 0, 0);
+    let b1: *u8 = alloc(8);
+    let r1: i64 = read_bytes(f1, b1, 8);
+    let c1: i32 = close(f1);
+    print(r1 as i32);          // 8
+    print(b1[0] as i32);       // 65 'A'
+
+    // (b) &buf[0] on a POINTER base — the #62 shape.
+    let f2: i32 = open(path, 0, 0);
+    let b2: *u8 = alloc(8);
+    let r2: i64 = read_bytes(f2, &b2[0], 8);
+    let c2: i32 = close(f2);
+    print(r2 as i32);          // 8
+    print(b2[0] as i32);       // 65 'A'
+    print(b2[7] as i32);       // 72 'H'
+
+    // (c) &buf[i] with a RUNTIME index: read the tail into an offset slot.
+    let f3: i32 = open(path, 0, 0);
+    let b3: *u8 = alloc(16);
+    var off: i32 = 4;
+    let r3: i64 = read_bytes(f3, &b3[off], 8);
+    let c3: i32 = close(f3);
+    print(r3 as i32);          // 8
+    print(b3[0] as i32);       // 0   — untouched, the read started at [4]
+    print(b3[4] as i32);       // 65 'A'
+    print(b3[11] as i32);      // 72 'H'
+
+    // (d) a CALL RESULT in the buffer position (no identifier at all).
+    let f4: i32 = open(path, 0, 0);
+    let b4: *u8 = alloc(8);
+    let r4: i64 = read_bytes(f4, pass(b4), 8);
+    let c4: i32 = close(f4);
+    print(r4 as i32);          // 8
+    print(b4[1] as i32);       // 66 'B'
+
+    // (e) an ARRAY-typed local (its alloca IS the address).
+    let f5: i32 = open(path, 0, 0);
+    var arr: [u8; 8] = 0;
+    let r5: i64 = read_bytes(f5, &arr[0], 8);
+    let c5: i32 = close(f5);
+    print(r5 as i32);          // 8
+    print(arr[2] as i32);      // 67 'C'
+
+    return 0;
+}
