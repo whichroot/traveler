@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// arena.tv — bump Arena<T>: the conventional-global grip of the memory model
+// (design-notes/memory.md "two grips"). Wholesale-lifetime storage for
+// startup-lifetime data (weights, tables) and long-lived scratch.
+//
+// The load-bearing property is that growth NEVER invalidates an issued
+// pointer: when the active chunk fills, the arena stashes it on a list and
+// bumps a FRESH buffer — the realloc-invalidation lesson (memory.md C2) made
+// structural. Each chunk is a typed `*T` from `alloc` (element size is
+// compiler-derived; cursors run in elements, so no sizeof is needed). There
+// is no per-object free: `arena_reset` rewinds to the first chunk for reuse,
+// `arena_free` releases every chunk.
+//
+// The old-chunk list is a `**T` that doubles when it fills. tvc_self ONLY.
+// @internal-design: memory
+
+struct Arena<T> {
+    buf: *T,          // active chunk (element storage)
+    used: i32,        // bump cursor, in elements
+    cap: i32,         // active chunk capacity, in elements
+    olds: **T,        // retired chunks, kept live until arena_free
+    nolds: i32,
+    olds_cap: i32,
+}
+
+let ARENA_MIN_ELEMS: i32 = 256;
+
+fn arena_new<T>(chunk_elems: i32) -> Arena<T> {
+    var ce: i32 = chunk_elems;
+    if ce < 1 { ce = ARENA_MIN_ELEMS; }
+    let b: *T = alloc(ce);
+    let o: **T = alloc(16);
+    return Arena { buf: b, used: 0, cap: ce, olds: o, nolds: 0, olds_cap: 16 };
+}
+
+// Retire the active chunk onto the olds list and bump a fresh one sized for
+// the request (never smaller than double the last chunk). Old chunks are
+// untouched, so every previously issued pointer stays valid.
+fn arena_grow<T>(a: *Arena<T>, need: i32) {
+    if a.nolds >= a.olds_cap {
+        a.olds_cap = a.olds_cap * 2;
+        a.olds = realloc(a.olds, a.olds_cap);
+    }
+    a.olds[a.nolds] = a.buf;
+    a.nolds = a.nolds + 1;
+    var ncap: i32 = a.cap * 2;
+    if need > ncap { ncap = need; }
+    a.cap = ncap;
+    a.buf = alloc(a.cap);
+    a.used = 0;
+}
+
+// Carve `n` contiguous elements from the active chunk; returns a pointer to
+// the first. Grows on overflow without moving existing data.
+fn arena_alloc<T>(a: *Arena<T>, n: i32) -> *T {
+    if a.used + n > a.cap {
+        arena_grow(a, n);
+    }
+    let s: i32 = a.used;
+    a.used = a.used + n;
+    return &a.buf[s];
+}
+
+// Rewind: retire everything, restart from a single fresh chunk. Every pointer
+// issued before the reset is INVALID afterwards (unlike growth, reset does
+// not preserve prior chunks' contents for continued use).
+fn arena_reset<T>(a: *Arena<T>) {
+    var i: i32 = 0;
+    while i < a.nolds {
+        free(a.olds[i]);
+        i = i + 1;
+    }
+    a.nolds = 0;
+    a.used = 0;
+}
+
+// Free every retired chunk and the active one. The Arena value lives wherever
+// the caller put it; it must not be used after this.
+fn arena_free<T>(a: *Arena<T>) {
+    var i: i32 = 0;
+    while i < a.nolds {
+        free(a.olds[i]);
+        i = i + 1;
+    }
+    free(a.olds);
+    free(a.buf);
+}

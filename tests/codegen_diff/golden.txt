@@ -92,6 +92,7 @@ fd883f494bdfbb594f6194b8873c9390  examples/ir_emitter.tv
 284b206cf5fb347e49e3c3ec112d29f2  examples/match_nested_scalar.tv
 2c765bf2054ed8eaa1347f73f02b0986  examples/mds_check_test.tv
 0d9aef183dc49b6bbd85d32560dec260  examples/mds_live_test.tv
+8318243a7a456d7c38eca7ff92902611  examples/mem_arena_pool.tv
 e82687dca2e17b0e0389fc7cb3af871d  examples/merkle_test.tv
 7e0f27074e1afd0052f114490a93cf35  examples/method_basics.tv
 b942bcd69b9485a51b34a80e70751c82  examples/mini_lexer.tv

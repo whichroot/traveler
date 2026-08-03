@@ -113,3 +113,4 @@ examples/alloc_cast_sizes.tv  # #72: cast-wrapped alloc/realloc element sizing �
 examples/generic_infer_cast.tv # #63(c): cast-typed arg drives inference — eval == compiled
 examples/ptr_cast_int.tv      # #73: address-of under numeric cast — ptr bits as int, eval == compiled
 examples/defer_cleanup.tv     # M2/#75: defer on every exit path incl. the `?` unwind — eval == compiled
+examples/mem_arena_pool.tv    # M3: arena chunk-list growth + pool handle stability — eval == compiled

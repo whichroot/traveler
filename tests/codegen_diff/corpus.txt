@@ -278,3 +278,4 @@ examples/generic_infer_cast.tv
 examples/ptr_cast_int.tv
 examples/global_array_init.tv
 examples/defer_cleanup.tv
+examples/mem_arena_pool.tv

@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// pool.tv — Pool<T>: the growth grip of the memory model (memory.md C6,
+// "indices over pointers"). A growable dense array whose elements are
+// addressed by i32 HANDLES, never pointers — so the backing store may realloc
+// on growth and every handle stays valid. This is the answer to the
+// realloc-invalidation class: code that holds a `*T` across a grow is wrong;
+// code that holds a handle is not.
+//
+// Handles are plain indices into the dense array. `pool_get` returns a
+// pointer INTO the current backing store — a borrow, valid only until the
+// next `pool_push` that grows. The discipline: re-fetch after any push.
+// tvc_self ONLY. @internal-design: memory
+
+struct Pool<T> {
+    data: *T,
+    len: i32,
+    cap: i32,
+}
+
+fn pool_new<T>() -> Pool<T> {
+    let buf: *T = alloc(4);
+    return Pool { data: buf, len: 0, cap: 4 };
+}
+
+// Append; returns the new element's handle. May realloc the backing store —
+// any pointer previously returned by pool_get is INVALID after this.
+fn pool_push<T>(p: *Pool<T>, x: T) -> i32 {
+    if p.len == p.cap {
+        p.cap = p.cap * 2;
+        p.data = realloc(p.data, p.cap);
+    }
+    p.data[p.len] = x;
+    p.len = p.len + 1;
+    return p.len - 1;
+}
+
+// The handle IS the validity check: stable across growth, field-friendly,
+// indexable by the parallelizer. Returns a borrow pointer — re-fetch after
+// any pool_push (the borrow, not the handle, is what realloc invalidates).
+fn pool_get<T>(p: *Pool<T>, h: i32) -> *T {
+    return &p.data[h];
+}
+
+fn pool_set<T>(p: *Pool<T>, h: i32, x: T) {
+    p.data[h] = x;
+}
+
+fn pool_len<T>(p: *Pool<T>) -> i32 {
+    return p.len;
+}
+
+fn pool_free<T>(p: *Pool<T>) {
+    free(p.data);
+}

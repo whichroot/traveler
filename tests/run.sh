@@ -439,6 +439,14 @@ run_test global_array_init "$TIMEOUT_SINGLE"
 compile_obj_self defer_cleanup
 link_objs defer_cleanup defer_cleanup
 run_test defer_cleanup "$TIMEOUT_SINGLE"
+# M3 gate: lib/mem arena (chunk-list growth never invalidates issued pointers)
+# + pool (handles survive realloc). The counterexamples are the point: the
+# arena's grown-over chunk still reads its values, and pool handles re-fetched
+# after a forced realloc are stable where a held raw pointer would dangle.
+# tvc_self-only (import); eval mirrors via the corpus.
+compile_obj_self mem_arena_pool
+link_objs mem_arena_pool mem_arena_pool
+run_test mem_arena_pool "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.
