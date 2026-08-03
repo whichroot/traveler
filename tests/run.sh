@@ -1450,6 +1450,18 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     fi
 fi
 
+# --- alloc-debug redzone gate (memory model M5) ---
+if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
+    echo ""
+    echo "=== alloc-debug redzones (tests/alloc_debug/run.sh) ==="
+    if "$SCRIPT_DIR/alloc_debug/run.sh"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES alloc_debug"
+    fi
+fi
+
 # --- Bootstrap gate (B4: Traveler builds itself, no C in the chain) ---
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""

@@ -1,0 +1,9 @@
+// eval-provenance trap (M5): double free must be refused by the oracle with
+// eval-memory: double free (exit 97). Run under --eval only.
+fn main() {
+    let p: *i64 = alloc(4);
+    p[0] = 5;
+    free(p);
+    free(p);
+    print(999);
+}

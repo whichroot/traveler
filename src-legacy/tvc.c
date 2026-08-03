@@ -10835,6 +10835,7 @@ static void codegen_program(ASTNode *prog) {
         if (!strcmp(efi->name, "printf") ||
             !strcmp(efi->name, "read") || !strcmp(efi->name, "write") ||
             !strcmp(efi->name, "malloc") || !strcmp(efi->name, "free") ||
+            !strcmp(efi->name, "realloc") || !strcmp(efi->name, "getenv") ||
             !strcmp(efi->name, "abort")) continue;
         Type eret = resolve_type(efi->ret_type);
         ir_emit("declare %s @%s(", type_to_ir(eret), efi->name);

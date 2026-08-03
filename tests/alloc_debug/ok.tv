@@ -1,0 +1,14 @@
+// alloc-debug gate: a correct program runs clean under --alloc-debug
+// redzones. Exercises alloc, realloc (grow), full-range writes, free.
+fn main() {
+    let p: *i64 = alloc(4);
+    var i: i32 = 0;
+    while i < 4 { p[i] = (i + 1) as i64; i = i + 1; }
+    print(p[0]);            // 1
+    print(p[3]);            // 4
+    var q: *i64 = realloc(p, 8);
+    q[7] = 99;
+    print(q[7]);            // 99
+    free(q);
+    print(7);               // 7 — reached the end without a canary abort
+}

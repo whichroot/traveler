@@ -46,6 +46,9 @@ extern "C" fn fork() -> i32;
 extern "C" fn waitpid(pid: i32, status: *i32, options: i32) -> i32;
 extern "C" fn isatty(fd: i32) -> i32;
 extern "C" fn fflush(f: *u8) -> i32;
+// M5 eval leak report opt-in (TRAVELER_EVAL_LEAKS=1). The one env read in the
+// compiler, confined to the eval oracle's diagnostic path.
+extern "C" fn getenv(name: *u8) -> *u8;
 
 // ===== TOKEN KIND CONSTANTS (0-79 original; 80-82 appended for extfield/register) =====
 
@@ -1661,6 +1664,11 @@ var g_gpu_target: i32 = 0;
 // --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
 // (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
 var g_emit_mode: i32 = 0;
+// --alloc-debug (memory model M5): opt-in redzones. Every alloc/realloc gets a
+// 16B header (magic + payload size) and a 16B trailer canary; free/realloc
+// verify and abort loudly naming the operation. Flag OFF -> byte-identical
+// emission (the raw malloc path), proven by the codegen-diff gate.
+var g_alloc_debug: i32 = 0;
 // Toolchain paths for the --emit driver (-llc / -cc flags); null => PATH default.
 var g_llc_path: *u8 = null;
 var g_cc_path: *u8 = null;
@@ -11940,12 +11948,19 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr_int(elem_sz as i64); ir_wr("\n");
             }
             let ptr_r: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(ptr_r); ir_wr(" = call ptr @malloc(i64 ");
-            ir_wr_reg(total_r); ir_wr(")\n");
-            // Memset zero
-            ir_wr("  call void @llvm.memset.p0.i64(ptr ");
-            ir_wr_reg(ptr_r); ir_wr(", i8 0, i64 ");
-            ir_wr_reg(total_r); ir_wr(", i1 false)\n");
+            if g_alloc_debug == 1 {
+                // --alloc-debug: redzone helper (header + trailer canary),
+                // zero-filled payload inside it.
+                ir_wr("  "); ir_wr_reg(ptr_r); ir_wr(" = call ptr @__tv_alloc_dbg(i64 ");
+                ir_wr_reg(total_r); ir_wr(")\n");
+            } else {
+                ir_wr("  "); ir_wr_reg(ptr_r); ir_wr(" = call ptr @malloc(i64 ");
+                ir_wr_reg(total_r); ir_wr(")\n");
+                // Memset zero
+                ir_wr("  call void @llvm.memset.p0.i64(ptr ");
+                ir_wr_reg(ptr_r); ir_wr(", i8 0, i64 ");
+                ir_wr_reg(total_r); ir_wr(", i1 false)\n");
+            }
             return IRValue { reg: ptr_r, type_off: str_intern("ptr") };
         }
         // realloc(ptr, count): resize to `count` context-typed elements; contents
@@ -11973,8 +11988,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr_int(r_elem_sz as i64); ir_wr("\n");
             }
             let r_ptr: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(r_ptr); ir_wr(" = call ptr @realloc(ptr ");
-            ir_wr_reg(rc_ptr.reg); ir_wr(", i64 "); ir_wr_reg(r_total); ir_wr(")\n");
+            if g_alloc_debug == 1 {
+                ir_wr("  "); ir_wr_reg(r_ptr); ir_wr(" = call ptr @__tv_realloc_dbg(ptr ");
+                ir_wr_reg(rc_ptr.reg); ir_wr(", i64 "); ir_wr_reg(r_total); ir_wr(")\n");
+            } else {
+                ir_wr("  "); ir_wr_reg(r_ptr); ir_wr(" = call ptr @realloc(ptr ");
+                ir_wr_reg(rc_ptr.reg); ir_wr(", i64 "); ir_wr_reg(r_total); ir_wr(")\n");
+            }
             return IRValue { reg: r_ptr, type_off: str_intern("ptr") };
         }
         // free(ptr) builtin
@@ -11991,7 +12011,11 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 diag_end();
                 return IRValue { reg: 0, type_off: NULL_STR };
             }
-            ir_wr("  call void @free(ptr "); ir_wr_reg(fr_arg.reg); ir_wr(")\n");
+            if g_alloc_debug == 1 {
+                ir_wr("  call void @__tv_free_dbg(ptr "); ir_wr_reg(fr_arg.reg); ir_wr(")\n");
+            } else {
+                ir_wr("  call void @free(ptr "); ir_wr_reg(fr_arg.reg); ir_wr(")\n");
+            }
             return IRValue { reg: 0, type_off: NULL_STR };
         }
         // exit(code) builtin
@@ -15229,6 +15253,7 @@ fn is_preamble_decl(name: i32) -> i32 {
     if str_eq(s, "strlen") == 1 { return 1; }
     if str_eq(s, "putchar") == 1 { return 1; }
     if str_eq(s, "creat") == 1 { return 1; }
+    if str_eq(s, "getenv") == 1 { return 1; }   // preamble declares it (pfor runtime)
     return 0;
 }
 
@@ -15546,6 +15571,107 @@ fn emit_preamble() {
 
 // ===== PARALLEL DISPATCH RUNTIME EMISSION =====
 // __get_num_cores, __pfor_entry, __parallel_for — once per module.
+
+// ===== ALLOC-DEBUG REDZONE RUNTIME (memory model M5) =====
+// Emitted only under --alloc-debug. Layout per allocation:
+//   [0..8)  magic 0xDB6C0DE
+//   [8..16) payload size in bytes
+//   [16..16+size)  the payload (what the program sees; returned pointer)
+//   [16+size .. +16)  trailer canary 0xA5A5A5A5A5A5A5A5 x2
+// free/realloc verify magic + trailer and abort loudly on a smear. The
+// returned pointer is base+16, so an under/overflow of the payload hits a
+// canary, not a neighboring live allocation.
+fn emit_alloc_debug_runtime() {
+    ir_wr("\n; --- alloc-debug redzone runtime ---\n");
+    ir_wr("@.__ad_msg_trl = private constant [37 x i8] c\"alloc-debug: trailer canary smeared\\0A\\00\"\n");
+    ir_wr("@.__ad_msg_dbl = private constant [42 x i8] c\"alloc-debug: free of non-redzone pointer\\0A\\00\"\n");
+
+    // __tv_alloc_dbg(i64 %size) -> ptr : malloc(16+size+16), lay header +
+    // trailer, zero the payload, return base+16.
+    ir_wr("define internal ptr @__tv_alloc_dbg(i64 %size) {\n");
+    ir_wr("entry:\n");
+    ir_wr("  %total = add i64 %size, 32\n");
+    ir_wr("  %base = call ptr @malloc(i64 %total)\n");
+    ir_wr("  store i64 230686942, ptr %base\n");           // magic 0xDB6C0DE
+    ir_wr("  %szp = getelementptr i64, ptr %base, i64 1\n");
+    ir_wr("  store i64 %size, ptr %szp\n");
+    ir_wr("  %pay = getelementptr i8, ptr %base, i64 16\n");
+    ir_wr("  call void @llvm.memset.p0.i64(ptr %pay, i8 0, i64 %size, i1 false)\n");
+    ir_wr("  %trl = getelementptr i8, ptr %pay, i64 %size\n");
+    ir_wr("  store i64 -6510615555426900571, ptr %trl\n");   // 0xA5A5A5A5A5A5A5A5
+    ir_wr("  %trl2 = getelementptr i8, ptr %trl, i64 8\n");
+    ir_wr("  store i64 -6510615555426900571, ptr %trl2\n");
+    ir_wr("  ret ptr %pay\n");
+    ir_wr("}\n");
+
+    // __tv_check_dbg(ptr %pay) : verify header magic + trailer canary; abort
+    // with a message on any violation. Shared by free and realloc.
+    ir_wr("define internal void @__tv_check_dbg(ptr %pay) {\n");
+    ir_wr("entry:\n");
+    ir_wr("  %isnull = icmp eq ptr %pay, null\n");
+    ir_wr("  br i1 %isnull, label %ok, label %chk\n");
+    ir_wr("chk:\n");
+    ir_wr("  %base = getelementptr i8, ptr %pay, i64 -16\n");
+    ir_wr("  %magic = load i64, ptr %base\n");
+    ir_wr("  %magok = icmp eq i64 %magic, 230686942\n");
+    ir_wr("  br i1 %magok, label %trlc, label %badh\n");
+    ir_wr("badh:\n");
+    ir_wr("  %w1 = call i64 @write(i32 2, ptr @.__ad_msg_dbl, i64 41)\n");
+    ir_wr("  call void @abort()\n");
+    ir_wr("  ret void\n");
+    ir_wr("trlc:\n");
+    ir_wr("  %szp = getelementptr i8, ptr %pay, i64 -8\n");
+    ir_wr("  %size = load i64, ptr %szp\n");
+    ir_wr("  %trl = getelementptr i8, ptr %pay, i64 %size\n");
+    ir_wr("  %c1 = load i64, ptr %trl\n");
+    ir_wr("  %trl2 = getelementptr i8, ptr %trl, i64 8\n");
+    ir_wr("  %c2 = load i64, ptr %trl2\n");
+    ir_wr("  %ok1 = icmp eq i64 %c1, -6510615555426900571\n");
+    ir_wr("  %ok2 = icmp eq i64 %c2, -6510615555426900571\n");
+    ir_wr("  %both = and i1 %ok1, %ok2\n");
+    ir_wr("  br i1 %both, label %ok, label %badt\n");
+    ir_wr("badt:\n");
+    ir_wr("  %w2 = call i64 @write(i32 2, ptr @.__ad_msg_trl, i64 36)\n");
+    ir_wr("  call void @abort()\n");
+    ir_wr("  ret void\n");
+    ir_wr("ok:\n");
+    ir_wr("  ret void\n");
+    ir_wr("}\n");
+
+    // __tv_free_dbg(ptr %pay): check canaries, then free(base).
+    ir_wr("define internal void @__tv_free_dbg(ptr %pay) {\n");
+    ir_wr("entry:\n");
+    ir_wr("  call void @__tv_check_dbg(ptr %pay)\n");
+    ir_wr("  %isnull = icmp eq ptr %pay, null\n");
+    ir_wr("  br i1 %isnull, label %done, label %dofree\n");
+    ir_wr("dofree:\n");
+    ir_wr("  %base = getelementptr i8, ptr %pay, i64 -16\n");
+    ir_wr("  call void @free(ptr %base)\n");
+    ir_wr("  ret void\n");
+    ir_wr("done:\n");
+    ir_wr("  ret void\n");
+    ir_wr("}\n");
+
+    // __tv_realloc_dbg(ptr %pay, i64 %newsize) -> ptr : check old canaries,
+    // realloc the base, re-lay header + trailer. New tail bytes uninitialized
+    // (matches realloc's contract). Payload contents preserved by realloc.
+    ir_wr("define internal ptr @__tv_realloc_dbg(ptr %pay, i64 %newsize) {\n");
+    ir_wr("entry:\n");
+    ir_wr("  call void @__tv_check_dbg(ptr %pay)\n");
+    ir_wr("  %base = getelementptr i8, ptr %pay, i64 -16\n");
+    ir_wr("  %total = add i64 %newsize, 32\n");
+    ir_wr("  %nbase = call ptr @realloc(ptr %base, i64 %total)\n");
+    ir_wr("  store i64 230686942, ptr %nbase\n");
+    ir_wr("  %szp = getelementptr i64, ptr %nbase, i64 1\n");
+    ir_wr("  store i64 %newsize, ptr %szp\n");
+    ir_wr("  %npay = getelementptr i8, ptr %nbase, i64 16\n");
+    ir_wr("  %trl = getelementptr i8, ptr %npay, i64 %newsize\n");
+    ir_wr("  store i64 -6510615555426900571, ptr %trl\n");
+    ir_wr("  %trl2 = getelementptr i8, ptr %trl, i64 8\n");
+    ir_wr("  store i64 -6510615555426900571, ptr %trl2\n");
+    ir_wr("  ret ptr %npay\n");
+    ir_wr("}\n");
+}
 
 fn emit_pfor_runtime() {
     if g_pfor_emitted == 1 { return; }
@@ -18523,6 +18649,11 @@ fn codegen_program(prog: i32) {
     // ---- Emit parallel dispatch runtime ----
     emit_pfor_runtime();
 
+    // ---- Emit alloc-debug redzone helpers (only under --alloc-debug) ----
+    if g_alloc_debug == 1 {
+        emit_alloc_debug_runtime();
+    }
+
     // ---- Emit dynamic field runtime (always; internal funcs DCE'd if unused) ----
     // The %__Field type must precede the functions that reference it.
     emit_dynfield_type();
@@ -18947,6 +19078,15 @@ var g_lw_active: i32 = 0;
 // argv[0] under eval is the SOURCE PATH (differs from a compiled binary).
 var g_eval_args: *u64 = null;
 var g_eval_nargs: i32 = 0;
+// M5 eval provenance: registry of EB_ALLOC/EB_REALLOC heap buffers.
+// base/size/live triples, flat arrays. The oracle-side temporal net: free
+// validates the pointer is a live tracked base (double-free / wild-free
+// refuse loudly); program exit reports live leftovers (leaks) to stderr.
+let EV_HEAP_CAP: i32 = 65536;
+var g_evh_base: *u64 = null;
+var g_evh_size: *u64 = null;
+var g_evh_live: *i32 = null;
+var g_evh_n: i32 = 0;
 var g_eir: *EIRNode = null;
 var g_neir: i32 = 0;
 var g_cap_eir: i32 = 0;
@@ -22569,6 +22709,40 @@ fn ev_fw_div(dst: u64, a: u64, b: u64, f: u64) {
     ev_fw_mul(dst, a, invp as u64, f);
 }
 
+// ---- M5 eval heap provenance ----
+// Register a freshly allocated heap buffer. Flat parallel arrays; registry is
+// append-mostly with live-toggling (no compaction — addresses are keys).
+fn evh_register(base: u64, size: u64) {
+    if g_evh_base == null {
+        g_evh_base = alloc(EV_HEAP_CAP);
+        g_evh_size = alloc(EV_HEAP_CAP);
+        g_evh_live = alloc(EV_HEAP_CAP);
+    }
+    if g_evh_n >= EV_HEAP_CAP { return; }   // cap: stop tracking, never corrupt
+    g_evh_base[g_evh_n] = base;
+    g_evh_size[g_evh_n] = size;
+    g_evh_live[g_evh_n] = 1;
+    g_evh_n = g_evh_n + 1;
+}
+
+// Find the slot for a base address, or -1.
+fn evh_find(base: u64) -> i32 {
+    var i: i32 = g_evh_n;
+    while i > 0 {
+        i = i - 1;
+        if g_evh_base[i] == base { return i; }
+    }
+    return 0 - 1;
+}
+
+// A memory error at the oracle: named, loud, exit 97 (the eval-refusal code).
+fn evh_fail(what: *u8, addr: u64) {
+    wr(2, "eval-memory: ");
+    wr(2, what);
+    wr(2, "\n");
+    exit(97);
+}
+
 // ---- Frames ----
 fn ev_frame_new(nslots: i32, narrs: i32) -> *EvFrame {
     let fr: *EvFrame = alloc(1);
@@ -23604,15 +23778,36 @@ fn ev_builtin(e: i32, fr: *EvFrame) -> EvalVal {
         var total: u64 = a0 * (g_eir[e].a as u64);
         if total == 0 { total = 1; }
         let buf: *u8 = alloc(total as i64);
+        evh_register(buf as u64, total);
         return EvalVal { tag: EV_PTR, type_off: g_eir[e].type_off, bits: buf as u64 };
     }
     if eb == EB_REALLOC {
         var total: u64 = a1 * (g_eir[e].a as u64);
         if total == 0 { total = 1; }
+        // Provenance: realloc'ing a tracked buffer retires the old base and
+        // registers the (possibly moved) new one. realloc of an untracked
+        // pointer passes through (frame-slot/foreign buffers are not ours).
+        let old_slot: i32 = evh_find(a0);
+        if old_slot >= 0 && g_evh_live[old_slot] == 0 {
+            evh_fail("realloc of a freed buffer", a0);
+        }
         let nb: *u8 = realloc(a0 as *u8, total as i64);
+        if old_slot >= 0 { g_evh_live[old_slot] = 0; }
+        evh_register(nb as u64, total);
         return EvalVal { tag: EV_PTR, type_off: g_eir[e].type_off, bits: nb as u64 };
     }
     if eb == EB_FREE {
+        // Provenance: freeing a tracked buffer must hit a LIVE tracked base.
+        // Double-free and free-of-non-allocation (wild) are caught; untracked
+        // pointers (frame slots, string literals, FFI) pass through — the
+        // registry only claims the EB_ALLOC heap.
+        let slot: i32 = evh_find(a0);
+        if slot >= 0 {
+            if g_evh_live[slot] == 0 {
+                evh_fail("double free", a0);
+            }
+            g_evh_live[slot] = 0;
+        }
         free(a0 as *u8);
         return EvalVal { tag: EV_VOID, type_off: NULL_STR, bits: 0 };
     }
@@ -24230,6 +24425,23 @@ fn ev_program(prog: i32) {
         ab[1] = av as u64;
     }
     let r: EvalVal = ev_call(mef, at, ay, ab, mnp);
+    // M5: opt-in leak report (TRAVELER_EVAL_LEAKS=1). A diagnostic to stderr,
+    // never an error — startup-lifetime allocation is a legitimate pattern, so
+    // leaks are reported, not refused. Default off keeps the oracle quiet.
+    let lk_name: *u8 = "TRAVELER_EVAL_LEAKS";
+    if getenv(lk_name) != null {
+        var leaks: i32 = 0;
+        var li: i32 = 0;
+        while li < g_evh_n {
+            if g_evh_live[li] == 1 { leaks = leaks + 1; }
+            li = li + 1;
+        }
+        if leaks > 0 {
+            wr(2, "eval-memory: ");
+            wr_int(2, leaks as i64);
+            wr(2, " heap buffer(s) still live at exit\n");
+        }
+    }
     if r.tag == EV_INT {
         exit(ev_sext(r.bits, 32) as i32);
     }
@@ -25085,6 +25297,9 @@ fn main(argc: i32, argv: **u8) {
             // --eval: run through the Traveler IR evaluator instead of LLVM.
             // Refuses loudly (exit 97), never misevaluates; gate tests/eval_diff/.
             g_eval_mode = 1;
+        } else if str_eq(argv[ai], "--alloc-debug") == 1 {
+            // --alloc-debug: emit redzone-guarded alloc/realloc/free helpers.
+            g_alloc_debug = 1;
         } else if str_eq(argv[ai], "--repl") == 1 {
             // --repl: a persistent session over the same evaluator
             // (@internal-note: plan-eval-engine, E3).

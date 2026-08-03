@@ -1,0 +1,11 @@
+// alloc-debug gate: a deliberate one-element overflow MUST trip the trailer
+// canary at free. This is the #72-class heap smash, caught on the first run.
+fn main() {
+    let p: *i64 = alloc(4);
+    var i: i32 = 0;
+    while i < 4 { p[i] = (i + 1) as i64; i = i + 1; }
+    print(p[0]);            // 1
+    p[4] = 777;             // one element past the payload -> smears trailer
+    free(p);                // redzone check aborts here: "trailer canary smeared"
+    print(999);             // never reached
+}
