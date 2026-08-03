@@ -1,0 +1,9 @@
+// M2 refusal: defer is function-spine only. A defer inside an if/for/while/
+// match would be conditional — it would need runtime "did it execute"
+// tracking, which the model refuses to build. Move it to the top level.
+fn main() {
+    if 1 == 1 {
+        defer print(1);
+    }
+    print(0);
+}

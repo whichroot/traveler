@@ -112,3 +112,4 @@ examples/read_bytes_expr.tv   # #62: read_bytes buffer arg as &buf[i] / call res
 examples/alloc_cast_sizes.tv  # #72: cast-wrapped alloc/realloc element sizing — eval == compiled
 examples/generic_infer_cast.tv # #63(c): cast-typed arg drives inference — eval == compiled
 examples/ptr_cast_int.tv      # #73: address-of under numeric cast — ptr bits as int, eval == compiled
+examples/defer_cleanup.tv     # M2/#75: defer on every exit path incl. the `?` unwind — eval == compiled

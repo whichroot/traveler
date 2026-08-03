@@ -155,6 +155,7 @@ let TOK_KW_TYPE: i32 = 92;   // `type N = <FieldTy>;` == field/binfield/extfield
 // int_val; the parser desugars to `x = x op e` (byte-identical IR).
 let TOK_OP_ASSIGN: i32 = 93;
 let TOK_QMARK: i32 = 94;     // `expr?` — Result early-return propagation
+let TOK_KW_DEFER: i32 = 95;  // `defer <stmt>;` — function-scoped exit cleanup (memory model)
 
 // Field kind constants
 let FIELD_KIND_PRIME: i32 = 0;
@@ -377,6 +378,7 @@ fn keyword_kind(text: *u8) -> i32 {
     // ident-call path; codegen routes the builtin BY NAME (find_func guard shadows).
     if str_eq(text, "break") == 1 { return 26; }
     if str_eq(text, "continue") == 1 { return 27; }
+    if str_eq(text, "defer") == 1 { return TOK_KW_DEFER; }
     if str_eq(text, "binfield") == 1 { return 28; }
     if str_eq(text, "extfield") == 1 { return TOK_KW_EXTFIELD; }
     if str_eq(text, "instantiate") == 1 { return TOK_KW_INSTANTIATE; }
@@ -1047,6 +1049,7 @@ let AST_IMPL_BLOCK: i32 = 36;
 //   name2  = closure id (assigned at parse: index into the closure registry)
 let AST_CLOSURE: i32 = 37;
 let AST_QMARK: i32 = 38;   // child0=Result expr; Ok yields payload, Err early-returns
+let AST_DEFER: i32 = 39;   // child0=the deferred statement/block (no value)
 
 // ===== OPERATOR KIND CONSTANTS =====
 
@@ -1417,6 +1420,16 @@ var g_mono_explicit: i32 = 0;
 // Codegen state
 var g_block_terminated: i32 = 0;
 var g_fn_ret_type: i32 = 0;
+
+// Defer collection (memory model M2): per-function list of AST_DEFER body
+// nodes, emitted LIFO at every exit path. g_defer_top == 1 only while the
+// function's top-level statements are being codegen'd (defer is spine-only —
+// a defer inside a conditional/loop would need runtime "did it execute"
+// tracking, which we refuse to build).
+let MAX_DEFERS: i32 = 64;
+var g_defers: *i32 = null;      // alloc'd lazily in codegen_fn
+var g_ndefers: i32 = 0;
+var g_defer_top: i32 = 0;
 
 // Loop label stack for break/continue
 var g_loop_end_labels: *i32 = null;
@@ -2077,6 +2090,7 @@ fn tok_kind_name(kind: i32) -> *u8 {
     if kind == TOK_KW_PRINT { return "keyword 'print'"; }
     if kind == TOK_KW_BREAK { return "keyword 'break'"; }
     if kind == TOK_KW_CONTINUE { return "keyword 'continue'"; }
+    if kind == TOK_KW_DEFER { return "keyword 'defer'"; }
     if kind == TOK_KW_BINFIELD { return "keyword 'binfield'"; }
     if kind == TOK_KW_EXTFIELD { return "keyword 'extfield'"; }
     if kind == TOK_KW_INSTANTIATE { return "keyword 'instantiate'"; }
@@ -3216,6 +3230,20 @@ fn parse_stmt() -> i32 {
         p_advance();
         p_expect(TOK_SEMI);
         return node_alloc(AST_CONTINUE, ln, cl);
+    }
+
+    // defer <stmt> ;  — function-scoped exit cleanup (memory model M2).
+    // The body is a single statement (usually a call) or a { block }. Top-level
+    // placement is enforced at codegen (function-spine only).
+    if k == TOK_KW_DEFER {
+        p_advance();
+        let idx: i32 = node_alloc(AST_DEFER, ln, cl);
+        if p_peek() == TOK_LBRACE {
+            g_nodes[idx].child0 = parse_block();
+        } else {
+            g_nodes[idx].child0 = parse_stmt();
+        }
+        return idx;
     }
 
     // match expr { arm => { block }, ... } — arms in g_arms, destructuring
@@ -10978,6 +11006,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         let r_loaded: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(r_loaded); ir_wr(" = load ");
         ir_wr_type(g_enums[r_ei].name); ir_wr(", ptr "); ir_wr_reg(r_alloca); ir_wr("\n");
+        // #75: the `?` early-return is an exit path — run the defer chain
+        // before propagating, else every alloc live at the `?` leaks (M2).
+        emit_defers();
         ir_wr("  ret "); ir_wr_type(g_enums[r_ei].name); ir_wr(" ");
         ir_wr_reg(r_loaded); ir_wr("\n");
         // Ok arm: extract the T payload.
@@ -13917,12 +13948,29 @@ fn ir_cond_i1(v: IRValue) -> i32 {
     return r;
 }
 
+// Emit the collected defer chain LIFO at an exit path (memory model M2).
+// Defer bodies are AST statement nodes codegen'd in the CURRENT frame — their
+// locals are in scope and ir_tmp() keeps temps fresh. Called immediately
+// before every `ret` the function can take (plain return, main bare return,
+// fall-through, and each `?` Err-propagation ret).
+fn emit_defers() {
+    var di: i32 = g_ndefers;
+    while di > 0 {
+        di = di - 1;
+        codegen_stmt(g_nodes[g_defers[di]].child0);
+    }
+}
+
 fn codegen_stmt(stmt: i32) {
     let kind: i32 = g_nodes[stmt].kind;
 
     // ---- Block ----
     if kind == AST_BLOCK {
         sym_push_scope();
+        // A nested block is not the function spine: defer is not collected
+        // from here (g_defer_top is restored on the way out).
+        let saved_defer_top: i32 = g_defer_top;
+        g_defer_top = 0;
         let nstmts: i32 = g_nodes[stmt].nargs;
         let sbase: i32 = g_nodes[stmt].args_start;
         var si: i32 = 0;
@@ -13930,7 +13978,35 @@ fn codegen_stmt(stmt: i32) {
             codegen_stmt(g_args[sbase + si]);
             si = si + 1;
         }
+        g_defer_top = saved_defer_top;
         sym_pop_scope();
+        return;
+    }
+
+    // ---- defer <stmt> (collect only; runs at every exit, LIFO) ----
+    if kind == AST_DEFER {
+        if g_defer_top == 0 {
+            diag_begin(g_nodes[stmt].line, g_nodes[stmt].col);
+            derr("defer must be a top-level statement of its function (move it to the function spine; defer inside if/for/while/match is not supported)");
+            diag_end();
+            return;
+        }
+        if g_ndefers >= MAX_DEFERS {
+            diag_begin(g_nodes[stmt].line, g_nodes[stmt].col);
+            derr("too many defer statements in one function (max 64)");
+            diag_end();
+            return;
+        }
+        // Refuse defers whose own body returns — a defer that exits the
+        // function from an exit path is a control-flow hall of mirrors.
+        if g_nodes[g_nodes[stmt].child0].kind == AST_RETURN {
+            diag_begin(g_nodes[stmt].line, g_nodes[stmt].col);
+            derr("a defer body cannot contain `return`");
+            diag_end();
+            return;
+        }
+        g_defers[g_ndefers] = stmt;
+        g_ndefers = g_ndefers + 1;
         return;
     }
 
@@ -14094,11 +14170,15 @@ fn codegen_stmt(stmt: i32) {
                     }
                 }
             }
+            // The return VALUE is already computed (rv/ret_reg); run the
+            // defer chain after it, before the actual ret (memory model M2).
+            emit_defers();
             ir_wr("  ret "); ir_wr_type(ret_type);
             ir_wr(" "); ir_wr_reg(ret_reg); ir_wr("\n");
         } else {
             // Bare `return;` in main returns the i32 exit code, not void (#40);
             // non-main void fns keep `ret void`.
+            emit_defers();
             if str_eq(&g_strings[g_cur_fn], "main") == 1 {
                 ir_wr("  ret i32 0\n");
             } else {
@@ -14926,14 +15006,38 @@ fn codegen_fn(decl: i32) {
     g_prelude_len = 0;
     g_body_mode = 1;
 
-    // Emit body
-    codegen_stmt(fn_body);
+    // Defer collection state: reset per function; the spine (top-level block
+    // statements) is emitted with g_defer_top = 1 so top-level `defer` arms
+    // collect; nested blocks mark g_defer_top = 0 in the AST_BLOCK arm.
+    if g_defers == null { g_defers = alloc(MAX_DEFERS + 1); }
+    g_ndefers = 0;
+    g_defer_top = 1;
+
+    // Emit body. The top-level block is the function spine: emit its
+    // statements directly (NOT via the AST_BLOCK arm, which marks depth) so
+    // top-level `defer` statements collect into g_defers. Scope push mirrors
+    // the block arm so `sym_pop_scope` below still balances.
+    if g_nodes[fn_body].kind == AST_BLOCK {
+        sym_push_scope();
+        let topn: i32 = g_nodes[fn_body].nargs;
+        let topbase: i32 = g_nodes[fn_body].args_start;
+        var ti: i32 = 0;
+        while ti < topn {
+            codegen_stmt(g_args[topbase + ti]);
+            ti = ti + 1;
+        }
+        sym_pop_scope();
+    } else {
+        codegen_stmt(fn_body);
+    }
 
     // Pop scope
     sym_pop_scope();
 
-    // Default return if block not terminated (still in body mode)
+    // Default return if block not terminated (still in body mode). Run the
+    // defer chain first — falling off the end is an exit path.
     if g_block_terminated == 0 {
+        emit_defers();
         if is_main == 1 {
             ir_wr("  ret i32 0\n");
         } else {
@@ -18682,6 +18786,9 @@ let EIR_DYNRED: i32 = 35;      // a=operand, b=__field slot, aux_type=src type:
 // E2i: a >64-bit integer constant. a = g_ewide start index (4 LE u64 limbs,
 // masked at the type width); exec COPIES the limbs into a frame-owned box.
 let EIR_WCONST: i32 = 36;
+// Defer (memory model M2): collected per-frame, run LIFO at ev_call teardown
+// (covers normal return AND the `?` unwind, both of which reach teardown).
+let EIR_DEFER: i32 = 37;     // a=body stmt EIR (registered, run at frame exit)
 // NB: EIR_INDEX carries its element stride in c (op=1 -> reference semantics,
 // no load: struct elements); EIR_INDEX_ST carries stride in op.
 
@@ -18823,6 +18930,8 @@ struct EvFrame {
     owned: *u64,
     nowned: i32,
     owned_cap: i32,
+    defers: *i32,
+    ndefers: i32,
     unwinding: i32,
     ret_tag: i32,
     ret_type: i32,
@@ -21349,6 +21458,13 @@ fn lower_stmt(stmt: i32) -> i32 {
         return e;
     }
 
+    // ---- defer (memory model M2): register the body; runs at frame exit ----
+    if kind == AST_DEFER {
+        let e: i32 = eir_new(EIR_DEFER, ln, cl);
+        g_eir[e].a = lower_stmt(g_nodes[stmt].child0);
+        return e;
+    }
+
     // ---- Break / continue ----
     if kind == AST_BREAK {
         if g_lw_loop_depth == 0 { ev_refuse("break-outside-loop", ln, cl); }
@@ -22470,6 +22586,9 @@ fn ev_frame_new(nslots: i32, narrs: i32) -> *EvFrame {
     fr.owned = fo;
     fr.nowned = 0;
     fr.owned_cap = na;
+    let fd: *i32 = alloc(MAX_DEFERS + 1);
+    fr.defers = fd;
+    fr.ndefers = 0;
     fr.unwinding = 0;
     fr.ret_tag = EV_VOID;
     fr.ret_type = NULL_STR;
@@ -22500,6 +22619,7 @@ fn ev_frame_free(fr: *EvFrame) {
     free(fr.stypes);
     free(fr.sbits);
     free(fr.owned);
+    free(fr.defers);
     free(fr);
 }
 
@@ -23905,6 +24025,17 @@ fn ev_stmt(s: i32, fr: *EvFrame) -> i32 {
         }
         return 3;
     }
+    // Register a defer body; it runs at frame exit (ev_call teardown), LIFO,
+    // on every exit path (normal return and the `?` unwind alike). The local
+    // pointer binding (fd) is the seed-compatible member-index idiom.
+    if kind == EIR_DEFER {
+        if fr.ndefers < MAX_DEFERS {
+            let fd: *i32 = fr.defers;
+            fd[fr.ndefers] = g_eir[s].a;
+            fr.ndefers = fr.ndefers + 1;
+        }
+        return 0;
+    }
     if kind == EIR_BRK { return 1; }
     if kind == EIR_CONT { return 2; }
     if kind == EIR_EXPR {
@@ -23968,6 +24099,16 @@ fn ev_call(efidx: i32, atags: *i32, atypes: *i32, abits: *u64, nargs: i32) -> Ev
         let wrbuf: *u64 = alloc(4);
         ev_memcpy(wrbuf as u64, r_bits, 32);
         r_bits = wrbuf as u64;
+    }
+    // Run the defer chain LIFO at frame exit (memory model M2). The return
+    // value is already captured above (r_*), so defers see final local state
+    // and cannot clobber the result — matching codegen (value-then-defer).
+    // Covers both the normal return (rc==3) and the `?` unwind (rc==0 with
+    // unwinding) because both reach this teardown.
+    let fd2: *i32 = fr.defers;
+    while fr.ndefers > 0 {
+        fr.ndefers = fr.ndefers - 1;
+        ev_stmt(fd2[fr.ndefers], fr);
     }
     ev_frame_free(fr);
     return EvalVal { tag: r_tag, type_off: r_type, bits: r_bits };

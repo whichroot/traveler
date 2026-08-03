@@ -202,6 +202,7 @@ fn run() -> Result<i64, NetError> {
     // Client: send the request.
     let c: TcpStream = tcp_connect_local(port)?;
     let req: *u8 = alloc(64);
+    defer free(req);
     var roff: i32 = sputs(req, 0, "GET /zk HTTP/1.0");
     roff = crlf(req, roff);
     roff = crlf(req, roff);
@@ -210,15 +211,18 @@ fn run() -> Result<i64, NetError> {
     // Server: accept, read, route.
     let srv: TcpStream = tcp_accept(l)?;
     let rbuf: *u8 = alloc(512);
+    defer free(rbuf);
     let got: i64 = tcp_read(srv, rbuf, 511)?;
     if got > 0 && starts_with(rbuf, "GET /zk") == 1 { print(2); }
 
     // The field stack runs server-side: prove, verify, tamper, re-verify.
     let verdicts: *i32 = alloc(2);
+    defer free(verdicts);
     zk_prove_and_verify(verdicts);
 
     // Serve the verdicts as the HTTP body.
     let resp: *u8 = alloc(128);
+    defer free(resp);
     var off: i32 = sputs(resp, 0, "HTTP/1.0 200 OK");
     off = crlf(resp, off);
     off = sputs(resp, off, "Content-Length: 2");
@@ -231,6 +235,7 @@ fn run() -> Result<i64, NetError> {
 
     // Client: read the response, print the verdicts from the wire.
     let cbuf: *u8 = alloc(512);
+    defer free(cbuf);
     let cgot: i64 = tcp_read(c, cbuf, 511)?;
     let bs: i32 = body_start(cbuf, cgot as i32);
     if bs >= 0 {
@@ -238,14 +243,11 @@ fn run() -> Result<i64, NetError> {
         print((cbuf[bs + 1] as i32) - 48);
     }
 
+    // #75: every buffer above is freed by its defer on WHATEVER exit path is
+    // taken (success or any `?` early-return); the socket closes stay manual.
     tcp_close(c);
     tcp_close(srv);
     listener_close(l);
-    free(req);
-    free(rbuf);
-    free(resp);
-    free(cbuf);
-    free(verdicts);
     return Result::Ok(0);
 }
 

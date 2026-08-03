@@ -20,6 +20,7 @@ f01099764580d2c23bafd07acecef602  examples/closure_basics.tv
 2e440a19558709d2f28b6be9d29952f6  examples/compare_let.tv
 8857ae78f9ebe32c484474170f9d4135  examples/const_generic.tv
 fe16f887894b648fc58967687677be0d  examples/convergence_test.tv
+35bce9b9dbfa1ba1d018781e0d1c8a6f  examples/defer_cleanup.tv
 f44e5c613e56fbd58f0a3fcf6e61af18  examples/dp_test.tv
 8cbaf33f250ce7fac5fcc91dd736ce68  examples/dyn_fri_test.tv
 659a27189e6ba4dd6172d64e3de5be06  examples/dyn_kernel_test.tv
@@ -113,7 +114,7 @@ b5a9f2b212b54db1a7dc31de9d78fc65  examples/mobius_extremal.tv
 637060b30e44b3eb6995ac111558bdc7  examples/mobius_signed.tv
 bfaedd6412acdca95d4bbe786de81e8b  examples/multiview_test.tv
 220c9472479b495db46dcd426cbec797  examples/net_loopback.tv
-7a0077d9b3adb5962df926f2b2ae83b8  examples/net_zk_serve.tv
+8f46e6695e22a0e307c94923e4a28930  examples/net_zk_serve.tv
 ab0786016f39b916b77e0c7d8d8860d1  examples/neuron_read_test.tv
 e9923b6b7750fa40e17c9a72d914b651  examples/nn_kit_gate.tv
 d2706876684c067a22cdfef75a74bfb7  examples/nt_bm_carriers.tv

@@ -1,0 +1,3 @@
+defer_nested.tv:6
+defer must be a top-level statement of its function
+error generated.

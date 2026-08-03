@@ -1,0 +1,10 @@
+// M2 refusal: a defer body cannot contain `return`. A defer that exits the
+// function from an exit path is a control-flow hall of mirrors.
+fn f() -> i32 {
+    defer return 5;
+    return 1;
+}
+
+fn main() {
+    print(f());
+}

@@ -1,0 +1,3 @@
+defer_return.tv:4
+a defer body cannot contain `return`
+error generated.

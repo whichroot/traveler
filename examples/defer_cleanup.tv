@@ -1,0 +1,64 @@
+// M2 gate: `defer` — function-scoped exit cleanup that runs on EVERY exit
+// path, LIFO, after the return value is computed.
+//
+// The load-bearing case is the `?` early-return (issue #75): without defer,
+// any allocation live at a `?` leaked on the error path because the error
+// operator rebuilt-and-returned inline, bypassing hand-written cleanup. The
+// gate below proves the defer chain runs on (a) normal return, (b) fall-off
+// the end, and (c) the `?` propagation path — and that it runs LIFO after
+// the return value is fixed.
+
+import "../src/lib/core/result.tv";
+
+var cleaned: i32 = 0;
+
+// (a) normal return: defer runs after the return value is computed.
+fn compute() -> i32 {
+    let buf: *i32 = alloc(4);
+    buf[0] = 7;
+    defer { free(buf); cleaned = cleaned + 1; }
+    return buf[0];          // 7 is read BEFORE the defer frees buf
+}
+
+// LIFO ordering: second defer prints before the first.
+fn lifo() -> i32 {
+    defer print(1);
+    defer print(2);
+    return 0;
+}
+
+// (c) the `?` path: may_fail's defer must run even when it returns Err.
+fn may_fail(fail: i32) -> Result<i32, i32> {
+    let buf: *i32 = alloc(4);
+    buf[0] = 5;
+    defer { free(buf); cleaned = cleaned + 10; }
+    if fail == 1 {
+        return Result::Err(0 - 3);
+    }
+    return Result::Ok(buf[0]);
+}
+
+fn caller(fail: i32) -> Result<i32, i32> {
+    let v: i32 = may_fail(fail)?;   // Err -> early-return, defer must still run
+    return Result::Ok(v * 2);
+}
+
+fn main() {
+    print(compute());       // 7  (defer ran after the value was read)
+    print(cleaned);         // 1
+    cleaned = 0;
+    print(lifo());          // prints 2 then 1 (LIFO), returns 0
+    let a: Result<i32, i32> = caller(0);
+    match a {
+        Result::Ok(x) => { print(x); },
+        Result::Err(e) => { print(0 - e); },
+    }
+    print(cleaned);         // 10 (Ok path, defer ran)
+    cleaned = 0;
+    let b: Result<i32, i32> = caller(1);
+    match b {
+        Result::Ok(x) => { print(x); },
+        Result::Err(e) => { print(0 - e); },
+    }
+    print(cleaned);         // 10 (the `?` path — the #75 proof)
+}

@@ -433,6 +433,12 @@ test_single ptr_cast_int
 compile_obj_self global_array_init
 link_objs global_array_init global_array_init
 run_test global_array_init "$TIMEOUT_SINGLE"
+# M2/#75 gate: `defer` runs on every exit path (normal return, fall-off, the
+# `?` early-return), LIFO, after the return value. tvc_self-only: the frozen
+# seed does not parse `defer` (a new keyword).
+compile_obj_self defer_cleanup
+link_objs defer_cleanup defer_cleanup
+run_test defer_cleanup "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.
