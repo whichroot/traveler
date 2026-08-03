@@ -275,3 +275,4 @@ examples/wide_literal_casts.tv          # 56: text-wide literals via let-annotat
 examples/read_bytes_expr.tv             # 62: read_bytes buffer arg is a general pointer expression
 examples/alloc_cast_sizes.tv
 examples/generic_infer_cast.tv
+examples/ptr_cast_int.tv

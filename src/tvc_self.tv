@@ -7746,6 +7746,17 @@ fn type_is_ptr(type_off: i32) -> i32 {
     return 0;
 }
 
+// #73: a VALUE's pointer-ness has two spellings — the declared "*T" and the
+// bare "ptr" that address-of/alloc/string paths return. Predicates on a
+// VALUE's type must accept both; type_is_ptr stays the declared-"*T" test.
+fn value_is_ptr(type_off: i32) -> i32 {
+    if type_is_ptr(type_off) == 1 { return 1; }
+    if type_off == NULL_STR { return 0; }
+    let s: *u8 = &g_strings[type_off];
+    if s[0] == 112 && s[1] == 116 && s[2] == 114 && s[3] == 0 { return 1; } // "ptr"
+    return 0;
+}
+
 // Check if a source type is an array type (starts with '[').
 fn type_is_array(type_off: i32) -> i32 {
     if type_off == NULL_STR { return 0; }
@@ -12570,8 +12581,10 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             return IRValue { reg: cr, type_off: target_type };
         }
-        // ptr <-> int
-        if type_is_ptr(inner.type_off) == 1 && dst_bits > 0 {
+        // ptr <-> int. #73: the VALUE predicate — an address-of expression
+        // nested directly under the cast carries the bare "ptr" spelling,
+        // which the "*T" test missed (fell to int<->int -> invalid IR).
+        if value_is_ptr(inner.type_off) == 1 && dst_bits > 0 {
             let r: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(r); ir_wr(" = ptrtoint ptr ");
             ir_wr_reg(inner.reg); ir_wr(" to "); ir_wr_type(target_type); ir_wr("\n");

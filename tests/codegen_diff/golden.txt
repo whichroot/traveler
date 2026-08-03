@@ -150,6 +150,7 @@ da1906b889aad65b18116649e8e66425  examples/poseidon2_babybear_test.tv
 008b0a0ed37eb8b0933e192f888b1d2b  examples/poseidon2_test.tv
 0160c1143f9ce025e06500e06b964380  examples/poseidon2_wide_test.tv
 53c1ea3ed70c6e8175d3d123cce24b39  examples/predict_decide.tv
+fbda02a6778d31b339e1c108f26d94a1  examples/ptr_cast_int.tv
 1afc02ecec455561aeb35d0b4c667771  examples/qmark_basics.tv
 7d0d1f356f25bd3c6ac0dec348bad113  examples/read_bytes_expr.tv
 6cc719432b192fdb366a2c77d135f8fc  examples/reed_solomon_test.tv

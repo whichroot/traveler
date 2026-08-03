@@ -423,6 +423,10 @@ test_single alloc_cast_sizes
 compile_obj_self generic_infer_cast
 link_objs generic_infer_cast generic_infer_cast
 run_test generic_infer_cast "$TIMEOUT_SINGLE"
+# #73 gate: `(&expr) as i64` emits ptrtoint (the value predicate accepts the
+# bare "ptr" spelling address-of paths return). Dual-parity eligible: the
+# seed's ptr->int cast always handled it.
+test_single ptr_cast_int
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.

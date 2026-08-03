@@ -1,0 +1,26 @@
+// #73 gate: an address-of expression DIRECTLY under a numeric cast emits
+// ptrtoint. The value predicate used to test only the declared "*T" spelling,
+// and every address-of path returns the bare "ptr" spelling — so
+// `(&a[i]) as i64` fell through to the int<->int path and stored a raw
+// pointer into an i64 slot (invalid IR, llc rejected with no source span).
+// Addresses are never printed raw (ASLR); differences are deterministic.
+fn main() {
+    let a: *i64 = alloc(4);
+    // element stride via two direct casts: (&a[1]) - (&a[0]) = 8
+    let d: i64 = (&a[1]) as i64 - (&a[0]) as i64;
+    print(d);
+    // the surfacing shape: store a cast address into an array slot
+    var c: [i64; 4] = 0;
+    c[2] = (&a[3]) as i64;
+    let d2: i64 = c[2] - (&a[0]) as i64;
+    print(d2); // 24
+    // address-of a scalar local under the cast
+    var x: i32 = 5;
+    let dx: i64 = (&x) as i64;
+    print(dx - dx); // 0
+    // the let-bound form (always worked) must agree with the direct form
+    let gp: *i64 = &a[2];
+    let d3: i64 = gp as i64 - (&a[0]) as i64;
+    print(d3); // 16
+    free(a);
+}
