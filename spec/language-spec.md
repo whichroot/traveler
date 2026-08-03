@@ -131,8 +131,8 @@ document are *not* lexer keywords:
   **[planned; not reserved in v0.1.0]** (`#[export]` is the implemented export
   mechanism — §13.3, §15.4). Some reserved words are gated to features that are
   themselves not yet built: `const` is used for const generics (`<const N>`) but
-  top-level `const` declarations are not parsed (§4.3); `unsafe` is reserved but
-  `unsafe` blocks are not implemented (§14.3).
+top-level `const` declarations are not parsed (§4.3); `unsafe` is reserved but
+will not become a block construct (decided against — §14.3).
 
 ### 2.5 Identifiers
 
@@ -782,13 +782,14 @@ type SensorPoly = Poly<Sample, 2>
 *T               // raw pointer to a value of type T   (also **T, ***T, ...)
 ```
 
-> **Partly implemented.** `*T` (and nested `**T`) are implemented and
-> mutable-by-default. The `*mut T` / `*const T` distinction is
-> **[planned; not implemented in v0.1.0]** — there is one raw-pointer form. The
-> `unsafe`-gating shown in the operations table below is **not enforced**:
-> `unsafe` blocks are not implemented (§14.3), so dereference, indexed access,
-> and pointer casts compile directly without an `unsafe` wrapper. Element
-> access uses indexing — `p[i]` and `p[i] = v` — rather than an `offset` method.
+> **Implemented as specified below.** `*T` (and nested `**T`) are implemented
+> and mutable-by-default. The `*mut T` / `*const T` distinction is
+> **[planned; not implemented in v0.1.0]** — there is one raw-pointer form.
+> There is **no `unsafe` construct** in Traveler and none is planned: the
+> unsafe surface is exactly two named doors (the integer-to-pointer cast and
+> `extern "C"`), documented in the operations table. Element access uses
+> indexing — `p[i]` and `p[i] = v`; there is no `offset` method and no
+> pointer arithmetic (see the operations table).
 
 A raw pointer is an address-width integer that points to a value in memory.
 All pointer types have compile-time-known size: one machine word (`usize`).
@@ -803,21 +804,31 @@ undefined behavior.
 ```
 let p: *ASTNode = null
 if p != null {
-    unsafe { let node = *p }
+    let node: ASTNode = p[0]
 }
 ```
 
-**Operations** (all require `unsafe` unless noted):
+**Operations.** A pointer can be FORMED in exactly three ways — `alloc`
+(§12.3), address-of (`&x`, `&a[i]`, `&p[i]`), and the integer-to-pointer
+cast — and CONSUMED only by indexing. There is **no pointer arithmetic**
+(`ptr + int` is refused; advance a position by indexing `p[i]`, or by
+re-taking an element address `&p[i]`):
 
-| Operation | Syntax | Safety | Semantics |
+| Operation | Syntax | Class | Semantics |
 |---|---|---|---|
-| Dereference read | `*ptr` | unsafe | Read value at address |
-| Dereference write | `*ptr = val` | unsafe | Write value at address |
-| Null check | `ptr == null`, `ptr != null` | safe | Compare to null |
+| Element read | `p[i]` | checked-size | Read element i (i32 index model, §3.13) |
+| Element write | `p[i] = v` | checked-size | Write element i |
+| Element address | `&p[i]`, `&a[i]` | safe formation | Address of element i |
+| Address-of | `&x` | safe formation | Address of a mutable binding |
+| Null check | `p == null`, `p != null` | safe | Compare to null |
 | Pointer equality | `p1 == p2` | safe | Compare addresses |
-| Offset | `ptr.offset(n)` | unsafe | Advance by n * sizeof(T) bytes |
-| Address-of | `&x as *T` | safe | Take address of stack/heap value |
-| Cast | `ptr as *U` | unsafe | Reinterpret pointer type |
+| Pointer to integer | `p as i64` / `(&x) as i64` | safe observation | The address as an integer (`ptrtoint`) |
+| Integer to pointer | `n as *T` | **the unsafe door** | Forge a pointer (`inttoptr`). The FFI/membrane floor: mmap'd regions, device registers. No provenance; all safety obligations are the programmer's. |
+| Reinterpret | `p as *U` | **the unsafe door** | Retype a pointer; element size follows `*U` |
+
+"Checked-size" means the ELEMENT SIZE is compiler-derived (from the pointee
+type) and can never silently disagree with the allocation's sizing (§12.3);
+bounds and lifetime are NOT checked (see Ownership discipline).
 
 **Recursive types** are now possible:
 
@@ -834,11 +845,18 @@ The size of `Expr` is known at compile time: tag (1 byte) + max variant
 payload (`*Expr` + `*Expr` = 2 words). The pointed-to `Expr` values live
 on the heap, allocated via `alloc`.
 
-**Ownership discipline**: Raw pointers have no automatic lifetime management.
-The programmer is responsible for `free`-ing heap-allocated pointees. The
-compiler does not track pointer aliasing, lifetimes, or use-after-free.
-These are the programmer's responsibility, enforced by convention and testing,
-not by the type system. This is the same discipline as C.
+**Ownership discipline**: Raw pointers have no automatic lifetime management
+— no destructors, no GC, no borrow checker, by design (memory management is
+never hidden in control flow). The programmer is responsible for `free`-ing
+heap-allocated pointees; the compiler does not track pointer aliasing,
+lifetimes, or use-after-free. What the compiler DOES enforce is the spatial
+side: allocation sizing is destination-typed and refusal-backed (§12.3),
+pointer arithmetic does not exist, and `alloc` zero-fills. Temporal safety
+is structural: stack discipline, wholesale-freed arenas, and index handles
+over held pointers for anything that grows (a `realloc` invalidates every
+derived pointer; handles survive it). **[planned; not implemented in
+v0.1.0]:** a `defer` statement (scope-exit cleanup that runs on every exit
+path, including `?` early returns) and library arena/pool types.
 
 **LLVM IR**: `*T` maps to `ptr` (LLVM's opaque pointer type).
 
@@ -1089,15 +1107,15 @@ In a field, every nonzero element has a multiplicative inverse. Division by zero
 **Behavior**:
 - If the compiler can prove the divisor is zero at compile time: **compile error**.
 - At runtime: **trap** (program aborts with a diagnostic message and stack trace).
-- In `unsafe` blocks: undefined behavior (the compiler may assume divisors are
-  nonzero for optimization purposes).
 
 **Rationale**: Silently returning 0 (as some implementations do) masks bugs.
-Trapping is the safe default. Performance-critical code that has externally
-validated its inputs can use `unsafe { a / b }` to elide the check.
+Trapping is the safe default. (An earlier revision offered `unsafe { a / b }`
+to elide the check; there is no `unsafe` construct — §14.3 — so if the trap
+lands, elision will be a compiler flag or a proven-nonzero path, not a
+block form.)
 
-> **NOT YET IMPLEMENTED (v0.1.0).** The runtime zero-divisor trap and the
-> `unsafe`-block elision are not implemented. Division lowers to `a * inv(b)`
+> **NOT YET IMPLEMENTED (v0.1.0).** The runtime zero-divisor trap is not
+> implemented. Division lowers to `a * inv(b)`
 > with `inv(x) = pow(x, p-2)`, so `a / 0` currently computes `a * pow(0, p-2)`
 > = `0` **silently**, with no trap (§16.11). Compile-time-provable-zero
 > divisors are likewise not yet diagnosed.
@@ -2804,6 +2822,14 @@ fn alloc(count) -> *T
 Allocates `count * sizeof(T)` bytes (via `malloc`) and **zero-fills them**
 (`llvm.memset`). Returns a raw pointer to the first element.
 
+**Sizing is destination-typed and refusal-backed.** `T` is taken from the
+pointer-typed destination the allocation flows into — a binding annotation
+(`let p: *T = alloc(n)`), an assignment target, a parameter/field/return
+type, or a pointer-target cast (`alloc(n) as *T`; both spellings size
+identically). An allocation with **no pointer-typed destination is a
+compile-time error** — the count would be uninterpretable. Raw-byte
+allocations are spelled with a `*u8` destination.
+
 > **NOT YET IMPLEMENTED (v0.1.0).** There is **no** out-of-memory check: on
 > allocation failure `malloc` returns null and that null is returned unchecked
 > (no trap). Also note the returned memory is **zero-filled**, not
@@ -2832,14 +2858,19 @@ fn free<T>(ptr: *T)
 ```
 
 Deallocates a previously `alloc`-ed or `realloc`-ed buffer. `free(null)` is a
-no-op. Double-free is undefined behavior. Accessing memory through `ptr` after
-`free` is undefined behavior.
+no-op (libc's guarantee; Traveler adds no check). Double-free is undefined
+behavior. Accessing memory through `ptr` after `free` is undefined behavior.
 
 **Ownership discipline**: The language provides no automatic lifetime
-management for heap memory in this revision. The programmer is responsible
-for matching every `alloc` with exactly one `free` (or `realloc` which
-invalidates the old pointer). `Vec<T>` provides a structured pattern over
-these primitives. Future revisions may add RAII-style destructors.
+management for heap memory, and none is planned — destructors, GC, and
+borrow checking are refused (hidden scope-exit calls are invisible control
+flow). The programmer matches every `alloc` with exactly one `free` (or
+`realloc`, which invalidates the old pointer AND every pointer derived from
+it — code that holds element pointers across growth is wrong; hold indices
+instead). Structured patterns over the primitives: `Vec<T>`/`Str` (owned,
+freed by their free functions), and **[planned; not implemented in
+v0.1.0]** library arena (wholesale free) and handle-based pool types, plus
+a `defer` statement for exit-path cleanup.
 
 **LLVM codegen**: `alloc<T>(n)` compiles to a call to a runtime allocator
 function (e.g., `malloc(n * sizeof(T))` or a custom arena). `free` compiles
@@ -3113,8 +3144,8 @@ compile-time errors include:
 > **Corrected — these are NOT diagnosed in v0.1.0** (an earlier revision listed
 > them): a native `while` loop (it is supported, §6.5); a non-exhaustive `match`
 > (no exhaustiveness check, §6.7); division by a compile-time-zero divisor (§5.2);
-> and pointer deref / offset / cast "outside `unsafe`" (there is no `unsafe`
-> enforcement, §14.3). A `Poly<F, d>` with `d >= F::ORDER` is likewise not
+> and pointer access / casts "outside `unsafe`" (there is no `unsafe`
+> construct, §14.3). A `Poly<F, d>` with `d >= F::ORDER` is likewise not
 > currently warned.
 
 ### 14.2 Runtime Errors
@@ -3136,40 +3167,35 @@ compile-time errors include:
 > are **not** implemented. Traveler currently follows the C discipline: these are
 > the programmer's responsibility. Guarding traps are a planned hardening item.
 
-### 14.3 Unsafe Blocks
+### 14.3 The Unsafe Surface (no `unsafe` construct)
 
-> **NOT YET IMPLEMENTED (v0.1.0 — planned).** `unsafe` is a reserved word (§2.4)
-> but `unsafe` **blocks are not a construct** — there is no `unsafe { ... }`
-> parsing and no safety gating. The point is moot in `v0.1.0` because the
-> "checks" an `unsafe` block would elide are not emitted in the first place:
-> pointer dereference, indexed access, and pointer casts already compile
-> everywhere without a wrapper, division emits no zero check, and array access is
-> unchecked (§14.1, §14.2, §3.12). The whole program is effectively "unsafe" in
-> the C sense today. The block form below is the intended future surface, for
-> when checked operations exist and `unsafe` locally elides them.
+> **DECIDED (v0.1.x): there is no `unsafe { ... }` construct and none is
+> planned.** `unsafe` remains a reserved word (§2.4) but will not become a
+> block form. Earlier revisions sketched one as "the intended future
+> surface"; that sketch is withdrawn. Rationale: an `unsafe` block earns its
+> keep by locally ELIDING checks that exist everywhere else. Traveler's
+> memory model (§3.12, §12.3) puts its checks at different points — sizing
+> and formation at compile time, structure (arenas/handles/`defer`) for
+> lifetimes, and opt-in dynamic nets — so a block-scoped elision marker
+> would gate nothing and communicate a safety boundary the language does
+> not draw there.
 
-```
-unsafe {
-    let x = a / b       // no zero check on b
-    let y = arr[i]       // no bounds check on i
-    let z = *ptr         // pointer dereference (read)
-    *ptr = val           // pointer dereference (write)
-    let q = ptr.offset(n) // pointer arithmetic
-    let r = ptr as *U    // pointer cast
-}
-```
+The actual unsafe surface is small and NAMED, not block-scoped:
 
-Within `unsafe` blocks (planned semantics):
-- Division by zero is undefined behavior (compiler assumes it doesn't happen)
-- Array/Vec bounds checks are elided
-- Pointer dereference is permitted (no null check)
-- Pointer arithmetic and casting are permitted
-- The programmer is responsible for:
-  - Not dereferencing null or dangling pointers
-  - Not double-freeing heap memory
-  - Not reading uninitialized memory
-  - Not aliasing mutable pointers to the same memory
-  - Ensuring pointer arithmetic stays within allocated bounds
+- **`n as *T`** — the pointer forge (`inttoptr`): the FFI/membrane floor
+  (mmap'd regions, device registers). All obligations are the
+  programmer's: validity, alignment, lifetime, aliasing (§3.12).
+- **`p as *U`** — pointer reinterpretation; element sizing follows `*U`.
+- **`extern "C"`** — foreign code with foreign invariants (§13.5).
+- **Unchecked operations** — indexing bounds, use-after-free, double-free,
+  null dereference: undefined behavior per §14.2, everywhere, uniformly.
+
+The programmer's obligations at these doors:
+- Not dereferencing null or dangling pointers
+- Not double-freeing heap memory
+- Not reading uninitialized memory (`realloc` growth bytes, §12.3)
+- Not holding derived pointers across `realloc` (hold indices instead)
+- Keeping forged pointers within genuinely owned, live regions
 
 ---
 
@@ -3666,10 +3692,10 @@ store i8 %val, ptr %ptr
 %is_null = icmp eq ptr %ptr, null
 ```
 
-**Pointer offset** (`ptr.offset(n)`):
+**Element address** (`&p[i]` — there is no `offset` method; §3.12):
 
 ```llvm
-; unsafe { ptr.offset(n) } where T = u8
+; &p[i] where T = u8
 %new_ptr = getelementptr i8, ptr %ptr, i64 %n
 ```
 
@@ -3677,9 +3703,9 @@ For types wider than 1 byte, `getelementptr` scales by element size
 automatically:
 
 ```llvm
-; ptr.offset(n) where T = i32 (4 bytes)
+; &p[i] where T = i32 (4 bytes)
 %new_ptr = getelementptr i32, ptr %ptr, i64 %n
-; Advances by n * 4 bytes
+; Advances by i * 4 bytes
 ```
 
 ### 15.10 Control Flow
