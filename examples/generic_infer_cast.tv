@@ -1,0 +1,27 @@
+// #63(c) gate: a cast-typed argument drives generic inference.
+//
+// When the generic param appears only in the BODY of the callee's signature
+// binding (not derivable from a plain-identifier arg), inference used to fail
+// on `f(n, 0 as G)` — the workaround was a typed witness variable. Inference
+// now reads through the cast (the #72 context-transparency rule's dual):
+// the cast's target type is the argument's stated type.
+
+type G = Field<251>;
+type H = Field<65521>;
+
+fn fold_in<F>(n: i32, w: F) -> i32 {
+    let y: F = w + w;
+    return n + signed(y) as i32;
+}
+
+fn main() {
+    // cast-typed literal arg infers F = G: 3+3 = 6 in Field<251>
+    print(fold_in(100, 3 as G));      // 106
+    // a different carrier through the same call site: F = H
+    print(fold_in(200, 250 as H));    // 700
+    // wrap-around: 200+200 = 149 mod 251; signed() balances 149 > 125 to -102
+    print(fold_in(0, 200 as G));      // -102
+    // the old idiom (typed witness) still works and agrees
+    let w: G = 3;
+    print(fold_in(100, w));           // 106
+}

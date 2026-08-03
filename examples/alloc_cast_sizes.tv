@@ -1,0 +1,57 @@
+// #72 gate: `alloc(n) as *T` must size elements, not bytes.
+//
+// The cast used to interrupt context-type propagation, so the alloc fell to
+// the elem=1 byte floor while the cast made the result *T anyway — a silent
+// 4x/8x heap under-allocation (surfaced as a qwen35-cli heap smash). The rule
+// now: alloc/realloc are context-REQUIRING, and a pointer-target cast passes
+// its target through the barrier — both spellings size identically.
+// Every element of every buffer is written and summed, so an under-sized
+// allocation corrupts the checksums (or crashes) instead of passing.
+
+struct Pair { a: i64, b: i64 }
+
+fn main() {
+    // cast-wrapped alloc, 4-byte pointee: 64 i32s = 256 bytes (was 64)
+    let p: *i32 = alloc(64) as *i32;
+    var i: i32 = 0;
+    while i < 64 { p[i] = i; i = i + 1; }
+    var s1: i32 = 0;
+    i = 0;
+    while i < 64 { s1 = s1 + p[i]; i = i + 1; }
+    print(s1); // 2016
+
+    // cast-wrapped alloc, 8-byte pointee: 32 i64s = 256 bytes (was 32)
+    let q: *i64 = alloc(32) as *i64;
+    var j: i64 = 0;
+    while j < 32 { q[j as i32] = j * 3; j = j + 1; }
+    var s2: i64 = 0;
+    j = 0;
+    while j < 32 { s2 = s2 + q[j as i32]; j = j + 1; }
+    print(s2); // 1488
+
+    // cast-wrapped alloc, struct pointee: 8 Pairs = 128 bytes (was 8)
+    let r: *Pair = alloc(8) as *Pair;
+    i = 0;
+    while i < 8 {
+        r[i].a = i as i64;
+        r[i].b = (i * 10) as i64;
+        i = i + 1;
+    }
+    var s3: i64 = 0;
+    i = 0;
+    while i < 8 { s3 = s3 + r[i].a + r[i].b; i = i + 1; }
+    print(s3); // 308
+
+    // cast-wrapped realloc: grow to 128 i32s = 512 bytes; old contents kept
+    var g: *i32 = alloc(4);
+    g[0] = 11; g[1] = 22; g[2] = 33; g[3] = 44;
+    g = realloc(g, 128) as *i32;
+    i = 4;
+    while i < 128 { g[i] = 1; i = i + 1; }
+    var s4: i32 = 0;
+    i = 0;
+    while i < 128 { s4 = s4 + g[i]; i = i + 1; }
+    print(s4); // 110 + 124 = 234
+
+    free(p); free(q); free(r); free(g);
+}

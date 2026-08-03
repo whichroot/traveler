@@ -109,3 +109,5 @@ examples/wide_fri_test.tv       # FRI over the wide carrier
 examples/mobius_cutoff.tv       # the Remark-3.4 machine check: native i128/i256 endpoints
 examples/field_signed_cast.tv   # #60: signed int -> Field<p>, eval must mirror codegen
 examples/read_bytes_expr.tv   # #62: read_bytes buffer arg as &buf[i] / call result — eval == compiled
+examples/alloc_cast_sizes.tv  # #72: cast-wrapped alloc/realloc element sizing — eval == compiled
+examples/generic_infer_cast.tv # #63(c): cast-typed arg drives inference — eval == compiled

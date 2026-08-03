@@ -8488,6 +8488,19 @@ fn find_struct(name: i32) -> i32 {
     return 0 - 1;
 }
 
+// #72: is this node the alloc/realloc BUILTIN call? These are the
+// context-REQUIRING expressions (element sizing has no natural default), so
+// the cast arms pass a pointer target through the cast barrier to them:
+// `alloc(n) as *T` must size exactly like `let p: *T = alloc(n)`.
+fn node_is_sizing_call(nd: i32) -> i32 {
+    if g_nodes[nd].kind != AST_CALL { return 0; }
+    let nm: i32 = g_nodes[nd].name0;
+    if nm == NULL_STR { return 0; }
+    if str_eq(&g_strings[nm], "alloc") == 1 { return 1; }
+    if str_eq(&g_strings[nm], "realloc") == 1 { return 1; }
+    return 0;
+}
+
 // Element byte size implied by a pointer context type (*Token -> sizeof, *i32
 // -> 4; non-pointer -> 1 = raw bytes). Shared by alloc AND realloc.
 fn ctx_elem_size(ctx_type: i32) -> i32 {
@@ -9165,6 +9178,12 @@ fn arg_value_type(arg_nd: i32) -> i32 {
                 if type_is_ptr(ot) == 1 { return type_pointee(ot); }
             }
         }
+    }
+    // #63(c): a cast-typed argument states its type explicitly — inference
+    // reads through the cast (context-transparency, the #72 rule's dual).
+    // Kills the typed-witness workaround: `moments(10, 0 as G10)` infers G10.
+    if g_nodes[arg_nd].kind == AST_CAST {
+        return resolve_type_sub(g_nodes[arg_nd].name0);
     }
     return NULL_STR;
 }
@@ -11824,6 +11843,14 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             if type_bits(al_count.type_off) < 64 {
                 count64 = emit_implicit_convert(al_count.reg, al_count.type_off, str_intern("i64"));
             }
+            // #72 root: the elem=1 floor silently under-allocated whenever no
+            // pointer context reached the alloc (the frozen seed refuses this
+            // shape too). Raw bytes are spelled with a *u8 destination.
+            if type_is_ptr(ctx_type) == 0 {
+                diag_begin(g_nodes[node].line, g_nodes[node].col);
+                derr("cannot size alloc: no pointer-typed destination (bind it, e.g. `let p: *T = alloc(n)`)");
+                diag_end();
+            }
             // Compute element size from context type (e.g. *Token -> sizeof(Token))
             let elem_sz: i32 = ctx_elem_size(ctx_type);
             var total_r: i32 = count64;
@@ -11851,6 +11878,12 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             var rcount64: i32 = rc_cnt.reg;
             if type_bits(rc_cnt.type_off) < 64 {
                 rcount64 = emit_implicit_convert(rc_cnt.reg, rc_cnt.type_off, str_intern("i64"));
+            }
+            // #72: same refusal as alloc — sizing needs a pointer destination.
+            if type_is_ptr(ctx_type) == 0 {
+                diag_begin(g_nodes[node].line, g_nodes[node].col);
+                derr("cannot size realloc: no pointer-typed destination (bind it, e.g. `p = realloc(p, n)`)");
+                diag_end();
             }
             let r_elem_sz: i32 = ctx_elem_size(ctx_type);
             var r_total: i32 = rcount64;
@@ -12494,6 +12527,12 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     cast_ctx = target_type;
                 }
             }
+        }
+        // #72: alloc/realloc are context-REQUIRING (element sizing); a
+        // pointer-target cast passes its target through the barrier so
+        // `alloc(n) as *T` sizes exactly like `let p: *T = alloc(n)`.
+        if node_is_sizing_call(g_nodes[node].child0) == 1 && type_is_ptr(target_type) == 1 {
+            cast_ctx = target_type;
         }
         let inner: IRValue = codegen_expr(g_nodes[node].child0, cast_ctx);
         let src_bits: i32 = type_bits(inner.type_off);
@@ -19907,6 +19946,11 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
                     cast_ctx = target_type;
                 }
             }
+        }
+        // #72 mirror: pointer-target casts pass through to sizing calls
+        // (alloc/realloc) — keeps eval element sizing == codegen.
+        if node_is_sizing_call(g_nodes[node].child0) == 1 && type_is_ptr(target_type) == 1 {
+            cast_ctx = target_type;
         }
         let inner: LowVal = lower_expr(g_nodes[node].child0, cast_ctx);
         // E2i boundary: a wide SOURCE into a field/dyn target has no mirrored

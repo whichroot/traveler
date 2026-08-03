@@ -1,0 +1,8 @@
+// #72 refusal: an alloc with no pointer-typed destination cannot size its
+// elements. The old behavior was a SILENT elem=1 byte floor (the heap-smash
+// door); the frozen seed always refused this shape. Raw-byte allocations are
+// spelled with a *u8 destination.
+fn main() {
+    let x: i64 = alloc(4) as i64;
+    print(x);
+}

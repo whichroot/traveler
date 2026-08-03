@@ -412,6 +412,17 @@ run_test field_signed_cast "$TIMEOUT_SINGLE"
 compile_obj_self read_bytes_expr
 link_objs read_bytes_expr read_bytes_expr
 run_test read_bytes_expr "$TIMEOUT_SINGLE"
+# #72 gate: `alloc(n) as *T` sizes elements, not bytes. The cast used to
+# interrupt context propagation (elem=1 floor -> silent 4x/8x heap
+# under-allocation); alloc/realloc now receive a pointer cast target as their
+# context. Dual-parity eligible: the seed always passed context through casts.
+test_single alloc_cast_sizes
+# #63(c) gate: a cast-typed argument drives generic inference (arg_value_type
+# reads through AST_CAST). tvc_self-only: the seed does not parse unbounded
+# `<F>` generics.
+compile_obj_self generic_infer_cast
+link_objs generic_infer_cast generic_infer_cast
+run_test generic_infer_cast "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.

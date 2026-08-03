@@ -3,6 +3,7 @@
 1311535a9d6dc17f100c5d2651000511  examples/address_of.tv
 a6bb3d479ca6dcec20c84562b71c62a5  examples/aes_sbox.tv
 91a347b502bc6834703c1106fb58b632  examples/algebraic_loops.tv
+6457b016adb9e7e108d04924fd2b576f  examples/alloc_cast_sizes.tv
 e82df99bb3094009ce3e66cf32dd6005  examples/alloc_ptr_table.tv
 ca108c0cf680102e7406917713cb3742  examples/assign_widen.tv
 af41c90fc2a516019d83bf9e22eef695  examples/barrett_test.tv
@@ -53,6 +54,7 @@ c2149e61724783b9787d12af0be53f27  examples/frobenius_rmt.tv
 e5fcb9702ba1ecb218a5baa6c7fde985  examples/generic_enum.tv
 93327537585be613a6976f9e2011bfb6  examples/generic_export.tv
 aed9057688cdede08d778180f8e12c59  examples/generic_extfield.tv
+efc21539799b0e61f017a515b3aeac58  examples/generic_infer_cast.tv
 b298fc15020fb3e89be1c1a383f00dac  examples/generic_kernel.tv
 6c0dc2b0436aeaae93f0ef6f3feda67a  examples/generic_multi.tv
 dbb78de4a02743ebf61de007339ad470  examples/generic_struct.tv

@@ -1,0 +1,3 @@
+alloc_no_ctx.tv:6
+cannot size alloc: no pointer-typed destination
+error generated.
