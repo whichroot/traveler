@@ -122,14 +122,13 @@ src/
     features/          relational + turning descriptors
     dsp/               DSP
     observe/           Topology observation
-    nt/                Required library for O(N^2)
+    nt/                Advanced Algorithms
     net/               Networking support (thin as of now)
     ecc/               Reed-Solomon erasure + error decode (GF(2^8), GF(2^16))
     float/             IEEE-754 -> dyadic rationals (exact at rest)
     fmt/               JSON support
     rns/               exact auto-parallel NN matmul
     util/              math helpers, streaming protocol
-    time/              Monotonic/Wall Clock
     fs/                buffered file I/O
     net/               TCP sockets + minimal HTTP over POSIX
     time/              monotonic + wall clock, sleep
