@@ -1,0 +1,6 @@
+// Memory-model refusal R2: free() takes a pointer. A non-pointer argument
+// used to emit `call @free(ptr %int)` — invalid IR one tool late.
+fn main() {
+    let x: i64 = 4;
+    free(x);
+}

@@ -1,0 +1,13 @@
+// Memory-model refusal R1: returning the address of frame-owned storage is
+// dangling by construction. The old behavior compiled it clean — a pointer
+// into a freed frame, invalid at the first use in the caller. Return an
+// alloc'd pointer, or write through a caller-passed buffer.
+fn leak() -> *i32 {
+    var x: i32 = 5;
+    return &x;
+}
+
+fn main() {
+    let p: *i32 = leak();
+    print(p[0]);
+}

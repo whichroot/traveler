@@ -1,0 +1,3 @@
+free_non_ptr.tv:5
+free() takes a pointer
+error generated.

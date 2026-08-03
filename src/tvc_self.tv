@@ -7757,6 +7757,32 @@ fn value_is_ptr(type_off: i32) -> i32 {
     return 0;
 }
 
+// R1 (memory model, @internal-design: memory): does this expression take the
+// address of FRAME-owned storage? `&x` on a local alloca, or `&arr[i]` where
+// arr is a local ARRAY. `&p[i]` on a local POINTER aims at the pointee
+// (heap/caller-owned) and is fine; globals (is_alloca==2) are static.
+fn node_is_frame_addr(nd: i32) -> i32 {
+    if g_nodes[nd].kind != AST_UNARY { return 0; }
+    if g_nodes[nd].op != OP_ADDR { return 0; }
+    let ch: i32 = g_nodes[nd].child0;
+    if g_nodes[ch].kind == AST_IDENT {
+        let si: i32 = sym_find(g_nodes[ch].name0);
+        if si >= 0 && g_syms[si].is_alloca == 1 { return 1; }
+        return 0;
+    }
+    if g_nodes[ch].kind == AST_INDEX {
+        let base: i32 = g_nodes[ch].child0;
+        if g_nodes[base].kind == AST_IDENT {
+            let bsi: i32 = sym_find(g_nodes[base].name0);
+            if bsi >= 0 && g_syms[bsi].is_alloca == 1 {
+                if type_is_array(resolve_type_sub(g_syms[bsi].type_off)) == 1 { return 1; }
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
 // Check if a source type is an array type (starts with '[').
 fn type_is_array(type_off: i32) -> i32 {
     if type_off == NULL_STR { return 0; }
@@ -11923,6 +11949,17 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         // free(ptr) builtin
         if str_eq(&g_strings[call_name], "free") == 1 {
             let fr_arg: IRValue = codegen_expr(g_args[g_nodes[node].args_start], str_intern("ptr"));
+            // R2 (memory model): free takes a pointer. A non-pointer argument
+            // previously emitted `call @free(ptr %int)` — invalid IR, one tool
+            // late. Counted diagnostic; the call is not emitted (recovery).
+            if fr_arg.type_off != NULL_STR && value_is_ptr(fr_arg.type_off) == 0 {
+                diag_begin(g_nodes[node].line, g_nodes[node].col);
+                derr("free() takes a pointer; got '");
+                derr(&g_strings[fr_arg.type_off]);
+                derr("'");
+                diag_end();
+                return IRValue { reg: 0, type_off: NULL_STR };
+            }
             ir_wr("  call void @free(ptr "); ir_wr_reg(fr_arg.reg); ir_wr(")\n");
             return IRValue { reg: 0, type_off: NULL_STR };
         }
@@ -14023,6 +14060,14 @@ fn codegen_stmt(stmt: i32) {
     // ---- Return ----
     if kind == AST_RETURN {
         if g_nodes[stmt].child0 != NULL_NODE {
+            // R1 (memory model): returning the address of frame-owned storage
+            // is dangling by construction. Counted diagnostic (artifact
+            // refused at the g_diag_count gate); recovery continues.
+            if node_is_frame_addr(g_nodes[stmt].child0) == 1 {
+                diag_begin(g_nodes[stmt].line, g_nodes[stmt].col);
+                derr("cannot return the address of a local: the frame is freed when the function returns (return an alloc'd pointer, or write through a caller-passed buffer)");
+                diag_end();
+            }
             let rv: IRValue = codegen_expr(g_nodes[stmt].child0, g_fn_ret_type);
             // Closures Rubicon (N1): no escape via return — the stack env would
             // dangle. REJECT; pass closures DOWN as generic <C> args.
@@ -24366,8 +24411,13 @@ fn repl_prepare(src: *u8, len: i32) {
 
     let toks: *Token = alloc(REPL_TOK_CAP);
     let nt: i32 = lex(src, len, toks, REPL_TOK_CAP);
-    if nt <= 1 { return; }
+    if nt <= 1 { free(toks); return; }
 
+    // #74: the previous cell's buffer is dead once this cell replaces it
+    // (g_tokens is overwritten below); free it before it is orphaned.
+    // The CURRENT buffer stays live after repl_prepare returns —
+    // post-prepare diagnostics read token spans through g_tokens.
+    if g_tokens != null { free(g_tokens); }
     g_tokens = toks;
     g_ntokens = nt;
     g_tok_pos = 0;
