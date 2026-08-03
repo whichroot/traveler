@@ -1,0 +1,36 @@
+// #57(1) gate: a global array with `= 0` emits zeroinitializer and is fully
+// usable — read, write, address-of-element all against @name as the base.
+//
+// The old emitter printed the resolved scalar into the aggregate slot
+// (`@g = global [8 x i64] 0` — llc rejects), and the ident/index arms used
+// g_syms.reg (0 for globals) as the array base. Since a no-initializer
+// global is a parse error, `= 0` is the canonical zeroed-array spelling.
+// tvc_self-only: the frozen seed shares the invalid emission (loud at llc,
+// the #31 seed-boundary precedent); eval refuses array-globals by design.
+
+var g: [i64; 8] = 0;
+var h: [i32; 4] = 0;
+
+fn sum_g() -> i64 {
+    var s: i64 = 0;
+    var i: i32 = 0;
+    while i < 8 { s = s + g[i]; i = i + 1; }
+    return s;
+}
+
+fn main() {
+    // starts zeroed
+    print(sum_g()); // 0
+    // write/read through the global base
+    var i: i32 = 0;
+    while i < 8 { g[i] = (i * 2) as i64; i = i + 1; }
+    print(sum_g()); // 56
+    print(g[3]);    // 6
+    // address-of-element aliases the LIVE global
+    let p: *i64 = &g[3];
+    g[3] = 100;
+    print(p[0]);    // 100
+    // second array: independent storage
+    h[0] = 41; h[3] = 1;
+    print(h[0] + h[3]); // 42
+}

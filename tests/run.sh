@@ -427,6 +427,12 @@ run_test generic_infer_cast "$TIMEOUT_SINGLE"
 # bare "ptr" spelling address-of paths return). Dual-parity eligible: the
 # seed's ptr->int cast always handled it.
 test_single ptr_cast_int
+# #57(1) gate: global array `= 0` -> zeroinitializer; @name is the index base
+# for reads, writes, and address-of-element. tvc_self-only: the seed shares
+# the old invalid emission (loud at llc, the #31 seed-boundary precedent).
+compile_obj_self global_array_init
+link_objs global_array_init global_array_init
+run_test global_array_init "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.

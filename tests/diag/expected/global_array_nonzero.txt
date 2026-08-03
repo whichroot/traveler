@@ -1,0 +1,2 @@
+global_array_nonzero.tv:4
+global array initializer must be 0

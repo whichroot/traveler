@@ -10293,6 +10293,17 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         let entry_reg: i32 = g_syms[sym_idx].reg;
         let entry_alloca: i32 = g_syms[sym_idx].is_alloca;
         if entry_alloca == 2 {
+            // #57(1): an aggregate global decays to its ADDRESS (@name IS the
+            // pointer) — mirrors the local-alloca aggregate case below. The
+            // old unconditional load pulled the whole aggregate as a value
+            // (invalid IR at the first index).
+            if resolve_struct_type(entry_type) >= 0 || resolve_enum_type(entry_type) >= 0 || type_is_array(entry_type) == 1 || type_is_poly(entry_type) == 1 || type_is_register(entry_type) == 1 {
+                let ra: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(ra);
+                ir_wr(" = getelementptr i8, ptr @");
+                ir_wr_sym(g_syms[sym_idx].name); ir_wr(", i64 0\n");
+                return IRValue { reg: ra, type_off: entry_type };
+            }
             // Global variable: load from @name
             let r: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(r); ir_wr(" = load ");
@@ -12481,10 +12492,19 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             // Array indexing: GEP [N x T] with double index, load elem
             let arr_ir: i32 = type_to_ir(obj_type);
             let elem_type: i32 = type_array_elem(obj_type);
+            var arr_base: i32 = obj_reg;
+            if obj_alloca == 2 {
+                // #57(1): a global array's base is @name itself (materialised),
+                // never g_syms.reg (0 for globals — was an unrelated %t0).
+                arr_base = ir_tmp();
+                ir_wr("  "); ir_wr_reg(arr_base);
+                ir_wr(" = getelementptr i8, ptr @");
+                ir_wr_sym(obj_name); ir_wr(", i64 0\n");
+            }
             let gep: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(gep); ir_wr(" = getelementptr ");
             ir_wr_sym(arr_ir); ir_wr(", ptr ");
-            ir_wr_reg(obj_reg); ir_wr(", i64 0, i64 ");
+            ir_wr_reg(arr_base); ir_wr(", i64 0, i64 ");
             ir_wr_reg(idx64); ir_wr("\n");
             let val: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(val); ir_wr(" = load ");
@@ -18408,10 +18428,13 @@ fn codegen_program(prog: i32) {
             let gname: i32 = g_nodes[gd].name0;
             let gtype: i32 = g_nodes[gd].name1;
             let ginit: i32 = g_nodes[gd].child0;
+            let g_arr: i32 = type_is_array(gtype);
             ir_wr("@"); wr(g_ir_fd, &g_strings[gname]);
             ir_wr(" = global "); ir_wr_type(gtype); ir_wr(" ");
             if g_nodes[ginit].kind == AST_NULL {
-                ir_wr("null");
+                // #57(1): an aggregate takes no scalar constant — the zeroed
+                // spelling for an array is zeroinitializer, never null.
+                if g_arr == 1 { ir_wr("zeroinitializer"); } else { ir_wr("null"); }
             } else {
                 // constant-resolved (lit / +-* fold / prior-let); refuse loudly —
                 // the old fallthrough SILENTLY zero-initialized (@internal-note: known-issues #52)
@@ -18422,9 +18445,21 @@ fn codegen_program(prog: i32) {
                         "global initializer must be a compile-time constant: an int literal (incl. negated), null, +|-|* of constants, or a prior `let` constant");
                     exit(1);
                 }
-                let gfi: i32 = find_field_by_alias(gtype);
-                if gfi >= 0 { gval = gval % g_fields[gfi].prime; }
-                ir_wr_int(gval as i64);
+                if g_arr == 1 {
+                    // #57(1): `= 0` is the whole-array zero (no-init is a parse
+                    // error, so this is the canonical spelling); the old path
+                    // printed the scalar into an aggregate slot — invalid IR.
+                    if gval != 0 {
+                        diag_error_at(g_nodes[gd].line, g_nodes[gd].col,
+                            "global array initializer must be 0 (whole-array zero); element-wise initialization is not supported");
+                        exit(1);
+                    }
+                    ir_wr("zeroinitializer");
+                } else {
+                    let gfi: i32 = find_field_by_alias(gtype);
+                    if gfi >= 0 { gval = gval % g_fields[gfi].prime; }
+                    ir_wr_int(gval as i64);
+                }
             }
             ir_wr("\n");
             // is_alloca=2 sentinel: load/store via @name

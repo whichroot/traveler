@@ -276,3 +276,4 @@ examples/read_bytes_expr.tv             # 62: read_bytes buffer arg is a general
 examples/alloc_cast_sizes.tv
 examples/generic_infer_cast.tv
 examples/ptr_cast_int.tv
+examples/global_array_init.tv

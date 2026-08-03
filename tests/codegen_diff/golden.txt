@@ -71,6 +71,7 @@ b633379c2c9a4e02f27ff710bc9fad76  examples/genus_probe_test.tv
 b14ddf37e512e22a52f9d928ad60910f  examples/genus_profile_certify.tv
 b2437a4fa37c0b51f7c17126e5a85959  examples/genus_soft_test.tv
 29c6865b50841dc7e9879bff7ce57c98  examples/genus_wav.tv
+26a615063a291f77e8ddd5e31c389462  examples/global_array_init.tv
 5812370e31ba746ad201d5bea0a2ba52  examples/glyph_convergence_test.tv
 4c82ba4d700508aa4f8c8fe9d4b9efd9  examples/gpu_field_map.tv
 09b12c80aa24919a502ddef1d112f993  examples/grain_lfsr_test.tv

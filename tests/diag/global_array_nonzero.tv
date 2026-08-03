@@ -1,0 +1,8 @@
+// #57(1) refusal: a global array initializer must be 0 (whole-array zero).
+// A nonzero scalar has no aggregate meaning — the old emitter printed it
+// into the aggregate slot (invalid IR, one tool late); now refused at source.
+var g: [i64; 8] = 5;
+
+fn main() {
+    print(g[0]);
+}
