@@ -1,0 +1,13 @@
+// #64 regression: a failed generic inference must FAIL the build (exit != 0,
+// no artifact) instead of degrading the callee to an i32 stub and writing
+// runnable IR. The generic param appears only in the body, so no argument or
+// context can bind it — inference fails, and the build must too.
+fn body_only<T>(n: i32) -> i32 {
+    let x: T = 0;
+    return n + 1;
+}
+
+fn main() {
+    let r: i32 = body_only(10);
+    print(r);
+}

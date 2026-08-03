@@ -7694,6 +7694,9 @@ fn type_to_ir(type_off: i32) -> i32 {
     wr(2, "error: type_to_ir unknown type: ");
     wr(2, s);
     wr(2, "\n");
+    // #64 class: count it (no source position at this depth) so the driver
+    // refuses the artifact; the i32 return is recovery, not a blessing.
+    g_diag_count = g_diag_count + 1;
     return str_intern("i32");
 }
 
@@ -12048,9 +12051,15 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 let gp_name: i32 = g_gen_names[inf_gstart + igi];
                 var inferred: i32 = infer_generic_param(fci, gp_name, node, ctx_type);
                 if inferred == NULL_STR {
-                    wr(2, "error: cannot infer generic type for: ");
-                    wr(2, &g_strings[call_name]); wr(2, "\n");
-                    inferred = str_intern("i32"); // fallback
+                    // #64: count the failure so the driver refuses the artifact
+                    // (g_diag_count gate). The i32 fallback keeps recovery alive
+                    // to surface further errors; it is never blessed as output.
+                    diag_begin(g_nodes[node].line, g_nodes[node].col);
+                    derr("cannot infer generic type for '");
+                    derr(&g_strings[call_name]);
+                    derr("'");
+                    diag_end();
+                    inferred = str_intern("i32"); // recovery only
                 }
                 inf_tuple[igi] = inferred;
                 igi = igi + 1;
@@ -25145,7 +25154,8 @@ fn main(argc: i32, argv: **u8) {
         codegen_program(prog);
         close(g_ir_fd);
         // Codegen-stage diagnostics don't abort mid-emission; if any fired the
-        // IR is unreliable — report and exit non-zero rather than claim success.
+        // IR is unreliable — remove the partial artifact and exit non-zero
+        // rather than claim success (#64: a stale .ll must not be lowerable).
         if g_diag_count > 0 {
             wr(2, "error: ");
             wr_int(2, g_diag_count as i64);
@@ -25154,6 +25164,7 @@ fn main(argc: i32, argv: **u8) {
             } else {
                 wr(2, " errors generated.\n");
             }
+            unlink(ll_path);
             exit(1);
         }
         // --emit obj|exe: hand the temp .ll to llc (+ cc) for the native artifact.

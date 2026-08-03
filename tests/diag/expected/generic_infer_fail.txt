@@ -1,0 +1,3 @@
+generic_infer_fail.tv:11
+cannot infer generic type for 'body_only'
+error generated.
