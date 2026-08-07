@@ -49,6 +49,13 @@ fn main() -> i32 {
         output[j] = chosen;
     }
 
+    let wide_input: *AgxLang0DeviceF = alloc(65536);
+    let wide_output: *AgxLang0DeviceF = alloc(65536);
+    for j in 0..65536 {
+        wide_output[j] = wide_input[j] + 1;
+    }
+
+    free(wide_output); free(wide_input);
     free(output); free(input);
     return 0;
 }

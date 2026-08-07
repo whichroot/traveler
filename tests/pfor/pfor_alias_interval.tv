@@ -1,0 +1,54 @@
+// ALIAS0: shifted overlap must serialize; adjacent byte ranges may dispatch.
+
+field F = Field<2013265921>;
+
+fn slow(x: F) -> F {
+    var a: F = x;
+    var k: i32 = 0;
+    while k < 2000 {
+        a = a + 0;
+        k = k + 1;
+    }
+    return a;
+}
+
+fn shift_sum(src: *F, dst: *F, n: i32) {
+    for i in 0..n {
+        dst[i] = slow(src[i + 1]) + 1;
+    }
+}
+
+fn checksum(buf: *F, n: i32) -> F {
+    var total: F = 0;
+    var i: i32 = 0;
+    while i < n {
+        total = total + buf[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+
+    let overlap: *F = alloc(n + 101);
+    var i: i32 = 0;
+    while i < n + 101 {
+        overlap[i] = i as F;
+        i = i + 1;
+    }
+    let shifted: *F = &overlap[100];
+    shift_sum(overlap, shifted, n);
+    print(checksum(shifted, n));
+
+    let adjacent: *F = alloc(n * 2 + 2);
+    i = 0;
+    while i < n * 2 + 2 {
+        adjacent[i] = i as F;
+        i = i + 1;
+    }
+    let adjacent_dst: *F = &adjacent[n + 1];
+    shift_sum(adjacent, adjacent_dst, n);
+    print(checksum(adjacent_dst, n));
+    return 0;
+}

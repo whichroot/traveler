@@ -114,6 +114,10 @@ AGX_DOT_LOOP_DEV="$TMP/agx_rns_dot_loop.agx.hex"
 AGX_DOT_LOOP_LL="$TMP/agx_rns_dot_loop.ll"
 AGX_DOT_LOOP_OBJ="$TMP/agx_rns_dot_loop.o"
 AGX_DOT_LOOP_EXE="$TMP/agx-rns-dot-loop"
+AGX_DOT_GENERAL_DEV="$TMP/agx_rns_dot_general.agx.hex"
+AGX_DOT_GENERAL_LL="$TMP/agx_rns_dot_general.ll"
+AGX_DOT_GENERAL_OBJ="$TMP/agx_rns_dot_general.o"
+AGX_DOT_GENERAL_EXE="$TMP/agx-rns-dot-general"
 AGX_DOT_REFUSE_DEV="$TMP/agx_rns_dot_refuse.agx.hex"
 AGX_DOT_REFUSE_LL="$TMP/agx_rns_dot_refuse.ll"
 AGX_DOT_REFUSE_REPORT="$TMP/agx_rns_dot_refuse.report"
@@ -126,6 +130,7 @@ AGX_LANG0_EVAL_OBJ="$TMP/agx_lang0_eval.o"
 AGX_LANG0_EVAL_EXE="$TMP/agx-lang0-eval"
 AGX_LANG0_REFUSE="$TMP/agx_lang0_refuse.agx.hex"
 AGX_LANG0_DEVICE_REFUSE="$TMP/agx_lang0_device_refuse.agx.hex"
+AGX_GRID_BOUNDARY="$TMP/agx_grid_boundary.agx.hex"
 AGX_LANG0_SHADOW_REFUSE="$TMP/agx_lang0_shadow_refuse.agx.hex"
 AGX_LANG0_SHADOW_LL="$TMP/agx_lang0_shadow_refuse.ll"
 AGX_LANG1_STRUCT_DEV="$TMP/agx_lang1_struct.agx.hex"
@@ -317,6 +322,23 @@ else
         echo "  FAIL: canonical nested K=8 RNS dot did not match counted evidence"; fail=1
         AGX3_READY=0
     fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot_general.tv" \
+            -o "$AGX_DOT_GENERAL_DEV" 2>/dev/null \
+       || [ "$(grep -c '^worker __pfor_gpu_worker_' "$AGX_DOT_GENERAL_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^grid 1024$' "$AGX_DOT_GENERAL_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^output-words 1024$' "$AGX_DOT_GENERAL_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^input0-words 8$' "$AGX_DOT_GENERAL_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^input1-words 8192$' "$AGX_DOT_GENERAL_DEV" || true)" -ne 3 ] \
+       || ! python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" \
+            --check-artifact "$AGX_DOT_GENERAL_DEV" 1024 8 8192 \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_rns_dot_general.tv" \
+            -o "$AGX_DOT_GENERAL_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_DOT_GENERAL_LL" || true)" -ne 3 ] \
+       || ! "$LLC" -filetype=obj "$AGX_DOT_GENERAL_LL" \
+            -o "$AGX_DOT_GENERAL_OBJ" 2>/dev/null; then
+        echo "  FAIL: generalized 1x8x1024 counted dot did not compile"; fail=1
+        AGX3_READY=0
+    fi
     if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
            -o "$AGX_DOT_REFUSE_DEV" 2>/dev/null \
        || grep -q '^worker __pfor_gpu_worker_' "$AGX_DOT_REFUSE_DEV" \
@@ -324,14 +346,14 @@ else
        || ! "$STAGE1" "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
             -o "$AGX_DOT_REFUSE_LL" 2>/dev/null \
        || [ "$(grep -c '^define internal void @__pfor_worker_' \
-                    "$AGX_DOT_REFUSE_LL" || true)" -ne 2 ] \
+                     "$AGX_DOT_REFUSE_LL" || true)" -ne 3 ] \
        || [ "$(grep -c 'call void @__parallel_for(' \
-                    "$AGX_DOT_REFUSE_LL" || true)" -ne 2 ] \
+                     "$AGX_DOT_REFUSE_LL" || true)" -ne 3 ] \
        || ! "$STAGE1" --pfor-report "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
             >"$AGX_DOT_REFUSE_REPORT" 2>/dev/null \
-       || [ "$(grep -c '"dispatched":1' "$AGX_DOT_REFUSE_REPORT" || true)" -ne 2 ] \
+        || [ "$(grep -c '"dispatched":1' "$AGX_DOT_REFUSE_REPORT" || true)" -ne 3 ] \
        || [ "$(grep -c '"reason":"assign-carried"' \
-                    "$AGX_DOT_REFUSE_REPORT" || true)" -ne 2 ]; then
+                     "$AGX_DOT_REFUSE_REPORT" || true)" -ne 3 ]; then
         echo "  FAIL: noncanonical nested RNS dot CPU/AGX boundary changed"; fail=1
         AGX3_READY=0
     fi
@@ -552,8 +574,17 @@ else
             -o "$AGX_LANG0_DEVICE_REFUSE" 2>/dev/null \
        || grep -q '^worker __pfor_gpu_worker_' "$AGX_LANG0_DEVICE_REFUSE" \
        || [ "$(grep -c '^skip __pfor_gpu_worker_.* reason=unsupported-agx0-worker$' \
-                    "$AGX_LANG0_DEVICE_REFUSE" || true)" -ne 5 ]; then
+                     "$AGX_LANG0_DEVICE_REFUSE" || true)" -ne 6 ]; then
         echo "  FAIL: AGX LANG0 iterator/cast/width/store refusals changed"; fail=1
+        LANG0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_grid_boundary.tv" \
+            -o "$AGX_GRID_BOUNDARY" 2>/dev/null \
+       || [ "$(grep -c '^worker __pfor_gpu_worker_' \
+                    "$AGX_GRID_BOUNDARY" || true)" -ne 1 ] \
+       || ! grep -q '^grid 65535$' "$AGX_GRID_BOUNDARY" \
+       || grep -q '^skip __pfor_gpu_worker_' "$AGX_GRID_BOUNDARY"; then
+        echo "  FAIL: AGX inclusive 65,535-element grid boundary changed"; fail=1
         LANG0_READY=0
     fi
     if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang0_shadow_refuse.tv" \
@@ -1119,6 +1150,22 @@ else
         agx_lang1_dynamic_array_eval.tv agx_lang1_dynamic_array_dispatch.tv \
         --check-dynamic-array-artifact --check-dynamic-array-output \
         'agx-ra0: shape=6 blocks=40 iterations=2 copies=42 repairs=0 slot-regs=25 live-regs=11 vm-regs=0 pairs=0 loads=2 outcome=1' 0
+    if ! "$STAGE1" --pfor-proof0-report \
+            "$SCRIPT_DIR/agx_lang1_i1_matrix.tv" \
+            >"$TMP/agx_lang1_i1_matrix.jsonl" 2>/dev/null \
+       || [ "$(grep -c '"lang1_candidate":1' \
+                    "$TMP/agx_lang1_i1_matrix.jsonl" || true)" -ne 4 ] \
+       || ! "$STAGE1" --emit-gpu-agx \
+            "$SCRIPT_DIR/agx_lang1_i1_matrix.tv" \
+            -o "$TMP/agx_lang1_i1_matrix.hex" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$TMP/agx_lang1_i1_matrix.hex" \
+       || [ "$(grep -c '^skip __pfor_gpu_worker_' \
+                    "$TMP/agx_lang1_i1_matrix.hex" || true)" -ne 4 ]; then
+        echo "  FAIL: AGX LANG1-I1 element/length claim matrix changed"
+        fail=1; LANG1_C1_READY=0
+    else
+        echo "  ok   AGX LANG1-I1 bool/u32/field and length-16 boundaries fail closed"
+    fi
     if ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_c1_refuse.tv" \
             --pfor-proof0-report >"$TMP/agx_lang1_c1_refuse.jsonl" 2>/dev/null \
        || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
@@ -1213,7 +1260,7 @@ else
             echo "  FAIL: G16X CF2 loop and exit execution mismatch"; fail=1
         fi
         if python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" "$AGX_HARNESS"; then
-            echo "  ok   G16X fixed-shape counted Montgomery dots exact"
+            echo "  ok   G16X fixed-K counted Montgomery dots exact"
         else
             echo "  FAIL: G16X counted Montgomery dot mismatch"; fail=1
         fi
@@ -1592,8 +1639,30 @@ else
                     agx3fail=1
                 fi
             fi
+            if ! cc "$AGX_DOT_GENERAL_OBJ" -framework IOKit \
+                    -o "$AGX_DOT_GENERAL_EXE" 2>/dev/null; then
+                echo "  FAIL: generalized 1x8x1024 counted dot did not link"
+                agx3fail=1
+            else
+                (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+                 TRAVELER_THREADS=4 "$AGX_DOT_GENERAL_EXE" \
+                    >"$TMP/agx_dot_general.cpu.bin")
+                dot_general_cpu_status=$?
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_DOT_GENERAL_DEV" \
+                    "$AGX_DOT_GENERAL_EXE" >"$TMP/agx_dot_general.gpu.bin"
+                dot_general_gpu_status=$?
+                if [ "$dot_general_cpu_status" -ne 0 ] \
+                   || [ "$dot_general_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_dot_general.cpu.bin" | tr -d ' ')" -ne 8192 ] \
+                   || ! cmp -s "$TMP/agx_dot_general.cpu.bin" \
+                        "$TMP/agx_dot_general.gpu.bin"; then
+                    echo "  FAIL: generalized 1x8x1024 counted dot differs from CPU"
+                    agx3fail=1
+                fi
+            fi
             if [ "$agx3fail" = "0" ]; then
-                echo "  ok   AGX RNS product, reduce-8, direct-dot, and nested K=8 paths are exact"
+                echo "  ok   AGX RNS product, reduce-8, and generalized K=8 dot paths are exact"
             else
                 fail=1
             fi

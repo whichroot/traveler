@@ -266,6 +266,8 @@ if [ -x "$STAGE1" ]; then
         "pfor_self_shadowed_read:0"
         "pfor_parity_bigliteral:2"
         "pfor_alias_eq:1"
+        "pfor_alias_interval:1"
+        "pfor_alias_provenance:4"
     )
     for entry in "${EFFECT_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"
@@ -276,6 +278,17 @@ if [ -x "$STAGE1" ]; then
         if [ "$status" = "PASS" ]; then
             gw=$(grep -c "define internal void @__pfor_worker" "$TMPDIR/${name}.ll" || true)
             [ "$gw" = "$want_workers" ] || { status="FAIL"; detail="workers: want $want_workers, got $gw"; }
+        fi
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_alias_provenance" ]; then
+            forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
+            [ "$forced" = "4" ] \
+                || { status="FAIL"; detail="untrusted joins: want 4 serial guards, got $forced"; }
+        fi
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_alias_interval" ]; then
+            grep -q 'icmp slt i64 .* -2147483648' "$TMPDIR/${name}.ll" \
+                && grep -q 'icmp sgt i64 .* 2147483648' "$TMPDIR/${name}.ll" \
+                && ! grep -q 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" \
+                || { status="FAIL"; detail="i32 interval guard or dispatchable path missing"; }
         fi
         if [ "$status" = "PASS" ]; then
             "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \

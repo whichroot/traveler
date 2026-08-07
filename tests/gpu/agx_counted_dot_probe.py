@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Assemble and execute the fixed-shape G16X counted Montgomery dot."""
+"""Assemble and execute the fixed-K G16X counted Montgomery dot."""
 
 import pathlib
 import sys
@@ -385,7 +385,8 @@ def check_only() -> None:
         raise ValueError(f"counted kernel size depends on constants: {lengths}")
 
 
-def check_artifact(path: pathlib.Path) -> None:
+def check_artifact(path: pathlib.Path, output: int = 128,
+                   input0: int = 32, input1: int = 256) -> None:
     records = []
     current = None
     in_code = False
@@ -395,6 +396,8 @@ def check_artifact(path: pathlib.Path) -> None:
             in_code = False
         elif current is not None and line.startswith("field "):
             current["field"] = int(line.split()[1])
+        elif current is not None and line.startswith("grid "):
+            current["grid"] = int(line.split()[1])
         elif current is not None and line.startswith("output-words "):
             current["output"] = int(line.split()[1])
         elif current is not None and line.startswith("input0-words "):
@@ -416,8 +419,9 @@ def check_artifact(path: pathlib.Path) -> None:
     if len(records) != 3 or {record["field"] for record in records} != set(PRIMES):
         raise ValueError("compiler artifact does not contain the three RNS workers")
     for record in records:
-        if (record.get("output"), record.get("input0"), record.get("input1"),
-                record.get("layout")) != (128, 32, 256, 1):
+        if (record.get("grid"), record.get("output"), record.get("input0"),
+                record.get("input1"), record.get("layout")) != \
+                (output, output, input0, input1, 1):
             raise ValueError("compiler counted-dot ABI metadata changed")
         code = bytes(record["code"])
         expected_code, meta = build_kernel(record["field"], 8)
@@ -464,8 +468,11 @@ def execute(harness: pathlib.Path) -> None:
 
 def main() -> int:
     check_only()
-    if len(sys.argv) == 3 and sys.argv[1] == "--check-artifact":
-        check_artifact(pathlib.Path(sys.argv[2]))
+    if len(sys.argv) in (3, 6) and sys.argv[1] == "--check-artifact":
+        expected = [128, 32, 256]
+        if len(sys.argv) == 6:
+            expected = [int(value) for value in sys.argv[3:6]]
+        check_artifact(pathlib.Path(sys.argv[2]), *expected)
         print("AGX counted-dot compiler artifact PASS: three workers byte-exact")
         return 0
     if len(sys.argv) == 2 and sys.argv[1] == "--check-only":
@@ -475,7 +482,7 @@ def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit(
             "usage: agx_counted_dot_probe.py HARNESS|--check-only|"
-            "--check-artifact PATH"
+            "--check-artifact PATH [OUTPUT INPUT0 INPUT1]"
         )
     execute(pathlib.Path(sys.argv[1]))
     print("AGX counted-dot hardware PASS: K=1/2/8 exact over three RNS primes")

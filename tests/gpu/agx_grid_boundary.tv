@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// The compiler accepts the runtime's inclusive 65,535-element AGX grid ceiling.
+
+field AgxGridBoundaryF = Field<2013265921>;
+
+fn main() -> i32 {
+    let input: *AgxGridBoundaryF = alloc(65535);
+    let output: *AgxGridBoundaryF = alloc(65535);
+    for i in 0..65535 {
+        output[i] = input[i] + 1;
+    }
+    free(output); free(input);
+    return 0;
+}

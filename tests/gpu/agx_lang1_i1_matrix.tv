@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0
+// PROOF2/I1 claim matrix: scalar element kinds and private-array size edges.
+
+field AgxI1MatrixF = Field<2013265921>;
+
+fn agx_i1_bool1(input: *AgxI1MatrixF, output: *AgxI1MatrixF) {
+    for j in 0..768 {
+        let a: AgxI1MatrixF = input[j];
+        var index: i32 = 0;
+        if j >= 384 { index = 0; }
+        var slots: [bool; 1] = 0;
+        slots[index] = a == 0;
+        var chosen: AgxI1MatrixF = a;
+        if slots[index] { chosen = 1; }
+        output[j] = chosen;
+    }
+}
+
+fn agx_i1_u32_1(input: *AgxI1MatrixF, output: *AgxI1MatrixF) {
+    for j in 0..768 {
+        let a: AgxI1MatrixF = input[j];
+        var index: u32 = 0;
+        if j >= 384 { index = 0; }
+        var slots: [u32; 1] = 0;
+        slots[index] = 3;
+        let score: u32 = slots[index];
+        var chosen: AgxI1MatrixF = a;
+        if score == 3 { chosen = a + 1; }
+        output[j] = chosen;
+    }
+}
+
+fn agx_i1_field1(input: *AgxI1MatrixF, output: *AgxI1MatrixF) {
+    for j in 0..768 {
+        let a: AgxI1MatrixF = input[j];
+        var index: i32 = 0;
+        if j >= 384 { index = 0; }
+        var slots: [AgxI1MatrixF; 1] = 0;
+        slots[index] = a + 7;
+        output[j] = slots[index];
+    }
+}
+
+fn agx_i1_i32_16(input: *AgxI1MatrixF, output: *AgxI1MatrixF) {
+    for j in 0..768 {
+        let a: AgxI1MatrixF = input[j];
+        let index: i32 = j & 15;
+        var slots: [i32; 16] = 0;
+        slots[index] = j + 11;
+        var chosen: AgxI1MatrixF = a;
+        if slots[index] == j + 11 { chosen = a + 11; }
+        output[j] = chosen;
+    }
+}

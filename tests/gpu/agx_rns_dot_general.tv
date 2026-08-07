@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: Apache-2.0
+// Consumer geometry: one K=8 row reduced across 1024 independent columns.
+import "../../src/lib/gpu/agx_runtime.tv";
+import "../../src/lib/rns/rns_dyn.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+field AgxGeneral0 = Field<2013265921>;
+field AgxGeneral1 = Field<1811939329>;
+field AgxGeneral2 = Field<2130706433>;
+
+fn main() -> i32 {
+    let K: i32 = 8;
+    let N: i32 = 1024;
+    let x: *i64 = alloc(K);
+    let w: *i64 = alloc(K * N);
+    let x0: *AgxGeneral0 = alloc(K);
+    let x1: *AgxGeneral1 = alloc(K);
+    let x2: *AgxGeneral2 = alloc(K);
+    let w0: *AgxGeneral0 = alloc(K * N);
+    let w1: *AgxGeneral1 = alloc(K * N);
+    let w2: *AgxGeneral2 = alloc(K * N);
+    var i: i32 = 0;
+    while i < K {
+        x[i] = ((i as i64 * 37 + 11) % 127) - 63;
+        x0[i] = x[i] as AgxGeneral0;
+        x1[i] = x[i] as AgxGeneral1;
+        x2[i] = x[i] as AgxGeneral2;
+        i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        w[i] = ((i as i64 * 53 + 7) % 131) - 65;
+        w0[i] = w[i] as AgxGeneral0;
+        w1[i] = w[i] as AgxGeneral1;
+        w2[i] = w[i] as AgxGeneral2;
+        i = i + 1;
+    }
+
+    let output0: *AgxGeneral0 = alloc(N);
+    let output1: *AgxGeneral1 = alloc(N);
+    let output2: *AgxGeneral2 = alloc(N);
+    for q in 0..1024 {
+        var acc: AgxGeneral0 = 0 as AgxGeneral0;
+        for k in 0..8 {
+            acc = acc + x0[(q / 1024) * 8 + k]
+                * w0[k * 1024 + (q % 1024)];
+        }
+        output0[q] = acc;
+    }
+    for q in 0..1024 {
+        var acc: AgxGeneral1 = 0 as AgxGeneral1;
+        for k in 0..8 {
+            acc = acc + x1[(q / 1024) * 8 + k]
+                * w1[k * 1024 + (q % 1024)];
+        }
+        output1[q] = acc;
+    }
+    for q in 0..1024 {
+        var acc: AgxGeneral2 = 0 as AgxGeneral2;
+        for k in 0..8 {
+            acc = acc + x2[(q / 1024) * 8 + k]
+                * w2[k * 1024 + (q % 1024)];
+        }
+        output2[q] = acc;
+    }
+
+    let before: i32 = agx_dispatches();
+    let requested: i32 = (getenv("TRAVELER_AGX_PROFILE") != null) as i32;
+    if requested != 0 && before != 3 { return 3; }
+    if requested == 0 && before != 0 { return 4; }
+    let residue0: *i64 = alloc(N);
+    let residue1: *i64 = alloc(N);
+    let residue2: *i64 = alloc(N);
+    i = 0;
+    while i < N {
+        residue0[i] = output0[i] as i64;
+        residue1[i] = output1[i] as i64;
+        residue2[i] = output2[i] as i64;
+        i = i + 1;
+    }
+    let primes: *i64 = alloc(3);
+    primes[0] = 2013265921;
+    primes[1] = 1811939329;
+    primes[2] = 2130706433;
+    let residues: **i64 = alloc(3);
+    residues[0] = residue0;
+    residues[1] = residue1;
+    residues[2] = residue2;
+    let exact: *i64 = alloc(N);
+    rns_crt_pass(primes, 3, residues, exact, 1, N, 0);
+    i = 0;
+    while i < N {
+        var want: i64 = 0;
+        var k: i32 = 0;
+        while k < K {
+            want = want + x[k] * w[k * N + i];
+            k = k + 1;
+        }
+        if exact[i] != want { return 5; }
+        i = i + 1;
+    }
+    let put: i64 = write(1, exact as *u8, 8192);
+    if put != 8192 { return 6; }
+    return 0;
+}

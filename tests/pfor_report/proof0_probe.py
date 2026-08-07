@@ -225,7 +225,7 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "1d30ba41227448537edcb740b47b201e6075d0b39a4961e32b85d7e9759e6fed"
+        "1ec06ac13ee50fd5b1cb9d4a25e0b9c2bcea34b2832ff5e5e1127b1ef9c44b89"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")
@@ -400,7 +400,7 @@ def check_adversarial(rows: list[dict]) -> None:
     require(rows[3], short_circuits=4, max_control_depth=5,
             cpu_effects=1, agx_effects=0)
     require(rows[4], fors=1, continues=1, max_private_depth=1,
-            max_control_depth=5, cpu_effects=1, agx_effects=0)
+            max_control_depth=4, cpu_effects=1, agx_effects=1)
     require(rows[5], continues=1, outer_exits=1,
             cpu_effects=0, agx_effects=0)
     require(rows[6], legacy_reason="call-read", calls=1, read_calls=1,

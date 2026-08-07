@@ -9,18 +9,10 @@
 // chunk leaders read cells the previous chunk just wrote.
 // Demonstrated: serial 1250075000, parallel 1250075062 @ 32 threads.
 //
-// Fix: runtime aliasing guard at the dispatch site.  The compiler knows
-// which captures are written arrays; it emits base-pointer equality
-// checks (icmp eq ptr) between every written array and every other
-// captured pointer.  Any hit branches to a direct serial worker call
-// instead of __parallel_for.  Zero cost when no aliases (a handful of
-// compares), zero new syntax.
-//
-// RESIDUAL (documented, not covered): PARTIAL overlap via offset
-// aliasing — shift_sum(buf, &buf[100], n) — passes the base-equality
-// check and still races.  Catching it needs allocation extents at
-// runtime, out of scope.  The model assumption narrows from "captured
-// pointers don't alias" to "captured pointers don't PARTIALLY overlap".
+// Fix: the runtime guard constructs checked half-open byte footprints from
+// each affine access and the actual loop bounds. Any overlap or unknown range
+// branches to the direct serial worker instead of __parallel_for. ALIAS0 adds
+// the shifted-overlap regression in pfor_alias_interval.tv.
 //
 // Expected workers: 1 (the worker is still emitted — the guard is a
 // runtime branch, not an eligibility rejection).  Output must equal

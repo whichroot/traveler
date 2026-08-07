@@ -1,0 +1,76 @@
+// ALIAS0: integer erasure and control-flow joins lose range provenance.
+
+field F = Field<2013265921>;
+
+fn local_erased_copy(src: *F, dst: *F, n: i32) {
+    let address: u64 = src as u64;
+    let erased: *F = address as *F;
+    for i in 0..n {
+        dst[i] = erased[i] + 1;
+    }
+}
+
+fn nested_erased_copy(src: *F, dst: *F, n: i32) {
+    let erased: *F = (src as u64) as *F;
+    for i in 0..n {
+        dst[i] = erased[i] + 1;
+    }
+}
+
+fn joined_erased_copy(src: *F, dst: *F, n: i32, erase: bool) {
+    let address: u64 = src as u64;
+    var selected: *F = src;
+    if erase {
+        selected = address as *F;
+    } else {
+        selected = src;
+    }
+    for i in 0..n {
+        dst[i] = selected[i] + 1;
+    }
+}
+
+fn indirect_erased_copy(src: *F, dst: *F, n: i32) {
+    let address: u64 = src as u64;
+    let erased: *F = address as *F;
+    var selected: *F = src;
+    let slot: **F = &selected;
+    slot[0] = erased;
+    for i in 0..n {
+        dst[i] = selected[i] + 1;
+    }
+}
+
+fn checksum(buf: *F, n: i32) -> F {
+    var total: F = 0;
+    var i: i32 = 0;
+    while i < n {
+        total = total + buf[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let src: *F = alloc(n);
+    let dst0: *F = alloc(n);
+    let dst1: *F = alloc(n);
+    let dst2: *F = alloc(n);
+    let dst3: *F = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        src[i] = i as F;
+        i = i + 1;
+    }
+    local_erased_copy(src, dst0, n);
+    nested_erased_copy(src, dst1, n);
+    joined_erased_copy(src, dst2, n, true);
+    indirect_erased_copy(src, dst3, n);
+    print(checksum(dst0, n));
+    print(checksum(dst1, n));
+    print(checksum(dst2, n));
+    print(checksum(dst3, n));
+    free(dst3); free(dst2); free(dst1); free(dst0); free(src);
+    return 0;
+}

@@ -319,16 +319,24 @@ fn agx_prepare_dispatch(runtime: *AgxRuntime, code: *u8, code_size: i32,
         || (input1_words > 0 && input2 == null) {
         return 0;
     }
-    if input_layout == 1
-        && (output_words != 128 || input0_words != 32
-            || input1_words != 256 || grid != 128
-            || prime > (0xffffffff as u64)) { return 0; }
+    var counted_rows: i32 = 0;
+    var counted_cols: i32 = 0;
+    if input_layout == 1 {
+        if output_words != grid || input0_words < 8 || input1_words < 8
+            || (input0_words % 8) != 0 || (input1_words % 8) != 0
+            || grid > 134217727 || prime > (0xffffffff as u64) { return 0; }
+        counted_rows = input0_words / 8;
+        counted_cols = input1_words / 8;
+        if counted_rows < 1 || counted_cols < 1
+            || counted_rows > 2147483647 / counted_cols
+            || counted_rows * counted_cols != grid { return 0; }
+    }
     let code_map: *AgxResourceMap = agx_resource(runtime, 0);
     let heap: *AgxResourceMap = agx_resource(runtime, 3);
     let metadata: *AgxResourceMap = agx_resource(runtime, 22);
     let output_bytes: u64 = (output_words as u64) * 4;
     var packed_words: i32 = input0_words + input1_words;
-    if input_layout == 1 { packed_words = 2048; }
+    if input_layout == 1 { packed_words = grid * 16; }
     let input_bytes: u64 = (packed_words as u64) * 4;
     var input_offset: u64 = (output_bytes + 255) & (0 - (256 as u64));
     if input_offset < 0x100 { input_offset = 0x100; }
@@ -368,18 +376,19 @@ fn agx_prepare_dispatch(runtime: *AgxRuntime, code: *u8, code_size: i32,
             i = i + 1;
         }
     } else {
-        // Fixed K=8 counted-dot ABI: one adjacent (x,w) pair per term.
+        // K=8 counted-dot ABI: one adjacent (x,w) pair per term. Matrix
+        // geometry is derived from validated capture extents, never baked.
         var q: i32 = 0;
-        while q < 128 {
+        while q < grid {
             var k: i32 = 0;
             while k < 8 {
                 let at: i32 = (q * 8 + k) * 2;
                 agx_put_u32(heap_bytes,
                             (input_offset + ((at as u64) * 4)) as i64,
-                            input[(q / 32) * 8 + k]);
+                            input[(q / counted_cols) * 8 + k]);
                 agx_put_u32(heap_bytes,
                             (input_offset + (((at + 1) as u64) * 4)) as i64,
-                            input2[k * 32 + (q % 32)]);
+                            input2[k * counted_cols + (q % counted_cols)]);
                 k = k + 1;
             }
             q = q + 1;
@@ -784,9 +793,14 @@ fn agx_run_code_mode(image_path: *u8, code: *u8, code_size: i32, prime: u64,
         layout_ok = 1;
     }
     if input_layout == 1 && prime <= (0xffffffff as u64)
-        && output_words == 128 && input0_words == 32 && input1_words == 256
-        && element_count == 128 && input2 != null {
-        layout_ok = 1;
+        && output_words == element_count && input0_words >= 8
+        && input1_words >= 8 && (input0_words % 8) == 0
+        && (input1_words % 8) == 0 && input2 != null {
+        let rows: i32 = input0_words / 8;
+        let cols: i32 = input1_words / 8;
+        if rows <= 2147483647 / cols && rows * cols == element_count {
+            layout_ok = 1;
+        }
     }
     if input1_words > 0 && (input2 == null || prime > (0xffffffff as u64)) {
         layout_ok = 0;

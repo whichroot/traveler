@@ -254,8 +254,8 @@ worker ID, field, grid, and code digest before submission. This is a determinist
 wrong-build guard, not cryptographic artifact authentication:
 
 ```sh
-$TVC --emit-gpu-agx tests/gpu/agx_rns_matmul.tv -o /tmp/rns-agx.hex
-$TVC --agx-dispatch tests/gpu/agx_rns_matmul.tv -o /tmp/rns-host.ll
+$TVC --emit-gpu-agx tests/gpu/agx_rns_dot_general.tv -o /tmp/rns-agx.hex
+$TVC --agx-dispatch tests/gpu/agx_rns_dot_general.tv -o /tmp/rns-host.ll
 $LLC -filetype=obj /tmp/rns-host.ll -o /tmp/rns-host.o
 cc /tmp/rns-host.o -framework IOKit -o /tmp/rns-host
 TRAVELER_AGX_PROFILE="$AGX_PROFILE" \
@@ -264,11 +264,16 @@ TRAVELER_AGX_ARTIFACT=/tmp/rns-agx.hex /tmp/rns-host
 
 With either variable absent, an unsupported worker, alias uncertainty, an
 artifact mismatch, or a launch refusal, execution falls back to the CPU worker.
+The compiler and runtime share a 65,535-element maximum AGX grid. Checked alias
+intervals reject i32 index wrap and any pointer provenance erased through an
+integer, an uncertain control-flow assignment, or an exposed pointer-binding
+address.
 The gate supplies a different valid kernel with the same worker ID, field, and
-grid and requires hash-mismatch fallback. The current RNS gate forms all
-per-prime products on AGX, reduces each channel on CPU, and uses the shipped
-Garner CRT; it makes no performance claim and does not claim device-side
-reduction support.
+grid and requires hash-mismatch fallback. The counted-dot gate derives rows and
+columns from canonical source index equations, executes a `1x8 * 8x1024`
+reduction for each of three primes on AGX, and uses the shipped Garner CRT on
+CPU. `K=8` remains the measured device-loop contract. No performance claim is
+made.
 
 ## 5. Verify self-hosting (Stage 2 / Stage 3)
 

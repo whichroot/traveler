@@ -1193,6 +1193,8 @@ struct SymEntry {
     // Binding immutability (spec §4.4): 0=immutable `let`, 1=mutable (`var`).
     // Default 1; only scalar-let/global-let derive it from source (seed parity, #30).
     is_mut: i32,
+    // ALIAS0 pointer origin: typed parameter/allocation/address lineage only.
+    ptr_provenance: i32,
 }
 
 // Function registry entry: populated during codegen first pass.
@@ -1604,6 +1606,17 @@ struct PForState {
     dlt_n: i32,
     dlt_terms: *i64,     // 4
     dlt_signs: *i64,     // 4
+}
+
+struct PForAliasChecked {
+    value: i32,
+    bad: i32,            // SSA i1 register, -1 when statically false
+}
+
+struct PForAliasRange {
+    lo: i32,
+    hi: i32,
+    bad: i32,            // arithmetic/provenance failure -> serial fallback
 }
 
 // The single live analysis instance (arenas attached in main())
@@ -8292,6 +8305,7 @@ fn sym_add(name: i32, type_off: i32, reg: i32, is_alloca: i32) {
     // Default mutable/permissive; only the immutable scalar/global-let codegen
     // paths override from the AST_LET `mut` flag right after this call.
     g_syms[g_sym_count].is_mut = 1;
+    g_syms[g_sym_count].ptr_provenance = 0;
     g_sym_count = g_sym_count + 1;
 }
 
@@ -8745,6 +8759,41 @@ fn node_is_sizing_call(nd: i32) -> i32 {
     if nm == NULL_STR { return 0; }
     if str_eq(&g_strings[nm], "alloc") == 1 { return 1; }
     if str_eq(&g_strings[nm], "realloc") == 1 { return 1; }
+    return 0;
+}
+
+fn node_ptr_provenance(node: i32, depth: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || depth > 32 { return 0; }
+    if node_is_sizing_call(node) == 1 { return 1; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_IDENT {
+        let si: i32 = sym_find(g_nodes[node].name0);
+        if si >= 0 { return g_syms[si].ptr_provenance; }
+        return 0;
+    }
+    if kind == AST_CAST {
+        let target_type: i32 = resolve_type_sub(g_nodes[node].name0);
+        if type_is_ptr(target_type) == 0 { return 0; }
+        return node_ptr_provenance(g_nodes[node].child0, depth + 1);
+    }
+    if kind == AST_UNARY && g_nodes[node].op == OP_ADDR {
+        let target: i32 = g_nodes[node].child0;
+        if target <= 0 || target >= g_nnodes { return 0; }
+        if g_nodes[target].kind == AST_IDENT { return 1; }
+        if g_nodes[target].kind == AST_INDEX {
+            let base: i32 = g_nodes[target].child0;
+            if base > 0 && base < g_nnodes
+                && g_nodes[base].kind == AST_IDENT {
+                let bsi: i32 = sym_find(g_nodes[base].name0);
+                if bsi >= 0 {
+                    if type_is_array(resolve_type_sub(g_syms[bsi].type_off)) == 1 {
+                        return 1;
+                    }
+                    return g_syms[bsi].ptr_provenance;
+                }
+            }
+        }
+    }
     return 0;
 }
 
@@ -12990,6 +13039,11 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                         diag_end();
                         exit(1);
                     }
+                    // The address may escape through a **T alias and replace a
+                    // pointer binding without an AST_ASSIGN to that binding.
+                    if type_is_ptr(resolve_type_sub(g_syms[asi].type_off)) == 1 {
+                        g_syms[asi].ptr_provenance = 0;
+                    }
                     // Local: alloca register IS the address
                     return IRValue { reg: g_syms[asi].reg, type_off: str_intern("ptr") };
                 }
@@ -14454,9 +14508,8 @@ fn pfor_check_hazards(pf: *PForState, start_node: i32, end_node: i32) -> i32 {
     let writes: *i64 = pf.writes;
     let reads: *i64 = pf.reads;
 
-    // A callee's internal index map is opaque, but a read through a pointer
-    // actual is harmless when its base differs from every written capture.
-    // Runtime pointer-equality guards preserve that fact under caller aliasing.
+    // A callee's internal index map is opaque. A same-base write refuses here;
+    // ALIAS0 treats a distinct capture's runtime extent as unknown and falls back.
     var cri: i32 = 0;
     while cri < pf.ncall_reads {
         var cwi: i32 = 0;
@@ -14835,8 +14888,11 @@ fn pfor_admit_inner_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
     if g_nodes[xo].kind != AST_IDENT || g_nodes[wo].kind != AST_IDENT {
         return 0;
     }
-    if agx_counted_x_index_ok(g_nodes[x].child1, outer_var, inner_var) == 0
-        || agx_counted_w_index_ok(g_nodes[w].child1, outer_var, inner_var) == 0 {
+    let x_cols: i32 = agx_counted_x_cols(
+        g_nodes[x].child1, outer_var, inner_var);
+    let w_cols: i32 = agx_counted_w_cols(
+        g_nodes[w].child1, outer_var, inner_var);
+    if x_cols <= 0 || x_cols != w_cols {
         return 0;
     }
     pfor_record_read(pf, g_nodes[xo].name0, g_nodes[x].child1, outer_var);
@@ -15419,8 +15475,8 @@ fn proof0_affine_record_call_read(P: *PForProof0, A: *PForState,
 }
 
 // Map a direct callee's read-only pointer parameters into caller base
-// identities. Their internal indices stay opaque; distinct bases rely on the
-// existing runtime alias fallback, while a same-base write refuses.
+// identities. Their internal indices stay opaque; ALIAS0 falls back at runtime
+// for a distinct written capture, while a same-base write refuses here.
 fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
                                  call: i32, fi: i32) {
     if g_funcs[fi].reads_nonparam == 1 {
@@ -16768,8 +16824,10 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         let saved_env2: i32 = P.nenv;
         if proof0_bind(P, g_nodes[stmt].name0, stmt, P0_BIND_ITER,
                        proof0_loop_iter_type(stmt)) == 1 {
+            // Counted-loop selectors are bounded by max_private_depth. They do
+            // not consume a structured mask frame.
             proof0_stmt(P, g_nodes[stmt].child2, private_depth + 1,
-                        conditional_depth, control_depth + 1, depth + 1);
+                        conditional_depth, control_depth, depth + 1);
         }
         P.nenv = saved_env2;
         return;
@@ -17041,7 +17099,7 @@ fn proof0_caps_set_equal(A: *PForState, B: *PForState) -> i32 {
     return 1;
 }
 
-// The runtime alias fallback consumes only each affine write's base identity.
+// The runtime alias fallback consumes the complete affine read/write records.
 fn proof0_write_order_equal(A: *PForState, B: *PForState) -> i32 {
     if A.nwrites != B.nwrites { return 0; }
     var i: i32 = 0;
@@ -17065,6 +17123,220 @@ fn proof0_write_set_equal(A: *PForState, B: *PForState) -> i32 {
         if found == 0 { return 0; }
         ai = ai + 1;
     }
+    return 1;
+}
+
+// PROOF2 admission prerequisites. The existing AGX shape classifier remains
+// the compatibility oracle; recursive effects and the complete dispatch
+// artifact must agree before that shape may be emitted.
+fn proof2_legacy_agx_ready(P: *PForProof0, A: *PForState,
+                           legacy: *PForState) -> i32 {
+    if P.cpu_ready == 0
+        || (proof0_agx_candidate(P) == 0 && proof0_lang1_candidate(P) == 0)
+        || proof0_caps_elem_ok(A) == 0 || pfor_device_caps_ok(A) == 0
+        || proof0_caps_set_equal(A, legacy) == 0
+        || proof0_caps_order_equal(A, legacy) == 0
+        || proof0_write_set_equal(A, legacy) == 0
+        || proof0_write_order_equal(A, legacy) == 0 { return 0; }
+    return 1;
+}
+
+fn pfor_alias_or(a: i32, b: i32) -> i32 {
+    if a < 0 { return b; }
+    if b < 0 { return a; }
+    let r: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(r); ir_wr(" = or i1 ");
+    ir_wr_reg(a); ir_wr(", "); ir_wr_reg(b); ir_wr("\n");
+    return r;
+}
+
+fn pfor_alias_checked_add(base: i32, delta: i64) -> PForAliasChecked {
+    var bad: i32 = 0 - 1;
+    if delta > 0 {
+        bad = ir_tmp();
+        ir_wr("  "); ir_wr_reg(bad); ir_wr(" = icmp sgt i64 ");
+        ir_wr_reg(base); ir_wr(", ");
+        ir_wr_int(9223372036854775807 - delta); ir_wr("\n");
+    } else if delta < 0 {
+        bad = ir_tmp();
+        ir_wr("  "); ir_wr_reg(bad); ir_wr(" = icmp slt i64 ");
+        ir_wr_reg(base); ir_wr(", ");
+        ir_wr_int((0 - 9223372036854775807 - 1) - delta); ir_wr("\n");
+    }
+    if delta == 0 {
+        return PForAliasChecked { value: base, bad: bad };
+    }
+    let value: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(value); ir_wr(" = add i64 ");
+    ir_wr_reg(base); ir_wr(", "); ir_wr_int(delta); ir_wr("\n");
+    return PForAliasChecked { value: value, bad: bad };
+}
+
+fn pfor_alias_checked_mul(index: i32, elem_bytes: i32) -> PForAliasChecked {
+    if elem_bytes == 1 {
+        return PForAliasChecked { value: index, bad: 0 - 1 };
+    }
+    let eb: i64 = elem_bytes as i64;
+    let upper: i64 = 9223372036854775807 / eb;
+    let lower: i64 = (0 - 9223372036854775807 - 1) / eb;
+    let too_hi: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(too_hi); ir_wr(" = icmp sgt i64 ");
+    ir_wr_reg(index); ir_wr(", "); ir_wr_int(upper); ir_wr("\n");
+    let too_lo: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(too_lo); ir_wr(" = icmp slt i64 ");
+    ir_wr_reg(index); ir_wr(", "); ir_wr_int(lower); ir_wr("\n");
+    let bad: i32 = pfor_alias_or(too_hi, too_lo);
+    let value: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(value); ir_wr(" = mul i64 ");
+    ir_wr_reg(index); ir_wr(", "); ir_wr_int(eb); ir_wr("\n");
+    return PForAliasChecked { value: value, bad: bad };
+}
+
+fn pfor_alias_checked_address(base: i32, offset: i32) -> PForAliasChecked {
+    let value: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(value); ir_wr(" = add i64 ");
+    ir_wr_reg(base); ir_wr(", "); ir_wr_reg(offset); ir_wr("\n");
+    let nonnegative: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(nonnegative); ir_wr(" = icmp sge i64 ");
+    ir_wr_reg(offset); ir_wr(", 0\n");
+    let wrapped_hi: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(wrapped_hi); ir_wr(" = icmp ult i64 ");
+    ir_wr_reg(value); ir_wr(", "); ir_wr_reg(base); ir_wr("\n");
+    let wrapped_lo: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(wrapped_lo); ir_wr(" = icmp ugt i64 ");
+    ir_wr_reg(value); ir_wr(", "); ir_wr_reg(base); ir_wr("\n");
+    let bad: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(bad); ir_wr(" = select i1 ");
+    ir_wr_reg(nonnegative); ir_wr(", i1 "); ir_wr_reg(wrapped_hi);
+    ir_wr(", i1 "); ir_wr_reg(wrapped_lo); ir_wr("\n");
+    return PForAliasChecked { value: value, bad: bad };
+}
+
+fn pfor_alias_const_i64(value: i64) -> i32 {
+    let r: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(r); ir_wr(" = add i64 0, ");
+    ir_wr_int(value); ir_wr("\n");
+    return r;
+}
+
+fn pfor_alias_i32_range_bad(lo: i32, hi: i32) -> i32 {
+    // The generated index expression executes in i32 before GEP sign-extension.
+    // A wrapped affine span is not one contiguous byte interval.
+    let lo_under: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(lo_under); ir_wr(" = icmp slt i64 ");
+    ir_wr_reg(lo); ir_wr(", -2147483648\n");
+    let lo_over: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(lo_over); ir_wr(" = icmp sgt i64 ");
+    ir_wr_reg(lo); ir_wr(", 2147483647\n");
+    let hi_under: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(hi_under); ir_wr(" = icmp slt i64 ");
+    ir_wr_reg(hi); ir_wr(", -2147483647\n");
+    let hi_over: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(hi_over); ir_wr(" = icmp sgt i64 ");
+    ir_wr_reg(hi); ir_wr(", 2147483648\n");
+    return pfor_alias_or(pfor_alias_or(lo_under, lo_over),
+                         pfor_alias_or(hi_under, hi_over));
+}
+
+fn pfor_alias_emit_range(ptr_reg: i32, rec: *i64,
+                          start64: i32, end64: i32,
+                          elem_bytes: i32, iter_bits: i32) -> PForAliasRange {
+    let lit: i64 = rec[4];
+    var lo_idx: PForAliasChecked = PForAliasChecked {
+        value: 0, bad: 0 - 1
+    };
+    var hi_idx: PForAliasChecked = PForAliasChecked {
+        value: 0, bad: 0 - 1
+    };
+    if rec[2] == 1 {
+        lo_idx = pfor_alias_checked_add(start64, lit);
+        hi_idx = pfor_alias_checked_add(end64, lit);
+    } else {
+        lo_idx.value = pfor_alias_const_i64(lit);
+        hi_idx.value = pfor_alias_const_i64(lit + 1);
+    }
+    var bad: i32 = pfor_alias_or(lo_idx.bad, hi_idx.bad);
+    if rec[2] == 1 && iter_bits == 32 {
+        bad = pfor_alias_or(
+            bad, pfor_alias_i32_range_bad(lo_idx.value, hi_idx.value));
+    }
+    let reversed: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(reversed); ir_wr(" = icmp sgt i64 ");
+    ir_wr_reg(lo_idx.value); ir_wr(", "); ir_wr_reg(hi_idx.value); ir_wr("\n");
+    bad = pfor_alias_or(bad, reversed);
+    let lo_off: PForAliasChecked = pfor_alias_checked_mul(
+        lo_idx.value, elem_bytes);
+    let hi_off: PForAliasChecked = pfor_alias_checked_mul(
+        hi_idx.value, elem_bytes);
+    bad = pfor_alias_or(bad, lo_off.bad);
+    bad = pfor_alias_or(bad, hi_off.bad);
+    let base: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(base); ir_wr(" = ptrtoint ptr ");
+    ir_wr_reg(ptr_reg); ir_wr(" to i64\n");
+    let lo_addr: PForAliasChecked = pfor_alias_checked_address(base, lo_off.value);
+    let hi_addr: PForAliasChecked = pfor_alias_checked_address(base, hi_off.value);
+    bad = pfor_alias_or(bad, lo_addr.bad);
+    bad = pfor_alias_or(bad, hi_addr.bad);
+    let addr_reversed: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(addr_reversed); ir_wr(" = icmp ugt i64 ");
+    ir_wr_reg(lo_addr.value); ir_wr(", "); ir_wr_reg(hi_addr.value); ir_wr("\n");
+    bad = pfor_alias_or(bad, addr_reversed);
+    return PForAliasRange { lo: lo_addr.value, hi: hi_addr.value, bad: bad };
+}
+
+fn pfor_alias_emit_overlap(a: PForAliasRange, b: PForAliasRange) -> i32 {
+    let a_nonempty: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(a_nonempty); ir_wr(" = icmp ult i64 ");
+    ir_wr_reg(a.lo); ir_wr(", "); ir_wr_reg(a.hi); ir_wr("\n");
+    let b_nonempty: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(b_nonempty); ir_wr(" = icmp ult i64 ");
+    ir_wr_reg(b.lo); ir_wr(", "); ir_wr_reg(b.hi); ir_wr("\n");
+    let left: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(left); ir_wr(" = icmp ult i64 ");
+    ir_wr_reg(a.lo); ir_wr(", "); ir_wr_reg(b.hi); ir_wr("\n");
+    let right: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(right); ir_wr(" = icmp ult i64 ");
+    ir_wr_reg(b.lo); ir_wr(", "); ir_wr_reg(a.hi); ir_wr("\n");
+    let nonempty: i32 = pfor_alias_or(0 - 1, a_nonempty);
+    let both_nonempty: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(both_nonempty); ir_wr(" = and i1 ");
+    ir_wr_reg(nonempty); ir_wr(", "); ir_wr_reg(b_nonempty); ir_wr("\n");
+    let crosses: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(crosses); ir_wr(" = and i1 ");
+    ir_wr_reg(left); ir_wr(", "); ir_wr_reg(right); ir_wr("\n");
+    let overlap: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(overlap); ir_wr(" = and i1 ");
+    ir_wr_reg(both_nonempty); ir_wr(", "); ir_wr_reg(crosses); ir_wr("\n");
+    return pfor_alias_or(pfor_alias_or(a.bad, b.bad), overlap);
+}
+
+fn pfor_alias_emit_words(ptr_reg: i32, words: i32) -> PForAliasRange {
+    let lo: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(lo); ir_wr(" = ptrtoint ptr ");
+    ir_wr_reg(ptr_reg); ir_wr(" to i64\n");
+    let hi: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(hi); ir_wr(" = add i64 ");
+    ir_wr_reg(lo); ir_wr(", "); ir_wr_int((words as i64) * 4); ir_wr("\n");
+    let bad: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(bad); ir_wr(" = icmp ult i64 ");
+    ir_wr_reg(hi); ir_wr(", "); ir_wr_reg(lo); ir_wr("\n");
+    return PForAliasRange { lo: lo, hi: hi, bad: bad };
+}
+
+fn pfor_alias_has_call_read(pf: *PForState, name: i32) -> i32 {
+    var i: i32 = 0;
+    while i < pf.ncall_reads {
+        if pf.call_reads[i] == name { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn pfor_alias_capture_trusted(caps: *i32, cap: i32) -> i32 {
+    let si: i32 = sym_find(caps[cap * 4]);
+    if si < 0 || g_syms[si].reg != caps[cap * 4 + 2]
+        || g_syms[si].is_alloca != caps[cap * 4 + 3]
+        || g_syms[si].ptr_provenance == 0 { return 0; }
     return 1;
 }
 
@@ -17577,6 +17849,10 @@ fn codegen_stmt(stmt: i32) {
         ir_wr("  store "); ir_wr_type(actual_type); ir_wr(" ");
         ir_wr_reg(store_reg); ir_wr(", ptr "); ir_wr_reg(alloca_r); ir_wr("\n");
         sym_add(var_name, actual_type, alloca_r, 1);
+        if type_is_ptr(actual_type) == 1 {
+            g_syms[g_sym_count - 1].ptr_provenance =
+                node_ptr_provenance(init_node, 0);
+        }
         // Scalar let: immutable unless `let mut`/`var` (flags bit0); aggregates
         // returned earlier keep the permissive default (seed parity).
         g_syms[g_sym_count - 1].is_mut = g_nodes[stmt].flags & 1;
@@ -17751,6 +18027,13 @@ fn codegen_stmt(stmt: i32) {
             ir_wr_reg(asgn_store); ir_wr(", ptr ");
             ir_wr_reg(g_syms[si].reg); ir_wr("\n");
         }
+        if type_is_ptr(s_type) == 1 {
+            // Provenance is a must-fact across control-flow paths. Once any
+            // assignment can erase it, a later sibling cannot restore it.
+            if node_ptr_provenance(g_nodes[stmt].child0, 0) == 0 {
+                g_syms[si].ptr_provenance = 0;
+            }
+        }
         return;
     }
 
@@ -17903,14 +18186,23 @@ fn codegen_stmt(stmt: i32) {
             && pfor_worker_space(g_pf0_affine.ncaps) == 1 {
             lang1_device_ready = 1;
         }
-        // Device admission remains a separate closed proof with unchanged
-        // AMD/NV authority. AGX may add a LANG1-only recursive candidate, while
-        // every legacy worker retains its prior capture artifact and bytes.
+        // AMD/NV retain legacy authority. PROOF2 authorizes an existing AGX
+        // shape only when legacy and recursive classification metadata agree;
+        // legacy non-AGX workers remain ordinal/CPU scaffolding.
         if g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1
             || g_agx_ir0_shadow == 1 || g_agx_ra0_shadow == 1 {
             worker_pf = pf;
             dispatch_ready = legacy_disp;
             if pfor_device_caps_ok(pf) == 0 { dispatch_ready = 0; }
+            if pfor_lang0_mode() == 1 && legacy_disp == 1 {
+                let proof2_status: i32 = proof2_agx_shape_parity(
+                    body_node, iter_name, pf, g_pf0, g_pf0_affine);
+                if proof2_status == 1 {
+                    worker_pf = g_pf0_affine;
+                } else if proof2_status == 2 {
+                    dispatch_ready = 0;
+                }
+            }
             if lang1_device_ready == 1 {
                 worker_pf = g_pf0_affine;
                 dispatch_ready = 1;
@@ -18083,11 +18375,14 @@ fn codegen_stmt(stmt: i32) {
                 ci = ci + 1;
             }
 
-            // Runtime aliasing guard: base-pointer equality between every WRITTEN
-            // array and every other captured ptr -> serial fallback on hit.
-            // Base equality only — partial overlap stays a documented assumption.
+            // ALIAS0: checked half-open byte footprints for every written-array
+            // pair. Opaque affine terms/callee footprints fail closed to serial.
             let pwrites: *i64 = worker_pf.writes;
+            let preads: *i64 = worker_pf.reads;
             var alias_acc: i32 = 0 - 1;
+            var alias_forced: i32 = 0;
+            var alias_start64: i32 = 0 - 1;
+            var alias_end64: i32 = 0 - 1;
             var wi: i32 = 0;
             while wi < worker_pf.nwrites {
                 let warr: i64 = pwrites[wi * 16];
@@ -18103,47 +18398,127 @@ fn codegen_stmt(stmt: i32) {
                     }
                     c2 = c2 + 1;
                 }
-                // Skip if an earlier write already covered this array
-                var dup: i32 = 0;
-                var wj: i32 = 0;
-                while wj < wi {
-                    if pwrites[wj * 16] == warr { dup = 1; }
-                    wj = wj + 1;
-                }
-                if wcap >= 0 && dup == 0 {
+                if wcap >= 0 {
                     c2 = 0;
                     while c2 < worker_pf.ncaps {
                         var check: i32 = 1;
                         if c2 == wcap { check = 0; }
                         if check == 1 && type_is_ptr(caps[c2 * 4 + 1]) == 0 { check = 0; }
-                        // If both are written arrays, check the pair once
                         if check == 1 {
-                            var c_written: i32 = 0;
-                            wj = 0;
+                            let cname: i32 = caps[c2 * 4];
+                            var c_accesses: i32 = 0;
+                            if pfor_alias_capture_trusted(caps, wcap) == 0
+                                || pfor_alias_capture_trusted(caps, c2) == 0 {
+                                alias_forced = 1;
+                                check = 0;
+                            }
+                            let agx_w_words: i32 = pfor_alias_agx_words(
+                                agx_shape, wcap);
+                            let agx_c_words: i32 = pfor_alias_agx_words(
+                                agx_shape, c2);
+                            if check == 1 && agx_dispatch == 1 && agx_w_words > 0
+                                && agx_c_words > 0 {
+                                c_accesses = 1;
+                                let wrange0: PForAliasRange = pfor_alias_emit_words(
+                                    cap_loaded[wcap], agx_w_words);
+                                let crange0: PForAliasRange = pfor_alias_emit_words(
+                                    cap_loaded[c2], agx_c_words);
+                                alias_acc = pfor_alias_or(alias_acc,
+                                    pfor_alias_emit_overlap(wrange0, crange0));
+                            } else if check == 1 {
+                            if pfor_alias_has_call_read(worker_pf, cname) == 1 {
+                                alias_forced = 1;
+                            }
+                            if pwrites[wi * 16 + 1] != 1
+                                || pwrites[wi * 16 + 3] != 0 {
+                                alias_forced = 1;
+                            }
+                            var ri: i32 = 0;
+                            while ri < worker_pf.nreads {
+                                if preads[ri * 16] == cname as i64 {
+                                    c_accesses = c_accesses + 1;
+                                    if preads[ri * 16 + 1] != 1
+                                        || preads[ri * 16 + 3] != 0 {
+                                        alias_forced = 1;
+                                    } else if pwrites[wi * 16 + 1] == 1
+                                        && pwrites[wi * 16 + 3] == 0 {
+                                        if alias_start64 < 0 {
+                                            alias_start64 = start_reg;
+                                            alias_end64 = end_reg;
+                                            if bw != 64 {
+                                                alias_start64 = ir_tmp();
+                                                ir_wr("  "); ir_wr_reg(alias_start64);
+                                                ir_wr(" = sext i32 "); ir_wr_reg(start_reg);
+                                                ir_wr(" to i64\n");
+                                                alias_end64 = ir_tmp();
+                                                ir_wr("  "); ir_wr_reg(alias_end64);
+                                                ir_wr(" = sext i32 "); ir_wr_reg(end_reg);
+                                                ir_wr(" to i64\n");
+                                            }
+                                        }
+                                         let wrange: PForAliasRange = pfor_alias_emit_range(
+                                             cap_loaded[wcap], &pwrites[wi * 16],
+                                             alias_start64, alias_end64,
+                                             ctx_elem_size(caps[wcap * 4 + 1]), bw);
+                                         let crange: PForAliasRange = pfor_alias_emit_range(
+                                             cap_loaded[c2], &preads[ri * 16],
+                                             alias_start64, alias_end64,
+                                             ctx_elem_size(caps[c2 * 4 + 1]), bw);
+                                        alias_acc = pfor_alias_or(alias_acc,
+                                            pfor_alias_emit_overlap(wrange, crange));
+                                    }
+                                }
+                                ri = ri + 1;
+                            }
+                            var wj: i32 = 0;
                             while wj < worker_pf.nwrites {
-                                if pwrites[wj * 16] == caps[c2 * 4] as i64 { c_written = 1; }
+                                if pwrites[wj * 16] == cname as i64 {
+                                    c_accesses = c_accesses + 1;
+                                    if pwrites[wj * 16 + 1] != 1
+                                        || pwrites[wj * 16 + 3] != 0 {
+                                        alias_forced = 1;
+                                    } else if pwrites[wi * 16 + 1] == 1
+                                        && pwrites[wi * 16 + 3] == 0 {
+                                        if alias_start64 < 0 {
+                                            alias_start64 = start_reg;
+                                            alias_end64 = end_reg;
+                                            if bw != 64 {
+                                                alias_start64 = ir_tmp();
+                                                ir_wr("  "); ir_wr_reg(alias_start64);
+                                                ir_wr(" = sext i32 "); ir_wr_reg(start_reg);
+                                                ir_wr(" to i64\n");
+                                                alias_end64 = ir_tmp();
+                                                ir_wr("  "); ir_wr_reg(alias_end64);
+                                                ir_wr(" = sext i32 "); ir_wr_reg(end_reg);
+                                                ir_wr(" to i64\n");
+                                            }
+                                        }
+                                         let wrange2: PForAliasRange = pfor_alias_emit_range(
+                                             cap_loaded[wcap], &pwrites[wi * 16],
+                                             alias_start64, alias_end64,
+                                             ctx_elem_size(caps[wcap * 4 + 1]), bw);
+                                         let crange2: PForAliasRange = pfor_alias_emit_range(
+                                             cap_loaded[c2], &pwrites[wj * 16],
+                                             alias_start64, alias_end64,
+                                             ctx_elem_size(caps[c2 * 4 + 1]), bw);
+                                        alias_acc = pfor_alias_or(alias_acc,
+                                            pfor_alias_emit_overlap(wrange2, crange2));
+                                    }
+                                }
                                 wj = wj + 1;
                             }
-                            if c_written == 1 && c2 < wcap { check = 0; }
-                        }
-                        if check == 1 {
-                            let eq: i32 = ir_tmp();
-                            ir_wr("  "); ir_wr_reg(eq); ir_wr(" = icmp eq ptr ");
-                            ir_wr_reg(cap_loaded[wcap]); ir_wr(", ");
-                            ir_wr_reg(cap_loaded[c2]); ir_wr("\n");
-                            if alias_acc < 0 {
-                                alias_acc = eq;
-                            } else {
-                                let acc2: i32 = ir_tmp();
-                                ir_wr("  "); ir_wr_reg(acc2); ir_wr(" = or i1 ");
-                                ir_wr_reg(alias_acc); ir_wr(", "); ir_wr_reg(eq); ir_wr("\n");
-                                alias_acc = acc2;
                             }
+                            if c_accesses == 0 { alias_forced = 1; }
                         }
                         c2 = c2 + 1;
                     }
                 }
                 wi = wi + 1;
+            }
+            if alias_forced == 1 {
+                let forced: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(forced); ir_wr(" = icmp eq i1 0, 0\n");
+                alias_acc = pfor_alias_or(alias_acc, forced);
             }
             free(cap_loaded);
 
@@ -18571,6 +18946,11 @@ fn codegen_fn(decl: i32) {
         ir_wr_int(pi as i64); ir_wr(", ptr ");
         ir_wr_reg(alloca_r); ir_wr("\n");
         sym_add(p_name, p_type, alloca_r, 1);
+        if type_is_ptr(p_type) == 1 {
+            // A typed pointer parameter is the function membrane's valid-range
+            // contract; local integer forges do not inherit this bit.
+            g_syms[g_sym_count - 1].ptr_provenance = 1;
+        }
         pi = pi + 1;
     }
 
@@ -19728,6 +20108,14 @@ struct AgxWorkerShape {
     caps_base: i32,
 }
 
+fn pfor_alias_agx_words(shape: *AgxWorkerShape, cap: i32) -> i32 {
+    if shape == null { return 0; }
+    if cap == shape.output_cap { return shape.output_words; }
+    if cap == shape.input0_cap { return shape.input0_words; }
+    if cap == shape.input1_cap { return shape.input1_words; }
+    return 0;
+}
+
 var g_agx_ops: *AgxOp = null;
 var g_agx_nops: i32 = 0;
 var g_agx_cap_ops: i32 = 0;
@@ -20771,7 +21159,7 @@ fn agx_dot_w_index_ok(node: i32, loop_name: i32, offset: i32) -> i32 {
     return 1;
 }
 
-fn agx_counted_x_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
+fn agx_counted_x_cols(node: i32, outer_var: i32, inner_var: i32) -> i32 {
     if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
         return 0;
     }
@@ -20793,11 +21181,12 @@ fn agx_counted_x_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
     let divisor: i32 = g_nodes[row].child1;
     if g_nodes[value].kind != AST_IDENT || g_nodes[value].name0 != outer_var
         || g_nodes[divisor].kind != AST_LIT_INT
-        || g_nodes[divisor].int_val != 32 { return 0; }
-    return 1;
+        || g_nodes[divisor].int_val == 0
+        || g_nodes[divisor].int_val > 2147483647 { return 0; }
+    return g_nodes[divisor].int_val as i32;
 }
 
-fn agx_counted_w_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
+fn agx_counted_w_cols(node: i32, outer_var: i32, inner_var: i32) -> i32 {
     if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
         return 0;
     }
@@ -20810,7 +21199,8 @@ fn agx_counted_w_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
     let scale: i32 = g_nodes[left].child1;
     if g_nodes[counter].kind != AST_IDENT || g_nodes[counter].name0 != inner_var
         || g_nodes[scale].kind != AST_LIT_INT
-        || g_nodes[scale].int_val != 32 { return 0; }
+        || g_nodes[scale].int_val == 0
+        || g_nodes[scale].int_val > 2147483647 { return 0; }
     if g_nodes[right].kind != AST_BINARY || g_nodes[right].op != OP_MOD {
         return 0;
     }
@@ -20818,8 +21208,8 @@ fn agx_counted_w_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
     let modulus: i32 = g_nodes[right].child1;
     if g_nodes[value].kind != AST_IDENT || g_nodes[value].name0 != outer_var
         || g_nodes[modulus].kind != AST_LIT_INT
-        || g_nodes[modulus].int_val != 32 { return 0; }
-    return 1;
+        || g_nodes[modulus].int_val != g_nodes[scale].int_val { return 0; }
+    return g_nodes[scale].int_val as i32;
 }
 
 fn agx_dot_term_ok(node: i32, loop_name: i32, x_name: i32,
@@ -21214,6 +21604,8 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     let inner_end: i32 = g_nodes[inner].child1;
     let inner_body: i32 = g_nodes[inner].child2;
     let inner_var: i32 = g_nodes[inner].name0;
+    if acc_name == loop_name || inner_var == loop_name
+        || inner_var == acc_name { return 0; }
     if g_nodes[inner_start].kind != AST_LIT_INT
         || g_nodes[inner_start].int_val != 0
         || g_nodes[inner_end].kind != AST_LIT_INT
@@ -21237,9 +21629,12 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     if g_nodes[x].kind != AST_INDEX || g_nodes[w].kind != AST_INDEX { return 0; }
     let xo: i32 = g_nodes[x].child0;
     let wo: i32 = g_nodes[w].child0;
+    let x_cols: i32 = agx_counted_x_cols(
+        g_nodes[x].child1, loop_name, inner_var);
+    let w_cols: i32 = agx_counted_w_cols(
+        g_nodes[w].child1, loop_name, inner_var);
     if g_nodes[xo].kind != AST_IDENT || g_nodes[wo].kind != AST_IDENT
-        || agx_counted_x_index_ok(g_nodes[x].child1, loop_name, inner_var) == 0
-        || agx_counted_w_index_ok(g_nodes[w].child1, loop_name, inner_var) == 0 {
+        || x_cols <= 0 || x_cols != w_cols {
         return 0;
     }
     let out_obj: i32 = g_nodes[store].child0;
@@ -21269,8 +21664,13 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     let loop_node: i32 = agx_find_for_body(body);
     if loop_node < 0 || g_nodes[g_nodes[loop_node].child0].kind != AST_LIT_INT
         || g_nodes[g_nodes[loop_node].child0].int_val != 0
-        || g_nodes[g_nodes[loop_node].child1].kind != AST_LIT_INT
-        || g_nodes[g_nodes[loop_node].child1].int_val != 128 { return 0; }
+        || g_nodes[g_nodes[loop_node].child1].kind != AST_LIT_INT { return 0; }
+    let grid64: u64 = g_nodes[g_nodes[loop_node].child1].int_val;
+    if grid64 == 0 || grid64 > 65535
+        || (grid64 % (x_cols as u64)) != 0 { return 0; }
+    let rows64: u64 = grid64 / (x_cols as u64);
+    if rows64 == 0 || rows64 > 268435455
+        || x_cols > 268435455 { return 0; }
     let p: u64 = g_fields[fi].prime;
     if p != 2147483647
         && (p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31)
@@ -21280,6 +21680,9 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     if p == 2013265921 || p == 1811939329 || p == 2130706433 {
         shape.kind = 4;
         shape.input_layout = 1;
+    } else if grid64 != 128 || rows64 != 4 || x_cols != 32 {
+        // The older unrolled dot emitter retains its one measured geometry.
+        return 0;
     }
     shape.output_name = output_name;
     shape.input0_name = x_name;
@@ -21287,13 +21690,13 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     shape.field_alias = field_alias;
     shape.field_index = fi;
     shape.rhs = rhs;
-    shape.grid = 128;
+    shape.grid = grid64 as i32;
     shape.output_cap = output_cap;
     shape.input0_cap = x_cap;
     shape.input1_cap = w_cap;
-    shape.output_words = 128;
-    shape.input0_words = 32;
-    shape.input1_words = 256;
+    shape.output_words = grid64 as i32;
+    shape.input0_words = (rows64 as i32) * 8;
+    shape.input1_words = x_cols * 8;
     return 1;
 }
 
@@ -21510,7 +21913,7 @@ fn agx_classify_lang0(body: i32, loop_name: i32, ncaps: i32,
     let hi: i32 = g_nodes[outer].child1;
     if g_nodes[lo].kind != AST_LIT_INT || g_nodes[lo].int_val != 0
         || g_nodes[hi].kind != AST_LIT_INT || g_nodes[hi].int_val == 0
-        || g_nodes[hi].int_val > 2147483647 { return 0; }
+        || g_nodes[hi].int_val > 65535 { return 0; }
     let grid: i32 = g_nodes[hi].int_val as i32;
     shape.kind = 5;
     shape.output_name = out_name;
@@ -21661,7 +22064,7 @@ fn agx_classify_lang1(body: i32, loop_name: i32, ncaps: i32,
     let hi: i32 = g_nodes[outer].child1;
     if g_nodes[lo].kind != AST_LIT_INT || g_nodes[lo].int_val != 0
         || g_nodes[hi].kind != AST_LIT_INT || g_nodes[hi].int_val == 0
-        || g_nodes[hi].int_val > 2147483647 { return 0; }
+        || g_nodes[hi].int_val > 65535 { return 0; }
     let grid: i32 = g_nodes[hi].int_val as i32;
     shape.kind = 6;
     shape.output_name = out_name;
@@ -21754,7 +22157,7 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
         || g_nodes[start_node].int_val != 0 { return 0; }
     if g_nodes[end_node].kind != AST_LIT_INT { return 0; }
     let grid64: u64 = g_nodes[end_node].int_val;
-    if grid64 == 0 || grid64 > 2147483647 { return 0; }
+    if grid64 == 0 || grid64 > 65535 { return 0; }
 
     let rhs: i32 = g_nodes[stmt].child2;
     var shape_kind: i32 = 1;
@@ -21816,6 +22219,92 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
         shape.input1_words = 256;
     }
     return 1;
+}
+
+fn proof2_temp_captures(pf: *PForState, base: i32) {
+    var i: i32 = 0;
+    while i < pf.ncaps {
+        g_pfor_workers[base + i * 4] = pf.caps[i * 4];
+        g_pfor_workers[base + i * 4 + 1] = resolve_type_sub(pf.caps[i * 4 + 1]);
+        g_pfor_workers[base + i * 4 + 2] = pf.caps[i * 4 + 2];
+        g_pfor_workers[base + i * 4 + 3] = pf.caps[i * 4 + 3];
+        i = i + 1;
+    }
+}
+
+fn proof2_agx_shape_equal(a: *AgxWorkerShape, b: *AgxWorkerShape) -> i32 {
+    if a.kind != b.kind || a.output_name != b.output_name
+        || a.input0_name != b.input0_name || a.input1_name != b.input1_name
+        || a.field_alias != b.field_alias || a.field_index != b.field_index
+        || a.rhs != b.rhs || a.grid != b.grid
+        || a.output_cap != b.output_cap || a.input0_cap != b.input0_cap
+        || a.input1_cap != b.input1_cap || a.output_words != b.output_words
+        || a.input0_words != b.input0_words
+        || a.input1_words != b.input1_words
+        || a.input_layout != b.input_layout { return 0; }
+    return 1;
+}
+
+fn proof2_build_worker_silent(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
+    let saved_ir0: i32 = g_agx_ir0_shadow;
+    let saved_ra0: i32 = g_agx_ra0_shadow;
+    g_agx_ir0_shadow = 0;
+    g_agx_ra0_shadow = 0;
+    let built: i32 = agx_build_worker_code(shape, loop_name);
+    g_agx_ir0_shadow = saved_ir0;
+    g_agx_ra0_shadow = saved_ra0;
+    return built;
+}
+
+// Return 0 for a legacy worker outside the AGX emitted set, 1 for exact
+// recursive authority, and 2 for an existing AGX shape that fails parity.
+fn proof2_agx_shape_parity(body: i32, loop_name: i32, legacy: *PForState,
+                           P: *PForProof0, recursive: *PForState) -> i32 {
+    let base: i32 = g_pfor_woff;
+    proof2_temp_captures(legacy, base);
+    let old_shape: *AgxWorkerShape = alloc(1);
+    let new_shape: *AgxWorkerShape = alloc(1);
+    let old_ok: i32 = agx_classify_worker(
+        body, loop_name, legacy.ncaps, base, old_shape);
+    if old_ok == 0 {
+        free(new_shape); free(old_shape);
+        return 0;
+    }
+    let old_built: i32 = proof2_build_worker_silent(old_shape, loop_name);
+    if old_built == 0 {
+        free(new_shape); free(old_shape);
+        return 0;
+    }
+    let old_len: i32 = g_agx_code_len;
+    let old_code: *u8 = alloc(old_len);
+    var oi: i32 = 0;
+    while oi < old_len {
+        old_code[oi] = g_agx_code[oi];
+        oi = oi + 1;
+    }
+    if proof2_legacy_agx_ready(P, recursive, legacy) == 0 {
+        free(old_code);
+        free(new_shape); free(old_shape);
+        return 2;
+    }
+    proof2_temp_captures(recursive, base);
+    let new_ok: i32 = agx_classify_worker(
+        body, loop_name, recursive.ncaps, base, new_shape);
+    var same: i32 = new_ok == 1
+        && proof2_agx_shape_equal(old_shape, new_shape) == 1;
+    if same == 1 && proof2_build_worker_silent(new_shape, loop_name) == 0 {
+        same = 0;
+    }
+    if same == 1 && g_agx_code_len != old_len { same = 0; }
+    var bi: i32 = 0;
+    while same == 1 && bi < old_len {
+        if old_code[bi] != g_agx_code[bi] { same = 0; }
+        bi = bi + 1;
+    }
+    free(old_code);
+    free(new_shape); free(old_shape);
+    if same == 1 { return 1; }
+    return 2;
 }
 
 fn agx_build_worker_ops(shape: *AgxWorkerShape, loop_name: i32) -> i32 {

@@ -144,11 +144,15 @@ tests/                 test suite (regression, parity, pfor, dynfield, bootstrap
   and unsupported by Apple. It covers exact 32-bit field maps, canonical
   `2^64-59`, narrow two-input own-cell maps, structured scalar control, flat
   aggregates, ordered dynamic indexing of scalarized private arrays, statically
-  expanded calls, and fixed-shape RNS reductions.
+  expanded calls, and fixed-`K=8` RNS reductions with matrix geometry derived
+  from the source index equations. AGX emission is capped at the runtime's
+  65,535-element grid limit.
   `src/lib/gpu/` submits artifacts directly through IOKit; its executable links
   no Metal, private framework, or project C/Objective-C. `--agx-dispatch` adds
   opt-in runtime selection beside the unchanged CPU pfor fallback and
-  content-pins the selected machine code to the host compilation. Gates require
+  content-pins the selected machine code to the host compilation. Checked byte
+  intervals, including i32 index-wrap checks, force overlapping or unknown
+  pointer ranges to CPU. Gates require
   eval, CPU pfor, owned G16X, and independent oracles to agree byte-for-byte,
   including wrong-artifact refusal and a three-prime exact RNS matmul consumer.
   No performance claim is made.
