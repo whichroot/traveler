@@ -99,6 +99,11 @@ assert_reason "$REPO_DIR/tests/pfor/pfor_race_global_assign.tv" "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_member_call.tv"   "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_hidden_read.tv"   "call-read"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_aggregate_alias_call.tv" "mutating-call"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_affine_wrap.tv"  "index-wrap"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_affine_circle.tv" "noninjective"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_affine_slack.tv" "noninjective"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_affine_point_wrap.tv" "raw"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_shadowed_read.tv" "call-read"
 # U1 (Stage D) i64 flavors: the independence proof is type-blind — default-deny
 # survived the gate lift with the same named refusals.
 assert_reason "$REPO_DIR/tests/pfor/pfor_u1_i64_raw.tv"         "raw"
@@ -122,8 +127,8 @@ assert_reason "$REPO_DIR/tests/pfor/pfor_race_alias_letptr.tv"   "private-base"
 assert_reason "$REPO_DIR/tests/pfor/pfor_private_escape.tv"      "private-escape"
 assert_dispatch "$REPO_DIR/tests/pfor/pfor_ok_private_var.tv"
 
-# PROOF0-a is a separate query schema: scope-aware recursive effects beside the
-# unchanged legacy verdict. It has no path to worker admission.
+# PROOF0 is a separate query schema: scope-aware effects and declaration-aware
+# affine hazards beside the unchanged legacy verdict. It has no admission path.
 PROOF0_FIXTURE="$SCRIPT_DIR/fixtures/proof0_effects.tv"
 if ! "$SELF" "$PROOF0_FIXTURE" --pfor-proof0-report \
         >"$TMP/proof0.focused.jsonl" 2>/dev/null \
@@ -138,12 +143,19 @@ if ! "$SELF" "$PROOF0_ADVERSARIAL" --pfor-proof0-report \
         "$TMP/proof0.adversarial.jsonl"; then
     echo "  FAIL proof0 adversarial false-safe summary"; fail=1
 fi
+PROOF0_AFFINE="$SCRIPT_DIR/fixtures/proof0_affine.tv"
+if ! "$SELF" "$PROOF0_AFFINE" --pfor-proof0-report \
+        >"$TMP/proof0.affine.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" --affine \
+        "$TMP/proof0.affine.jsonl"; then
+    echo "  FAIL proof0 focused affine summary"; fail=1
+fi
 legacy_focus="$("$SELF" "$PROOF0_FIXTURE" --pfor-report 2>/dev/null)"
 if ! lines_valid_json "$legacy_focus" \
    || printf '%s\n' "$legacy_focus" | grep -q 'cpu_effects'; then
     echo "  FAIL proof0 changed the legacy --pfor-report schema"; fail=1
 else
-    echo "  ok   PROOF0-a remains separate from the legacy report schema"
+    echo "  ok   PROOF0 remains separate from the legacy report schema"
 fi
 
 assert_proof0_standalone() {
@@ -156,7 +168,7 @@ assert_proof0_standalone() {
             "$TMP/proof0.$label.err"; then
         echo "  FAIL proof0 mixed-mode diagnostic: $label"; fail=1; return
     fi
-    echo "  ok   PROOF0-a rejects mixed mode: $label"
+    echo "  ok   PROOF0 rejects mixed mode: $label"
 }
 
 assert_proof0_standalone legacy --pfor-report
@@ -176,7 +188,7 @@ if ! "$SELF" "$REPO_DIR/tests/diag/expected_expression.tv" \
    || ! grep -q 'expected an expression' "$TMP/proof0.malformed.err"; then
     echo "  FAIL proof0 malformed-AST guard"; fail=1
 else
-    echo "  ok   PROOF0-a keeps malformed ASTs out of the walker"
+    echo "  ok   PROOF0 keeps malformed ASTs out of the walker"
 fi
 if ! "$SELF" "$REPO_DIR/tests/diag/defer_nested.tv" \
         --pfor-proof0-report >"$TMP/proof0.defer.out" \
@@ -185,7 +197,7 @@ if ! "$SELF" "$REPO_DIR/tests/diag/defer_nested.tv" \
    || ! grep -q 'defer must be a top-level statement' "$TMP/proof0.defer.err"; then
     echo "  FAIL proof0 nested-defer parser boundary"; fail=1
 else
-    echo "  ok   PROOF0-a keeps nested defer outside the walker"
+    echo "  ok   PROOF0 keeps nested defer outside the walker"
 fi
 
 # ------------------------------------------------------------------
@@ -207,9 +219,12 @@ while IFS= read -r line; do
     printf '%s\n' "$out" \
         | sed -E 's/"line":[0-9]+,"col":[0-9]+,//' \
         | sed "s|^|$line\t|" >> "$TMP/current.jsonl"
-    if ! "$SELF" "$REPO_DIR/$line" --pfor-proof0-report \
-            2>/dev/null >> "$TMP/proof0.jsonl"; then
+    if ! proof_out="$("$SELF" "$REPO_DIR/$line" \
+            --pfor-proof0-report 2>/dev/null)"; then
         echo "  PROOF0 COMPILE FAILED: $line"; corpus_fail=1
+    elif [ -n "$proof_out" ]; then
+        printf '%s\n' "$proof_out" \
+            | sed "s|^{|{\"source\":\"$line\",|" >> "$TMP/proof0.jsonl"
     fi
 done < "$CORPUS"
 sort "$TMP/current.jsonl" > "$TMP/current.sorted"

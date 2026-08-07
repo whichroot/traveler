@@ -244,13 +244,19 @@ if [ -x "$STAGE1" ]; then
     fi
 fi
 
-# U1 call effects are carrier-independent. Member-hidden mutation and opaque
-# callee reads must remain visible through the purity/footprint fixpoint.
+# Self-only effect/index hardening: hidden effects, caller-relative reads,
+# lexical parameter identity, and runtime-width affine constants fail closed.
 if [ -x "$STAGE1" ]; then
     EFFECT_TESTS=(
         "pfor_self_member_call:0"
         "pfor_self_hidden_read:1"
         "pfor_self_aggregate_alias_call:0"
+        "pfor_self_affine_wrap:0"
+        "pfor_self_affine_circle:0"
+        "pfor_self_affine_slack:0"
+        "pfor_self_affine_point_wrap:0"
+        "pfor_self_shadowed_read:0"
+        "pfor_parity_bigliteral:2"
     )
     for entry in "${EFFECT_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"

@@ -1,0 +1,28 @@
+// pfor_self_affine_wrap.tv - i32 affine constants must use runtime wrap semantics.
+// The second write index wraps to i+1, so adjacent iterations overlap.
+
+field F = Field<2013265921>;
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let out: *F = alloc(n + 1);
+    var w: i32 = 0;
+    while w <= n {
+        out[w] = 0;
+        w = w + 1;
+    }
+
+    for i in 0..50000 {
+        out[i] = 1;
+        out[i + 2147483647 + 2147483647 + 3] = 2;
+    }
+
+    var sum: F = 0;
+    w = 0;
+    while w <= n {
+        sum = sum + out[w];
+        w = w + 1;
+    }
+    print(sum);
+    return 0;
+}

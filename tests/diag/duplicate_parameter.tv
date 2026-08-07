@@ -1,0 +1,8 @@
+// Negative: parameter names are binding identities and must be unique.
+fn read(first: *i32, first: *i32, i: i32) -> i32 {
+    return first[i];
+}
+
+fn main() -> i32 {
+    return 0;
+}

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// PROOF0-a scope identity and recursive effect-summary fixture.
+// PROOF0 scope identity and recursive effect-summary fixture.
 
 import "../../../src/lib/core/result.tv";
 

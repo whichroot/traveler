@@ -1,0 +1,34 @@
+// pfor_self_shadowed_read.tv - a local shadow must not inherit a parameter's
+// read-footprint identity. The callee reads `out`, creating a prefix recurrence.
+
+field F = Field<2013265921>;
+
+fn previous(first: *F, second: *F, i: i32) -> F {
+    let first: *F = second;
+    return first[i - 1];
+}
+
+fn main() -> i32 {
+    let n: i32 = 50000;
+    let input: *F = alloc(n);
+    let out: *F = alloc(n);
+    out[0] = 1;
+    var w: i32 = 1;
+    while w < n {
+        out[w] = 0;
+        w = w + 1;
+    }
+
+    for i in 1..n {
+        out[i] = previous(input, out, i);
+    }
+
+    var sum: F = 0;
+    w = 0;
+    while w < n {
+        sum = sum + out[w];
+        w = w + 1;
+    }
+    print(sum);
+    return 0;
+}

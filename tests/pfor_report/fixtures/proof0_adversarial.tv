@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// PROOF0-a false-safe counterexamples: every loop below must stay conservative.
+// PROOF0 false-safe counterexamples: every loop below must stay conservative.
 
 struct AdversarialCell {
     value: i32,
@@ -11,6 +11,7 @@ trait Add {
 
 var hidden_counter: i32 = 0;
 var alias_shared: *AdversarialCell = null;
+var hidden_source: *i32 = null;
 
 impl Add for AdversarialCell {
     fn add(self, other: AdversarialCell) -> i32 {
@@ -31,6 +32,15 @@ fn hidden_member_call() -> i32 {
 fn hidden_read(data: *i32, i: i32) -> i32 {
     if i == 0 { return 0; }
     return data[i - 1];
+}
+
+fn hidden_global_read(i: i32) -> i32 {
+    return hidden_source[i];
+}
+
+fn shadowed_read(first: *i32, second: *i32, i: i32) -> i32 {
+    let first: *i32 = second;
+    return first[i];
 }
 
 fn hidden_alias_write() -> i32 {
@@ -86,6 +96,15 @@ fn main() -> i32 {
 
     for i in 1..64 {
         output[i] = hidden_read(output, i);
+    }
+
+    hidden_source = input;
+    for i in 0..64 {
+        output[i] = hidden_global_read(i);
+    }
+
+    for i in 0..64 {
+        output[i] = shadowed_read(input, output, i);
     }
 
     alias_shared = alloc(4);

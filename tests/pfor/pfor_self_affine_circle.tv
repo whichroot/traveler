@@ -1,0 +1,17 @@
+// pfor_self_affine_circle.tv - two signed-i32 offsets can be mathematically
+// distant but adjacent on the runtime residue circle. Dead branch: proof only.
+
+field F = Field<2013265921>;
+var never: i32 = 0;
+
+fn main() -> i32 {
+    let out: *F = alloc(1);
+    if never == 1 {
+        for i in 0..50000 {
+            out[i + 2147483647] = 1;
+            out[i - 2147483647] = 2;
+        }
+    }
+    print(7);
+    return 0;
+}

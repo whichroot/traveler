@@ -1607,9 +1607,9 @@ struct PForState {
 // The single live analysis instance (arenas attached in main())
 var g_pf: *PForState = null;
 
-// PROOF0-a is observational: a separate scope-aware recursive effect summary
-// runs only under --pfor-proof0-report. Declaration AST indices are binding
-// identities; the legacy proof remains the sole dispatch authority.
+// PROOF0 is observational: scope-aware recursive effects plus declaration-aware
+// affine hazards run only under --pfor-proof0-report. The legacy proof remains
+// the sole dispatch authority.
 let MAX_PROOF0_ENV: i32 = 128;
 let P0_BIND_OUTER: i32 = 1;
 let P0_BIND_LOCAL: i32 = 2;
@@ -1620,6 +1620,21 @@ let P0R_DEPTH: i32 = 1;
 let P0R_ENV: i32 = 2;
 let P0R_NODE: i32 = 3;
 let P0R_MATCH: i32 = 4;
+let P0A_NONE: i32 = 0;
+let P0A_BASE: i32 = 1;
+let P0A_PRIVATE_BASE: i32 = 2;
+let P0A_CONST_IDX: i32 = 3;
+let P0A_NONINJECTIVE: i32 = 4;
+let P0A_LET_HIDDEN: i32 = 5;
+let P0A_NONAFFINE: i32 = 6;
+let P0A_TERM_LIMIT: i32 = 7;
+let P0A_WRITE_LIMIT: i32 = 8;
+let P0A_READS_OVERFLOW: i32 = 9;
+let P0A_WILD_READ: i32 = 10;
+let P0A_RAW_WAR: i32 = 11;
+let P0A_WAW: i32 = 12;
+let P0A_CALL_READ: i32 = 13;
+let P0A_INDEX_WRAP: i32 = 14;
 
 struct PForProof0 {
     complete: i32,
@@ -1640,6 +1655,8 @@ struct PForProof0 {
     capture_writes: i32,
     index_reads: i32,
     index_writes: i32,
+    affine_safe: i32,
+    affine_reason: i32,
     local_index_bases: i32,
     conditional_stores: i32,
     private_stores: i32,
@@ -1669,6 +1686,7 @@ struct PForProof0 {
 }
 
 var g_pf0: *PForProof0 = null;
+var g_pf0_affine: *PForState = null;
 
 // pfor refusal-reason instrumentation (--pfor-report): first-failure-wins into
 // g_pf_reason, read ONLY by the report emitter — purely observational.
@@ -1710,6 +1728,7 @@ let PFR_PRIVATE_ESCAPE: i32 = 25;  // `&` of a body-local var (no-escape proof:
 let PFR_PRIVATE_BASE: i32 = 26;    // body-local name as an array base (alias-
 // opaque to the name-keyed hazard tables — #46)
 let PFR_CALL_READ: i32 = 27;       // callee has an opaque indexed-read footprint
+let PFR_INDEX_WRAP: i32 = 28;      // affine constants exceed exact i32 modeling
 
 // First-failure-wins refusal code for the loop currently under analysis.
 var g_pf_reason: i32 = 0;
@@ -1722,6 +1741,8 @@ var g_cur_fn: i32 = 0 - 1;
 // Function declaration whose body the lexical purity walk is inspecting.
 // NULL outside compute_all_purity; closure fallback therefore fails closed.
 var g_purity_fn_node: i32 = 0 - 1;
+// A shadowed parameter name cannot identify a read base path-insensitively.
+var g_purity_param_shadows: u64 = 0;
 // 1 = --pfor-report query mode active (set by the CLI flag).
 var g_pfor_report_mode: i32 = 0;
 // Distinguishes an explicitly requested legacy report from the PROOF0 schema;
@@ -3007,6 +3028,27 @@ fn parse_postfix() -> i32 {
     return node;
 }
 
+fn validate_unique_params(params: *i32, count: i32) {
+    var i: i32 = 0;
+    while i < count {
+        let param: i32 = params[i];
+        var j: i32 = 0;
+        while j < i {
+            let prior: i32 = params[j];
+            if g_nodes[prior].name0 == g_nodes[param].name0 {
+                diag_begin(g_nodes[param].line, g_nodes[param].col);
+                derr("duplicate parameter name '");
+                derr(&g_strings[g_nodes[param].name0]);
+                derr("'");
+                diag_end();
+                j = i;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
 // Parse a closure literal `|params| body` (caller peeked TOK_PIPE; annotations
 // optional; body = expr or block). Returns an AST_CLOSURE node (see kind consts).
 fn parse_closure(ln: i32, cl: i32) -> i32 {
@@ -3033,6 +3075,7 @@ fn parse_closure(ln: i32, cl: i32) -> i32 {
         nparams = nparams + 1;
         if p_peek() == TOK_COMMA { p_advance(); }
     }
+    validate_unique_params(tmp_params, nparams);
     p_expect(TOK_PIPE);
     // Optional `-> Type` return annotation.
     if p_peek() == TOK_ARROW {
@@ -3639,6 +3682,7 @@ fn parse_params_into(tmp_params: *i32) -> i32 {
         n = n + 1;
         if p_peek() == TOK_COMMA { p_advance(); }
     }
+    validate_unique_params(tmp_params, n);
     return n;
 }
 
@@ -3835,6 +3879,7 @@ fn parse_method_decl(recv_type: i32, want_body: i32, fn_name_out: *i32) -> i32 {
         np = np + 1;
         if p_peek() == TOK_COMMA { p_advance(); }
     }
+    validate_unique_params(tmp_params, np);
     p_expect(TOK_RPAREN);
     // Optional return type (parsed before bulk-copy).
     if p_peek() == TOK_ARROW {
@@ -13390,12 +13435,95 @@ fn stmt_reads_arrays(node: i32) -> i32 {
     return 1;
 }
 
+fn purity_stmt_shadows_name(node: i32, name: i32, depth: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || depth > 256 { return 1; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LET { return (g_nodes[node].name0 == name) as i32; }
+    if kind == AST_FOR {
+        if g_nodes[node].name0 == name { return 1; }
+        return purity_stmt_shadows_name(g_nodes[node].child2, name, depth + 1);
+    }
+    if kind == AST_BLOCK {
+        let start: i32 = g_nodes[node].args_start;
+        let count: i32 = g_nodes[node].nargs;
+        if start < 0 || count < 0 || start > g_nargs_pool - count { return 1; }
+        var bi: i32 = 0;
+        while bi < count {
+            if purity_stmt_shadows_name(g_args[start + bi], name,
+                                        depth + 1) == 1 { return 1; }
+            bi = bi + 1;
+        }
+        return 0;
+    }
+    if kind == AST_IF {
+        if purity_stmt_shadows_name(g_nodes[node].child1, name,
+                                    depth + 1) == 1 { return 1; }
+        if g_nodes[node].child2 >= 0 {
+            return purity_stmt_shadows_name(g_nodes[node].child2, name,
+                                            depth + 1);
+        }
+        return 0;
+    }
+    if kind == AST_WHILE {
+        return purity_stmt_shadows_name(g_nodes[node].child1, name, depth + 1);
+    }
+    if kind == AST_DEFER {
+        return purity_stmt_shadows_name(g_nodes[node].child0, name, depth + 1);
+    }
+    if kind == AST_MATCH {
+        let start2: i32 = g_nodes[node].args_start;
+        let count2: i32 = g_nodes[node].nargs;
+        if start2 < 0 || count2 < 0 || start2 > g_narms - count2 { return 1; }
+        var mi: i32 = 0;
+        while mi < count2 {
+            let arm: i32 = start2 + mi;
+            let bs: i32 = g_arms[arm].bindings_start;
+            let bn: i32 = g_arms[arm].nbindings;
+            if bs < 0 || bn < 0 || bs > g_nargs_pool - bn { return 1; }
+            var bj: i32 = 0;
+            while bj < bn {
+                if g_args[bs + bj] == name { return 1; }
+                bj = bj + 1;
+            }
+            if purity_stmt_shadows_name(g_arms[arm].body, name,
+                                        depth + 1) == 1 { return 1; }
+            mi = mi + 1;
+        }
+    }
+    return 0;
+}
+
+fn purity_param_shadow_mask(fn_node: i32) -> u64 {
+    if fn_node <= 0 || fn_node >= g_nnodes { return 18446744073709551615; }
+    let start: i32 = g_nodes[fn_node].args_start;
+    let count: i32 = g_nodes[fn_node].nargs;
+    if start < 0 || count < 0 || start > g_nargs_pool - count {
+        return 18446744073709551615;
+    }
+    var mask: u64 = 0;
+    var i: i32 = 0;
+    while i < count && i < 64 {
+        let param: i32 = g_args[start + i];
+        if param <= 0 || param >= g_nnodes
+            || purity_stmt_shadows_name(g_nodes[fn_node].child0,
+                                        g_nodes[param].name0, 0) == 1 {
+            mask = mask | ((1 as u64) << (i as u64));
+        }
+        i = i + 1;
+    }
+    return mask;
+}
+
 fn purity_param_index(fn_node: i32, name: i32) -> i32 {
     if fn_node < 0 || fn_node >= g_nnodes { return 0 - 1; }
     var i: i32 = 0;
     while i < g_nodes[fn_node].nargs {
         let param: i32 = g_args[g_nodes[fn_node].args_start + i];
         if param >= 0 && param < g_nnodes && g_nodes[param].name0 == name {
+            if i < 64
+                && ((g_purity_param_shadows >> (i as u64)) & 1) == 1 {
+                return 0 - 1;
+            }
             return i;
         }
         i = i + 1;
@@ -13611,6 +13739,7 @@ fn compute_all_purity() {
             g_funcs[i].purity_computed = 1;
         } else {
             g_purity_fn_node = g_funcs[i].node;
+            g_purity_param_shadows = purity_param_shadow_mask(g_funcs[i].node);
             let fn_body: i32 = g_nodes[g_funcs[i].node].child0;
             var read_mask: u64 = 0;
             var read_nonparam: i32 = 0;
@@ -13637,6 +13766,7 @@ fn compute_all_purity() {
                 continue;
             }
             g_purity_fn_node = g_funcs[i].node;
+            g_purity_param_shadows = purity_param_shadow_mask(g_funcs[i].node);
             let fn_body: i32 = g_nodes[g_funcs[i].node].child0;
             let np: i32 = stmt_is_pure(fn_body);
             let nw: i32 = stmt_writes_arrays(fn_body);
@@ -13658,6 +13788,7 @@ fn compute_all_purity() {
         }
     }
     g_purity_fn_node = 0 - 1;
+    g_purity_param_shadows = 0;
 }
 
 // ===== PARALLEL DISPATCH: LOOP BODY ANALYSIS =====
@@ -13850,12 +13981,29 @@ fn pfor_expr_key(pf: *PForState, node: i32) -> i32 {
 
 // Flatten an index expression into the pf.aff_* accumulator.
 // Returns 0 (reject) on any non-affine structure.
+fn pfor_affine_add_literal(pf: *PForState, raw: u64, sign: i32) -> i32 {
+    // The index context is at least i32. Keeping the folded constant inside
+    // signed i32 makes the mathematical record exact for both i32 and wider
+    // index expressions; larger/wrapping constants stay sequential.
+    if raw > 2147483647 { return 0; }
+    var delta: i64 = raw as i64;
+    if sign < 0 { delta = 0 - delta; }
+    let hi: i64 = 2147483647;
+    let lo: i64 = 0 - 2147483647 - 1;
+    if delta > 0 && pf.aff_lit > hi - delta { return 0; }
+    if delta < 0 && pf.aff_lit < lo - delta { return 0; }
+    pf.aff_lit = pf.aff_lit + delta;
+    return 1;
+}
+
 fn pfor_classify_index(pf: *PForState, node: i32, loop_var: i32, sign: i32) -> i32 {
     if node < 0 || node == 0 { pfor_refuse(PFR_NONAFFINE); return 0; }
     let kind: i32 = g_nodes[node].kind;
 
     if kind == AST_LIT_INT {
-        pf.aff_lit = pf.aff_lit + (sign as i64) * (g_nodes[node].int_val as i64);
+        if pfor_affine_add_literal(pf, g_nodes[node].int_val, sign) == 0 {
+            pfor_refuse(PFR_INDEX_WRAP); return 0;
+        }
         return 1;
     }
 
@@ -13990,25 +14138,32 @@ fn pfor_disjoint(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
         let dterms: *i64 = pf.dlt_terms;
         let dsigns: *i64 = pf.dlt_signs;
         if pf.dlt_n == 0 {
-            // Case (a): literal delta vs literal trip count
+            // Case (a): literal delta vs literal trip count. Compare on the
+            // i32 residue circle: this is sufficient for wider indices too,
+            // and prevents a 2^32+k mathematical delta proving a runtime k.
             if pf.pfb_start_lit_ok == 0 || pf.pfb_end_lit_ok == 0 { return 0; }
             let trip: i64 = pf.pfb_end_lit - pf.pfb_start_lit;
             if trip <= 0 { return 1; }  // empty loop
-            var mag: i64 = pf.dlt_lit;
-            if mag < 0 { mag = 0 - mag; }
-            if mag >= trip { return 1; }
+            let mod32: u64 = 4294967296;
+            if trip as u64 >= mod32 { return 0; }
+            let delta32: u64 = (pf.dlt_lit as u64) & 4294967295;
+            var gap: u64 = delta32;
+            let reverse: u64 = mod32 - delta32;
+            if reverse < gap { gap = reverse; }
+            if gap >= trip as u64 { return 1; }
             return 0;
         }
         if pf.dlt_n == 1 {
             if pf.pfb_end_key >= 0 && dterms[0] == pf.pfb_end_key as i64 {
                 if pf.pfb_start_lit_ok == 1 && pf.pfb_start_lit >= 0 {
-                    // Case (c): delta = ±end + slack
+                    // Case (c): exact delta = ±end. Nonzero slack can wrap a
+                    // signed-width footprint back into the first interval.
                     if dsigns[0] == 1 {
-                        if pf.dlt_lit >= 0 - pf.pfb_start_lit { return 1; }
+                        if pf.dlt_lit == 0 { return 1; }
                         return 0;
                     }
                     if dsigns[0] == 0 - 1 {
-                        if pf.dlt_lit <= pf.pfb_start_lit { return 1; }
+                        if pf.dlt_lit == 0 { return 1; }
                         return 0;
                     }
                 }
@@ -14016,7 +14171,8 @@ fn pfor_disjoint(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
         }
         return 0;
     }
-    // Constant form vs stride-1 form: point vs interval, literals only
+    // Constant form vs stride-1 form: point vs a cyclic i32 interval. Residue
+    // disjointness is sufficient even when the actual index evaluates wider.
     if a_lv == 0 && b_lv == 0 { return 0; }   // both const: cannot prove
     var po: i32 = ao;
     var pb: *i64 = a;
@@ -14030,10 +14186,13 @@ fn pfor_disjoint(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
     if ib[io + 3] != 0 { return 0; }          // interval has terms: no proof
     if pf.pfb_start_lit_ok == 0 || pf.pfb_end_lit_ok == 0 { return 0; }
     if pf.pfb_end_lit <= pf.pfb_start_lit { return 1; }  // empty loop
-    let pt: i64 = pb[po + 4];
-    let iv: i64 = ib[io + 4];
-    if pt < pf.pfb_start_lit + iv { return 1; }
-    if pt >= pf.pfb_end_lit + iv { return 1; }
+    let trip2: i64 = pf.pfb_end_lit - pf.pfb_start_lit;
+    if trip2 as u64 >= 4294967296 { return 0; }
+    let point32: u64 = (pb[po + 4] as u64) & 4294967295;
+    let begin32: u64 = ((pf.pfb_start_lit as u64)
+        + (ib[io + 4] as u64)) & 4294967295;
+    let forward: u64 = (point32 - begin32) & 4294967295;
+    if forward >= trip2 as u64 { return 1; }
     return 0;
 }
 
@@ -14479,6 +14638,7 @@ fn pfor_reason_str(code: i32) -> *u8 {
     if code == PFR_PRIVATE_ESCAPE { return "private-escape"; }
     if code == PFR_PRIVATE_BASE { return "private-base"; }
     if code == PFR_CALL_READ { return "call-read"; }
+    if code == PFR_INDEX_WRAP { return "index-wrap"; }
     return "";
 }
 
@@ -14727,6 +14887,8 @@ fn proof0_reset(P: *PForProof0) {
     P.capture_writes = 0;
     P.index_reads = 0;
     P.index_writes = 0;
+    P.affine_safe = 1;
+    P.affine_reason = P0A_NONE;
     P.local_index_bases = 0;
     P.conditional_stores = 0;
     P.private_stores = 0;
@@ -14794,6 +14956,387 @@ fn proof0_bind(P: *PForProof0, name: i32, decl: i32, kind: i32) -> i32 {
     P.nenv = P.nenv + 1;
     P.nbindings = P.nbindings + 1;
     return 1;
+}
+
+fn proof0_affine_refuse(P: *PForProof0, reason: i32) {
+    P.affine_safe = 0;
+    if P.affine_reason == P0A_NONE { P.affine_reason = reason; }
+}
+
+// Serialize invariant terms with lexical declaration identity. Captures use
+// their interned names; body bindings use declaration AST indices.
+fn proof0_affine_serialize(P: *PForProof0, A: *PForState, node: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || A.keypos >= 450 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        pfor_key_puti(A, g_nodes[node].int_val as i64);
+        return 1;
+    }
+    if kind == AST_IDENT {
+        let binding: i32 = proof0_resolve(P, g_nodes[node].name0);
+        if binding >= 0 {
+            pfor_key_putc(A, 100); // 'd': declaration identity
+            pfor_key_puti(A, P.env_decls[binding] as i64);
+        } else {
+            pfor_key_putc(A, 99);  // 'c': captured name identity
+            pfor_key_puti(A, g_nodes[node].name0 as i64);
+        }
+        return 1;
+    }
+    if kind == AST_BINARY {
+        pfor_key_putc(A, 40);
+        if proof0_affine_serialize(P, A, g_nodes[node].child0) == 0 { return 0; }
+        pfor_key_putc(A, 98);
+        pfor_key_puti(A, g_nodes[node].op as i64);
+        pfor_key_putc(A, 58);
+        if proof0_affine_serialize(P, A, g_nodes[node].child1) == 0 { return 0; }
+        pfor_key_putc(A, 41);
+        return 1;
+    }
+    if kind == AST_UNARY {
+        pfor_key_putc(A, 117);
+        pfor_key_puti(A, g_nodes[node].op as i64);
+        pfor_key_putc(A, 40);
+        if proof0_affine_serialize(P, A, g_nodes[node].child0) == 0 { return 0; }
+        pfor_key_putc(A, 41);
+        return 1;
+    }
+    if kind == AST_CAST {
+        pfor_key_putc(A, 99);
+        pfor_key_puti(A, g_nodes[node].name0 as i64);
+        pfor_key_putc(A, 40);
+        if proof0_affine_serialize(P, A, g_nodes[node].child0) == 0 { return 0; }
+        pfor_key_putc(A, 41);
+        return 1;
+    }
+    return 0;
+}
+
+fn proof0_affine_expr_key(P: *PForProof0, A: *PForState, node: i32) -> i32 {
+    A.keypos = 0;
+    if proof0_affine_serialize(P, A, node) == 0 || A.keypos >= 500 {
+        return 0 - 1;
+    }
+    let buf: *u8 = A.keybuf;
+    buf[A.keypos] = 0;
+    return str_intern(A.keybuf);
+}
+
+// Any body binding varies per outer work item unless it is the outer iterator,
+// which the affine classifier handles explicitly. Captures are invariant.
+fn proof0_affine_varies(P: *PForProof0, node: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes { return 1; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL || kind == AST_NULL
+        || kind == AST_STR_LIT { return 0; }
+    if kind == AST_IDENT {
+        if proof0_resolve(P, g_nodes[node].name0) >= 0 { return 1; }
+        return 0;
+    }
+    if kind == AST_BINARY {
+        if proof0_affine_varies(P, g_nodes[node].child0) == 1 { return 1; }
+        return proof0_affine_varies(P, g_nodes[node].child1);
+    }
+    if kind == AST_UNARY || kind == AST_CAST {
+        return proof0_affine_varies(P, g_nodes[node].child0);
+    }
+    return 1;
+}
+
+fn proof0_affine_classify(P: *PForProof0, A: *PForState,
+                          node: i32, sign: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes {
+        proof0_affine_refuse(P, P0A_NONAFFINE); return 0;
+    }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        if pfor_affine_add_literal(A, g_nodes[node].int_val, sign) == 0 {
+            proof0_affine_refuse(P, P0A_INDEX_WRAP); return 0;
+        }
+        return 1;
+    }
+    if kind == AST_IDENT {
+        let binding: i32 = proof0_resolve(P, g_nodes[node].name0);
+        if binding >= 0 && P.env_kinds[binding] == P0_BIND_OUTER
+            && P.env_decls[binding] == P.env_decls[0] {
+            if sign != 1 {
+                proof0_affine_refuse(P, P0A_NONINJECTIVE); return 0;
+            }
+            A.aff_lv_count = A.aff_lv_count + 1;
+            if A.aff_lv_count == 1 { return 1; }
+            proof0_affine_refuse(P, P0A_NONINJECTIVE);
+            return 0;
+        }
+    }
+    if kind == AST_BINARY && g_nodes[node].op == OP_ADD {
+        if proof0_affine_classify(P, A, g_nodes[node].child0, sign) == 0 {
+            return 0;
+        }
+        return proof0_affine_classify(P, A, g_nodes[node].child1, sign);
+    }
+    if kind == AST_BINARY && g_nodes[node].op == OP_SUB {
+        if proof0_affine_classify(P, A, g_nodes[node].child0, sign) == 0 {
+            return 0;
+        }
+        return proof0_affine_classify(P, A, g_nodes[node].child1, 0 - sign);
+    }
+    if proof0_affine_varies(P, node) == 1 {
+        if kind == AST_IDENT && proof0_resolve(P, g_nodes[node].name0) >= 0 {
+            proof0_affine_refuse(P, P0A_LET_HIDDEN);
+        } else {
+            proof0_affine_refuse(P, P0A_NONINJECTIVE);
+        }
+        return 0;
+    }
+    let key: i32 = proof0_affine_expr_key(P, A, node);
+    if key < 0 || A.aff_nterms >= 4 {
+        proof0_affine_refuse(P, P0A_TERM_LIMIT); return 0;
+    }
+    let terms: *i32 = A.aff_terms;
+    let signs: *i32 = A.aff_signs;
+    terms[A.aff_nterms] = key;
+    signs[A.aff_nterms] = sign;
+    A.aff_nterms = A.aff_nterms + 1;
+    return 1;
+}
+
+fn proof0_affine_base(P: *PForProof0, A: *PForState,
+                      base: i32, writing: i32) -> i32 {
+    if base <= 0 || base >= g_nnodes || g_nodes[base].kind != AST_IDENT {
+        if writing == 1 { proof0_affine_refuse(P, P0A_BASE); }
+        else { A.private_read = 2; }
+        return 0 - 1;
+    }
+    let name: i32 = g_nodes[base].name0;
+    if proof0_resolve(P, name) >= 0 {
+        if writing == 1 { proof0_affine_refuse(P, P0A_PRIVATE_BASE); }
+        else { A.private_read = 1; }
+        return 0 - 1;
+    }
+    return name;
+}
+
+fn proof0_affine_record_write(P: *PForProof0, A: *PForState,
+                              base: i32, idx: i32) {
+    let arr: i32 = proof0_affine_base(P, A, base, 1);
+    if arr < 0 { return; }
+    A.aff_lit = 0;
+    A.aff_nterms = 0;
+    A.aff_lv_count = 0;
+    if proof0_affine_classify(P, A, idx, 1) == 0 { return; }
+    if A.aff_lv_count != 1 {
+        proof0_affine_refuse(P, P0A_CONST_IDX); return;
+    }
+    pfor_fill_scratch(A, arr, 1, 1, 1);
+    let writes: *i64 = A.writes;
+    var i: i32 = 0;
+    while i < A.nwrites {
+        if writes[i * 16] == arr as i64
+            && pfor_affine_eq(writes, i * 16, A.scratch, 0) == 1 { return; }
+        i = i + 1;
+    }
+    if A.nwrites >= MAX_PFOR_WRITES {
+        proof0_affine_refuse(P, P0A_WRITE_LIMIT); return;
+    }
+    let scratch: *i64 = A.scratch;
+    let off: i32 = A.nwrites * 16;
+    var k: i32 = 0;
+    while k < 16 {
+        writes[off + k] = scratch[k];
+        k = k + 1;
+    }
+    A.nwrites = A.nwrites + 1;
+}
+
+fn proof0_affine_record_read(P: *PForProof0, A: *PForState,
+                             base: i32, idx: i32) {
+    let arr: i32 = proof0_affine_base(P, A, base, 0);
+    if arr < 0 { return; }
+    A.aff_lit = 0;
+    A.aff_nterms = 0;
+    A.aff_lv_count = 0;
+    let saved_safe: i32 = P.affine_safe;
+    let saved_reason: i32 = P.affine_reason;
+    var classified: i32 = proof0_affine_classify(P, A, idx, 1);
+    if classified == 1 && A.aff_lv_count > 1 { classified = 0; }
+    P.affine_safe = saved_safe;
+    P.affine_reason = saved_reason;
+    var has_lv: i32 = 0;
+    if classified == 1 && A.aff_lv_count == 1 { has_lv = 1; }
+    pfor_fill_scratch(A, arr, classified, has_lv, classified);
+    let reads: *i64 = A.reads;
+    var i: i32 = 0;
+    while i < A.nreads {
+        if reads[i * 16] == arr as i64 {
+            if reads[i * 16 + 1] == 0 && classified == 0 { return; }
+            if reads[i * 16 + 1] == 1 && classified == 1
+                && pfor_affine_eq(reads, i * 16, A.scratch, 0) == 1 { return; }
+        }
+        i = i + 1;
+    }
+    if A.nreads >= MAX_PFOR_READS {
+        A.reads_ovf = 1;
+        return;
+    }
+    let scratch: *i64 = A.scratch;
+    let off: i32 = A.nreads * 16;
+    var k: i32 = 0;
+    while k < 16 {
+        reads[off + k] = scratch[k];
+        k = k + 1;
+    }
+    A.nreads = A.nreads + 1;
+}
+
+fn proof0_affine_record_call_read(P: *PForProof0, A: *PForState,
+                                  name: i32) {
+    let names: *i32 = A.call_reads;
+    var i: i32 = 0;
+    while i < A.ncall_reads {
+        if names[i] == name { return; }
+        i = i + 1;
+    }
+    if A.ncall_reads >= MAX_PFOR_READS {
+        proof0_affine_refuse(P, P0A_CALL_READ); return;
+    }
+    names[A.ncall_reads] = name;
+    A.ncall_reads = A.ncall_reads + 1;
+}
+
+// Map a direct callee's read-only pointer parameters into caller base
+// identities. Their internal indices stay opaque; distinct bases rely on the
+// existing runtime alias fallback, while a same-base write refuses.
+fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
+                                call: i32, fi: i32) {
+    if g_funcs[fi].reads_nonparam == 1 {
+        proof0_affine_refuse(P, P0A_CALL_READ); return;
+    }
+    let mask: u64 = g_funcs[fi].read_param_mask;
+    if g_funcs[fi].reads_arrays == 1 && mask == 0 {
+        proof0_affine_refuse(P, P0A_CALL_READ); return;
+    }
+    var pi: i32 = 0;
+    while pi < 64 {
+        if ((mask >> (pi as u64)) & 1) == 1 {
+            if pi >= g_nodes[call].nargs {
+                proof0_affine_refuse(P, P0A_CALL_READ); return;
+            }
+            let actual: i32 = g_args[g_nodes[call].args_start + pi];
+            if actual <= 0 || actual >= g_nnodes
+                || g_nodes[actual].kind != AST_IDENT {
+                proof0_affine_refuse(P, P0A_CALL_READ); return;
+            }
+            let name: i32 = g_nodes[actual].name0;
+            if proof0_resolve(P, name) >= 0 {
+                proof0_affine_refuse(P, P0A_CALL_READ); return;
+            }
+            let si: i32 = sym_find(name);
+            if si < 0 || type_is_ptr(g_syms[si].type_off) == 0 {
+                proof0_affine_refuse(P, P0A_CALL_READ); return;
+            }
+            proof0_affine_record_call_read(P, A, name);
+            if P.affine_safe == 0 { return; }
+        }
+        pi = pi + 1;
+    }
+}
+
+fn proof0_affine_prepare(P: *PForProof0, A: *PForState,
+                         start_node: i32, end_node: i32) {
+    A.nwrites = 0;
+    A.nreads = 0;
+    A.reads_ovf = 0;
+    A.ncall_reads = 0;
+    A.private_read = 0;
+    A.pfb_start_lit_ok = 0;
+    A.pfb_end_lit_ok = 0;
+    A.pfb_end_key = 0 - 1;
+    if start_node > 0 && start_node < g_nnodes
+        && g_nodes[start_node].kind == AST_LIT_INT {
+        A.pfb_start_lit_ok = 1;
+        A.pfb_start_lit = g_nodes[start_node].int_val as i64;
+    }
+    if end_node > 0 && end_node < g_nnodes {
+        if g_nodes[end_node].kind == AST_LIT_INT {
+            A.pfb_end_lit_ok = 1;
+            A.pfb_end_lit = g_nodes[end_node].int_val as i64;
+        }
+        A.pfb_end_key = proof0_affine_expr_key(P, A, end_node);
+    }
+}
+
+fn proof0_affine_finish(P: *PForProof0, A: *PForState) {
+    if P.affine_safe == 0 { return; }
+    let writes: *i64 = A.writes;
+    let reads: *i64 = A.reads;
+    var cri: i32 = 0;
+    while cri < A.ncall_reads {
+        var cwi: i32 = 0;
+        while cwi < A.nwrites {
+            if A.call_reads[cri] as i64 == writes[cwi * 16] {
+                proof0_affine_refuse(P, P0A_CALL_READ); return;
+            }
+            cwi = cwi + 1;
+        }
+        cri = cri + 1;
+    }
+    var i: i32 = 0;
+    while i < A.nwrites {
+        var j: i32 = i + 1;
+        while j < A.nwrites {
+            if writes[i * 16] == writes[j * 16]
+                && pfor_disjoint(A, writes, i * 16, writes, j * 16) == 0 {
+                proof0_affine_refuse(P, P0A_WAW); return;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    if A.reads_ovf == 1 && A.nwrites > 0 {
+        proof0_affine_refuse(P, P0A_READS_OVERFLOW); return;
+    }
+    if A.private_read != 0 && A.nwrites > 0 {
+        if A.private_read == 2 { proof0_affine_refuse(P, P0A_BASE); }
+        else { proof0_affine_refuse(P, P0A_PRIVATE_BASE); }
+        return;
+    }
+    var r: i32 = 0;
+    while r < A.nreads {
+        let arr: i64 = reads[r * 16];
+        var written: i32 = 0;
+        var w: i32 = 0;
+        while w < A.nwrites {
+            if writes[w * 16] == arr { written = 1; }
+            w = w + 1;
+        }
+        if written == 1 {
+            if reads[r * 16 + 1] == 0 {
+                proof0_affine_refuse(P, P0A_WILD_READ); return;
+            }
+            var own: i32 = 0;
+            w = 0;
+            while w < A.nwrites {
+                if writes[w * 16] == arr
+                    && pfor_affine_eq(reads, r * 16, writes, w * 16) == 1 {
+                    own = 1;
+                    w = A.nwrites;
+                }
+                w = w + 1;
+            }
+            if own == 0 {
+                w = 0;
+                while w < A.nwrites {
+                    if writes[w * 16] == arr
+                        && pfor_disjoint(A, reads, r * 16,
+                                         writes, w * 16) == 0 {
+                        proof0_affine_refuse(P, P0A_RAW_WAR); return;
+                    }
+                    w = w + 1;
+                }
+            }
+        }
+        r = r + 1;
+    }
 }
 
 fn proof0_note_depth(P: *PForProof0, private_depth: i32,
@@ -14902,6 +15445,8 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
     if kind == AST_INDEX {
         P.index_reads = P.index_reads + 1;
         let base: i32 = g_nodes[node].child0;
+        proof0_affine_record_read(P, g_pf0_affine, base,
+                                  g_nodes[node].child1);
         if base >= 0 && base < g_nnodes && g_nodes[base].kind == AST_IDENT {
             if proof0_resolve(P, g_nodes[base].name0) >= 0 {
                 P.local_index_bases = P.local_index_bases + 1;
@@ -14918,6 +15463,9 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
     }
     if kind == AST_CALL {
         P.calls = P.calls + 1;
+        if proof0_args_ok(g_nodes[node].args_start, g_nodes[node].nargs, 1) == 0 {
+            proof0_mark(P, P0R_NODE); return;
+        }
         let fi: i32 = find_func_idx(g_nodes[node].name0);
         if fi < 0 || g_funcs[fi].is_extern == 1
             || g_funcs[fi].purity_computed == 0 {
@@ -14926,9 +15474,7 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
             P.effectful_calls = P.effectful_calls + 1;
         } else if g_funcs[fi].reads_arrays == 1 {
             P.read_calls = P.read_calls + 1;
-        }
-        if proof0_args_ok(g_nodes[node].args_start, g_nodes[node].nargs, 1) == 0 {
-            proof0_mark(P, P0R_NODE); return;
+            proof0_affine_map_call_reads(P, g_pf0_affine, node, fi);
         }
         var ai: i32 = 0;
         while ai < g_nodes[node].nargs {
@@ -15052,6 +15598,8 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         }
         if private_depth > 0 { P.private_stores = P.private_stores + 1; }
         let base: i32 = g_nodes[stmt].child0;
+        proof0_affine_record_write(P, g_pf0_affine, base,
+                                   g_nodes[stmt].child1);
         if base >= 0 && base < g_nnodes && g_nodes[base].kind == AST_IDENT {
             if proof0_resolve(P, g_nodes[base].name0) >= 0 {
                 P.local_index_bases = P.local_index_bases + 1;
@@ -15166,10 +15714,28 @@ fn proof0_reason_str(reason: i32) -> *u8 {
     return "";
 }
 
+fn proof0_affine_reason_str(reason: i32) -> *u8 {
+    if reason == P0A_BASE { return "unsupported-base"; }
+    if reason == P0A_PRIVATE_BASE { return "private-base"; }
+    if reason == P0A_CONST_IDX { return "const-idx"; }
+    if reason == P0A_NONINJECTIVE { return "noninjective"; }
+    if reason == P0A_LET_HIDDEN { return "let-hidden"; }
+    if reason == P0A_NONAFFINE { return "non-affine"; }
+    if reason == P0A_TERM_LIMIT { return "term-limit"; }
+    if reason == P0A_WRITE_LIMIT { return "write-limit"; }
+    if reason == P0A_READS_OVERFLOW { return "reads-overflow"; }
+    if reason == P0A_WILD_READ { return "wild-read"; }
+    if reason == P0A_RAW_WAR { return "raw-war"; }
+    if reason == P0A_WAW { return "waw"; }
+    if reason == P0A_CALL_READ { return "call-read"; }
+    if reason == P0A_INDEX_WRAP { return "index-wrap"; }
+    return "";
+}
+
 fn proof0_cpu_effects(P: *PForProof0) -> i32 {
     if P.complete == 0 || P.capture_writes != 0
         || P.capture_member_writes != 0 || P.unknown_calls != 0
-        || P.effectful_calls != 0 || P.read_calls != 0 || P.addresses != 0
+        || P.effectful_calls != 0 || P.addresses != 0
         || P.iterator_writes != 0 || P.alias_writes != 0
         || P.outer_exits != 0 || P.returns != 0 || P.qmarks != 0
         || P.defers != 0 { return 0; }
@@ -15187,16 +15753,31 @@ fn proof0_agx_effects(P: *PForProof0) -> i32 {
     return 1;
 }
 
-fn proof0_summarize(P: *PForProof0, loop_stmt: i32, body: i32,
+fn proof0_cpu_candidate(P: *PForProof0) -> i32 {
+    if proof0_cpu_effects(P) == 0 || P.affine_safe == 0 { return 0; }
+    return 1;
+}
+
+fn proof0_agx_candidate(P: *PForProof0) -> i32 {
+    if proof0_agx_effects(P) == 0 || P.affine_safe == 0 { return 0; }
+    return 1;
+}
+
+fn proof0_summarize(P: *PForProof0, A: *PForState,
+                    loop_stmt: i32, body: i32,
                     iter_name: i32) {
     proof0_reset(P);
+    proof0_affine_prepare(P, A, g_nodes[loop_stmt].child0,
+                          g_nodes[loop_stmt].child1);
     if proof0_bind(P, iter_name, loop_stmt, P0_BIND_OUTER) == 1 {
         proof0_stmt(P, body, 0, 0, 0, 0);
     }
+    proof0_affine_finish(P, A);
     P.nenv = 0;
 }
 
 fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
+                      A: *PForState,
                       pf: *PForState, legacy_dispatched: i32) {
     wr(1, "{\"fn\":"); json_emit_intern(g_cur_fn);
     wr(1, ",\"line\":"); wr_int(1, g_nodes[stmt].line as i64);
@@ -15209,7 +15790,14 @@ fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
     wr(1, ",\"reason\":\""); wr(1, proof0_reason_str(P.reason));
     wr(1, "\",\"cpu_effects\":"); wr_int(1, proof0_cpu_effects(P) as i64);
     wr(1, ",\"agx_effects\":"); wr_int(1, proof0_agx_effects(P) as i64);
-    wr(1, ",\"affine_pending\":"); wr_int(1, (P.index_writes != 0) as i64);
+    wr(1, ",\"cpu_candidate\":"); wr_int(1, proof0_cpu_candidate(P) as i64);
+    wr(1, ",\"agx_candidate\":"); wr_int(1, proof0_agx_candidate(P) as i64);
+    wr(1, ",\"affine_safe\":"); wr_int(1, P.affine_safe as i64);
+    wr(1, ",\"affine_reason\":\"");
+    wr(1, proof0_affine_reason_str(P.affine_reason));
+    wr(1, "\",\"affine_reads\":"); wr_int(1, A.nreads as i64);
+    wr(1, ",\"affine_writes\":"); wr_int(1, A.nwrites as i64);
+    wr(1, ",\"affine_call_reads\":"); wr_int(1, A.ncall_reads as i64);
     wr(1, ",\"bindings\":"); wr_int(1, P.nbindings as i64);
     wr(1, ",\"shadows\":"); wr_int(1, P.shadows as i64);
     wr(1, ",\"outer_reads\":"); wr_int(1, P.outer_reads as i64);
@@ -15926,8 +16514,10 @@ fn codegen_stmt(stmt: i32) {
                 }
             }
             if g_pfor_proof0_mode == 1 {
-                proof0_summarize(g_pf0, stmt, body_node, iter_name);
-                proof0_emit_report(stmt, iter_name, g_pf0, pf, rep_disp);
+                proof0_summarize(g_pf0, g_pf0_affine,
+                                 stmt, body_node, iter_name);
+                proof0_emit_report(stmt, iter_name, g_pf0, g_pf0_affine,
+                                   pf, rep_disp);
             } else {
                 pfor_emit_report_record(stmt, iter_name, pf, rep_disp);
             }
@@ -33391,7 +33981,7 @@ fn main(argc: i32, argv: **u8) {
             g_pfor_report_mode = 1;
             g_pfor_legacy_requested = 1;
         } else if str_eq(argv[ai], "--pfor-proof0-report") == 1 {
-            // PROOF0-a: recursive scope-aware effects beside the unchanged
+            // PROOF0: recursive effects + affine hazards beside the unchanged
             // legacy verdict. Query-only; never participates in dispatch.
             g_pfor_report_mode = 1;
             g_pfor_proof0_mode = 1;
@@ -33709,6 +34299,16 @@ fn main(argc: i32, argv: **u8) {
         g_pf0.env_names = alloc(MAX_PROOF0_ENV);
         g_pf0.env_decls = alloc(MAX_PROOF0_ENV);
         g_pf0.env_kinds = alloc(MAX_PROOF0_ENV);
+        g_pf0_affine = alloc(1);
+        g_pf0_affine.writes = alloc(MAX_PFOR_WRITES * 16);
+        g_pf0_affine.reads = alloc(MAX_PFOR_READS * 16);
+        g_pf0_affine.call_reads = alloc(MAX_PFOR_READS);
+        g_pf0_affine.keybuf = alloc(512);
+        g_pf0_affine.scratch = alloc(16);
+        g_pf0_affine.aff_terms = alloc(4);
+        g_pf0_affine.aff_signs = alloc(4);
+        g_pf0_affine.dlt_terms = alloc(4);
+        g_pf0_affine.dlt_signs = alloc(4);
     }
 
     // Set parser state

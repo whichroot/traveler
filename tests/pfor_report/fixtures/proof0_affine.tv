@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: Apache-2.0
+// PROOF0-b declaration-aware affine and hazard-summary fixture.
+
+field Proof0AffineF = Field<2013265921>;
+
+struct Proof0Buffers {
+    data: *Proof0AffineF,
+}
+
+fn read_previous(data: *Proof0AffineF, i: i32) -> Proof0AffineF {
+    if i == 0 { return 0; }
+    return data[i - 1];
+}
+
+fn main() -> i32 {
+    let n: i32 = 32;
+    let input: *Proof0AffineF = alloc(256);
+    let output: *Proof0AffineF = alloc(256);
+    let index: *i32 = alloc(256);
+    let buffers: Proof0Buffers = Proof0Buffers { data: output };
+
+    for i in 0..n {
+        output[i] = input[i];
+    }
+
+    let offset: i32 = n;
+    for i in 0..n {
+        output[i + offset] = input[i];
+    }
+
+    for i in 0..n {
+        if input[i] == 0 {
+            let offset: i32 = 0;
+            let observed: i32 = offset;
+        }
+        output[i + offset] = input[i];
+    }
+
+    for i in 0..n {
+        output[i] = input[i];
+        output[i + n] = input[i + n];
+    }
+
+    for i in 0..n {
+        output[i] = input[i];
+        output[i + 1] = input[i + 1];
+    }
+
+    for i in 0..n {
+        output[i] = output[i + 1] + input[i];
+    }
+
+    for i in 0..n {
+        output[i] = output[index[i]];
+    }
+
+    for i in 0..n {
+        output[i + i] = input[i];
+    }
+
+    for i in 0..n {
+        output[0] = input[i];
+    }
+
+    for i in 0..n {
+        if input[i] != 0 {
+            let i: i32 = 0;
+            output[i] = input[i];
+        }
+    }
+
+    for i in 0..n {
+        let alias: *Proof0AffineF = output;
+        alias[i] = input[i];
+    }
+
+    for i in 0..n {
+        if input[i] != 0 { output[i] = input[i]; }
+    }
+
+    for i in 0..n {
+        if input[i] != 0 { output[i] = input[i]; }
+        else { output[i] = 0; }
+    }
+
+    for i in 0..n {
+        output[i] = output[i + n] + input[i];
+    }
+
+    for i in 1..n {
+        output[i] = read_previous(input, i);
+    }
+
+    for i in 0..32 {
+        output[i] = input[i];
+        output[i + 2147483647 + 2147483647 + 3] = input[i];
+    }
+
+    for i in 0..n {
+        buffers.data[i] = input[i];
+    }
+
+    free(index);
+    free(output);
+    free(input);
+    return 0;
+}

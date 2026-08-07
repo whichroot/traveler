@@ -1,22 +1,19 @@
-// pfor_parity_bigliteral.tv — A2: cross-compiler literal-width parity
+// pfor_parity_bigliteral.tv - runtime-width affine-literal regression
 //
-// tvc.c stores affine literals as int64_t; tvc_self.tv originally used
-// i32 with 'int_val as i32' truncation.  Truncation is SOUND (a key
-// collision requires true deltas >= 2^32, which can only make truly
-// disjoint footprints look overlapping — lost parallelism, never a
-// race) but it breaks dual-compiler parity:
+// This began as a cross-compiler parity test. That premise was wrong: array
+// indices evaluate in i32 here, so a mathematical 2^32+1 delta is runtime +1.
 //
 //   out[i + 4294967297] vs out[i], trip 4096:
-//     tvc.c:    delta = 2^32+1 >= 4096  -> dispatch
-//     tvc_self: delta = trunc(2^32+1) = 1 < 4096 -> reject  (DIVERGED)
+//     analyzer over unbounded integers: delta >= trip -> unsafe dispatch
+//     runtime i32:                      delta == 1    -> overlapping writes
 //
 // The big-literal loop lives in a dead branch: pfor analysis runs at
-// codegen regardless of reachability, the worker is emitted but never
-// called, so no runtime access at offset 2^32.
+// codegen regardless of reachability, so worker count deterministically catches
+// the proof error without executing an out-of-range access.
 //
-// Loop layout (expected workers: 3, identical in BOTH compilers):
+// Loop layout (tvc_self workers: 2; frozen C seed retains its old count 3):
 //   1. live safe loop                          -> worker
-//   2. dead-branch big-literal disjoint loop   -> worker (the probe)
+//   2. dead-branch wrapped-literal loop         -> NO worker (index-wrap)
 //   3. live boundary loop, delta == trip       -> worker (case (a) edge)
 //   4. live overlap loop, delta == trip-1      -> NO worker (negative ctl)
 //
@@ -49,9 +46,7 @@ fn main() -> i32 {
     while w < n { s0 = s0 + out[w]; w = w + 1; }
     print(s0);
 
-    // Loop 2: THE PROBE.  Dead branch, two writes with literal delta
-    // 2^32+1.  True footprints disjoint by case (a): 4294967297 >= 4096.
-    // Both compilers must reach the same verdict (dispatch).
+    // Loop 2: THE PROBE. Runtime i32 turns the second write into out[i+1].
     if g_never == 1 {
         for i in 0..4096 {
             out[i + 4294967297] = a[i];

@@ -1,0 +1,18 @@
+// pfor_self_affine_slack.tv - a dynamic end-term offset with extra slack can
+// wrap back into the first footprint. Dead branch: proof only.
+
+field F = Field<2013265921>;
+var never: i32 = 0;
+
+fn main() -> i32 {
+    let n: i32 = 2147483647;
+    let out: *F = alloc(1);
+    if never == 1 {
+        for i in 0..n {
+            out[i] = 1;
+            out[i + n + 3] = 2;
+        }
+    }
+    print(7);
+    return 0;
+}
