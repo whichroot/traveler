@@ -278,6 +278,10 @@ else
         echo "  FAIL: AGX control specimens failed their portable structure gate"
         fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/agx_cf0_probe.py" --check-only; then
+        echo "  FAIL: AGX CF0 compare/select encoder failed its portable gate"
+        fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" --check-only; then
         echo "  FAIL: AGX counted-dot specimen failed its portable structure gate"
         fail=1
@@ -315,6 +319,11 @@ else
             echo "  ok   G16X compare/select/forward-control/backedge contracts exact"
         else
             echo "  FAIL: G16X control-flow execution mismatch"; fail=1
+        fi
+        if python3 "$SCRIPT_DIR/agx_cf0_probe.py" "$AGX_HARNESS"; then
+            echo "  ok   G16X CF0 authored compare/select fields exact"
+        else
+            echo "  FAIL: G16X CF0 compare/select execution mismatch"; fail=1
         fi
         if python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" "$AGX_HARNESS"; then
             echo "  ok   G16X fixed-shape counted Montgomery dots exact"
