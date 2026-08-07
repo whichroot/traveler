@@ -35,6 +35,7 @@ def check_corpus(rows: list[dict]) -> None:
     cpu_candidate = sum(row["cpu_candidate"] for row in rows)
     cpu_dispatched = sum(row["cpu_dispatched"] for row in rows)
     agx_candidate = sum(row["agx_candidate"] for row in rows)
+    lang1_candidate = sum(row["lang1_candidate"] for row in rows)
     independent = sum(row["legacy_independent"] for row in rows)
     if dispatched != 206:
         raise ValueError(
@@ -72,6 +73,26 @@ def check_corpus(rows: list[dict]) -> None:
     census = (independent, cpu_candidate, agx_candidate, cpu_added, cpu_removed)
     if census != (206, 216, 163, 10, 0):
         raise ValueError(f"PROOF1 candidate census changed: {census}")
+    c1_inlineable = sum(row["c1_inlineable_calls"] for row in rows)
+    c1_refusals = {
+        reason: sum(row["c1_refusal"] == reason for row in rows)
+        for reason in ("", "callee-shape", "closure-shape", "short-circuit")
+    }
+    if (lang1_candidate, c1_inlineable, c1_refusals) != (
+        178,
+        38,
+        {"": 398, "callee-shape": 9, "closure-shape": 1,
+         "short-circuit": 0},
+    ):
+        raise ValueError(
+            "LANG1-C1 candidate/refusal census changed: "
+            f"{lang1_candidate}, {c1_inlineable}, {c1_refusals}"
+        )
+    print(
+        "LANG1-C1 census: "
+        f"candidates={lang1_candidate} inlineable={c1_inlineable} "
+        f"refusals={c1_refusals}"
+    )
     operationally_blocked = [
         row for row in rows
         if row["cpu_candidate"] == 1 and row["cpu_dispatched"] == 0
@@ -204,7 +225,7 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "7ce77a3d1d8686a63015826a64a55ff86698103bf8c30858b4d4547f39bb5924"
+        "1d30ba41227448537edcb740b47b201e6075d0b39a4961e32b85d7e9759e6fed"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")

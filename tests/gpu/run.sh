@@ -756,8 +756,8 @@ else
        || ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_array_refuse.tv" \
             -o "$TMP/agx_lang1_array_refuse.hex" 2>/dev/null \
        || grep -q '^worker __pfor_gpu_worker_' "$TMP/agx_lang1_array_refuse.hex" \
-       || ! grep -q '^skip __pfor_gpu_worker_0 reason=unsupported-agx0-worker$' \
-            "$TMP/agx_lang1_array_refuse.hex"; then
+       || [ "$(grep -c '^skip __pfor_gpu_worker_' \
+                    "$TMP/agx_lang1_array_refuse.hex" || true)" -ne 4 ]; then
         echo "  FAIL: AGX LANG1 fixed-array artifact/refusal changed"; fail=1
         LANG1_ARRAY_READY=0
     fi
@@ -791,7 +791,7 @@ else
         LANG1_ARRAY_READY=0
     fi
     if [ "$LANG1_ARRAY_READY" = "1" ]; then
-        echo "  ok   AGX LANG1 fixed-array scalarization and dynamic-index refusal are pinned"
+        echo "  ok   AGX LANG1 fixed-array scalarization and remaining index refusals are pinned"
     fi
     LANG1_ARRAY_HOST_READY=0
     if [ "$LANG1_ARRAY_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
@@ -965,18 +965,11 @@ else
             "$SCRIPT_DIR/agx_lang1_closure.tv" \
             -o "$TMP/agx_lang1_closure.ra.hex" \
             2>"$TMP/agx_lang1_closure.ra.report" \
-       || ! cmp -s "$AGX_LANG1_CLOSURE_DEV" \
-            "$TMP/agx_lang1_closure.ra.hex" \
-       || ! grep -qF 'agx-ra0: shape=6 blocks=1 iterations=2 copies=0 repairs=0 slot-regs=5 live-regs=1 vm-regs=0 pairs=0 loads=2 outcome=1' \
-            "$TMP/agx_lang1_closure.ra.report" \
-       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_closure_refuse.tv" \
-            --pfor-proof0-report >"$TMP/agx_lang1_closure_refuse.jsonl" \
-            2>/dev/null \
-       || ! grep -q '"cpu_reason":"unsupported-stmt"' \
-            "$TMP/agx_lang1_closure_refuse.jsonl" \
-       || ! grep -q '"lang1_candidate":0' \
-            "$TMP/agx_lang1_closure_refuse.jsonl"; then
-        echo "  FAIL: AGX LANG1 closure artifact/refusal changed"; fail=1
+        || ! cmp -s "$AGX_LANG1_CLOSURE_DEV" \
+             "$TMP/agx_lang1_closure.ra.hex" \
+        || ! grep -qF 'agx-ra0: shape=6 blocks=1 iterations=2 copies=0 repairs=0 slot-regs=5 live-regs=1 vm-regs=0 pairs=0 loads=2 outcome=1' \
+             "$TMP/agx_lang1_closure.ra.report"; then
+        echo "  FAIL: AGX LANG1 closure artifact changed"; fail=1
         LANG1_CLOSURE_READY=0
     fi
     if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_closure_eval.tv" \
@@ -1032,6 +1025,123 @@ else
             LANG1_CLOSURE_HOST_READY=1
             echo "  ok   AGX LANG1 closures agree at T=1/4/32"
         fi
+    fi
+
+    LANG1_C1_READY=1
+    LANG1_C1_HOST_READY=1
+    run_lang1_c1_gate() {
+        local label="$1" source="$2" eval_source="$3" dispatch_source="$4"
+        local artifact_check="$5" output_check="$6" ra_line="$7"
+        local normal_pfor="${8:-1}"
+        local dev="$TMP/agx_lang1_${label}.agx.hex"
+        local shadow="$TMP/agx_lang1_${label}.shadow.hex"
+        local report="$TMP/agx_lang1_${label}.ra.report"
+        local eval_bin="$TMP/agx_lang1_${label}.eval.bin"
+        local eval_ll="$TMP/agx_lang1_${label}.eval.ll"
+        local eval_obj="$TMP/agx_lang1_${label}.eval.o"
+        local eval_exe="$TMP/agx-lang1-${label}-eval"
+        local dispatch_ll="$TMP/agx_lang1_${label}.ll"
+        local dispatch_obj="$TMP/agx_lang1_${label}.o"
+        local dispatch_exe="$TMP/agx-lang1-${label}"
+        if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/$source" \
+                -o "$dev" 2>/dev/null \
+           || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                "$artifact_check" "$dev" \
+           || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+                "$SCRIPT_DIR/$source" -o "$shadow" 2>"$report" \
+           || ! cmp -s "$dev" "$shadow" \
+           || ! grep -qF "$ra_line" "$report"; then
+            echo "  FAIL: AGX LANG1-C1 $label artifact/RA changed"
+            fail=1; LANG1_C1_READY=0; LANG1_C1_HOST_READY=0; return
+        fi
+        if ! "$STAGE1" --eval "$SCRIPT_DIR/$eval_source" \
+                >"$eval_bin" 2>/dev/null \
+           || ! "$STAGE1" "$SCRIPT_DIR/$eval_source" -o "$eval_ll" 2>/dev/null \
+           || [ "$(grep -c 'call void @__parallel_for(' "$eval_ll" || true)" \
+                -ne "$normal_pfor" ] \
+           || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$eval_ll" \
+                -o "$eval_obj" 2>/dev/null \
+           || ! cc $HOST_LINK_PIE "$eval_obj" -o "$eval_exe" 2>/dev/null \
+           || ! env TRAVELER_THREADS=4 "$eval_exe" \
+                >"$TMP/agx_lang1_${label}.cpu.bin" \
+           || ! cmp -s "$eval_bin" "$TMP/agx_lang1_${label}.cpu.bin" \
+           || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                "$output_check" "$eval_bin"; then
+            echo "  FAIL: AGX LANG1-C1 $label eval/CPU oracle changed"
+            fail=1; LANG1_C1_READY=0; LANG1_C1_HOST_READY=0; return
+        fi
+        if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/$dispatch_source" \
+                -o "$dispatch_ll" 2>/dev/null \
+           || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                    "$dispatch_ll" || true)" -ne 1 ] \
+           || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                    "$dispatch_ll" || true)" -ne 1 ] \
+           || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$dispatch_ll" \
+                -o "$dispatch_obj" 2>/dev/null; then
+            echo "  FAIL: AGX LANG1-C1 $label dispatch artifact changed"
+            fail=1; LANG1_C1_READY=0; LANG1_C1_HOST_READY=0; return
+        fi
+        if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+            if ! cc "$dispatch_obj" -framework IOKit -o "$dispatch_exe" 2>/dev/null \
+               || ! env TRAVELER_THREADS=1 "$dispatch_exe" \
+                    >"$TMP/agx_lang1_${label}.t1.bin" \
+               || ! env TRAVELER_THREADS=4 "$dispatch_exe" \
+                    >"$TMP/agx_lang1_${label}.t4.bin" \
+               || ! env TRAVELER_THREADS=32 "$dispatch_exe" \
+                    >"$TMP/agx_lang1_${label}.t32.bin" \
+               || ! cmp -s "$eval_bin" "$TMP/agx_lang1_${label}.t1.bin" \
+               || ! cmp -s "$eval_bin" "$TMP/agx_lang1_${label}.t4.bin" \
+               || ! cmp -s "$eval_bin" "$TMP/agx_lang1_${label}.t32.bin"; then
+                echo "  FAIL: AGX LANG1-C1 $label differs at T=1/4/32"
+                fail=1; LANG1_C1_READY=0; LANG1_C1_HOST_READY=0; return
+            fi
+        else
+            LANG1_C1_HOST_READY=0
+        fi
+        echo "  ok   AGX LANG1-C1 $label artifact and CPU differential are pinned"
+    }
+    run_lang1_c1_gate c1 agx_lang1_c1.tv agx_lang1_c1_eval.tv \
+        agx_lang1_c1_dispatch.tv --check-c1-artifact --check-c1-output \
+        'agx-ra0: shape=6 blocks=12 iterations=3 copies=8 repairs=0 slot-regs=31 live-regs=4 vm-regs=0 pairs=0 loads=2 outcome=1'
+    run_lang1_c1_gate c1_operator agx_lang1_c1_operator.tv \
+        agx_lang1_c1_operator_eval.tv agx_lang1_c1_operator_dispatch.tv \
+        --check-c1-operator-artifact --check-c1-operator-output \
+        'agx-ra0: shape=6 blocks=9 iterations=2 copies=6 repairs=0 slot-regs=12 live-regs=5 vm-regs=0 pairs=0 loads=2 outcome=1'
+    run_lang1_c1_gate c1_closure agx_lang1_c1_closure.tv \
+        agx_lang1_c1_closure_eval.tv agx_lang1_c1_closure_dispatch.tv \
+        --check-c1-closure-artifact --check-c1-closure-output \
+        'agx-ra0: shape=6 blocks=4 iterations=2 copies=2 repairs=0 slot-regs=7 live-regs=3 vm-regs=0 pairs=0 loads=2 outcome=1'
+    run_lang1_c1_gate c1_harden agx_lang1_c1_harden.tv \
+        agx_lang1_c1_harden_eval.tv agx_lang1_c1_harden_dispatch.tv \
+        --check-c1-harden-artifact --check-c1-harden-output \
+        'agx-ra0: shape=6 blocks=20 iterations=4 copies=14 repairs=0 slot-regs=19 live-regs=4 vm-regs=0 pairs=0 loads=5 outcome=1'
+    run_lang1_c1_gate dynamic_array agx_lang1_dynamic_array.tv \
+        agx_lang1_dynamic_array_eval.tv agx_lang1_dynamic_array_dispatch.tv \
+        --check-dynamic-array-artifact --check-dynamic-array-output \
+        'agx-ra0: shape=6 blocks=40 iterations=2 copies=42 repairs=0 slot-regs=25 live-regs=11 vm-regs=0 pairs=0 loads=2 outcome=1' 0
+    if ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_c1_refuse.tv" \
+            --pfor-proof0-report >"$TMP/agx_lang1_c1_refuse.jsonl" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-c1-refusals "$TMP/agx_lang1_c1_refuse.jsonl" \
+       || ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_c1_refuse.tv" \
+            -o "$TMP/agx_lang1_c1_refuse.hex" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$TMP/agx_lang1_c1_refuse.hex"; then
+        echo "  FAIL: AGX LANG1-C1 negative catalogue changed"
+        fail=1; LANG1_C1_READY=0
+    else
+        echo "  ok   AGX LANG1-C1 negative catalogue remains CPU-only"
+    fi
+    if ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --write-c1-hardening-refusals "$TMP/agx_lang1_c1_limits.tv" \
+       || ! "$STAGE1" --emit-gpu-agx "$TMP/agx_lang1_c1_limits.tv" \
+            -o "$TMP/agx_lang1_c1_limits.hex" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$TMP/agx_lang1_c1_limits.hex" \
+       || [ "$(grep -c '^skip __pfor_gpu_worker_' \
+                    "$TMP/agx_lang1_c1_limits.hex" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX LANG1 depth/capacity fences changed"
+        fail=1; LANG1_C1_READY=0
+    else
+        echo "  ok   AGX LANG1 call depth and C1/index capacity fences fail closed"
     fi
     if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
         echo "  FAIL: AGX control specimens failed their portable structure gate"
@@ -1323,6 +1433,50 @@ else
             fi
             if [ "$lang1closurefail" = "0" ]; then
                 echo "  ok   AGX LANG1 closures are exact on eval, CPU, and G16X"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_C1_READY" = "1" ]; then
+            lang1c1fail=0
+            if [ "$LANG1_C1_HOST_READY" != "1" ]; then
+                echo "  FAIL: AGX LANG1-C1 runtime differential is not host-ready"
+                lang1c1fail=1
+            fi
+            for c1_label in c1 c1_operator c1_closure c1_harden dynamic_array; do
+                case "$c1_label" in
+                    c1) c1_output_check=--check-c1-output ;;
+                    c1_operator) c1_output_check=--check-c1-operator-output ;;
+                    c1_closure) c1_output_check=--check-c1-closure-output ;;
+                    c1_harden) c1_output_check=--check-c1-harden-output ;;
+                    *) c1_output_check=--check-dynamic-array-output ;;
+                esac
+                if [ "$lang1c1fail" = "0" ] \
+                   && python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                    TRAVELER_AGX_ARTIFACT="$TMP/agx_lang1_${c1_label}.agx.hex" \
+                        "$TMP/agx-lang1-${c1_label}" \
+                        >"$TMP/agx_lang1_${c1_label}.gpu.bin"
+                    c1_status=$?
+                    if [ "$c1_status" -ne 0 ] \
+                       || [ "$(wc -c <"$TMP/agx_lang1_${c1_label}.gpu.bin" | tr -d ' ')" -ne 3072 ] \
+                       || ! cmp -s "$TMP/agx_lang1_${c1_label}.eval.bin" \
+                            "$TMP/agx_lang1_${c1_label}.gpu.bin" \
+                       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                            "$c1_output_check" \
+                            "$TMP/agx_lang1_${c1_label}.gpu.bin" \
+                       || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                            "$AGX_HARNESS" >/dev/null; then
+                        echo "  FAIL: AGX LANG1-C1 $c1_label eval/CPU/G16X differential failed"
+                        lang1c1fail=1
+                    fi
+                else
+                    lang1c1fail=1
+                fi
+            done
+            if [ "$lang1c1fail" = "0" ]; then
+                echo "  ok   AGX LANG1-C1 hardening and dynamic private indices are exact"
             else
                 fail=1
             fi

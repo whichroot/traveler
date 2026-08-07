@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-C1: trait-qualified and operator callees own scalar local control.
+
+field AgxLang1C1OperatorF = Field<2013265921>;
+
+struct AgxLang1C1OperatorBox {
+    value: AgxLang1C1OperatorF,
+}
+
+trait Add {
+    fn add(self, other: AgxLang1C1OperatorBox) -> AgxLang1C1OperatorF;
+}
+
+impl Add for AgxLang1C1OperatorBox {
+    fn add(self, other: AgxLang1C1OperatorBox) -> AgxLang1C1OperatorF {
+        let left: AgxLang1C1OperatorF = self.value;
+        let right: AgxLang1C1OperatorF = other.value;
+        if left < right { return right; }
+        else { return left; }
+    }
+}
+
+fn agx_lang1_c1_operator_init(left: *AgxLang1C1OperatorF,
+                              right: *AgxLang1C1OperatorF, n: i32) {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang1C1OperatorF;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang1C1OperatorF;
+        i = i + 1;
+    }
+}
+
+fn agx_lang1_c1_operator(left: *AgxLang1C1OperatorF,
+                         right: *AgxLang1C1OperatorF,
+                         output: *AgxLang1C1OperatorF) {
+    for j in 0..768 {
+        let a: AgxLang1C1OperatorBox =
+            AgxLang1C1OperatorBox { value: left[j] };
+        let b: AgxLang1C1OperatorBox =
+            AgxLang1C1OperatorBox { value: right[j] };
+        let via_trait: AgxLang1C1OperatorF =
+            Add__AgxLang1C1OperatorBox__add(&a, b);
+        let via_operator: AgxLang1C1OperatorF = a + b;
+        var chosen: AgxLang1C1OperatorF = via_trait;
+        if via_trait == via_operator { chosen = via_operator; }
+        output[j] = chosen;
+    }
+}

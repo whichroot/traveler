@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+import "agx_lang1_c1_operator.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+fn main() -> i32 {
+    let n: i32 = 768;
+    let left: *AgxLang1C1OperatorF = alloc(n);
+    let right: *AgxLang1C1OperatorF = alloc(n);
+    let output: *AgxLang1C1OperatorF = alloc(n);
+    agx_lang1_c1_operator_init(left, right, n);
+    agx_lang1_c1_operator(left, right, output);
+    let wrote: i64 = write(1, output as *u8, 3072);
+    free(output); free(right); free(left);
+    if wrote != 3072 { return 4; }
+    return 0;
+}

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-C1 hardening: argument order, scalar set, and scalar result types.
+
+field AgxLang1C1HardenF = Field<2013265921>;
+
+fn agx_c1_harden_field(a: AgxLang1C1HardenF, b: AgxLang1C1HardenF,
+                       mode: i32) -> AgxLang1C1HardenF {
+    var selected: AgxLang1C1HardenF = a;
+    selected = b;
+    if mode < 128 { return selected; }
+    else { return a; }
+}
+
+fn agx_c1_harden_i32(a: i32, b: i32, mode: i32) -> i32 {
+    var selected: i32 = a;
+    selected = b;
+    if mode < 384 { return selected; }
+    else { return a; }
+}
+
+fn agx_c1_harden_u32(a: u32, b: u32, mode: i32) -> u32 {
+    var selected: u32 = a;
+    selected = b;
+    if mode < 640 { return selected; }
+    else { return a; }
+}
+
+fn agx_lang1_c1_harden_init(left: *AgxLang1C1HardenF,
+                             right: *AgxLang1C1HardenF, n: i32) {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang1C1HardenF;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang1C1HardenF;
+        i = i + 1;
+    }
+}
+
+fn agx_lang1_c1_harden(left: *AgxLang1C1HardenF,
+                        right: *AgxLang1C1HardenF,
+                        output: *AgxLang1C1HardenF) {
+    for j in 0..768 {
+        var chosen: AgxLang1C1HardenF = left[j];
+        if j < 256 {
+            chosen = agx_c1_harden_field(left[j], right[j], j);
+        } else {
+            if j < 512 {
+                let value: i32 = agx_c1_harden_i32(j, 17, j);
+                if value == 17 { chosen = right[j]; }
+            } else {
+                let value2: u32 = agx_c1_harden_u32(5, 11, j);
+                if value2 == 11 { chosen = right[j]; }
+            }
+        }
+        output[j] = chosen;
+    }
+}

@@ -1,15 +1,59 @@
 // SPDX-License-Identifier: Apache-2.0
-// Dynamic private-array indexing stays outside the measured LANG1 slice.
+// LANG1-I1 refusal catalogue: each remaining boundary stays CPU-only.
 
 field AgxLang1ArrayRefuseF = Field<2013265921>;
 
-fn dynamic_private_index(input: *AgxLang1ArrayRefuseF,
+fn dynamic_short_circuit(input: *AgxLang1ArrayRefuseF,
                          output: *AgxLang1ArrayRefuseF) {
     for j in 0..768 {
         var local: [i32; 4] = 0;
-        local[j] = 1;
+        var index: i32 = 0;
+        if input[j] != 0 { index = 1; }
+        let selected: i1 = true && local[index] == 0;
         var chosen: AgxLang1ArrayRefuseF = input[j];
-        if local[j] == 1 { chosen = input[j]; }
+        if selected { chosen = input[j]; }
         output[j] = chosen;
+    }
+}
+
+fn dynamic_i64_index(input: *AgxLang1ArrayRefuseF,
+                     output: *AgxLang1ArrayRefuseF) {
+    for j in 0..768 {
+        var local: [i32; 4] = 0;
+        let index: i64 = j as i64;
+        local[index] = 1;
+        output[j] = input[j];
+    }
+}
+
+fn dynamic_loop_bound(input: *AgxLang1ArrayRefuseF,
+                      output: *AgxLang1ArrayRefuseF) {
+    for j in 0..768 {
+        var local: [i32; 4] = 0;
+        var index: i32 = 0;
+        if input[j] != 0 { index = 1; }
+        var chosen: AgxLang1ArrayRefuseF = input[j];
+        for k in 0..local[index] { chosen = input[j]; }
+        output[j] = chosen;
+    }
+}
+
+fn dynamic_large_array(input: *AgxLang1ArrayRefuseF,
+                       output: *AgxLang1ArrayRefuseF) {
+    for j in 0..768 {
+        var local: [i32; 17] = 0;
+        var index: i32 = 0;
+        if input[j] != 0 { index = 1; }
+        local[index] = 1;
+        output[j] = input[j];
+    }
+}
+
+fn dynamic_pointer_index(input: *AgxLang1ArrayRefuseF,
+                         output: *AgxLang1ArrayRefuseF) {
+    for j in 0..768 {
+        var index: i32 = 0;
+        if input[j] != 0 { index = 1; }
+        output[j] = input[index];
     }
 }

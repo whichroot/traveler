@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-C1 negative catalogue: every loop remains a CPU-only fallback.
+
+field AgxLang1C1RefuseF = Field<2013265921>;
+
+struct AgxLang1C1RefuseBox {
+    value: AgxLang1C1RefuseF,
+}
+
+extern "C" fn abs(value: i32) -> i32;
+
+fn c1_nonterminal(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    if value == 0 { return value; }
+    let copied: AgxLang1C1RefuseF = value;
+    return copied;
+}
+
+fn c1_missing_else(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    if value == 0 { return value; }
+    return value;
+}
+
+fn c1_nested_loop(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    var copied: AgxLang1C1RefuseF = value;
+    for k in 0..2 { copied = value; }
+    return copied;
+}
+
+fn c1_aggregate(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    let boxed: AgxLang1C1RefuseBox = AgxLang1C1RefuseBox { value: value };
+    return boxed.value;
+}
+
+fn c1_pointer(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    let pointer: *AgxLang1C1RefuseF = &value;
+    return pointer[0];
+}
+
+fn c1_extern(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    let magnitude: i32 = abs(value as i32);
+    return magnitude as AgxLang1C1RefuseF;
+}
+
+fn c1_recursive(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    return c1_recursive(value);
+}
+
+fn c1_mutual_a(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    return c1_mutual_b(value);
+}
+
+fn c1_mutual_b(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    return c1_mutual_a(value);
+}
+
+fn c1_predicate(value: AgxLang1C1RefuseF) -> i1 {
+    let copied: AgxLang1C1RefuseF = value;
+    return copied == 0;
+}
+
+fn c1_too_deep(value: AgxLang1C1RefuseF) -> AgxLang1C1RefuseF {
+    if value < 1 {
+        if value < 2 {
+            if value < 3 {
+                if value < 4 {
+                    if value < 5 { return value; }
+                    else { return value; }
+                } else { return value; }
+            } else { return value; }
+        } else { return value; }
+    } else { return value; }
+}
+
+fn agx_c1_refuse_nonterminal(input: *AgxLang1C1RefuseF,
+                             output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_nonterminal(input[i]); }
+}
+
+fn agx_c1_refuse_missing_else(input: *AgxLang1C1RefuseF,
+                              output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_missing_else(input[i]); }
+}
+
+fn agx_c1_refuse_nested_loop(input: *AgxLang1C1RefuseF,
+                             output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_nested_loop(input[i]); }
+}
+
+fn agx_c1_refuse_aggregate(input: *AgxLang1C1RefuseF,
+                           output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_aggregate(input[i]); }
+}
+
+fn agx_c1_refuse_pointer(input: *AgxLang1C1RefuseF,
+                         output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_pointer(input[i]); }
+}
+
+fn agx_c1_refuse_extern(input: *AgxLang1C1RefuseF,
+                        output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_extern(input[i]); }
+}
+
+fn agx_c1_refuse_recursive(input: *AgxLang1C1RefuseF,
+                           output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_recursive(input[i]); }
+}
+
+fn agx_c1_refuse_mutual_recursion(input: *AgxLang1C1RefuseF,
+                                  output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_mutual_a(input[i]); }
+}
+
+fn agx_c1_refuse_capture_mutation(left: *AgxLang1C1RefuseF,
+                                  right: *AgxLang1C1RefuseF,
+                                  output: *AgxLang1C1RefuseF) {
+    for i in 0..32 {
+        var captured: AgxLang1C1RefuseF = right[i];
+        let choose = |value: AgxLang1C1RefuseF| -> AgxLang1C1RefuseF {
+            let candidate: AgxLang1C1RefuseF = value;
+            if candidate < captured { return captured; }
+            else { return candidate; }
+        };
+        captured = left[i];
+        output[i] = choose(right[i]);
+    }
+}
+
+fn agx_c1_refuse_expr_capture_mutation(left: *AgxLang1C1RefuseF,
+                                       right: *AgxLang1C1RefuseF,
+                                       output: *AgxLang1C1RefuseF) {
+    for i in 0..32 {
+        var captured: AgxLang1C1RefuseF = right[i];
+        let choose = |unused: AgxLang1C1RefuseF| -> AgxLang1C1RefuseF captured;
+        captured = left[i];
+        output[i] = choose(right[i]);
+    }
+}
+
+fn agx_c1_refuse_short_circuit(input: *AgxLang1C1RefuseF,
+                               output: *AgxLang1C1RefuseF) {
+    for i in 0..32 {
+        let selected: i1 = true && c1_predicate(input[i]);
+        var value: AgxLang1C1RefuseF = input[i];
+        if selected { value = input[i]; }
+        output[i] = value;
+    }
+}
+
+fn agx_c1_refuse_depth(input: *AgxLang1C1RefuseF,
+                       output: *AgxLang1C1RefuseF) {
+    for i in 0..32 { output[i] = c1_too_deep(input[i]); }
+}

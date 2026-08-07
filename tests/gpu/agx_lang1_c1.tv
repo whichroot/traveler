@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-C1: scalar callee locals and terminal diamonds expand into worker EIR.
+
+field AgxLang1C1F = Field<2013265921>;
+
+fn agx_lang1_c1_init(left: *AgxLang1C1F, right: *AgxLang1C1F, n: i32) {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang1C1F;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang1C1F;
+        i = i + 1;
+    }
+    left[0] = 0; right[0] = 13;
+    left[1] = 3; right[1] = 5;
+    left[2] = 7; right[2] = 11;
+    left[3] = 19; right[3] = 2;
+}
+
+fn agx_lang1_c1_copy<T>(value: T) -> T {
+    let copied: T = value;
+    return copied;
+}
+
+fn agx_lang1_c1_choose(a: AgxLang1C1F, b: AgxLang1C1F,
+                       mode: i32) -> AgxLang1C1F {
+    let left: AgxLang1C1F = a;
+    let right: AgxLang1C1F = b;
+    if mode < 384 {
+        if left < right { return agx_lang1_c1_copy(right); }
+        else { return agx_lang1_c1_copy(left); }
+    } else {
+        if left < right { return agx_lang1_c1_copy(left); }
+        else { return agx_lang1_c1_copy(right); }
+    }
+}
+
+fn agx_lang1_c1_equal(a: AgxLang1C1F, b: AgxLang1C1F) -> i1 {
+    let left: AgxLang1C1F = a;
+    return left == b;
+}
+
+fn agx_lang1_c1(left: *AgxLang1C1F, right: *AgxLang1C1F,
+                 output: *AgxLang1C1F) {
+    for j in 0..768 {
+        let copied: AgxLang1C1F = agx_lang1_c1_copy(left[j]);
+        var chosen: AgxLang1C1F =
+            agx_lang1_c1_choose(copied, right[j], j);
+        if agx_lang1_c1_equal(chosen, copied) {
+            chosen = agx_lang1_c1_copy(chosen);
+        }
+        output[j] = chosen;
+    }
+}

@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-I1: dynamic private-array reads and writes select scalarized slots.
+
+field AgxLang1DynamicArrayF = Field<2013265921>;
+
+fn agx_dynamic_index_i32(mode: i32) -> i32 {
+    if mode < 384 { return 0; }
+    else { return 2; }
+}
+
+fn agx_dynamic_index_u32(mode: i32) -> u32 {
+    if mode < 384 { return 0; }
+    else { return 2; }
+}
+
+fn agx_dynamic_bump(value: i32) -> i32 {
+    var result: i32 = value;
+    result = result + 5;
+    if result < 0 { return 0; }
+    else { return result; }
+}
+
+fn agx_lang1_dynamic_array_init(left: *AgxLang1DynamicArrayF,
+                                right: *AgxLang1DynamicArrayF, n: i32) {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang1DynamicArrayF;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang1DynamicArrayF;
+        i = i + 1;
+    }
+    left[0] = 0; right[0] = 13;
+    left[1] = 3; right[1] = 5;
+    left[2] = 7; right[2] = 11;
+    left[3] = 19; right[3] = 2;
+}
+
+fn agx_lang1_dynamic_array(left: *AgxLang1DynamicArrayF,
+                           right: *AgxLang1DynamicArrayF,
+                           output: *AgxLang1DynamicArrayF) {
+    for j in 0..768 {
+        let a: AgxLang1DynamicArrayF = left[j];
+        let b: AgxLang1DynamicArrayF = right[j];
+        var write_index: i32 = agx_dynamic_index_i32(j);
+        var read_index: u32 = agx_dynamic_index_u32(j);
+        if j >= 192 { write_index = 1; read_index = 1; }
+        if j >= 384 { write_index = 2; read_index = 2; }
+        if j >= 576 { write_index = 3; read_index = 3; }
+        var score: [i32; 4] = 0;
+        score[0] = 3;
+        score[1] = 7;
+        score[2] = 11;
+        score[3] = 17;
+        let before: i32 = score[read_index];
+        score[write_index] = agx_dynamic_bump(before);
+        let after: i32 = score[read_index];
+        var chosen: AgxLang1DynamicArrayF = a;
+        if after == 8 { chosen = b; }
+        if after == 16 { chosen = b; }
+        output[j] = chosen;
+    }
+}
