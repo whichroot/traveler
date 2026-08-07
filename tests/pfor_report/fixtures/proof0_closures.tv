@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1 static-closure proof: known identities cross; erased/effectful ones do not.
+
+field Proof0ClosureF = Field<2013265921>;
+
+struct Proof0ClosureCell {
+    value: Proof0ClosureF,
+}
+
+fn add_one(x: Proof0ClosureF) -> Proof0ClosureF {
+    return x + 1;
+}
+
+fn closure_map<C>(f: C, input: *Proof0ClosureF,
+                  output: *Proof0ClosureF, n: i32) {
+    for i in 0..n {
+        output[i] = f(input[i]);
+    }
+}
+
+fn main() -> i32 {
+    let input: *Proof0ClosureF = alloc(32);
+    let output: *Proof0ClosureF = alloc(32);
+    let table: *Proof0ClosureF = alloc(32);
+    let cells: *Proof0ClosureCell = input as *Proof0ClosureCell;
+    let k: Proof0ClosureF = 1;
+
+    let pure = |x: Proof0ClosureF| x + k;
+    for i in 0..32 {
+        output[i] = pure(input[i]);
+    }
+
+    // This is a closure, not the unrelated POSIX write name.
+    let write = |x: Proof0ClosureF| x + k;
+    for i in 0..32 {
+        output[i] = write(input[i]);
+    }
+
+    // Codegen gives the builtin name precedence over this local closure. The
+    // proof must classify the executed free(), not the closure body.
+    let free = |p: *Proof0ClosureF| p;
+    for i in 0..32 {
+        free(input);
+        output[i] = input[i];
+    }
+
+    let fp: fn(Proof0ClosureF)->Proof0ClosureF = &add_one;
+    for i in 0..32 {
+        output[i] = fp(input[i]);
+    }
+
+    let noisy = |x: Proof0ClosureF| {
+        print(x);
+        return x;
+    };
+    for i in 0..32 {
+        output[i] = noisy(input[i]);
+    }
+
+    let lookup = |i: i32| table[i];
+    for i in 0..32 {
+        output[i] = lookup(i);
+    }
+
+    let member_lookup = |i: i32| cells.value;
+    for i in 0..32 {
+        output[i] = member_lookup(i);
+    }
+
+    closure_map(pure, input, output, 32);
+    free(table);
+    free(output);
+    free(input);
+    return 0;
+}

@@ -41,10 +41,23 @@ def check_corpus(rows: list[dict]) -> None:
     incomplete = [row for row in rows if row["complete"] == 0]
     if len(incomplete) != 1 or incomplete[0]["reason"] != "unsupported-node":
         raise ValueError("unexpected whole-corpus summary incompleteness")
-    if (cpu, agx) != (214, 146):
+    if (cpu, agx) != (215, 144):
         raise ValueError(
             f"PROOF0 effect baseline changed: cpu={cpu} agx={agx}"
         )
+    call_totals = tuple(
+        sum(row[key] for row in rows)
+        for key in ("calls", "unknown_calls", "effectful_calls",
+                    "read_calls", "addresses")
+    )
+    if call_totals != (134, 30, 64, 1, 13):
+        raise ValueError(f"LANG1 call-effect totals changed: {call_totals}")
+    widths = tuple(
+        sum(row["iterator_width"] == width for row in rows)
+        for width in (0, 32, 64)
+    )
+    if widths != (1, 339, 6):
+        raise ValueError(f"LANG1 iterator-width census changed: {widths}")
     cpu_added = sum(
         row["cpu_candidate"] == 1 and row["legacy_independent"] == 0
         for row in rows
@@ -54,16 +67,17 @@ def check_corpus(rows: list[dict]) -> None:
         for row in rows
     )
     census = (independent, cpu_candidate, agx_candidate, cpu_added, cpu_removed)
-    if census != (171, 176, 132, 6, 1):
-        raise ValueError(f"PROOF0-b candidate census changed: {census}")
+    if census != (171, 177, 130, 6, 0):
+        raise ValueError(f"LANG1 candidate census changed: {census}")
     print(
-        "PROOF0-b candidate census: "
+        "LANG1 candidate census: "
         f"legacy-independent={independent} cpu={cpu_candidate} "
         f"agx={agx_candidate} cpu-added={cpu_added} cpu-removed={cpu_removed}"
     )
     seen: dict[tuple[str, str, str], int] = {}
     added_ids: list[str] = []
     removed_ids: list[str] = []
+    width_excluded_ids: list[str] = []
     for row in rows:
         base = (row["source"], row["fn"], row["var"])
         ordinal = seen.get(base, 0) + 1
@@ -73,6 +87,9 @@ def check_corpus(rows: list[dict]) -> None:
             added_ids.append(stable_id)
         if row["cpu_candidate"] == 0 and row["legacy_independent"] == 1:
             removed_ids.append(stable_id)
+        if (row["cpu_candidate"] == 1 and row["agx_candidate"] == 0
+                and row["iterator_width"] != 32):
+            width_excluded_ids.append(stable_id)
     expected_added = [
         "examples/genus_alias_test.tv:onset_field:i#1",
         "examples/genus_probe_test.tv:main:i#2",
@@ -81,14 +98,29 @@ def check_corpus(rows: list[dict]) -> None:
         "examples/poly_core_generic_test.tv:forward_sum_F65521:ki#1",
         "examples/poly_core_generic_test.tv:regime_detect_F251:k#1",
     ]
-    expected_removed = [
-        "examples/closure_prove_through.tv:closure_map:i#1",
-    ]
+    expected_removed: list[str] = []
     if added_ids != expected_added or removed_ids != expected_removed:
         raise ValueError(
-            f"PROOF0-b exact candidate delta changed: "
+            f"LANG1 exact candidate delta changed: "
             f"added={added_ids} removed={removed_ids}"
         )
+    expected_width_excluded = [
+        "examples/for_i64_bounds.tv:main:j#1",
+        "tests/pfor/pfor_i64_bounds.tv:main:j#1",
+    ]
+    if width_excluded_ids != expected_width_excluded:
+        raise ValueError(
+            f"LANG1 AGX iterator-width exclusions changed: {width_excluded_ids}"
+        )
+    restored = [
+        row for row in rows
+        if row["source"] == "examples/closure_prove_through.tv"
+        and row["fn"] == "closure_map"
+    ]
+    if len(restored) != 1:
+        raise ValueError("LANG1 closure_map corpus identity changed")
+    require(restored[0], legacy_independent=1, unknown_calls=0,
+            cpu_effects=1, affine_safe=1, cpu_candidate=1)
     for label, selected in (
         ("cpu-added", [row for row in rows
                        if row["cpu_candidate"] == 1
@@ -114,11 +146,11 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "489e7a59de6d15215e42506248a153eaade32539a2466d4cfc699e028234b78a"
+        "90343e67ce2a12f50a0c288cd90ea4f1d605864b9e283b603a1b9f95ee31da7a"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")
-    print(f"PROOF0-b corpus PASS: 346 records, effects cpu={cpu} agx={agx}")
+    print(f"LANG1 corpus PASS: 346 records, effects cpu={cpu} agx={agx}")
 
 
 def check_affine(rows: list[dict]) -> None:
@@ -167,16 +199,91 @@ def check_affine(rows: list[dict]) -> None:
     print("PROOF0-b affine PASS: injectivity and RAW/WAR/WAW hazards pinned")
 
 
-def check_adversarial(rows: list[dict]) -> None:
+def check_closures(rows: list[dict]) -> None:
+    if len(rows) != 8:
+        raise ValueError(f"expected 8 closure summaries, saw {len(rows)}")
+    if any(row["complete"] != 1 or row["reason"] != "" for row in rows):
+        raise ValueError("focused LANG1 closure summary is incomplete")
+
+    require(rows[0], legacy_independent=1, legacy_reason="", calls=1,
+            unknown_calls=0, effectful_calls=0, read_calls=0,
+            cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    require(rows[1], legacy_independent=1, legacy_reason="", calls=1,
+            unknown_calls=0, effectful_calls=0, read_calls=0,
+            cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    require(rows[2], legacy_independent=0, legacy_reason="mutating-call",
+            calls=1, unknown_calls=0, effectful_calls=1, read_calls=0,
+            cpu_effects=0, affine_safe=1, cpu_candidate=0)
+    require(rows[3], legacy_independent=0, legacy_reason="indirect-call",
+            calls=1, unknown_calls=1, effectful_calls=0, read_calls=0,
+            cpu_effects=0, affine_safe=1, cpu_candidate=0)
+    require(rows[4], legacy_independent=0, legacy_reason="mutating-call",
+            calls=1, unknown_calls=0, effectful_calls=1, read_calls=0,
+            cpu_effects=0, affine_safe=1, cpu_candidate=0)
+    require(rows[5], legacy_independent=0, legacy_reason="call-read",
+            calls=1, unknown_calls=0, effectful_calls=0, read_calls=1,
+            cpu_effects=1, affine_safe=0, affine_reason="call-read",
+            cpu_candidate=0)
+    require(rows[6], legacy_independent=0, legacy_reason="call-read",
+            calls=1, unknown_calls=0, effectful_calls=0, read_calls=1,
+            cpu_effects=1, affine_safe=0, affine_reason="call-read",
+            cpu_candidate=0)
+    require(rows[7], legacy_independent=1, legacy_reason="", calls=1,
+            unknown_calls=0, effectful_calls=0, read_calls=0,
+            cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    print("LANG1 closure PASS: direct identities cross and erased/effectful calls refuse")
+
+
+def check_static_calls(rows: list[dict]) -> None:
     if len(rows) != 10:
-        raise ValueError(f"expected 10 adversarial summaries, saw {len(rows)}")
+        raise ValueError(f"expected 10 static-call summaries, saw {len(rows)}")
+    if any(row["complete"] != 1 or row["reason"] != "" for row in rows):
+        raise ValueError("focused LANG1 static-call summary is incomplete")
+
+    require(rows[0], legacy_independent=1, legacy_reason="", calls=1,
+            overload_ops=0, unknown_calls=0, effectful_calls=0,
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    require(rows[1], legacy_independent=1, legacy_reason="", calls=1,
+            overload_ops=0, unknown_calls=0, effectful_calls=0,
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    require(rows[2], legacy_independent=0, legacy_reason="extern-call", calls=1,
+            overload_ops=0, unknown_calls=0, effectful_calls=0,
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    require(rows[3], legacy_independent=0, legacy_reason="mutating-call", calls=1,
+            overload_ops=1, unknown_calls=0, effectful_calls=0,
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    require(rows[4], legacy_independent=0, legacy_reason="extern-call", calls=1,
+            overload_ops=0, unknown_calls=0, effectful_calls=0,
+            addresses=1, cpu_effects=0, affine_safe=1, cpu_candidate=0)
+    require(rows[5], legacy_independent=0, legacy_reason="unsupported-expr",
+            shadows=1, calls=1, overload_ops=0, unknown_calls=0,
+            effectful_calls=1, addresses=0, cpu_effects=0, cpu_candidate=0)
+    require(rows[6], legacy_independent=0, legacy_reason="unsupported-expr",
+            shadows=1, calls=1, overload_ops=1, unknown_calls=0,
+            effectful_calls=1, addresses=0, cpu_effects=0, cpu_candidate=0)
+    require(rows[7], legacy_independent=1, legacy_reason="", calls=0,
+            overload_ops=0, unknown_calls=0, effectful_calls=0,
+            addresses=1, cpu_effects=0, affine_safe=1, cpu_candidate=0)
+    require(rows[8], iterator_width=64, legacy_independent=1,
+            legacy_reason="", calls=0, overload_ops=0, unknown_calls=0,
+            effectful_calls=0, addresses=0, cpu_effects=1, agx_effects=0,
+            affine_safe=1, cpu_candidate=1, agx_candidate=0)
+    require(rows[9], legacy_independent=0, legacy_reason="extern-call", calls=1,
+            overload_ops=0, unknown_calls=0, effectful_calls=0,
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+    print("LANG1 static-call PASS: direct, generic, trait, and operator targets resolve")
+
+
+def check_adversarial(rows: list[dict]) -> None:
+    if len(rows) != 12:
+        raise ValueError(f"expected 12 adversarial summaries, saw {len(rows)}")
     if any(row["complete"] != 1 or row["reason"] != "" for row in rows):
         raise ValueError("adversarial PROOF0 summary is incomplete")
     require(rows[0], legacy_reason="mutating-call", calls=1,
             effectful_calls=1, cpu_effects=0, agx_effects=0)
     require(rows[1], alias_writes=1, cpu_effects=0, agx_effects=0)
     require(rows[2], legacy_reason="mutating-call", calls=1,
-            overload_ops=1, unknown_calls=1,
+            overload_ops=1, unknown_calls=0, effectful_calls=1,
             cpu_effects=0, agx_effects=0)
     require(rows[3], short_circuits=4, max_control_depth=5,
             cpu_effects=1, agx_effects=0)
@@ -196,7 +303,14 @@ def check_adversarial(rows: list[dict]) -> None:
             cpu_effects=1, agx_effects=0, affine_safe=0,
             affine_reason="call-read", affine_call_reads=0,
             cpu_candidate=0, agx_candidate=0)
-    require(rows[9], legacy_reason="mutating-call", calls=1,
+    require(rows[9], legacy_reason="call-read", calls=1, read_calls=1,
+            cpu_effects=1, agx_effects=0, affine_safe=0,
+            affine_reason="call-read", affine_call_reads=0,
+            cpu_candidate=0, agx_candidate=0)
+    require(rows[10], legacy_reason="mutating-call", calls=1,
+            effectful_calls=1, cpu_effects=0, agx_effects=0,
+            cpu_candidate=0, agx_candidate=0)
+    require(rows[11], legacy_reason="mutating-call", calls=1,
             effectful_calls=1, cpu_effects=0, agx_effects=0)
     print("PROOF0-b adversarial PASS: false-safe counterexamples refused")
 
@@ -211,10 +325,17 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--affine":
         check_affine(read_rows(sys.argv[2]))
         return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--closures":
+        check_closures(read_rows(sys.argv[2]))
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--static-calls":
+        check_static_calls(read_rows(sys.argv[2]))
+        return 0
     if len(sys.argv) != 2:
         raise SystemExit(
             "usage: proof0_probe.py REPORT.jsonl | "
             "--adversarial REPORT.jsonl | --affine REPORT.jsonl | "
+            "--closures REPORT.jsonl | --static-calls REPORT.jsonl | "
             "--corpus REPORT.jsonl"
         )
     rows = read_rows(sys.argv[1])
@@ -242,7 +363,7 @@ def main() -> int:
     require(rows[8], shadows=1, shadow_reads=2, conditional_stores=1,
             cpu_effects=1, agx_effects=0)
     require(rows[9], member_reads=1, index_reads=1,
-            cpu_effects=1, agx_effects=0)
+            cpu_effects=0, agx_effects=0)
     require(rows[10], iterator_writes=1,
             cpu_effects=0, agx_effects=0)
     require(rows[11], member_writes=1, capture_member_writes=1,

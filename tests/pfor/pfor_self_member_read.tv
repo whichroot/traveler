@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// A pointer-backed member load is a read footprint, even through a local cast.
+// Dispatching this loop races every iteration's read with data[0]'s write.
+
+struct PforMemberCell {
+    value: i32,
+}
+
+fn read_first_member(data: *i32) -> i32 {
+    let cell: *PforMemberCell = data as *PforMemberCell;
+    return cell.value;
+}
+
+fn main() -> i32 {
+    let data: *i32 = alloc(64);
+    for i in 0..64 {
+        data[i] = read_first_member(data) + 1;
+    }
+    print(data[63]);
+    free(data);
+    return 0;
+}

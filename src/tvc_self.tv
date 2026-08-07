@@ -1681,6 +1681,7 @@ struct PForProof0 {
     defers: i32,
     short_circuits: i32,
     dynamic_fors: i32,
+    iterator_width: i32,
     max_private_depth: i32,
     max_control_depth: i32,
 }
@@ -1729,6 +1730,13 @@ let PFR_PRIVATE_BASE: i32 = 26;    // body-local name as an array base (alias-
 // opaque to the name-keyed hazard tables — #46)
 let PFR_CALL_READ: i32 = 27;       // callee has an opaque indexed-read footprint
 let PFR_INDEX_WRAP: i32 = 28;      // affine constants exceed exact i32 modeling
+
+// Shared closure-call classification. A `closure#N` has one lifted target, but
+// its body still has to pass the same effect boundary in every pfor proof.
+let PFOR_CLO_UNKNOWN: i32 = 0;
+let PFOR_CLO_PURE: i32 = 1;
+let PFOR_CLO_MUTATING: i32 = 2;
+let PFOR_CLO_READ: i32 = 3;
 
 // First-failure-wins refusal code for the loop currently under analysis.
 var g_pf_reason: i32 = 0;
@@ -13039,6 +13047,38 @@ fn is_impure_builtin(name: i32) -> i32 {
     return 0;
 }
 
+// Can this call reach a builtin before closure/function lookup in codegen_expr?
+// The find_func/nargs guards mirror codegen: declared functions shadow the
+// guarded builtins, while the remaining names are intrinsically reserved at a
+// call site (some additionally depend on result context, so analysis refuses).
+fn call_may_use_builtin_precedence(call: i32) -> i32 {
+    if call <= 0 || call >= g_nnodes || g_nodes[call].kind != AST_CALL {
+        return 0;
+    }
+    let name: i32 = g_nodes[call].name0;
+    let nargs: i32 = g_nodes[call].nargs;
+    if str_eq(&g_strings[name], "analyze") == 1 { return 1; }
+    if str_eq(&g_strings[name], "poly") == 1 { return 1; }
+    if str_eq(&g_strings[name], "__ntt_root") == 1 { return 1; }
+    if str_eq(&g_strings[name], "__ntt_inv_root") == 1 { return 1; }
+    if str_eq(&g_strings[name], "__ntt_n_inv") == 1 { return 1; }
+    if str_eq(&g_strings[name], "register") == 1 { return 1; }
+    if str_eq(&g_strings[name], "alloc") == 1 { return 1; }
+    if str_eq(&g_strings[name], "realloc") == 1 { return 1; }
+    if str_eq(&g_strings[name], "free") == 1 { return 1; }
+    if str_eq(&g_strings[name], "exit") == 1 { return 1; }
+    if str_eq(&g_strings[name], "read_bytes") == 1 { return 1; }
+    if find_func(name) >= 0 { return 0; }
+    if str_eq(&g_strings[name], "field") == 1 && nargs >= 1 { return 1; }
+    if str_eq(&g_strings[name], "field_wide") == 1 && nargs >= 1 { return 1; }
+    if str_eq(&g_strings[name], "wide") == 1 && nargs >= 2 { return 1; }
+    if str_eq(&g_strings[name], "print") == 1 && nargs >= 1 { return 1; }
+    if str_eq(&g_strings[name], "advance") == 1 && nargs >= 1 { return 1; }
+    if str_eq(&g_strings[name], "eval") == 1 && nargs >= 2 { return 1; }
+    if str_eq(&g_strings[name], "signed") == 1 && nargs >= 1 { return 1; }
+    return 0;
+}
+
 fn find_func_idx(name: i32) -> i32 {
     var i: i32 = 0;
     while i < g_nfuncs {
@@ -13180,7 +13220,7 @@ fn expr_is_pure(node: i32) -> i32 {
     }
     if kind == AST_CALL {
         let fn_name: i32 = g_nodes[node].name0;
-        if is_impure_builtin(fn_name) == 1 { return 0; }
+        if call_may_use_builtin_precedence(node) == 1 { return 0; }
         let fi: i32 = find_func_idx(fn_name);
         if fi < 0 { return 0; }
         if g_funcs[fi].is_extern == 1 { return 0; }
@@ -13269,6 +13309,7 @@ fn expr_calls_array_writer(node: i32) -> i32 {
         return expr_calls_array_writer(g_nodes[node].child1);
     }
     if kind == AST_CALL {
+        if call_may_use_builtin_precedence(node) == 1 { return 1; }
         let fi: i32 = find_func_idx(g_nodes[node].name0);
         // Unknown/extern callees: assume they may write (conservative)
         if fi < 0 { return 1; }
@@ -13331,7 +13372,9 @@ fn expr_reads_arrays(node: i32) -> i32 {
         || kind == AST_STR_LIT || kind == AST_IDENT { return 0; }
     if kind == AST_INDEX { return 1; }
     if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
-        return expr_reads_arrays(g_nodes[node].child0);
+        // A scalar member access emits a load. Without declaration-aware alias
+        // provenance here, classify every closure member load as a hidden read.
+        return 1;
     }
     if kind == AST_BINARY {
         if op_has_registered_impl(g_nodes[node].op) == 1 { return 1; }
@@ -13342,6 +13385,7 @@ fn expr_reads_arrays(node: i32) -> i32 {
         return expr_reads_arrays(g_nodes[node].child0);
     }
     if kind == AST_CALL {
+        if call_may_use_builtin_precedence(node) == 1 { return 1; }
         let fi: i32 = find_func_idx(g_nodes[node].name0);
         if fi < 0 || g_funcs[fi].is_extern == 1 { return 1; }
         if g_funcs[fi].reads_arrays == 1 { return 1; }
@@ -13433,6 +13477,26 @@ fn stmt_reads_arrays(node: i32) -> i32 {
     }
     if kind == AST_BREAK || kind == AST_CONTINUE { return 0; }
     return 1;
+}
+
+fn pfor_closure_effect(clo_type: i32) -> i32 {
+    if type_is_closure(clo_type) == 0 { return PFOR_CLO_UNKNOWN; }
+    let body_node: i32 = clo_body_node(clo_type_id(clo_type));
+    if body_node == NULL_NODE { return PFOR_CLO_UNKNOWN; }
+    let body: i32 = g_nodes[body_node].child0;
+    if body <= 0 || body >= g_nnodes { return PFOR_CLO_UNKNOWN; }
+    if g_nodes[body].kind == AST_BLOCK {
+        if stmt_is_pure(body) == 0 || stmt_writes_arrays(body) == 1 {
+            return PFOR_CLO_MUTATING;
+        }
+        if stmt_reads_arrays(body) == 1 { return PFOR_CLO_READ; }
+        return PFOR_CLO_PURE;
+    }
+    if expr_is_pure(body) == 0 || expr_calls_array_writer(body) == 1 {
+        return PFOR_CLO_MUTATING;
+    }
+    if expr_reads_arrays(body) == 1 { return PFOR_CLO_READ; }
+    return PFOR_CLO_PURE;
 }
 
 fn purity_stmt_shadows_name(node: i32, name: i32, depth: i32) -> i32 {
@@ -13557,6 +13621,10 @@ fn expr_read_effect(node: i32, fn_node: i32, mask: *u64,
         return;
     }
     if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
+        // Member access emits a load from the aggregate address. Map a direct
+        // parameter base; local aliases/chains become a conservative nonparam
+        // read rather than disappearing from the callee footprint.
+        purity_add_read_base(g_nodes[node].child0, fn_node, mask, nonparam);
         expr_read_effect(g_nodes[node].child0, fn_node, mask, nonparam,
                          depth + 1);
         return;
@@ -13577,6 +13645,12 @@ fn expr_read_effect(node: i32, fn_node: i32, mask: *u64,
         return;
     }
     if kind == AST_CALL {
+        // A context-sensitive builtin can execute even when a same-named user
+        // function exists. Never borrow that declaration's read footprint.
+        if call_may_use_builtin_precedence(node) == 1 {
+            nonparam[0] = 1;
+            return;
+        }
         let fi: i32 = find_func_idx(g_nodes[node].name0);
         if fi < 0 || g_funcs[fi].is_extern == 1 {
             nonparam[0] = 1;
@@ -14543,6 +14617,15 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
     // are opaque to this loop's affine hazard tables just like callee writes.
     if kind == AST_CALL {
         let fn_name: i32 = g_nodes[expr].name0;
+        // Match codegen precedence before consulting a same-named closure.
+        if call_may_use_builtin_precedence(expr) == 1 {
+            if is_impure_builtin(fn_name) == 1 {
+                pfor_refuse(PFR_MUTATING_CALL);
+            } else {
+                pfor_refuse(PFR_EXTERN_CALL);
+            }
+            return 0;
+        }
         // PROVE-THROUGH for closures: "closure#N" names exactly ONE lifted fn
         // (statically known callee) — prove its body pure + no array writes and
         // allow. A closure parallelizes precisely when its identity is provable.
@@ -14550,20 +14633,15 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
         if clo_si >= 0 && find_func(fn_name) < 0 {
             let clo_ty: i32 = resolve_type_sub(g_syms[clo_si].type_off);
             if type_is_closure(clo_ty) == 1 {
-                let cid: i32 = clo_type_id(clo_ty);
-                let cbody_node: i32 = clo_body_node(cid);
-                if cbody_node == NULL_NODE { pfor_refuse(PFR_INDIRECT_CALL); return 0; }
-                let cbody: i32 = g_nodes[cbody_node].child0;
-                // Prove body pure + no array accesses (env is a read-only by-value
-                // snapshot). Capture assigns read as global writes and fence.
-                if g_nodes[cbody].kind == AST_BLOCK {
-                    if stmt_is_pure(cbody) == 0 { pfor_refuse(PFR_MUTATING_CALL); return 0; }
-                    if stmt_writes_arrays(cbody) == 1 { pfor_refuse(PFR_MUTATING_CALL); return 0; }
-                    if stmt_reads_arrays(cbody) == 1 { pfor_refuse(PFR_CALL_READ); return 0; }
-                } else {
-                    if expr_is_pure(cbody) == 0 { pfor_refuse(PFR_MUTATING_CALL); return 0; }
-                    if expr_calls_array_writer(cbody) == 1 { pfor_refuse(PFR_MUTATING_CALL); return 0; }
-                    if expr_reads_arrays(cbody) == 1 { pfor_refuse(PFR_CALL_READ); return 0; }
+                let ce: i32 = pfor_closure_effect(clo_ty);
+                if ce == PFOR_CLO_UNKNOWN {
+                    pfor_refuse(PFR_INDIRECT_CALL); return 0;
+                }
+                if ce == PFOR_CLO_MUTATING {
+                    pfor_refuse(PFR_MUTATING_CALL); return 0;
+                }
+                if ce == PFOR_CLO_READ {
+                    pfor_refuse(PFR_CALL_READ); return 0;
                 }
                 // Proven: walk the call args for captures, then allow.
                 let cnargs: i32 = g_nodes[expr].nargs;
@@ -14582,7 +14660,6 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
         // THE FN-POINTER FENCE: an indirect call is an unprovable callee —
         // reject (explicitly, not incidentally). Costs parallelism, never soundness.
         if sym_find(fn_name) >= 0 && find_func(fn_name) < 0 { pfor_refuse(PFR_INDIRECT_CALL); return 0; }
-        if is_impure_builtin(fn_name) == 1 { pfor_refuse(PFR_MUTATING_CALL); return 0; }
         let fi: i32 = find_func_idx(fn_name);
         if fi < 0 || g_funcs[fi].is_extern == 1 { pfor_refuse(PFR_EXTERN_CALL); return 0; }
         if g_funcs[fi].purity_computed == 0 { pfor_refuse(PFR_MUTATING_CALL); return 0; }
@@ -14913,6 +14990,7 @@ fn proof0_reset(P: *PForProof0) {
     P.defers = 0;
     P.short_circuits = 0;
     P.dynamic_fors = 0;
+    P.iterator_width = 0;
     P.max_private_depth = 0;
     P.max_control_depth = 0;
 }
@@ -15377,6 +15455,289 @@ fn proof0_let_bind_kind(stmt: i32) -> i32 {
     return P0_BIND_LOCAL;
 }
 
+// Static iterator width for type-directed call resolution. Unknown expression
+// shapes return NULL rather than letting the proof assume the i32 default.
+fn proof0_bound_width(node: i32, depth: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || depth > 64 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        if g_nodes[node].int_val < ((1 as u64) << (31 as u64)) { return 32; }
+        if g_nodes[node].int_val < ((1 as u64) << (63 as u64)) { return 64; }
+        return 0;
+    }
+    if kind == AST_IDENT {
+        return for_bound_type_width(arg_value_type(node));
+    }
+    if kind == AST_CAST {
+        return for_bound_type_width(resolve_type_sub(g_nodes[node].name0));
+    }
+    if kind == AST_BINARY {
+        let left: i32 = proof0_bound_width(g_nodes[node].child0, depth + 1);
+        let right: i32 = proof0_bound_width(g_nodes[node].child1, depth + 1);
+        if left != 0 && left == right { return left; }
+        return 0;
+    }
+    if kind == AST_UNARY && g_nodes[node].op == OP_NEG {
+        let child: i32 = g_nodes[node].child0;
+        if child > 0 && child < g_nnodes
+            && g_nodes[child].kind == AST_LIT_INT {
+            let magnitude: u64 = g_nodes[child].int_val;
+            if magnitude <= ((1 as u64) << (31 as u64)) { return 32; }
+            if magnitude <= ((1 as u64) << (63 as u64)) { return 64; }
+            return 0;
+        }
+        return proof0_bound_width(g_nodes[node].child0, depth + 1);
+    }
+    return 0;
+}
+
+fn proof0_loop_iter_type(loop_stmt: i32) -> i32 {
+    if loop_stmt <= 0 || loop_stmt >= g_nnodes
+        || g_nodes[loop_stmt].kind != AST_FOR { return NULL_STR; }
+    let ws: i32 = proof0_bound_width(g_nodes[loop_stmt].child0, 0);
+    let we: i32 = proof0_bound_width(g_nodes[loop_stmt].child1, 0);
+    if ws == 0 || we == 0 { return NULL_STR; }
+    if ws == 64 || we == 64 { return str_intern("i64"); }
+    return str_intern("i32");
+}
+
+// Declaration-aware type lookup. A body binding must never fall through to a
+// same-named outer symbol: that would resolve a different trait implementation.
+fn proof0_name_type(P: *PForProof0, name: i32) -> i32 {
+    let binding: i32 = proof0_resolve(P, name);
+    if binding >= 0 {
+        let decl: i32 = P.env_decls[binding];
+        if decl < 0 || decl >= g_nnodes { return NULL_STR; }
+        if g_nodes[decl].kind == AST_LET {
+            if g_nodes[decl].name1 != NULL_STR {
+                return resolve_type_sub(g_nodes[decl].name1);
+            }
+            let init: i32 = g_nodes[decl].child0;
+            if init > 0 && init < g_nnodes {
+                if g_nodes[init].kind == AST_STRUCT_LIT
+                    || g_nodes[init].kind == AST_ENUM_CONSTRUCT {
+                    return resolve_type_sub(g_nodes[init].name0);
+                }
+                if g_nodes[init].kind == AST_CAST {
+                    return resolve_type_sub(g_nodes[init].name0);
+                }
+            }
+        }
+        if P.env_kinds[binding] == P0_BIND_OUTER {
+            return proof0_loop_iter_type(decl);
+        }
+        return NULL_STR;
+    }
+    let si: i32 = sym_find(name);
+    if si >= 0 { return resolve_type_sub(g_syms[si].type_off); }
+    return NULL_STR;
+}
+
+fn proof0_receiver_field_scalar(recv_type: i32, field_name: i32) -> i32 {
+    let si: i32 = resolve_struct_type(recv_type);
+    if si < 0 { return 0; }
+    let fidx: i32 = struct_field_index(si, field_name);
+    if fidx < 0 { return 0; }
+    let ft: i32 = resolve_type_sub(struct_field_type(si, fidx));
+    if ft == NULL_STR || type_is_ptr(ft) == 1 || type_is_array(ft) == 1
+        || type_is_closure(ft) == 1 || type_is_dyn(ft) == 1
+        || type_is_field_value(ft) == 1 || resolve_struct_type(ft) >= 0
+        || resolve_enum_type(ft) >= 0 || type_is_poly(ft) == 1
+        || type_is_register(ft) == 1 || type_bits(ft) > 64
+        || str_eq(&g_strings[ft], "ptr") == 1
+        || str_eq(&g_strings[ft], "Field") == 1 { return 0; }
+    return purity_plain_scalar_type(ft);
+}
+
+// Prove that a synthesized `&receiver` cannot escape the direct method call.
+// The receiver may be unused or supply scalar field values. Direct receiver
+// values, address-taking, aggregate/pointer fields, nested closures, and unknown
+// syntax refuse. Purity separately excludes writes and external effects.
+fn proof0_receiver_use_safe(node: i32, recv_name: i32,
+                            recv_type: i32, depth: i32) -> i32 {
+    if node < 0 || node == 0 { return 1; }
+    if node >= g_nnodes || depth > 256 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL || kind == AST_NULL
+        || kind == AST_STR_LIT || kind == AST_BREAK || kind == AST_CONTINUE {
+        return 1;
+    }
+    if kind == AST_IDENT {
+        return (g_nodes[node].name0 != recv_name) as i32;
+    }
+    if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
+        let base: i32 = g_nodes[node].child0;
+        if base > 0 && base < g_nnodes && g_nodes[base].kind == AST_IDENT
+            && g_nodes[base].name0 == recv_name {
+            return proof0_receiver_field_scalar(recv_type, g_nodes[node].name0);
+        }
+        return proof0_receiver_use_safe(base, recv_name, recv_type, depth + 1);
+    }
+    if kind == AST_BINARY || kind == AST_INDEX {
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0 { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child1, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_UNARY {
+        if g_nodes[node].op == OP_ADDR { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_CAST || kind == AST_QMARK || kind == AST_EXPR_STMT
+        || kind == AST_RETURN {
+        return proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_CALL || kind == AST_ENUM_CONSTRUCT {
+        if proof0_args_ok(g_nodes[node].args_start,
+                          g_nodes[node].nargs, 1) == 0 { return 0; }
+        var ai: i32 = 0;
+        while ai < g_nodes[node].nargs {
+            if proof0_receiver_use_safe(
+                    g_args[g_nodes[node].args_start + ai], recv_name,
+                    recv_type, depth + 1) == 0 { return 0; }
+            ai = ai + 1;
+        }
+        return 1;
+    }
+    if kind == AST_STRUCT_LIT {
+        if proof0_args_ok(g_nodes[node].args_start,
+                          g_nodes[node].nargs, 2) == 0 { return 0; }
+        var si2: i32 = 0;
+        while si2 < g_nodes[node].nargs {
+            if proof0_receiver_use_safe(
+                    g_args[g_nodes[node].args_start + si2 * 2 + 1], recv_name,
+                    recv_type, depth + 1) == 0 { return 0; }
+            si2 = si2 + 1;
+        }
+        return 1;
+    }
+    if kind == AST_LET {
+        if g_nodes[node].name0 == recv_name { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_ASSIGN {
+        if g_nodes[node].name0 == recv_name { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_INDEX_ASSIGN {
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0
+            || proof0_receiver_use_safe(g_nodes[node].child1, recv_name,
+                                        recv_type, depth + 1) == 0 { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child2, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_MEMBER_ASSIGN {
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0 { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child1, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_IF {
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0
+            || proof0_receiver_use_safe(g_nodes[node].child1, recv_name,
+                                        recv_type, depth + 1) == 0 { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child2, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_WHILE {
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0 { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child1, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_FOR {
+        if g_nodes[node].name0 == recv_name { return 0; }
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0
+            || proof0_receiver_use_safe(g_nodes[node].child1, recv_name,
+                                        recv_type, depth + 1) == 0 { return 0; }
+        return proof0_receiver_use_safe(g_nodes[node].child2, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_BLOCK {
+        if proof0_args_ok(g_nodes[node].args_start,
+                          g_nodes[node].nargs, 1) == 0 { return 0; }
+        var bi: i32 = 0;
+        while bi < g_nodes[node].nargs {
+            if proof0_receiver_use_safe(
+                    g_args[g_nodes[node].args_start + bi], recv_name,
+                    recv_type, depth + 1) == 0 { return 0; }
+            bi = bi + 1;
+        }
+        return 1;
+    }
+    if kind == AST_DEFER {
+        return proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                        recv_type, depth + 1);
+    }
+    if kind == AST_MATCH {
+        if proof0_receiver_use_safe(g_nodes[node].child0, recv_name,
+                                    recv_type, depth + 1) == 0 { return 0; }
+        if g_nodes[node].args_start < 0 || g_nodes[node].nargs < 0
+            || g_nodes[node].args_start > g_narms - g_nodes[node].nargs {
+            return 0;
+        }
+        var mi: i32 = 0;
+        while mi < g_nodes[node].nargs {
+            let arm: i32 = g_nodes[node].args_start + mi;
+            let bs: i32 = g_arms[arm].bindings_start;
+            let bn: i32 = g_arms[arm].nbindings;
+            if bs < 0 || bn < 0 || bs > g_nargs_pool - bn { return 0; }
+            var bj: i32 = 0;
+            while bj < bn {
+                if g_args[bs + bj] == recv_name { return 0; }
+                bj = bj + 1;
+            }
+            if proof0_receiver_use_safe(g_arms[arm].body, recv_name,
+                                        recv_type, depth + 1) == 0 { return 0; }
+            mi = mi + 1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+fn proof0_method_receiver_noescape(fi: i32, recv_type: i32) -> i32 {
+    if fi < 0 || fi >= g_nfuncs { return 0; }
+    let decl: i32 = g_funcs[fi].node;
+    if decl <= 0 || decl >= g_nnodes || g_nodes[decl].nargs <= 0
+        || proof0_args_ok(g_nodes[decl].args_start,
+                          g_nodes[decl].nargs, 1) == 0 { return 0; }
+    let param: i32 = g_args[g_nodes[decl].args_start];
+    if param <= 0 || param >= g_nnodes { return 0; }
+    return proof0_receiver_use_safe(g_nodes[decl].child0,
+                                    g_nodes[param].name0, recv_type, 0);
+}
+
+fn proof0_function_effect(P: *PForProof0, A: *PForState,
+                          call: i32, fi: i32, map_reads: i32) {
+    if fi < 0 || g_funcs[fi].is_extern == 1
+        || g_funcs[fi].purity_computed == 0 {
+        P.unknown_calls = P.unknown_calls + 1;
+        return;
+    }
+    if g_funcs[fi].is_pure == 0 || g_funcs[fi].writes_arrays == 1 {
+        P.effectful_calls = P.effectful_calls + 1;
+        return;
+    }
+    if g_funcs[fi].reads_arrays == 1 {
+        P.read_calls = P.read_calls + 1;
+        if map_reads == 1 {
+            proof0_affine_map_call_reads(P, A, call, fi);
+        } else {
+            // Operator arguments are not stored in an AST_CALL arg slice. Keep
+            // hidden indexed reads conservative until inlining exposes them.
+            proof0_affine_refuse(P, P0A_CALL_READ);
+        }
+    }
+}
+
 fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                control_depth: i32) {
     if node < 0 || node >= g_nnodes { proof0_mark(P, P0R_NODE); return; }
@@ -15416,9 +15777,43 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
             return;
         }
         if op_has_registered_impl(op) == 1 {
-            P.calls = P.calls + 1;
-            P.overload_ops = P.overload_ops + 1;
-            P.unknown_calls = P.unknown_calls + 1;
+            let lhs_node: i32 = g_nodes[node].child0;
+            var lhs_type: i32 = NULL_STR;
+            if lhs_node > 0 && lhs_node < g_nnodes
+                && g_nodes[lhs_node].kind == AST_IDENT {
+                lhs_type = proof0_name_type(P, g_nodes[lhs_node].name0);
+            }
+            var aggregate_lhs: i32 = 0;
+            if lhs_type != NULL_STR {
+                if resolve_struct_type(lhs_type) >= 0
+                    || resolve_enum_type(lhs_type) >= 0 {
+                    aggregate_lhs = 1;
+                }
+            }
+            // A known primitive lhs uses the built-in operator even when the
+            // unit also declares an unrelated impl. Unknown types stay denied.
+            if lhs_type == NULL_STR || aggregate_lhs == 1 {
+                P.calls = P.calls + 1;
+                P.overload_ops = P.overload_ops + 1;
+                var fi: i32 = 0 - 1;
+                if aggregate_lhs == 1 {
+                    let method: i32 = op_overload_method(op);
+                    if method != NULL_STR {
+                        let resolved: i32 = resolve_trait_method(method, lhs_type);
+                        if resolved != NULL_STR { fi = find_func_idx(resolved); }
+                    }
+                }
+                proof0_function_effect(P, g_pf0_affine, node, fi, 0);
+                if fi >= 0
+                    && proof0_method_receiver_noescape(fi, lhs_type) == 0 {
+                    P.addresses = P.addresses + 1;
+                    if lhs_node > 0 && lhs_node < g_nnodes
+                        && g_nodes[lhs_node].kind == AST_IDENT
+                        && proof0_resolve(P, g_nodes[lhs_node].name0) >= 0 {
+                        P.local_addresses = P.local_addresses + 1;
+                    }
+                }
+            }
         }
         proof0_expr(P, g_nodes[node].child0, depth + 1, control_depth);
         proof0_expr(P, g_nodes[node].child1, depth + 1, control_depth);
@@ -15466,20 +15861,86 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         if proof0_args_ok(g_nodes[node].args_start, g_nodes[node].nargs, 1) == 0 {
             proof0_mark(P, P0R_NODE); return;
         }
-        let fi: i32 = find_func_idx(g_nodes[node].name0);
-        if fi < 0 || g_funcs[fi].is_extern == 1
-            || g_funcs[fi].purity_computed == 0 {
-            P.unknown_calls = P.unknown_calls + 1;
-        } else if g_funcs[fi].is_pure == 0 || g_funcs[fi].writes_arrays == 1 {
-            P.effectful_calls = P.effectful_calls + 1;
-        } else if g_funcs[fi].reads_arrays == 1 {
-            P.read_calls = P.read_calls + 1;
-            proof0_affine_map_call_reads(P, g_pf0_affine, node, fi);
+        let call_name: i32 = g_nodes[node].name0;
+        var call_handled: i32 = 0;
+        var synthetic_receiver: i32 = 0 - 1;
+        // Builtins execute before closure lookup. Classify their own effect,
+        // never a same-named closure's body.
+        if call_may_use_builtin_precedence(node) == 1 {
+            call_handled = 1;
+            if is_impure_builtin(call_name) == 1 {
+                P.effectful_calls = P.effectful_calls + 1;
+            } else {
+                P.unknown_calls = P.unknown_calls + 1;
+            }
+        }
+        // A captured/local `closure#N` is a direct lifted target. Respect the
+        // recursive environment first so a body-local shadow cannot inherit an
+        // outer closure's identity.
+        if call_handled == 0 && proof0_resolve(P, call_name) < 0
+            && find_func(call_name) < 0 {
+            let clo_si: i32 = sym_find(call_name);
+            if clo_si >= 0 {
+                let clo_ty: i32 = resolve_type_sub(g_syms[clo_si].type_off);
+                if type_is_closure(clo_ty) == 1 {
+                    call_handled = 1;
+                    P.capture_reads = P.capture_reads + 1;
+                    let ce: i32 = pfor_closure_effect(clo_ty);
+                    if ce == PFOR_CLO_UNKNOWN {
+                        P.unknown_calls = P.unknown_calls + 1;
+                    } else if ce == PFOR_CLO_MUTATING {
+                        P.effectful_calls = P.effectful_calls + 1;
+                    } else if ce == PFOR_CLO_READ {
+                        P.read_calls = P.read_calls + 1;
+                        proof0_affine_refuse(P, P0A_CALL_READ);
+                    }
+                }
+            }
+        }
+        if call_handled == 0 {
+            var target_name: i32 = call_name;
+            var method_type: i32 = NULL_STR;
+            // Mirror codegen's type-directed method resolution only when no
+            // local callable shadows the name. Resolve the bare receiver through
+            // PROOF0's declaration environment, not the outer codegen scope.
+            if proof0_resolve(P, call_name) < 0 && sym_find(call_name) < 0
+                && find_func(call_name) < 0 && g_nodes[node].nargs > 0
+                && g_nimpls > 0 {
+                let recv: i32 = g_args[g_nodes[node].args_start];
+                if recv > 0 && recv < g_nnodes
+                    && g_nodes[recv].kind == AST_UNARY
+                    && g_nodes[recv].op == OP_ADDR
+                    && g_nodes[recv].flags == OP_ADDR {
+                    let recv_value: i32 = g_nodes[recv].child0;
+                    if recv_value > 0 && recv_value < g_nnodes
+                        && g_nodes[recv_value].kind == AST_IDENT {
+                        method_type = proof0_name_type(
+                            P, g_nodes[recv_value].name0);
+                    }
+                }
+                if method_type != NULL_STR {
+                    let resolved_method: i32 = resolve_trait_method(
+                        call_name, method_type);
+                    if resolved_method != NULL_STR {
+                        target_name = resolved_method;
+                    }
+                }
+            }
+            let fi: i32 = find_func_idx(target_name);
+            proof0_function_effect(P, g_pf0_affine, node, fi, 1);
+            if target_name != call_name && fi >= 0
+                && proof0_method_receiver_noescape(fi, method_type) == 1 {
+                synthetic_receiver = g_args[g_nodes[node].args_start];
+            }
         }
         var ai: i32 = 0;
         while ai < g_nodes[node].nargs {
-            proof0_expr(P, g_args[g_nodes[node].args_start + ai], depth + 1,
-                        control_depth);
+            let arg: i32 = g_args[g_nodes[node].args_start + ai];
+            if arg == synthetic_receiver {
+                proof0_expr(P, g_nodes[arg].child0, depth + 1, control_depth);
+            } else {
+                proof0_expr(P, arg, depth + 1, control_depth);
+            }
             ai = ai + 1;
         }
         return;
@@ -15736,6 +16197,7 @@ fn proof0_cpu_effects(P: *PForProof0) -> i32 {
     if P.complete == 0 || P.capture_writes != 0
         || P.capture_member_writes != 0 || P.unknown_calls != 0
         || P.effectful_calls != 0 || P.addresses != 0
+        || P.member_reads != 0
         || P.iterator_writes != 0 || P.alias_writes != 0
         || P.outer_exits != 0 || P.returns != 0 || P.qmarks != 0
         || P.defers != 0 { return 0; }
@@ -15746,6 +16208,7 @@ fn proof0_agx_effects(P: *PForProof0) -> i32 {
     if proof0_cpu_effects(P) == 0 || P.calls != 0 || P.whiles != 0
         || P.member_reads != 0 || P.member_writes != 0
         || P.dynamic_fors != 0 || P.max_private_depth > 2
+        || P.iterator_width != 32
         || P.max_control_depth > 4
         || P.conditional_stores != 0 || P.private_stores != 0
         || P.iterator_writes != 0 || P.local_index_bases != 0
@@ -15767,6 +16230,8 @@ fn proof0_summarize(P: *PForProof0, A: *PForState,
                     loop_stmt: i32, body: i32,
                     iter_name: i32) {
     proof0_reset(P);
+    let iter_type: i32 = proof0_loop_iter_type(loop_stmt);
+    if iter_type != NULL_STR { P.iterator_width = type_bits(iter_type); }
     proof0_affine_prepare(P, A, g_nodes[loop_stmt].child0,
                           g_nodes[loop_stmt].child1);
     if proof0_bind(P, iter_name, loop_stmt, P0_BIND_OUTER) == 1 {
@@ -15783,6 +16248,7 @@ fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
     wr(1, ",\"line\":"); wr_int(1, g_nodes[stmt].line as i64);
     wr(1, ",\"col\":"); wr_int(1, g_nodes[stmt].col as i64);
     wr(1, ",\"var\":"); json_emit_intern(iter_name);
+    wr(1, ",\"iterator_width\":"); wr_int(1, P.iterator_width as i64);
     wr(1, ",\"legacy_independent\":"); wr_int(1, pf.independent as i64);
     wr(1, ",\"legacy_dispatched\":"); wr_int(1, legacy_dispatched as i64);
     wr(1, ",\"legacy_reason\":\""); wr(1, pfor_reason_str(g_pf_reason));

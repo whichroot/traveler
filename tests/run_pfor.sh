@@ -250,6 +250,7 @@ if [ -x "$STAGE1" ]; then
     EFFECT_TESTS=(
         "pfor_self_member_call:0"
         "pfor_self_hidden_read:1"
+        "pfor_self_member_read:0"
         "pfor_self_aggregate_alias_call:0"
         "pfor_self_affine_wrap:0"
         "pfor_self_affine_circle:0"

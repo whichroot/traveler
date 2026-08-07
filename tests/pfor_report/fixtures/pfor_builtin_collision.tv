@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Context selects the analyze builtin before a same-named function. Borrowing
+// the declaration's empty read footprint makes the independence proof false;
+// the current aggregate capture gate is an additional conservative backstop.
+
+field PforBuiltinF = Field<2013265921>;
+var pfor_builtin_data: [PforBuiltinF; 64] = 0;
+
+fn analyze(data: i32, count: i32) -> i32 {
+    return 0;
+}
+
+fn hidden_builtin_read() -> PforBuiltinF {
+    let ignored: Poly<PforBuiltinF, 1> = analyze(pfor_builtin_data, 2);
+    return 1;
+}
+
+fn main() -> i32 {
+    for i in 0..64 {
+        pfor_builtin_data[i] = hidden_builtin_read();
+    }
+    print(pfor_builtin_data[63]);
+    return 0;
+}

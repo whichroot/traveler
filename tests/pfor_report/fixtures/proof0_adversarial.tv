@@ -5,6 +5,8 @@ struct AdversarialCell {
     value: i32,
 }
 
+field AdversarialF = Field<2013265921>;
+
 trait Add {
     fn add(self, other: AdversarialCell) -> i32;
 }
@@ -12,6 +14,7 @@ trait Add {
 var hidden_counter: i32 = 0;
 var alias_shared: *AdversarialCell = null;
 var hidden_source: *i32 = null;
+var hidden_builtin_source: [AdversarialF; 64] = 0;
 
 impl Add for AdversarialCell {
     fn add(self, other: AdversarialCell) -> i32 {
@@ -47,6 +50,22 @@ fn hidden_alias_write() -> i32 {
     let dst: AdversarialCell = alias_shared;
     dst = dst;
     return dst.value;
+}
+
+fn hidden_member_read(data: *i32) -> i32 {
+    let cell: *AdversarialCell = data as *AdversarialCell;
+    return cell.value;
+}
+
+// The call is the builtin in a Poly result context, not this scalar-returning
+// declaration. Analysis must not borrow this body's effects.
+fn analyze(data: i32, count: i32) -> i32 {
+    return 0;
+}
+
+fn hidden_builtin_read() -> AdversarialF {
+    let ignored: Poly<AdversarialF, 1> = analyze(hidden_builtin_source, 2);
+    return 1;
 }
 
 fn main() -> i32 {
@@ -105,6 +124,14 @@ fn main() -> i32 {
 
     for i in 0..64 {
         output[i] = shadowed_read(input, output, i);
+    }
+
+    for i in 0..64 {
+        output[i] = hidden_member_read(output);
+    }
+
+    for i in 0..64 {
+        hidden_builtin_source[i] = hidden_builtin_read();
     }
 
     alias_shared = alloc(4);

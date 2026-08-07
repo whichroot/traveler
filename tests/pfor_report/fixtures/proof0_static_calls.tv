@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1 static direct/generic/trait/operator call resolution.
+
+field Proof0StaticF = Field<2013265921>;
+
+struct Proof0Scale {
+    value: Proof0StaticF,
+}
+
+struct Proof0Keep {
+    marker: i32,
+}
+
+struct Proof0Dirty {
+    value: Proof0StaticF,
+}
+
+struct Proof0DirtyAdd {
+    marker: i32,
+}
+
+var proof0_static_sink: i32 = 0;
+
+trait Apply {
+    fn apply(self, x: Proof0StaticF) -> Proof0StaticF;
+}
+
+trait Add {
+    fn add(self, x: Proof0StaticF) -> Proof0StaticF;
+}
+
+trait Leak {
+    fn leak(self) -> usize;
+}
+
+impl Apply for Proof0Scale {
+    fn apply(self, x: Proof0StaticF) -> Proof0StaticF {
+        return x;
+    }
+}
+
+impl Add for Proof0Keep {
+    fn add(self, x: Proof0StaticF) -> Proof0StaticF {
+        return x;
+    }
+}
+
+impl Apply for Proof0Dirty {
+    fn apply(self, x: Proof0StaticF) -> Proof0StaticF {
+        proof0_static_sink = proof0_static_sink + 1;
+        return x;
+    }
+}
+
+impl Add for Proof0DirtyAdd {
+    fn add(self, x: Proof0StaticF) -> Proof0StaticF {
+        proof0_static_sink = proof0_static_sink + 1;
+        return x;
+    }
+}
+
+impl Leak for Proof0Scale {
+    fn leak(self) -> usize {
+        return self as usize;
+    }
+}
+
+fn generic_identity<T>(x: T) -> T {
+    return x;
+}
+
+// A declaration shadows the guarded signed() builtin in codegen.
+fn signed(x: Proof0StaticF) -> Proof0StaticF {
+    return x;
+}
+
+fn trait_map<T: Apply>(scale: T, input: *Proof0StaticF,
+                       output: *Proof0StaticF, n: i32) {
+    for i in 0..n {
+        output[i] = scale.apply(input[i]);
+    }
+}
+
+fn main() -> i32 {
+    let input: *Proof0StaticF = alloc(32);
+    let output: *Proof0StaticF = alloc(32);
+    let scale: Proof0Scale = Proof0Scale { value: 7 };
+    let keep: Proof0Keep = Proof0Keep { marker: 1 };
+
+    for i in 0..32 {
+        output[i] = generic_identity(input[i]);
+    }
+
+    for i in 0..32 {
+        output[i] = signed(input[i]);
+    }
+
+    for i in 0..32 {
+        output[i] = scale.apply(input[i]);
+    }
+
+    for i in 0..32 {
+        output[i] = keep + input[i];
+    }
+
+    for i in 0..32 {
+        output[i] = scale.leak() as Proof0StaticF;
+    }
+
+    let shadow_method: Proof0Scale = Proof0Scale { value: 1 };
+    for i in 0..32 {
+        let shadow_method: Proof0Dirty = Proof0Dirty { value: 2 };
+        output[i] = shadow_method.apply(input[i]);
+    }
+
+    let shadow_operator: Proof0Keep = Proof0Keep { marker: 1 };
+    for i in 0..32 {
+        let shadow_operator: Proof0DirtyAdd = Proof0DirtyAdd { marker: 2 };
+        output[i] = shadow_operator + input[i];
+    }
+
+    for i in 0..32 {
+        let address: *Proof0StaticF = &input[i];
+        output[i] = input[i];
+    }
+
+    let wide_n: i64 = 32;
+    for i in 0..wide_n {
+        output[i] = i as Proof0StaticF;
+    }
+
+    trait_map(scale, input, output, 32);
+    free(output);
+    free(input);
+    return 0;
+}

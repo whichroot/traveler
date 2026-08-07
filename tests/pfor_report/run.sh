@@ -98,6 +98,8 @@ assert_reason "$REPO_DIR/tests/pfor/pfor_race_raw.tv"           "raw"
 assert_reason "$REPO_DIR/tests/pfor/pfor_race_global_assign.tv" "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_member_call.tv"   "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_hidden_read.tv"   "call-read"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_member_read.tv"   "call-read"
+assert_reason "$SCRIPT_DIR/fixtures/pfor_builtin_collision.tv"       "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_aggregate_alias_call.tv" "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_affine_wrap.tv"  "index-wrap"
 assert_reason "$REPO_DIR/tests/pfor/pfor_self_affine_circle.tv" "noninjective"
@@ -149,6 +151,20 @@ if ! "$SELF" "$PROOF0_AFFINE" --pfor-proof0-report \
    || ! python3 "$SCRIPT_DIR/proof0_probe.py" --affine \
         "$TMP/proof0.affine.jsonl"; then
     echo "  FAIL proof0 focused affine summary"; fail=1
+fi
+PROOF0_CLOSURES="$SCRIPT_DIR/fixtures/proof0_closures.tv"
+if ! "$SELF" "$PROOF0_CLOSURES" --pfor-proof0-report \
+        >"$TMP/proof0.closures.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" --closures \
+        "$TMP/proof0.closures.jsonl"; then
+    echo "  FAIL proof0 focused closure summary"; fail=1
+fi
+PROOF0_STATIC_CALLS="$SCRIPT_DIR/fixtures/proof0_static_calls.tv"
+if ! "$SELF" "$PROOF0_STATIC_CALLS" --pfor-proof0-report \
+        >"$TMP/proof0.static-calls.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" --static-calls \
+        "$TMP/proof0.static-calls.jsonl"; then
+    echo "  FAIL proof0 focused static-call summary"; fail=1
 fi
 legacy_focus="$("$SELF" "$PROOF0_FIXTURE" --pfor-report 2>/dev/null)"
 if ! lines_valid_json "$legacy_focus" \
