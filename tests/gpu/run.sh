@@ -274,6 +274,58 @@ else
     if [ "$AGX3_READY" = "1" ]; then
         echo "  ok   AGX runtime dispatch, RNS, and counted-dot artifacts compile"
     fi
+
+    # IR0 lowers every admitted worker shape through typed EIR + a private CFG,
+    # validates it, and discards it. Host IR and direct AGX bytes must not move.
+    IR0_READY=1
+    if ! "$STAGE1" --emit-gpu-agx --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_dispatch_gate.tv" -o "$TMP/agx_ir0_k1.hex" 2>/dev/null \
+       || ! "$STAGE1" --agx-dispatch --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_dispatch_gate.tv" -o "$TMP/agx_ir0_k1.ll" 2>/dev/null \
+       || ! cmp -s "$AGX_DISPATCH_DEV" "$TMP/agx_ir0_k1.hex" \
+       || ! cmp -s "$AGX_DISPATCH_LL" "$TMP/agx_ir0_k1.ll"; then
+        echo "  FAIL: AGX IR0 map shadow changed output or failed validation"; fail=1
+        IR0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_rns_reduce8.tv" -o "$TMP/agx_ir0_k2.hex" 2>/dev/null \
+       || ! "$STAGE1" --agx-dispatch --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_rns_reduce8.tv" -o "$TMP/agx_ir0_k2.ll" 2>/dev/null \
+       || ! cmp -s "$AGX_REDUCE_DEV" "$TMP/agx_ir0_k2.hex" \
+       || ! cmp -s "$AGX_REDUCE_LL" "$TMP/agx_ir0_k2.ll"; then
+        echo "  FAIL: AGX IR0 reduce-8 shadow changed output or failed validation"; fail=1
+        IR0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot.tv" -o "$TMP/agx_ir0_k3.hex" 2>/dev/null \
+       || ! "$STAGE1" --agx-dispatch --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot.tv" -o "$TMP/agx_ir0_k3.ll" 2>/dev/null \
+       || ! cmp -s "$AGX_DOT_DEV" "$TMP/agx_ir0_k3.hex" \
+       || ! cmp -s "$AGX_DOT_LL" "$TMP/agx_ir0_k3.ll"; then
+        echo "  FAIL: AGX IR0 unrolled-dot shadow changed output or failed validation"; fail=1
+        IR0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot_loop.tv" -o "$TMP/agx_ir0_k4.hex" 2>/dev/null \
+       || ! "$STAGE1" --agx-dispatch --agx-ir0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot_loop.tv" -o "$TMP/agx_ir0_k4.ll" 2>/dev/null \
+       || ! cmp -s "$AGX_DOT_LOOP_DEV" "$TMP/agx_ir0_k4.hex" \
+       || ! cmp -s "$AGX_DOT_LOOP_LL" "$TMP/agx_ir0_k4.ll"; then
+        echo "  FAIL: AGX IR0 counted-dot shadow changed output or failed validation"; fail=1
+        IR0_READY=0
+    fi
+    if "$STAGE1" --agx-ir0-shadow "$SCRIPT_DIR/agx_binary_map.tv" \
+            >"$TMP/agx_ir0_no_output.out" 2>"$TMP/agx_ir0_no_output.err"; then
+        echo "  FAIL: AGX IR0 shadow silently skipped without -o"; fail=1
+        IR0_READY=0
+    elif ! grep -q -- '--agx-ir0-shadow requires -o' \
+            "$TMP/agx_ir0_no_output.err"; then
+        echo "  FAIL: AGX IR0 missing-output refusal changed"; fail=1
+        IR0_READY=0
+    fi
+    if [ "$IR0_READY" = "1" ]; then
+        echo "  ok   AGX IR0 validates shapes 1-4 with byte-identical host/device output"
+    fi
     if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
         echo "  FAIL: AGX control specimens failed their portable structure gate"
         fail=1

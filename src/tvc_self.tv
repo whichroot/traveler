@@ -1663,6 +1663,9 @@ var g_gpu_target: i32 = 0;
 // workers first call the imported Traveler IOKit adapter at runtime. Flag off
 // leaves ordinary emitted IR byte-identical. @internal-note: plan-gpu-agx-target.
 var g_agx_dispatch_mode: i32 = 0;
+// --agx-ir0-shadow: lower already-classified AGX workers through typed EIR and
+// a private CFG, validate it, then discard it. Never changes admission or bytes.
+var g_agx_ir0_shadow: i32 = 0;
 // --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
 // (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
 var g_emit_mode: i32 = 0;
@@ -14639,12 +14642,17 @@ fn codegen_stmt(stmt: i32) {
             var agx_shape: *AgxWorkerShape = null;
             var agx_dispatch: i32 = 0;
             var agx_hash: u64 = 0;
-            if g_agx_dispatch_mode == 1 && bw != 64 {
+            if (g_agx_dispatch_mode == 1 || g_agx_ir0_shadow == 1) && bw != 64 {
                 agx_shape = alloc(1);
-                agx_dispatch = agx_classify_worker(body_node, iter_name,
-                                                    pf.ncaps, worker_caps_base,
-                                                    agx_shape);
-                if agx_dispatch == 1 {
+                let agx_classified: i32 = agx_classify_worker(
+                    body_node, iter_name, pf.ncaps, worker_caps_base,
+                    agx_shape);
+                if agx_classified == 1 && g_agx_ir0_shadow == 1 {
+                    agx_ir0_require(agx_ir0_shadow_worker(
+                        body_node, iter_name, pf.ncaps, worker_caps_base,
+                        bw, agx_shape.kind), body_node);
+                }
+                if g_agx_dispatch_mode == 1 && agx_classified == 1 {
                     agx_dispatch = agx_build_worker_code(agx_shape, iter_name);
                     if agx_dispatch == 1 { agx_hash = agx_code_hash(); }
                 }
@@ -21073,6 +21081,64 @@ struct EIRNode {
     col: i32,
 }
 
+// IR0 shadow CFG. EIR remains structured and typed; this private graph makes
+// blocks, edges, terminators, and loop/join block parameters explicit before
+// any control-aware AGX allocator exists.
+let AGX_CFG_TERM_NONE: i32 = 0;
+let AGX_CFG_TERM_JUMP: i32 = 1;
+let AGX_CFG_TERM_BRANCH: i32 = 2;
+let AGX_CFG_TERM_RETURN: i32 = 3;
+let AGX_CFG_EDGE_PLAIN: i32 = 0;
+let AGX_CFG_EDGE_FOR_INIT: i32 = 1;
+let AGX_CFG_EDGE_FOR_NEXT: i32 = 2;
+
+struct AgxCfgBlock {
+    first_item: i32,
+    nitems: i32,
+    pred_start: i32,
+    npreds: i32,
+    succ_start: i32,
+    nsuccs: i32,
+    param_start: i32,
+    nparams: i32,
+    term: i32,
+    term_value: i32,
+    target0: i32,
+    target1: i32,
+    line: i32,
+    col: i32,
+}
+
+struct AgxCfgEdge {
+    from: i32,
+    to: i32,
+    kind: i32,
+    owner: i32,
+}
+
+struct AgxCfgItem {
+    block: i32,
+    eir: i32,
+}
+
+struct AgxCfgParam {
+    slot: i32,
+    type_off: i32,
+    incoming_start: i32,
+    nincoming: i32,
+}
+
+struct AgxCfgIncoming {
+    pred: i32,
+    value: i32,
+}
+
+struct AgxCfgRegion {
+    header: i32,
+    break_block: i32,
+    continue_block: i32,
+}
+
 // Lowered-fn registry entry (keyed by g_funcs index). state: 0 = pending, 1 =
 // lowered. pmeta/ret_bytes = per-param/return aggregate sizes (ev_call copies).
 struct EIRFunc {
@@ -21185,6 +21251,34 @@ var g_nevg: i32 = 0;
 var g_ewide: *u64 = null;
 var g_newide: i32 = 0;
 var g_cap_ewide: i32 = 0;
+
+// IR0 arenas are lazily allocated with the EIR lowering arenas and reset for
+// each classified worker. Indices, never raw interior pointers, survive growth.
+var g_agx_cfg_blocks: *AgxCfgBlock = null;
+var g_agx_cfg_nblocks: i32 = 0;
+var g_agx_cfg_cap_blocks: i32 = 0;
+var g_agx_cfg_edges: *AgxCfgEdge = null;
+var g_agx_cfg_nedges: i32 = 0;
+var g_agx_cfg_cap_edges: i32 = 0;
+var g_agx_cfg_items: *AgxCfgItem = null;
+var g_agx_cfg_nitems: i32 = 0;
+var g_agx_cfg_cap_items: i32 = 0;
+var g_agx_cfg_params: *AgxCfgParam = null;
+var g_agx_cfg_nparams: i32 = 0;
+var g_agx_cfg_cap_params: i32 = 0;
+var g_agx_cfg_regions: *AgxCfgRegion = null;
+var g_agx_cfg_nregions: i32 = 0;
+var g_agx_cfg_cap_regions: i32 = 0;
+var g_agx_cfg_preds: *i32 = null;
+var g_agx_cfg_succs: *i32 = null;
+var g_agx_cfg_cap_adj: i32 = 0;
+var g_agx_cfg_incoming: *AgxCfgIncoming = null;
+var g_agx_cfg_cap_incoming: i32 = 0;
+var g_agx_cfg_reachable: *i32 = null;
+var g_agx_cfg_slot_types: *i32 = null;
+var g_agx_cfg_marks: *i32 = null;
+var g_agx_cfg_cap_slots: i32 = 0;
+var g_agx_ir0_failed: i32 = 0;
 
 // ---- Refusal (the cardinal rule): loud, located, exit 97 ----
 fn ev_refuse(what: *u8, line: i32, col: i32) {
@@ -23672,6 +23766,1115 @@ fn lower_stmt(stmt: i32) -> i32 {
 
     ev_internal("lower_stmt unhandled node kind");
     return 0 - 1;
+}
+
+// ===== AGX IR0 SHADOW: TYPED WORKER EIR -> PRIVATE CFG =====
+
+fn agx_ir0_fail() {
+    g_agx_ir0_failed = 1;
+}
+
+fn agx_ir0_ensure_arenas() {
+    if g_eir == null {
+        g_cap_eir = EIR_INIT_CAP;
+        g_eir = alloc(g_cap_eir);
+    }
+    if g_evargs == null {
+        g_cap_evargs = EVARGS_INIT_CAP;
+        g_evargs = alloc(g_cap_evargs);
+    }
+    if g_lw_names == null {
+        g_lw_names = alloc(MAX_LW_SYMS);
+        g_lw_types = alloc(MAX_LW_SYMS);
+        g_lw_slots = alloc(MAX_LW_SYMS);
+        g_lw_reprs = alloc(MAX_LW_SYMS);
+        g_lw_scope = alloc(MAX_LW_DEPTH);
+    }
+    if g_agx_cfg_blocks == null {
+        g_agx_cfg_cap_blocks = 64;
+        g_agx_cfg_blocks = alloc(g_agx_cfg_cap_blocks);
+        g_agx_cfg_reachable = alloc(g_agx_cfg_cap_blocks);
+        g_agx_cfg_cap_edges = 128;
+        g_agx_cfg_edges = alloc(g_agx_cfg_cap_edges);
+        g_agx_cfg_cap_items = 256;
+        g_agx_cfg_items = alloc(g_agx_cfg_cap_items);
+        g_agx_cfg_cap_params = 64;
+        g_agx_cfg_params = alloc(g_agx_cfg_cap_params);
+        g_agx_cfg_cap_regions = 16;
+        g_agx_cfg_regions = alloc(g_agx_cfg_cap_regions);
+    }
+}
+
+fn agx_cfg_reset(nslots: i32) {
+    g_agx_cfg_nblocks = 0;
+    g_agx_cfg_nedges = 0;
+    g_agx_cfg_nitems = 0;
+    g_agx_cfg_nparams = 0;
+    g_agx_cfg_nregions = 0;
+    g_agx_ir0_failed = 0;
+    if nslots > g_agx_cfg_cap_slots {
+        var cap: i32 = g_agx_cfg_cap_slots;
+        if cap == 0 { cap = 32; }
+        while cap < nslots { cap = cap * 2; }
+        g_agx_cfg_slot_types = realloc(g_agx_cfg_slot_types, cap);
+        g_agx_cfg_marks = realloc(g_agx_cfg_marks, cap);
+        g_agx_cfg_cap_slots = cap;
+    }
+    var i: i32 = 0;
+    while i < nslots {
+        g_agx_cfg_slot_types[i] = NULL_STR;
+        g_agx_cfg_marks[i] = 0;
+        i = i + 1;
+    }
+}
+
+fn agx_cfg_new_block(line: i32, col: i32) -> i32 {
+    if g_agx_cfg_nblocks >= g_agx_cfg_cap_blocks {
+        g_agx_cfg_cap_blocks = g_agx_cfg_cap_blocks * 2;
+        g_agx_cfg_blocks = realloc(g_agx_cfg_blocks, g_agx_cfg_cap_blocks);
+        g_agx_cfg_reachable = realloc(
+            g_agx_cfg_reachable, g_agx_cfg_cap_blocks);
+    }
+    let b: i32 = g_agx_cfg_nblocks;
+    g_agx_cfg_nblocks = g_agx_cfg_nblocks + 1;
+    g_agx_cfg_blocks[b].first_item = g_agx_cfg_nitems;
+    g_agx_cfg_blocks[b].nitems = 0;
+    g_agx_cfg_blocks[b].pred_start = 0;
+    g_agx_cfg_blocks[b].npreds = 0;
+    g_agx_cfg_blocks[b].succ_start = 0;
+    g_agx_cfg_blocks[b].nsuccs = 0;
+    g_agx_cfg_blocks[b].param_start = g_agx_cfg_nparams;
+    g_agx_cfg_blocks[b].nparams = 0;
+    g_agx_cfg_blocks[b].term = AGX_CFG_TERM_NONE;
+    g_agx_cfg_blocks[b].term_value = 0 - 1;
+    g_agx_cfg_blocks[b].target0 = 0 - 1;
+    g_agx_cfg_blocks[b].target1 = 0 - 1;
+    g_agx_cfg_blocks[b].line = line;
+    g_agx_cfg_blocks[b].col = col;
+    g_agx_cfg_reachable[b] = 0;
+    return b;
+}
+
+fn agx_cfg_add_edge_kind(from: i32, to: i32, kind: i32, owner: i32) {
+    if from < 0 || from >= g_agx_cfg_nblocks
+        || to < 0 || to >= g_agx_cfg_nblocks
+        || kind < AGX_CFG_EDGE_PLAIN || kind > AGX_CFG_EDGE_FOR_NEXT {
+        agx_ir0_fail();
+        return;
+    }
+    var i: i32 = 0;
+    while i < g_agx_cfg_nedges {
+        if g_agx_cfg_edges[i].from == from && g_agx_cfg_edges[i].to == to {
+            agx_ir0_fail();
+            return;
+        }
+        i = i + 1;
+    }
+    if g_agx_cfg_nedges >= g_agx_cfg_cap_edges {
+        g_agx_cfg_cap_edges = g_agx_cfg_cap_edges * 2;
+        g_agx_cfg_edges = realloc(g_agx_cfg_edges, g_agx_cfg_cap_edges);
+    }
+    g_agx_cfg_edges[g_agx_cfg_nedges].from = from;
+    g_agx_cfg_edges[g_agx_cfg_nedges].to = to;
+    g_agx_cfg_edges[g_agx_cfg_nedges].kind = kind;
+    g_agx_cfg_edges[g_agx_cfg_nedges].owner = owner;
+    g_agx_cfg_nedges = g_agx_cfg_nedges + 1;
+}
+
+fn agx_cfg_add_edge(from: i32, to: i32) {
+    agx_cfg_add_edge_kind(from, to, AGX_CFG_EDGE_PLAIN, 0 - 1);
+}
+
+fn agx_cfg_add_item(block: i32, eir: i32) {
+    if block < 0 || block >= g_agx_cfg_nblocks
+        || g_agx_cfg_blocks[block].term != AGX_CFG_TERM_NONE {
+        agx_ir0_fail();
+        return;
+    }
+    if g_agx_cfg_blocks[block].nitems == 0 {
+        g_agx_cfg_blocks[block].first_item = g_agx_cfg_nitems;
+    } else if g_agx_cfg_blocks[block].first_item
+        + g_agx_cfg_blocks[block].nitems != g_agx_cfg_nitems {
+        agx_ir0_fail();
+        return;
+    }
+    if g_agx_cfg_nitems >= g_agx_cfg_cap_items {
+        g_agx_cfg_cap_items = g_agx_cfg_cap_items * 2;
+        g_agx_cfg_items = realloc(g_agx_cfg_items, g_agx_cfg_cap_items);
+    }
+    g_agx_cfg_items[g_agx_cfg_nitems].block = block;
+    g_agx_cfg_items[g_agx_cfg_nitems].eir = eir;
+    g_agx_cfg_nitems = g_agx_cfg_nitems + 1;
+    g_agx_cfg_blocks[block].nitems = g_agx_cfg_blocks[block].nitems + 1;
+}
+
+fn agx_cfg_set_jump_kind(block: i32, target: i32,
+                         edge_kind: i32, owner: i32) {
+    if block < 0 { return; }
+    if g_agx_cfg_blocks[block].term != AGX_CFG_TERM_NONE {
+        agx_ir0_fail();
+        return;
+    }
+    g_agx_cfg_blocks[block].term = AGX_CFG_TERM_JUMP;
+    g_agx_cfg_blocks[block].target0 = target;
+    agx_cfg_add_edge_kind(block, target, edge_kind, owner);
+}
+
+fn agx_cfg_set_jump(block: i32, target: i32) {
+    agx_cfg_set_jump_kind(
+        block, target, AGX_CFG_EDGE_PLAIN, 0 - 1);
+}
+
+fn agx_cfg_set_branch(block: i32, value: i32, yes: i32, no: i32) {
+    if block < 0 || g_agx_cfg_blocks[block].term != AGX_CFG_TERM_NONE {
+        agx_ir0_fail();
+        return;
+    }
+    g_agx_cfg_blocks[block].term = AGX_CFG_TERM_BRANCH;
+    g_agx_cfg_blocks[block].term_value = value;
+    g_agx_cfg_blocks[block].target0 = yes;
+    g_agx_cfg_blocks[block].target1 = no;
+    agx_cfg_add_edge(block, yes);
+    agx_cfg_add_edge(block, no);
+}
+
+fn agx_cfg_set_return(block: i32, value: i32) {
+    if block < 0 || g_agx_cfg_blocks[block].term != AGX_CFG_TERM_NONE {
+        agx_ir0_fail();
+        return;
+    }
+    g_agx_cfg_blocks[block].term = AGX_CFG_TERM_RETURN;
+    g_agx_cfg_blocks[block].term_value = value;
+}
+
+fn agx_cfg_add_param(block: i32, slot: i32, type_off: i32) {
+    if block < 0 || block >= g_agx_cfg_nblocks || slot < 0
+        || slot >= g_lw_nslots || type_off == NULL_STR {
+        agx_ir0_fail();
+        return;
+    }
+    var start: i32 = g_agx_cfg_blocks[block].param_start;
+    if g_agx_cfg_blocks[block].nparams == 0 {
+        start = g_agx_cfg_nparams;
+        g_agx_cfg_blocks[block].param_start = start;
+    }
+    var i: i32 = 0;
+    while i < g_agx_cfg_blocks[block].nparams {
+        if g_agx_cfg_params[start + i].slot == slot { return; }
+        i = i + 1;
+    }
+    if start + g_agx_cfg_blocks[block].nparams != g_agx_cfg_nparams {
+        agx_ir0_fail();
+        return;
+    }
+    if g_agx_cfg_nparams >= g_agx_cfg_cap_params {
+        g_agx_cfg_cap_params = g_agx_cfg_cap_params * 2;
+        g_agx_cfg_params = realloc(g_agx_cfg_params, g_agx_cfg_cap_params);
+    }
+    g_agx_cfg_params[g_agx_cfg_nparams].slot = slot;
+    g_agx_cfg_params[g_agx_cfg_nparams].type_off = type_off;
+    g_agx_cfg_params[g_agx_cfg_nparams].incoming_start = 0;
+    g_agx_cfg_params[g_agx_cfg_nparams].nincoming = 0;
+    g_agx_cfg_nparams = g_agx_cfg_nparams + 1;
+    g_agx_cfg_blocks[block].nparams = g_agx_cfg_blocks[block].nparams + 1;
+}
+
+fn agx_cfg_push_region(header: i32, break_block: i32, continue_block: i32) {
+    if g_agx_cfg_nregions >= g_agx_cfg_cap_regions {
+        g_agx_cfg_cap_regions = g_agx_cfg_cap_regions * 2;
+        g_agx_cfg_regions = realloc(g_agx_cfg_regions, g_agx_cfg_cap_regions);
+    }
+    let i: i32 = g_agx_cfg_nregions;
+    g_agx_cfg_nregions = g_agx_cfg_nregions + 1;
+    g_agx_cfg_regions[i].header = header;
+    g_agx_cfg_regions[i].break_block = break_block;
+    g_agx_cfg_regions[i].continue_block = continue_block;
+}
+
+fn agx_cfg_pop_region() {
+    if g_agx_cfg_nregions == 0 { agx_ir0_fail(); return; }
+    g_agx_cfg_nregions = g_agx_cfg_nregions - 1;
+}
+
+fn agx_ir0_set_slot_type(slot: i32, type_off: i32) {
+    if slot < 0 || slot >= g_lw_nslots || type_off == NULL_STR {
+        agx_ir0_fail();
+        return;
+    }
+    if g_agx_cfg_slot_types[slot] != NULL_STR
+        && g_agx_cfg_slot_types[slot] != type_off {
+        agx_ir0_fail();
+        return;
+    }
+    g_agx_cfg_slot_types[slot] = type_off;
+}
+
+fn agx_ir0_collect_slot_types() {
+    var e: i32 = 0;
+    while e < g_neir {
+        let kind: i32 = g_eir[e].kind;
+        if kind == EIR_LOCAL || kind == EIR_LET || kind == EIR_LET_ARR
+            || kind == EIR_SET || kind == EIR_FOR {
+            agx_ir0_set_slot_type(g_eir[e].a, g_eir[e].type_off);
+        }
+        e = e + 1;
+    }
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        if g_agx_cfg_slot_types[slot] == NULL_STR { agx_ir0_fail(); }
+        slot = slot + 1;
+    }
+}
+
+fn agx_ir0_binary_op(op: i32) -> i32 {
+    if op >= OP_ADD && op <= OP_OR { return 1; }
+    if op >= OP_BITAND && op <= OP_BITXOR { return 1; }
+    if op == OP_SHL || op == OP_SHR { return 1; }
+    return 0;
+}
+
+fn agx_ir0_expr_ok(e: i32, depth: i32) -> i32 {
+    if e < 0 || e >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[e].kind;
+    let ty: i32 = g_eir[e].type_off;
+    if ty == NULL_STR { return 0; }
+    if kind == EIR_CONST {
+        let cfi: i32 = find_field_by_alias(ty);
+        if cfi >= 0 {
+            if g_eir[e].alg != cfi { return 0; }
+        } else if g_eir[e].alg != 0 - 1 { return 0; }
+        return 1;
+    }
+    if kind == EIR_NULLP {
+        if type_is_ptr(ty) == 0 { return 0; }
+        return 1;
+    }
+    if kind == EIR_LOCAL {
+        if g_eir[e].a < 0 || g_eir[e].a >= g_lw_nslots { return 0; }
+        if ty != g_agx_cfg_slot_types[g_eir[e].a] { return 0; }
+        return 1;
+    }
+    if kind == EIR_SC {
+        if (g_eir[e].op != OP_AND && g_eir[e].op != OP_OR)
+            || ty != str_intern("i1") { return 0; }
+        if agx_ir0_expr_ok(g_eir[e].a, depth + 1) == 0
+            || agx_ir0_expr_ok(g_eir[e].b, depth + 1) == 0 { return 0; }
+        if g_eir[g_eir[e].a].type_off != str_intern("i1")
+            || g_eir[g_eir[e].b].type_off != str_intern("i1") { return 0; }
+        return 1;
+    }
+    if kind == EIR_BIN {
+        let op: i32 = g_eir[e].op;
+        let operand_ty: i32 = g_eir[e].aux_type;
+        if agx_ir0_binary_op(op) == 0 || operand_ty == NULL_STR { return 0; }
+        if agx_ir0_expr_ok(g_eir[e].a, depth + 1) == 0
+            || agx_ir0_expr_ok(g_eir[e].b, depth + 1) == 0 { return 0; }
+        if g_eir[g_eir[e].a].type_off != operand_ty { return 0; }
+        let fi: i32 = find_field_by_alias(operand_ty);
+        if fi >= 0 {
+            if g_eir[e].alg != fi { return 0; }
+            if op != OP_ADD && op != OP_SUB && op != OP_MUL
+                && op != OP_DIV && op != OP_POW
+                && (op < OP_EQ || op > OP_GE) { return 0; }
+        } else if g_eir[e].alg != 0 - 1 { return 0; }
+        if op == OP_POW {
+            if g_eir[g_eir[e].b].type_off != str_intern("i32")
+                || ty != operand_ty { return 0; }
+        } else {
+            if g_eir[g_eir[e].b].type_off != operand_ty { return 0; }
+            if op >= OP_EQ && op <= OP_GE {
+                if ty != str_intern("i1") { return 0; }
+            } else if ty != operand_ty { return 0; }
+        }
+        return 1;
+    }
+    if kind == EIR_UN {
+        if g_eir[e].op != OP_NEG && g_eir[e].op != OP_NOT
+            && g_eir[e].op != OP_BITNOT { return 0; }
+        if g_eir[e].aux_type == NULL_STR
+            || agx_ir0_expr_ok(g_eir[e].a, depth + 1) == 0 { return 0; }
+        if g_eir[g_eir[e].a].type_off != g_eir[e].aux_type
+            || ty != g_eir[e].aux_type { return 0; }
+        return 1;
+    }
+    if kind == EIR_CAST {
+        if g_eir[e].aux_type == NULL_STR
+            || agx_ir0_expr_ok(g_eir[e].a, depth + 1) == 0 { return 0; }
+        if g_eir[g_eir[e].a].type_off != g_eir[e].aux_type { return 0; }
+        return 1;
+    }
+    if kind == EIR_INDEX {
+        if g_eir[e].c <= 0
+            || agx_ir0_expr_ok(g_eir[e].a, depth + 1) == 0
+            || agx_ir0_expr_ok(g_eir[e].b, depth + 1) == 0 { return 0; }
+        let base_ty: i32 = g_eir[g_eir[e].a].type_off;
+        var elem_ty: i32 = NULL_STR;
+        if type_is_ptr(base_ty) == 1 {
+            elem_ty = type_pointee(base_ty);
+        } else if type_is_array(base_ty) == 1 {
+            elem_ty = type_array_elem(base_ty);
+        }
+        if elem_ty != ty || g_eir[g_eir[e].b].type_off != str_intern("i64")
+            || g_eir[e].c != lw_type_size(
+                elem_ty, g_eir[e].line, g_eir[e].col) {
+            return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// marks bit 0 = assigned in this region; bit 1 = defined inside this region.
+fn agx_ir0_mark_slots(stmt: i32, depth: i32) {
+    if stmt < 0 || stmt >= g_neir || depth > 256 {
+        agx_ir0_fail();
+        return;
+    }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            agx_ir0_mark_slots(g_evargs[g_eir[stmt].args_start + i], depth + 1);
+            i = i + 1;
+        }
+        return;
+    }
+    if kind == EIR_LET || kind == EIR_LET_ARR {
+        let slot: i32 = g_eir[stmt].a;
+        if slot < 0 || slot >= g_lw_nslots { agx_ir0_fail(); return; }
+        g_agx_cfg_marks[slot] = g_agx_cfg_marks[slot] | 2;
+        return;
+    }
+    if kind == EIR_SET {
+        let slot: i32 = g_eir[stmt].a;
+        if slot < 0 || slot >= g_lw_nslots { agx_ir0_fail(); return; }
+        g_agx_cfg_marks[slot] = g_agx_cfg_marks[slot] | 1;
+        return;
+    }
+    if kind == EIR_IF {
+        agx_ir0_mark_slots(g_eir[stmt].b, depth + 1);
+        if g_eir[stmt].c >= 0 { agx_ir0_mark_slots(g_eir[stmt].c, depth + 1); }
+        return;
+    }
+    if kind == EIR_WHILE {
+        agx_ir0_mark_slots(g_eir[stmt].b, depth + 1);
+        return;
+    }
+    if kind == EIR_FOR {
+        agx_ir0_mark_slots(g_evargs[g_eir[stmt].args_start], depth + 1);
+    }
+}
+
+fn agx_cfg_add_region_params(block: i32, stmt: i32, extra_slot: i32) {
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        g_agx_cfg_marks[slot] = 0;
+        slot = slot + 1;
+    }
+    agx_ir0_mark_slots(stmt, 0);
+    if extra_slot >= 0 {
+        if extra_slot >= g_lw_nslots { agx_ir0_fail(); return; }
+        g_agx_cfg_marks[extra_slot] = g_agx_cfg_marks[extra_slot] | 1;
+    }
+    slot = 0;
+    while slot < g_lw_nslots {
+        if (g_agx_cfg_marks[slot] & 1) != 0
+            && (g_agx_cfg_marks[slot] & 2) == 0 {
+            agx_cfg_add_param(block, slot, g_agx_cfg_slot_types[slot]);
+        }
+        slot = slot + 1;
+    }
+}
+
+fn agx_cfg_has_incoming(block: i32) -> i32 {
+    var e: i32 = 0;
+    while e < g_agx_cfg_nedges {
+        if g_agx_cfg_edges[e].to == block { return 1; }
+        e = e + 1;
+    }
+    return 0;
+}
+
+fn agx_cfg_lower_stmt(stmt: i32, current: i32) -> i32 {
+    if g_agx_ir0_failed == 1 || current < 0 { return 0 - 1; }
+    if stmt < 0 || stmt >= g_neir { agx_ir0_fail(); return 0 - 1; }
+    let kind: i32 = g_eir[stmt].kind;
+
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        var block: i32 = current;
+        while i < g_eir[stmt].nargs && block >= 0 {
+            block = agx_cfg_lower_stmt(
+                g_evargs[g_eir[stmt].args_start + i], block);
+            i = i + 1;
+        }
+        return block;
+    }
+
+    if kind == EIR_LET || kind == EIR_SET {
+        let slot: i32 = g_eir[stmt].a;
+        if slot < 0 || slot >= g_lw_nslots
+            || g_eir[stmt].type_off != g_agx_cfg_slot_types[slot]
+            || agx_ir0_expr_ok(g_eir[stmt].b, 0) == 0
+            || g_eir[g_eir[stmt].b].type_off != g_eir[stmt].type_off {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        agx_cfg_add_item(current, stmt);
+        return current;
+    }
+    if kind == EIR_INDEX_ST {
+        if g_eir[stmt].op <= 0
+            || agx_ir0_expr_ok(g_eir[stmt].a, 0) == 0
+            || agx_ir0_expr_ok(g_eir[stmt].b, 0) == 0
+            || agx_ir0_expr_ok(g_eir[stmt].c, 0) == 0 {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        let base_ty: i32 = g_eir[g_eir[stmt].a].type_off;
+        var elem_ty: i32 = NULL_STR;
+        if type_is_ptr(base_ty) == 1 {
+            elem_ty = type_pointee(base_ty);
+        } else if type_is_array(base_ty) == 1 {
+            elem_ty = type_array_elem(base_ty);
+        }
+        if elem_ty != g_eir[stmt].type_off
+            || g_eir[g_eir[stmt].b].type_off != str_intern("i64")
+            || g_eir[g_eir[stmt].c].type_off != elem_ty
+            || g_eir[stmt].op != lw_type_size(
+                elem_ty, g_eir[stmt].line, g_eir[stmt].col) {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        agx_cfg_add_item(current, stmt);
+        return current;
+    }
+    if kind == EIR_EXPR {
+        if agx_ir0_expr_ok(g_eir[stmt].a, 0) == 0 { agx_ir0_fail(); return 0 - 1; }
+        agx_cfg_add_item(current, stmt);
+        return current;
+    }
+
+    if kind == EIR_IF {
+        if agx_ir0_expr_ok(g_eir[stmt].a, 0) == 0
+            || g_eir[g_eir[stmt].a].type_off != str_intern("i1") {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        let then_block: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        var else_block: i32 = 0 - 1;
+        if g_eir[stmt].c >= 0 {
+            else_block = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        }
+        let join_block: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        if else_block < 0 { else_block = join_block; }
+        agx_cfg_set_branch(current, g_eir[stmt].a, then_block, else_block);
+        let then_end: i32 = agx_cfg_lower_stmt(g_eir[stmt].b, then_block);
+        if then_end >= 0 { agx_cfg_set_jump(then_end, join_block); }
+        if g_eir[stmt].c >= 0 {
+            let else_end: i32 = agx_cfg_lower_stmt(g_eir[stmt].c, else_block);
+            if else_end >= 0 { agx_cfg_set_jump(else_end, join_block); }
+        }
+        if agx_cfg_has_incoming(join_block) == 0 { return 0 - 1; }
+        agx_cfg_add_region_params(join_block, stmt, 0 - 1);
+        return join_block;
+    }
+
+    if kind == EIR_WHILE {
+        if agx_ir0_expr_ok(g_eir[stmt].a, 0) == 0
+            || g_eir[g_eir[stmt].a].type_off != str_intern("i1") {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        let header: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        let body: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        let exit_block: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        agx_cfg_set_jump(current, header);
+        agx_cfg_set_branch(header, g_eir[stmt].a, body, exit_block);
+        agx_cfg_add_region_params(header, g_eir[stmt].b, 0 - 1);
+        agx_cfg_push_region(header, exit_block, header);
+        let body_end: i32 = agx_cfg_lower_stmt(g_eir[stmt].b, body);
+        agx_cfg_pop_region();
+        if body_end >= 0 { agx_cfg_set_jump(body_end, header); }
+        return exit_block;
+    }
+
+    if kind == EIR_FOR {
+        if g_eir[stmt].nargs != 1
+            || agx_ir0_expr_ok(g_eir[stmt].b, 0) == 0
+            || agx_ir0_expr_ok(g_eir[stmt].c, 0) == 0
+            || g_eir[stmt].a < 0 || g_eir[stmt].a >= g_lw_nslots
+            || g_eir[stmt].type_off != g_agx_cfg_slot_types[g_eir[stmt].a]
+            || g_eir[g_eir[stmt].b].type_off != g_eir[stmt].type_off
+            || g_eir[g_eir[stmt].c].type_off != g_eir[stmt].type_off {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        let body_stmt: i32 = g_evargs[g_eir[stmt].args_start];
+        let header: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        let body: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        let latch: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        let exit_block: i32 = agx_cfg_new_block(g_eir[stmt].line, g_eir[stmt].col);
+        agx_cfg_set_jump_kind(
+            current, header, AGX_CFG_EDGE_FOR_INIT, stmt);
+        agx_cfg_set_branch(header, stmt, body, exit_block);
+        agx_cfg_add_region_params(header, body_stmt, g_eir[stmt].a);
+        agx_cfg_push_region(header, exit_block, latch);
+        let body_end: i32 = agx_cfg_lower_stmt(body_stmt, body);
+        agx_cfg_pop_region();
+        if body_end >= 0 { agx_cfg_set_jump(body_end, latch); }
+        if agx_cfg_has_incoming(latch) == 1 {
+            agx_cfg_set_jump_kind(
+                latch, header, AGX_CFG_EDGE_FOR_NEXT, stmt);
+        }
+        return exit_block;
+    }
+
+    if kind == EIR_BRK || kind == EIR_CONT {
+        if g_agx_cfg_nregions == 0 { agx_ir0_fail(); return 0 - 1; }
+        let ri: i32 = g_agx_cfg_nregions - 1;
+        var target: i32 = g_agx_cfg_regions[ri].break_block;
+        if kind == EIR_CONT { target = g_agx_cfg_regions[ri].continue_block; }
+        agx_cfg_set_jump(current, target);
+        return 0 - 1;
+    }
+    if kind == EIR_RET {
+        if g_eir[stmt].a >= 0 && agx_ir0_expr_ok(g_eir[stmt].a, 0) == 0 {
+            agx_ir0_fail();
+            return 0 - 1;
+        }
+        agx_cfg_set_return(current, g_eir[stmt].a);
+        return 0 - 1;
+    }
+
+    agx_ir0_fail();
+    return 0 - 1;
+}
+
+fn agx_cfg_find_edge(from: i32, to: i32) -> i32 {
+    var e: i32 = 0;
+    while e < g_agx_cfg_nedges {
+        if g_agx_cfg_edges[e].from == from && g_agx_cfg_edges[e].to == to {
+            return e;
+        }
+        e = e + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_ir0_local_value(slot: i32, type_off: i32,
+                       line: i32, col: i32) -> i32 {
+    let value: i32 = eir_new(EIR_LOCAL, line, col);
+    g_eir[value].a = slot;
+    g_eir[value].type_off = type_off;
+    return value;
+}
+
+fn agx_ir0_for_next_value(owner: i32, slot: i32,
+                          type_off: i32) -> i32 {
+    let line: i32 = g_eir[owner].line;
+    let col: i32 = g_eir[owner].col;
+    let current: i32 = agx_ir0_local_value(slot, type_off, line, col);
+    let one: i32 = eir_new(EIR_CONST, line, col);
+    g_eir[one].ival = 1;
+    g_eir[one].type_off = type_off;
+    let next: i32 = eir_new(EIR_BIN, line, col);
+    g_eir[next].op = OP_ADD;
+    g_eir[next].a = current;
+    g_eir[next].b = one;
+    g_eir[next].aux_type = type_off;
+    g_eir[next].type_off = type_off;
+    return next;
+}
+
+fn agx_cfg_incoming_value(edge: i32, slot: i32,
+                          type_off: i32) -> i32 {
+    if edge < 0 || edge >= g_agx_cfg_nedges {
+        agx_ir0_fail();
+        return 0 - 1;
+    }
+    let owner: i32 = g_agx_cfg_edges[edge].owner;
+    let kind: i32 = g_agx_cfg_edges[edge].kind;
+    let pred: i32 = g_agx_cfg_edges[edge].from;
+    let line: i32 = g_agx_cfg_blocks[pred].line;
+    let col: i32 = g_agx_cfg_blocks[pred].col;
+    if kind == AGX_CFG_EDGE_PLAIN {
+        return agx_ir0_local_value(slot, type_off, line, col);
+    }
+    if owner < 0 || owner >= g_neir || g_eir[owner].kind != EIR_FOR {
+        agx_ir0_fail();
+        return 0 - 1;
+    }
+    if slot == g_eir[owner].a {
+        if kind == AGX_CFG_EDGE_FOR_INIT { return g_eir[owner].b; }
+        if kind == AGX_CFG_EDGE_FOR_NEXT {
+            return agx_ir0_for_next_value(owner, slot, type_off);
+        }
+    }
+    return agx_ir0_local_value(slot, type_off, line, col);
+}
+
+fn agx_cfg_finalize() {
+    var b: i32 = 0;
+    while b < g_agx_cfg_nblocks {
+        g_agx_cfg_blocks[b].npreds = 0;
+        g_agx_cfg_blocks[b].nsuccs = 0;
+        b = b + 1;
+    }
+    var e: i32 = 0;
+    while e < g_agx_cfg_nedges {
+        let from: i32 = g_agx_cfg_edges[e].from;
+        let to: i32 = g_agx_cfg_edges[e].to;
+        g_agx_cfg_blocks[from].nsuccs = g_agx_cfg_blocks[from].nsuccs + 1;
+        g_agx_cfg_blocks[to].npreds = g_agx_cfg_blocks[to].npreds + 1;
+        e = e + 1;
+    }
+    if g_agx_cfg_nedges > g_agx_cfg_cap_adj {
+        var cap: i32 = g_agx_cfg_cap_adj;
+        if cap == 0 { cap = 128; }
+        while cap < g_agx_cfg_nedges { cap = cap * 2; }
+        g_agx_cfg_preds = realloc(g_agx_cfg_preds, cap);
+        g_agx_cfg_succs = realloc(g_agx_cfg_succs, cap);
+        g_agx_cfg_cap_adj = cap;
+    }
+    let pc: *i32 = alloc(g_agx_cfg_nblocks + 1);
+    let sc: *i32 = alloc(g_agx_cfg_nblocks + 1);
+    var poff: i32 = 0;
+    var soff: i32 = 0;
+    b = 0;
+    while b < g_agx_cfg_nblocks {
+        g_agx_cfg_blocks[b].pred_start = poff;
+        g_agx_cfg_blocks[b].succ_start = soff;
+        pc[b] = 0;
+        sc[b] = 0;
+        poff = poff + g_agx_cfg_blocks[b].npreds;
+        soff = soff + g_agx_cfg_blocks[b].nsuccs;
+        b = b + 1;
+    }
+    e = 0;
+    while e < g_agx_cfg_nedges {
+        let from: i32 = g_agx_cfg_edges[e].from;
+        let to: i32 = g_agx_cfg_edges[e].to;
+        let sp: i32 = g_agx_cfg_blocks[from].succ_start + sc[from];
+        g_agx_cfg_succs[sp] = to;
+        sc[from] = sc[from] + 1;
+        let pp: i32 = g_agx_cfg_blocks[to].pred_start + pc[to];
+        g_agx_cfg_preds[pp] = from;
+        pc[to] = pc[to] + 1;
+        e = e + 1;
+    }
+    var nincoming: i32 = 0;
+    b = 0;
+    while b < g_agx_cfg_nblocks {
+        nincoming = nincoming
+            + g_agx_cfg_blocks[b].nparams * g_agx_cfg_blocks[b].npreds;
+        b = b + 1;
+    }
+    if nincoming > g_agx_cfg_cap_incoming {
+        var icap: i32 = g_agx_cfg_cap_incoming;
+        if icap == 0 { icap = 128; }
+        while icap < nincoming { icap = icap * 2; }
+        g_agx_cfg_incoming = realloc(g_agx_cfg_incoming, icap);
+        g_agx_cfg_cap_incoming = icap;
+    }
+    var ioff: i32 = 0;
+    b = 0;
+    while b < g_agx_cfg_nblocks {
+        var pi: i32 = 0;
+        while pi < g_agx_cfg_blocks[b].nparams {
+            let pidx: i32 = g_agx_cfg_blocks[b].param_start + pi;
+            g_agx_cfg_params[pidx].incoming_start = ioff;
+            g_agx_cfg_params[pidx].nincoming = g_agx_cfg_blocks[b].npreds;
+            var ii: i32 = 0;
+            while ii < g_agx_cfg_blocks[b].npreds {
+                let pred: i32 =
+                    g_agx_cfg_preds[g_agx_cfg_blocks[b].pred_start + ii];
+                let edge: i32 = agx_cfg_find_edge(pred, b);
+                g_agx_cfg_incoming[ioff].pred = pred;
+                g_agx_cfg_incoming[ioff].value = agx_cfg_incoming_value(
+                    edge, g_agx_cfg_params[pidx].slot,
+                    g_agx_cfg_params[pidx].type_off);
+                ioff = ioff + 1;
+                ii = ii + 1;
+            }
+            pi = pi + 1;
+        }
+        b = b + 1;
+    }
+    b = 0;
+    while b < g_agx_cfg_nblocks {
+        g_agx_cfg_reachable[b] = 0;
+        b = b + 1;
+    }
+    if g_agx_cfg_nblocks > 0 { g_agx_cfg_reachable[0] = 1; }
+    var changed: i32 = 1;
+    while changed == 1 {
+        changed = 0;
+        e = 0;
+        while e < g_agx_cfg_nedges {
+            let from: i32 = g_agx_cfg_edges[e].from;
+            let to: i32 = g_agx_cfg_edges[e].to;
+            if g_agx_cfg_reachable[from] == 1
+                && g_agx_cfg_reachable[to] == 0 {
+                g_agx_cfg_reachable[to] = 1;
+                changed = 1;
+            }
+            e = e + 1;
+        }
+    }
+    free(pc);
+    free(sc);
+}
+
+fn agx_ir0_stmt_assigns_slot(stmt: i32, slot: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_SET { return (g_eir[stmt].a == slot) as i32; }
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            if agx_ir0_stmt_assigns_slot(
+                g_evargs[g_eir[stmt].args_start + i], slot, depth + 1) == 1 {
+                return 1;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+    if kind == EIR_IF {
+        if agx_ir0_stmt_assigns_slot(g_eir[stmt].b, slot, depth + 1) == 1 {
+            return 1;
+        }
+        if g_eir[stmt].c >= 0 {
+            return agx_ir0_stmt_assigns_slot(
+                g_eir[stmt].c, slot, depth + 1);
+        }
+        return 0;
+    }
+    if kind == EIR_WHILE {
+        return agx_ir0_stmt_assigns_slot(g_eir[stmt].b, slot, depth + 1);
+    }
+    if kind == EIR_FOR && g_eir[stmt].nargs == 1 {
+        return agx_ir0_stmt_assigns_slot(
+            g_evargs[g_eir[stmt].args_start], slot, depth + 1);
+    }
+    return 0;
+}
+
+fn agx_ir0_block_defines_slot(block: i32, slot: i32) -> i32 {
+    var i: i32 = 0;
+    while i < g_agx_cfg_blocks[block].nitems {
+        let item: i32 = g_agx_cfg_blocks[block].first_item + i;
+        let stmt: i32 = g_agx_cfg_items[item].eir;
+        if (g_eir[stmt].kind == EIR_LET || g_eir[stmt].kind == EIR_SET)
+            && g_eir[stmt].a == slot { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn agx_ir0_for_next_ok(value: i32, slot: i32, type_off: i32) -> i32 {
+    if agx_ir0_expr_ok(value, 0) == 0 || g_eir[value].kind != EIR_BIN
+        || g_eir[value].op != OP_ADD || g_eir[value].type_off != type_off
+        || g_eir[value].aux_type != type_off { return 0; }
+    let lhs: i32 = g_eir[value].a;
+    let rhs: i32 = g_eir[value].b;
+    if g_eir[lhs].kind != EIR_LOCAL || g_eir[lhs].a != slot
+        || g_eir[rhs].kind != EIR_CONST || g_eir[rhs].ival != 1
+        || g_eir[rhs].type_off != type_off { return 0; }
+    return 1;
+}
+
+fn agx_cfg_validate(shape_kind: i32) -> i32 {
+    if g_agx_ir0_failed == 1 || g_agx_cfg_nblocks == 0
+        || g_agx_cfg_nregions != 0 { return 0; }
+    var b: i32 = 0;
+    var reachable_blocks: i32 = 0;
+    var counted_headers: i32 = 0;
+    while b < g_agx_cfg_nblocks {
+        let term: i32 = g_agx_cfg_blocks[b].term;
+        if g_agx_cfg_reachable[b] == 0 {
+            if term != AGX_CFG_TERM_NONE || g_agx_cfg_blocks[b].npreds != 0
+                || g_agx_cfg_blocks[b].nsuccs != 0
+                || g_agx_cfg_blocks[b].nitems != 0
+                || g_agx_cfg_blocks[b].nparams != 0 { return 0; }
+            b = b + 1;
+            continue;
+        }
+        reachable_blocks = reachable_blocks + 1;
+        if term == AGX_CFG_TERM_NONE { return 0; }
+        if b == 0 {
+            if g_agx_cfg_blocks[b].npreds != 0 { return 0; }
+        } else if g_agx_cfg_blocks[b].npreds == 0 { return 0; }
+        if term == AGX_CFG_TERM_JUMP {
+            if g_agx_cfg_blocks[b].nsuccs != 1
+                || g_agx_cfg_blocks[b].target0 < 0 { return 0; }
+        } else if term == AGX_CFG_TERM_BRANCH {
+            if g_agx_cfg_blocks[b].nsuccs != 2
+                || g_agx_cfg_blocks[b].target0 < 0
+                || g_agx_cfg_blocks[b].target1 < 0
+                || g_agx_cfg_blocks[b].term_value < 0
+                || g_agx_cfg_blocks[b].term_value >= g_neir { return 0; }
+            let cond: i32 = g_agx_cfg_blocks[b].term_value;
+            if g_eir[cond].kind == EIR_FOR {
+                counted_headers = counted_headers + 1;
+            } else if agx_ir0_expr_ok(cond, 0) == 0
+                || g_eir[cond].type_off != str_intern("i1") { return 0; }
+        } else if term == AGX_CFG_TERM_RETURN {
+            if g_agx_cfg_blocks[b].nsuccs != 0 { return 0; }
+            if g_agx_cfg_blocks[b].term_value >= 0
+                && agx_ir0_expr_ok(g_agx_cfg_blocks[b].term_value, 0) == 0 {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+        var ii: i32 = 0;
+        while ii < g_agx_cfg_blocks[b].nitems {
+            let item: i32 = g_agx_cfg_blocks[b].first_item + ii;
+            if item < 0 || item >= g_agx_cfg_nitems
+                || g_agx_cfg_items[item].block != b
+                || g_agx_cfg_items[item].eir < 0
+                || g_agx_cfg_items[item].eir >= g_neir { return 0; }
+            ii = ii + 1;
+        }
+        var pi: i32 = 0;
+        while pi < g_agx_cfg_blocks[b].nparams {
+            let pidx: i32 = g_agx_cfg_blocks[b].param_start + pi;
+            if pidx < 0 || pidx >= g_agx_cfg_nparams { return 0; }
+            let slot: i32 = g_agx_cfg_params[pidx].slot;
+            if slot < 0 || slot >= g_lw_nslots
+                || g_agx_cfg_params[pidx].type_off != g_agx_cfg_slot_types[slot]
+                || g_agx_cfg_params[pidx].nincoming
+                    != g_agx_cfg_blocks[b].npreds { return 0; }
+            var ii2: i32 = 0;
+            while ii2 < g_agx_cfg_params[pidx].nincoming {
+                let incoming: i32 =
+                    g_agx_cfg_params[pidx].incoming_start + ii2;
+                let pred: i32 =
+                    g_agx_cfg_preds[g_agx_cfg_blocks[b].pred_start + ii2];
+                let value: i32 = g_agx_cfg_incoming[incoming].value;
+                if g_agx_cfg_incoming[incoming].pred != pred
+                    || agx_ir0_expr_ok(value, 0) == 0
+                    || g_eir[value].type_off != g_agx_cfg_params[pidx].type_off {
+                    return 0;
+                }
+                ii2 = ii2 + 1;
+            }
+            pi = pi + 1;
+        }
+        b = b + 1;
+    }
+    var e: i32 = 0;
+    while e < g_agx_cfg_nedges {
+        let from: i32 = g_agx_cfg_edges[e].from;
+        let to: i32 = g_agx_cfg_edges[e].to;
+        if g_agx_cfg_reachable[from] == 0 || g_agx_cfg_reachable[to] == 0 {
+            return 0;
+        }
+        if g_agx_cfg_edges[e].kind == AGX_CFG_EDGE_PLAIN {
+            if g_agx_cfg_edges[e].owner >= 0 { return 0; }
+        } else {
+            let owner: i32 = g_agx_cfg_edges[e].owner;
+            if owner < 0 || owner >= g_neir || g_eir[owner].kind != EIR_FOR {
+                return 0;
+            }
+        }
+        var sfound: i32 = 0;
+        var pfound: i32 = 0;
+        var i: i32 = 0;
+        while i < g_agx_cfg_blocks[from].nsuccs {
+            if g_agx_cfg_succs[g_agx_cfg_blocks[from].succ_start + i] == to {
+                sfound = 1;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < g_agx_cfg_blocks[to].npreds {
+            if g_agx_cfg_preds[g_agx_cfg_blocks[to].pred_start + i] == from {
+                pfound = 1;
+            }
+            i = i + 1;
+        }
+        if sfound == 0 || pfound == 0 { return 0; }
+        e = e + 1;
+    }
+    if shape_kind >= 1 && shape_kind <= 3 {
+        if reachable_blocks != 1 || g_agx_cfg_nparams != 0
+            || counted_headers != 0 { return 0; }
+    } else if shape_kind == 4 {
+        if reachable_blocks < 5 || counted_headers != 1 { return 0; }
+        b = 0;
+        while b < g_agx_cfg_nblocks {
+            if g_agx_cfg_reachable[b] == 1
+                && g_agx_cfg_blocks[b].term == AGX_CFG_TERM_BRANCH {
+                let owner: i32 = g_agx_cfg_blocks[b].term_value;
+                if owner >= 0 && owner < g_neir
+                    && g_eir[owner].kind == EIR_FOR {
+                    if g_eir[owner].nargs != 1
+                        || g_agx_cfg_blocks[b].npreds != 2
+                        || g_agx_cfg_blocks[b].nparams != 2
+                        || g_eir[g_eir[owner].b].kind != EIR_CONST
+                        || g_eir[g_eir[owner].b].ival != 0
+                        || g_eir[g_eir[owner].c].kind != EIR_CONST
+                        || g_eir[g_eir[owner].c].ival != 8 { return 0; }
+                    let iter_slot: i32 = g_eir[owner].a;
+                    let body_stmt: i32 =
+                        g_evargs[g_eir[owner].args_start];
+                    var saw_iter: i32 = 0;
+                    var saw_carried: i32 = 0;
+                    var pi2: i32 = 0;
+                    while pi2 < g_agx_cfg_blocks[b].nparams {
+                        let pidx2: i32 =
+                            g_agx_cfg_blocks[b].param_start + pi2;
+                        let slot2: i32 = g_agx_cfg_params[pidx2].slot;
+                        let type2: i32 = g_agx_cfg_params[pidx2].type_off;
+                        var saw_init: i32 = 0;
+                        var saw_next: i32 = 0;
+                        var ii3: i32 = 0;
+                        while ii3 < g_agx_cfg_params[pidx2].nincoming {
+                            let incoming2: i32 =
+                                g_agx_cfg_params[pidx2].incoming_start + ii3;
+                            let pred2: i32 =
+                                g_agx_cfg_incoming[incoming2].pred;
+                            let value2: i32 =
+                                g_agx_cfg_incoming[incoming2].value;
+                            let edge2: i32 = agx_cfg_find_edge(pred2, b);
+                            if edge2 < 0 || g_agx_cfg_edges[edge2].owner != owner {
+                                return 0;
+                            }
+                            if g_agx_cfg_edges[edge2].kind
+                                == AGX_CFG_EDGE_FOR_INIT {
+                                saw_init = 1;
+                                if slot2 == iter_slot {
+                                    if value2 != g_eir[owner].b { return 0; }
+                                } else if g_eir[value2].kind != EIR_LOCAL
+                                    || g_eir[value2].a != slot2
+                                    || agx_ir0_block_defines_slot(pred2, slot2) == 0 {
+                                    return 0;
+                                }
+                            } else if g_agx_cfg_edges[edge2].kind
+                                == AGX_CFG_EDGE_FOR_NEXT {
+                                saw_next = 1;
+                                if slot2 == iter_slot {
+                                    if agx_ir0_for_next_ok(value2, slot2, type2) == 0 {
+                                        return 0;
+                                    }
+                                } else if g_eir[value2].kind != EIR_LOCAL
+                                    || g_eir[value2].a != slot2 { return 0; }
+                            } else {
+                                return 0;
+                            }
+                            ii3 = ii3 + 1;
+                        }
+                        if saw_init == 0 || saw_next == 0 { return 0; }
+                        if slot2 == iter_slot {
+                            saw_iter = 1;
+                        } else {
+                            if agx_ir0_stmt_assigns_slot(body_stmt, slot2, 0) == 0 {
+                                return 0;
+                            }
+                            saw_carried = 1;
+                        }
+                        pi2 = pi2 + 1;
+                    }
+                    if saw_iter == 0 || saw_carried == 0 { return 0; }
+                }
+            }
+            b = b + 1;
+        }
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
+                         caps_base: i32, iter_width: i32,
+                         shape_kind: i32) -> i32 {
+    agx_ir0_ensure_arenas();
+
+    let saved_neir: i32 = g_neir;
+    let saved_nevargs: i32 = g_nevargs;
+    let saved_active: i32 = g_lw_active;
+    let saved_count: i32 = g_lw_count;
+    let saved_floor: i32 = g_lw_floor;
+    let saved_depth: i32 = g_lw_depth;
+    let saved_nslots: i32 = g_lw_nslots;
+    let saved_narrs: i32 = g_lw_narrs;
+    let saved_loop_depth: i32 = g_lw_loop_depth;
+    let saved_ret_type: i32 = g_lw_ret_type;
+    let saved_last_repr: i32 = g_lw_last_repr;
+    let saved_npending: i32 = g_lw_npending;
+    let saved_gen_nsub: i32 = g_gen_nsub;
+
+    // Shadow lowering is intentionally non-reentrant. Its CLI fences keep the
+    // evaluator inactive; fail closed if a future composition violates that.
+    if saved_neir != 0 || saved_nevargs != 0 || saved_active != 0
+        || saved_count != 0 || saved_floor != 0 || saved_depth != 0
+        || saved_nslots != 0 || saved_narrs != 0 || saved_loop_depth != 0
+        || saved_npending != 0 { return 0; }
+
+    g_neir = 0;
+    g_nevargs = 0;
+    g_lw_active = 1;
+    g_lw_count = 0;
+    g_lw_floor = 0;
+    g_lw_depth = 0;
+    g_lw_nslots = 0;
+    g_lw_narrs = 0;
+    g_lw_loop_depth = 0;
+    g_lw_ret_type = str_intern("void");
+    g_lw_last_repr = REPR_UNKNOWN;
+    g_lw_npending = 0;
+
+    lw_push_scope();
+    var ci: i32 = 0;
+    while ci < ncaps {
+        let cap_name: i32 = g_pfor_workers[caps_base + ci * 4];
+        let cap_type: i32 = resolve_type_sub(
+            g_pfor_workers[caps_base + ci * 4 + 1]);
+        lw_add(cap_name, cap_type);
+        ci = ci + 1;
+    }
+    var iter_type: i32 = str_intern("i32");
+    if iter_width == 64 { iter_type = str_intern("i64"); }
+    lw_add(loop_name, iter_type);
+    let root: i32 = lower_stmt(body);
+    lw_pop_scope();
+
+    agx_cfg_reset(g_lw_nslots);
+    agx_ir0_collect_slot_types();
+    let entry: i32 = agx_cfg_new_block(g_eir[root].line, g_eir[root].col);
+    let last: i32 = agx_cfg_lower_stmt(root, entry);
+    if last >= 0 { agx_cfg_set_return(last, 0 - 1); }
+    if g_agx_cfg_nregions != 0 { agx_ir0_fail(); }
+    agx_cfg_finalize();
+    let ok: i32 = agx_cfg_validate(shape_kind);
+
+    g_neir = saved_neir;
+    g_nevargs = saved_nevargs;
+    g_lw_active = saved_active;
+    g_lw_count = saved_count;
+    g_lw_floor = saved_floor;
+    g_lw_depth = saved_depth;
+    g_lw_nslots = saved_nslots;
+    g_lw_narrs = saved_narrs;
+    g_lw_loop_depth = saved_loop_depth;
+    g_lw_ret_type = saved_ret_type;
+    g_lw_last_repr = saved_last_repr;
+    g_lw_npending = saved_npending;
+    g_gen_nsub = saved_gen_nsub;
+    return ok;
+}
+
+fn agx_ir0_require(ok: i32, body: i32) {
+    if ok == 1 { return; }
+    wr(2, "agx-ir0-internal: shadow CFG validation failed at ");
+    wr(2, g_src_name); wr(2, ":");
+    wr_int(2, g_nodes[body].line as i64); wr(2, ":");
+    wr_int(2, g_nodes[body].col as i64); wr(2, "\n");
+    exit(98);
 }
 
 // Callee (g_funcs index) -> EIRFunc slot, creating + queueing the body if new.
@@ -28340,6 +29543,10 @@ fn main(argc: i32, argv: **u8) {
             // Opt-in host runtime selection: AGX first for admitted workers,
             // unchanged CPU pfor as the fallback.
             g_agx_dispatch_mode = 1;
+        } else if str_eq(argv[ai], "--agx-ir0-shadow") == 1 {
+            // Validate classified workers through EIR + private CFG without
+            // changing pfor/AGX admission or emitted host/device bytes.
+            g_agx_ir0_shadow = 1;
         } else if str_eq(argv[ai], "--repl") == 1 {
             // --repl: a persistent session over the same evaluator
             // (@internal-note: plan-eval-engine, E3).
@@ -28420,6 +29627,21 @@ fn main(argc: i32, argv: **u8) {
         }
         if output_path == null {
             wr(2, "error: --agx-dispatch requires -o\n");
+            exit(1);
+        }
+    }
+    if g_agx_ir0_shadow == 1 {
+        if g_eval_mode == 1 || g_repl_mode == 1 || g_diag_json == 1
+            || g_pfor_report_mode == 1 || g_ptr_typed == 1 {
+            wr(2, "error: --agx-ir0-shadow composes only with host or AGX codegen\n");
+            exit(1);
+        }
+        if g_emit_gpu_mode == 1 && g_gpu_target != 2 {
+            wr(2, "error: --agx-ir0-shadow requires the AGX GPU target\n");
+            exit(1);
+        }
+        if output_path == null {
+            wr(2, "error: --agx-ir0-shadow requires -o\n");
             exit(1);
         }
     }
