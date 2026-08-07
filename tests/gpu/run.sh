@@ -282,6 +282,10 @@ else
         echo "  FAIL: AGX CF0 compare/select encoder failed its portable gate"
         fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/agx_cf1_probe.py" --check-only; then
+        echo "  FAIL: AGX CF1 structured mask encoder failed its portable gate"
+        fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" --check-only; then
         echo "  FAIL: AGX counted-dot specimen failed its portable structure gate"
         fail=1
@@ -324,6 +328,11 @@ else
             echo "  ok   G16X CF0 authored compare/select fields exact"
         else
             echo "  FAIL: G16X CF0 compare/select execution mismatch"; fail=1
+        fi
+        if python3 "$SCRIPT_DIR/agx_cf1_probe.py" "$AGX_HARNESS"; then
+            echo "  ok   G16X CF1 authored structured mask stack exact"
+        else
+            echo "  FAIL: G16X CF1 structured mask execution mismatch"; fail=1
         fi
         if python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" "$AGX_HARNESS"; then
             echo "  ok   G16X fixed-shape counted Montgomery dots exact"
