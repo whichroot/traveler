@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: Apache-2.0
+// PROOF0-a false-safe counterexamples: every loop below must stay conservative.
+
+struct AdversarialCell {
+    value: i32,
+}
+
+trait Add {
+    fn add(self, other: AdversarialCell) -> i32;
+}
+
+var hidden_counter: i32 = 0;
+var alias_shared: *AdversarialCell = null;
+
+impl Add for AdversarialCell {
+    fn add(self, other: AdversarialCell) -> i32 {
+        hidden_counter = hidden_counter + 1;
+        return self.value + other.value;
+    }
+}
+
+fn hidden_noisy() -> AdversarialCell {
+    hidden_counter = hidden_counter + 1;
+    return AdversarialCell { value: hidden_counter };
+}
+
+fn hidden_member_call() -> i32 {
+    return hidden_noisy().value;
+}
+
+fn hidden_read(data: *i32, i: i32) -> i32 {
+    if i == 0 { return 0; }
+    return data[i - 1];
+}
+
+fn hidden_alias_write() -> i32 {
+    let dst: AdversarialCell = alias_shared;
+    dst = dst;
+    return dst.value;
+}
+
+fn main() -> i32 {
+    let input: *i32 = alloc(64);
+    let output: *i32 = alloc(64);
+
+    for i in 0..64 {
+        output[i] = hidden_member_call();
+    }
+
+    var shared: AdversarialCell = AdversarialCell { value: 0 };
+    for i in 0..64 {
+        let alias: AdversarialCell = shared;
+        alias = AdversarialCell { value: i };
+        output[i] = i;
+    }
+
+    let overload_left: AdversarialCell = AdversarialCell { value: 1 };
+    let overload_right: AdversarialCell = AdversarialCell { value: 2 };
+    for i in 0..64 {
+        output[i] = overload_left + overload_right;
+    }
+
+    for i in 0..64 {
+        let selected: bool = input[i] > 0
+            && (input[i] > 1
+            && (input[i] > 2
+            && (input[i] > 3
+            && input[i] > 4)));
+        output[i] = selected as i32;
+    }
+
+    for i in 0..64 {
+        var value: i32 = 0;
+        for k in 0..4 {
+            if input[i] > 0 {
+                if input[i] > 1 {
+                    if input[i] > 2 {
+                        continue;
+                        value = 1;
+                    }
+                }
+            }
+        }
+        output[i] = value;
+    }
+
+    for i in 1..64 {
+        output[i] = hidden_read(output, i);
+    }
+
+    alias_shared = alloc(4);
+    alias_shared.value = 9;
+    for i in 0..64 {
+        output[i] = hidden_alias_write();
+    }
+
+    free(alias_shared);
+    free(output);
+    free(input);
+    return 0;
+}

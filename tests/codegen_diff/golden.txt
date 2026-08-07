@@ -22,7 +22,7 @@ f01099764580d2c23bafd07acecef602  examples/closure_basics.tv
 fe16f887894b648fc58967687677be0d  examples/convergence_test.tv
 35bce9b9dbfa1ba1d018781e0d1c8a6f  examples/defer_cleanup.tv
 f44e5c613e56fbd58f0a3fcf6e61af18  examples/dp_test.tv
-8cbaf33f250ce7fac5fcc91dd736ce68  examples/dyn_fri_test.tv
+d1c2128fb9358fa632957244c652a908  examples/dyn_fri_test.tv
 659a27189e6ba4dd6172d64e3de5be06  examples/dyn_kernel_test.tv
 d2a68cc1a2e7c421f40301e3fb4fe3e1  examples/dyn_merkle_test.tv
 a5cc9e952e5830f13a3fbaf430c0a11f  examples/dyn_mul_boundary_test.tv

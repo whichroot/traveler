@@ -28,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$REPO_DIR" || exit 1
 
-SELF="$REPO_DIR/src/bootstrap/out/stage1"
+SELF="${TVC_SELF:-$REPO_DIR/src/bootstrap/out/stage1}"
 CORPUS="$REPO_DIR/tests/codegen_diff/corpus.txt"
 GOLDEN="$SCRIPT_DIR/baseline.jsonl"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -96,6 +96,9 @@ assert_reason "$REPO_DIR/tests/pfor/pfor_race_let_idx.tv"       "let-hidden"
 assert_reason "$REPO_DIR/tests/pfor/pfor_race_mutating_call.tv" "mutating-call"
 assert_reason "$REPO_DIR/tests/pfor/pfor_race_raw.tv"           "raw"
 assert_reason "$REPO_DIR/tests/pfor/pfor_race_global_assign.tv" "mutating-call"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_member_call.tv"   "mutating-call"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_hidden_read.tv"   "call-read"
+assert_reason "$REPO_DIR/tests/pfor/pfor_self_aggregate_alias_call.tv" "mutating-call"
 # U1 (Stage D) i64 flavors: the independence proof is type-blind — default-deny
 # survived the gate lift with the same named refusals.
 assert_reason "$REPO_DIR/tests/pfor/pfor_u1_i64_raw.tv"         "raw"
@@ -119,12 +122,79 @@ assert_reason "$REPO_DIR/tests/pfor/pfor_race_alias_letptr.tv"   "private-base"
 assert_reason "$REPO_DIR/tests/pfor/pfor_private_escape.tv"      "private-escape"
 assert_dispatch "$REPO_DIR/tests/pfor/pfor_ok_private_var.tv"
 
+# PROOF0-a is a separate query schema: scope-aware recursive effects beside the
+# unchanged legacy verdict. It has no path to worker admission.
+PROOF0_FIXTURE="$SCRIPT_DIR/fixtures/proof0_effects.tv"
+if ! "$SELF" "$PROOF0_FIXTURE" --pfor-proof0-report \
+        >"$TMP/proof0.focused.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" \
+        "$TMP/proof0.focused.jsonl"; then
+    echo "  FAIL proof0 focused recursive-effect summary"; fail=1
+fi
+PROOF0_ADVERSARIAL="$SCRIPT_DIR/fixtures/proof0_adversarial.tv"
+if ! "$SELF" "$PROOF0_ADVERSARIAL" --pfor-proof0-report \
+        >"$TMP/proof0.adversarial.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" --adversarial \
+        "$TMP/proof0.adversarial.jsonl"; then
+    echo "  FAIL proof0 adversarial false-safe summary"; fail=1
+fi
+legacy_focus="$("$SELF" "$PROOF0_FIXTURE" --pfor-report 2>/dev/null)"
+if ! lines_valid_json "$legacy_focus" \
+   || printf '%s\n' "$legacy_focus" | grep -q 'cpu_effects'; then
+    echo "  FAIL proof0 changed the legacy --pfor-report schema"; fail=1
+else
+    echo "  ok   PROOF0-a remains separate from the legacy report schema"
+fi
+
+assert_proof0_standalone() {
+    local label="$1"; shift
+    if "$SELF" "$PROOF0_FIXTURE" --pfor-proof0-report "$@" \
+            >"$TMP/proof0.$label.out" 2>"$TMP/proof0.$label.err"; then
+        echo "  FAIL proof0 accepted mixed mode: $label"; fail=1; return
+    fi
+    if ! grep -qx 'error: --pfor-proof0-report is a standalone query mode' \
+            "$TMP/proof0.$label.err"; then
+        echo "  FAIL proof0 mixed-mode diagnostic: $label"; fail=1; return
+    fi
+    echo "  ok   PROOF0-a rejects mixed mode: $label"
+}
+
+assert_proof0_standalone legacy --pfor-report
+assert_proof0_standalone eval --eval
+assert_proof0_standalone diagnostics --diagnostics
+assert_proof0_standalone output -o "$TMP/proof0.ll"
+assert_proof0_standalone emit-ir --emit ir
+assert_proof0_standalone gpu --emit-gpu-agx -o "$TMP/proof0.agx"
+assert_proof0_standalone target -target x86_64-unknown-linux-gnu
+assert_proof0_standalone arguments program-argument
+
+# Parse diagnostics gate malformed trees before the recursive walker.
+if ! "$SELF" "$REPO_DIR/tests/diag/expected_expression.tv" \
+        --pfor-proof0-report >"$TMP/proof0.malformed.out" \
+        2>"$TMP/proof0.malformed.err" \
+   || [ -s "$TMP/proof0.malformed.out" ] \
+   || ! grep -q 'expected an expression' "$TMP/proof0.malformed.err"; then
+    echo "  FAIL proof0 malformed-AST guard"; fail=1
+else
+    echo "  ok   PROOF0-a keeps malformed ASTs out of the walker"
+fi
+if ! "$SELF" "$REPO_DIR/tests/diag/defer_nested.tv" \
+        --pfor-proof0-report >"$TMP/proof0.defer.out" \
+        2>"$TMP/proof0.defer.err" \
+   || [ -s "$TMP/proof0.defer.out" ] \
+   || ! grep -q 'defer must be a top-level statement' "$TMP/proof0.defer.err"; then
+    echo "  FAIL proof0 nested-defer parser boundary"; fail=1
+else
+    echo "  ok   PROOF0-a keeps nested defer outside the walker"
+fi
+
 # ------------------------------------------------------------------
 # Part 2: whole-tree baseline (the audit-rule instrument).
 # Project out line/col so the golden tracks DISPATCH DECISIONS, not
 # source positions; prefix each record with its source path.
 # ------------------------------------------------------------------
 : > "$TMP/current.jsonl"
+: > "$TMP/proof0.jsonl"
 corpus_fail=0
 while IFS= read -r line; do
     line="${line%%#*}"; line="$(printf '%s' "$line" | tr -d '[:space:]')"
@@ -137,8 +207,16 @@ while IFS= read -r line; do
     printf '%s\n' "$out" \
         | sed -E 's/"line":[0-9]+,"col":[0-9]+,//' \
         | sed "s|^|$line\t|" >> "$TMP/current.jsonl"
+    if ! "$SELF" "$REPO_DIR/$line" --pfor-proof0-report \
+            2>/dev/null >> "$TMP/proof0.jsonl"; then
+        echo "  PROOF0 COMPILE FAILED: $line"; corpus_fail=1
+    fi
 done < "$CORPUS"
 sort "$TMP/current.jsonl" > "$TMP/current.sorted"
+
+if ! python3 "$SCRIPT_DIR/proof0_probe.py" --corpus "$TMP/proof0.jsonl"; then
+    echo "  FAIL: PROOF0 whole-corpus summary drifted"; fail=1
+fi
 
 # Headline: the reason tally + the post-U1 residual (cap-elem) count.
 echo "  --- verdict tally (whole corpus) ---"

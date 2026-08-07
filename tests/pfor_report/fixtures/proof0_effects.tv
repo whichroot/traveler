@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: Apache-2.0
+// PROOF0-a scope identity and recursive effect-summary fixture.
+
+import "../../../src/lib/core/result.tv";
+
+field Proof0F = Field<2013265921>;
+
+enum Proof0Error {
+    Bad,
+}
+
+struct Proof0Cell {
+    value: i32,
+}
+
+extern "C" fn opaque_value(x: i32) -> i32;
+
+fn pure_value(x: i32) -> i32 {
+    return x + 1;
+}
+
+fn proof0_value(x: i32) -> Result<i32, Proof0Error> {
+    if x < 0 { return Result::Err(Proof0Error::Bad); }
+    return Result::Ok(x);
+}
+
+fn main() -> i32 {
+    let input: *i32 = alloc(64);
+    let output: *i32 = alloc(64);
+    var carried: i32 = 0;
+
+    for i in 0..64 {
+        let x: i32 = i;
+        var chosen: i32 = input[i];
+        if x > 0 {
+            let x: i32 = x - 1;
+            if x > 3 { chosen = x; }
+        }
+        output[i] = chosen;
+    }
+
+    for i in 0..64 {
+        var score: i32 = 0;
+        for k in 0..4 {
+            if k == 1 { continue; }
+            score = score + 1;
+            if k == 3 { break; }
+        }
+        output[i] = score;
+    }
+
+    for i in 0..64 {
+        carried = carried + input[i];
+        output[i] = carried;
+    }
+
+    for i in 0..64 {
+        let value: i32 = pure_value(input[i]);
+        output[i] = value;
+    }
+
+    for i in 0..64 {
+        let value: i32 = opaque_value(input[i]);
+        output[i] = value;
+    }
+
+    for i in 0..64 {
+        if input[i] > 0 { output[i] = input[i]; }
+    }
+
+    for i in 0..64 {
+        let p: *i32 = output;
+        p[i] = input[i];
+    }
+
+    for i in 0..64 {
+        if input[i] == 0 {
+            let i: i32 = 0;
+            output[i] = input[i];
+        }
+    }
+
+    for i in 0..64 {
+        let cell: Proof0Cell = Proof0Cell { value: input[i] };
+        output[i] = cell.value;
+    }
+
+    for i in 0..64 {
+        i = i + 1;
+        output[i] = input[i];
+    }
+
+    let shared: *Proof0Cell = alloc(1);
+    for i in 0..64 {
+        let alias: *Proof0Cell = shared;
+        alias.value = i;
+        output[i] = i;
+    }
+
+    for i in 0..64 {
+        if input[i] > 0 {
+            if input[i] > 1 {
+                if input[i] > 2 {
+                    if input[i] > 3 {
+                        if input[i] > 4 {
+                            output[i] = input[i];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for i in 0..64 {
+        var j: i32 = 0;
+        while j < input[i] { j = j + 1; }
+        output[i] = j;
+    }
+
+    for i in 0..64 {
+        if i == 3 { return input[i]; }
+        output[i] = input[i];
+    }
+
+    let outer: i32 = 7;
+    for i in 0..64 {
+        let outer: i32 = input[i];
+        output[i] = outer;
+    }
+
+    free(shared);
+    free(output);
+    free(input);
+    return 0;
+}
+
+fn qmark_control(input: *i32, output: *i32) -> Result<i32, Proof0Error> {
+    for i in 0..64 {
+        let value: i32 = proof0_value(input[i])?;
+        output[i] = value;
+    }
+    return Result::Ok(0);
+}

@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+// A read-only callee's footprint is opaque to the caller's affine tables.
+// Dispatching this prefix recurrence races even though the callee is pure and
+// performs no stores, so calls with indexed reads must stay serial.
+
+fn previous(data: *i32, i: i32) -> i32 {
+    if i == 0 { return 0; }
+    return data[i - 1];
+}
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let data: *i32 = alloc(n * 4);
+    for i in 0..n { data[i] = 0; }
+    for i in 1..n {
+        data[i] = previous(data, i) + 1;
+    }
+    print(data[n - 1]);
+    free(data);
+    return 0;
+}

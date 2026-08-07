@@ -213,7 +213,7 @@ done
 #  this is asserted against stage1 (tvc_self) — like the wide-int / intern-stress
 #  self-compiler gates. Build stage1 if absent (mirrors run.sh).
 # ------------------------------------------------------------
-STAGE1="$REPO_DIR/src/bootstrap/out/stage1"
+STAGE1="${TVC_SELF:-$REPO_DIR/src/bootstrap/out/stage1}"
 if [ ! -x "$STAGE1" ]; then
     LLC="$LLC" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || true
 fi
@@ -242,6 +242,47 @@ if [ -x "$STAGE1" ]; then
         printf "  [%2d] %-32s FAIL (%s)\n" "$TOTAL" "$name" "$detail"
         FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"
     fi
+fi
+
+# U1 call effects are carrier-independent. Member-hidden mutation and opaque
+# callee reads must remain visible through the purity/footprint fixpoint.
+if [ -x "$STAGE1" ]; then
+    EFFECT_TESTS=(
+        "pfor_self_member_call:0"
+        "pfor_self_hidden_read:1"
+        "pfor_self_aggregate_alias_call:0"
+    )
+    for entry in "${EFFECT_TESTS[@]}"; do
+        name="${entry%%:*}"; want_workers="${entry##*:}"
+        TOTAL=$((TOTAL + 1)); status="PASS"; detail=""
+        if ! "$STAGE1" "$PFOR_DIR/${name}.tv" -o "$TMPDIR/${name}.ll" >/dev/null 2>&1; then
+            status="FAIL"; detail="compile (stage1)"
+        fi
+        if [ "$status" = "PASS" ]; then
+            gw=$(grep -c "define internal void @__pfor_worker" "$TMPDIR/${name}.ll" || true)
+            [ "$gw" = "$want_workers" ] || { status="FAIL"; detail="workers: want $want_workers, got $gw"; }
+        fi
+        if [ "$status" = "PASS" ]; then
+            "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
+            clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+        fi
+        if [ "$status" = "PASS" ]; then
+            baseline=$(cat "$EXPECTED/${name}.txt")
+            s1=$(TRAVELER_THREADS=1 "$TMPDIR/${name}" 2>/dev/null)
+            s32=$(TRAVELER_THREADS=32 "$TMPDIR/${name}" 2>/dev/null)
+            if [ "$s1" != "$baseline" ]; then
+                status="FAIL"; detail="serial output != baseline"
+            elif [ "$s32" != "$baseline" ]; then
+                status="FAIL"; detail="parallel output != baseline"
+            fi
+        fi
+        if [ "$status" = "PASS" ]; then
+            printf "  [%2d] %-32s PASS (stage1)\n" "$TOTAL" "$name"; PASS=$((PASS + 1))
+        else
+            printf "  [%2d] %-32s FAIL (%s)\n" "$TOTAL" "$name" "$detail"
+            FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"
+        fi
+    done
 fi
 
 # ------------------------------------------------------------

@@ -24,7 +24,7 @@ cd "$REPO_DIR" || exit 1
 
 CORPUS="$SCRIPT_DIR/corpus.txt"
 GOLDEN="$SCRIPT_DIR/golden.txt"
-SELF="$REPO_DIR/src/bootstrap/out/stage1"
+SELF="${TVC_SELF:-$REPO_DIR/src/bootstrap/out/stage1}"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 if [ ! -x "$SELF" ]; then

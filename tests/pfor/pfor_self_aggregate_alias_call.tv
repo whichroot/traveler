@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Struct lets alias their initializer address. Whole-value assignment through
+// that local therefore mutates shared storage and makes the callee impure.
+
+struct AliasCell {
+    value: i32,
+}
+
+var shared_cell: *AliasCell = null;
+
+fn alias_touch() -> i32 {
+    let dst: AliasCell = shared_cell;
+    dst = dst;
+    return dst.value;
+}
+
+fn main() -> i32 {
+    shared_cell = alloc(4);
+    shared_cell.value = 7;
+    let output: *i32 = alloc(64);
+    for i in 0..64 {
+        output[i] = alias_touch();
+    }
+    print(output[63]);
+    free(output);
+    free(shared_cell);
+    return 0;
+}

@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// A call hidden under `.field` is still an effectful call. U1 makes this a
+// no-field regression: uncomputed purity and member-access elision must fail
+// closed, or the global increment races across worker threads.
+
+struct PforCell {
+    value: i32,
+}
+
+var counter: i32 = 0;
+
+fn noisy_cell() -> PforCell {
+    counter = counter + 1;
+    return PforCell { value: counter };
+}
+
+fn hidden_increment() -> i32 {
+    return noisy_cell().value;
+}
+
+fn main() -> i32 {
+    let output: *i32 = alloc(64);
+    for i in 0..64 {
+        output[i] = hidden_increment();
+    }
+    print(counter);
+    print(output[63]);
+    free(output);
+    return 0;
+}

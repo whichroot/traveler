@@ -10,7 +10,7 @@ examples/dyn_fri_test.tv	{"fn":"bit_rev","var":"i","independent":0,"has_field":0
 examples/dyn_fri_test.tv	{"fn":"bit_reverse_swap_dyn","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_fri_test.tv	{"fn":"fri_fold_layer_dyn","var":"i","independent":0,"has_field":1,"ncaps":2,"dispatched":0,"reason":"raw"}
 examples/dyn_fri_test.tv	{"fn":"fri_fold_layer_dyn","var":"i","independent":1,"has_field":1,"ncaps":7,"dispatched":1,"reason":""}
-examples/dyn_fri_test.tv	{"fn":"fri_hash_layer_dyn","var":"i","independent":1,"has_field":1,"ncaps":8,"dispatched":1,"reason":""}
+examples/dyn_fri_test.tv	{"fn":"fri_hash_layer_dyn","var":"i","independent":0,"has_field":1,"ncaps":1,"dispatched":0,"reason":"mutating-call"}
 examples/dyn_fri_test.tv	{"fn":"fri_hash_pair_dyn","var":"i","independent":1,"has_field":1,"ncaps":2,"dispatched":1,"reason":""}
 examples/dyn_fri_test.tv	{"fn":"fri_hash_pair_dyn","var":"i","independent":1,"has_field":1,"ncaps":3,"dispatched":1,"reason":""}
 examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"i","independent":1,"has_field":1,"ncaps":2,"dispatched":1,"reason":""}
@@ -18,11 +18,11 @@ examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"i","independent":1,"has_fi
 examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"j","independent":1,"has_field":1,"ncaps":4,"dispatched":1,"reason":""}
 examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"q","independent":0,"has_field":0,"ncaps":4,"dispatched":0,"reason":"let-hidden"}
 examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"q","independent":1,"has_field":1,"ncaps":4,"dispatched":1,"reason":""}
-examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"r","independent":0,"has_field":1,"ncaps":9,"dispatched":0,"reason":"unsupported-stmt"}
+examples/dyn_fri_test.tv	{"fn":"fri_prove_dyn","var":"r","independent":0,"has_field":1,"ncaps":3,"dispatched":0,"reason":"mutating-call"}
 examples/dyn_fri_test.tv	{"fn":"fri_verify_dyn","var":"q","independent":0,"has_field":0,"ncaps":3,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_fri_test.tv	{"fn":"fri_verify_dyn","var":"q","independent":0,"has_field":1,"ncaps":2,"dispatched":0,"reason":"unsupported-stmt"}
-examples/dyn_fri_test.tv	{"fn":"fri_verify_dyn","var":"r","independent":0,"has_field":1,"ncaps":13,"dispatched":0,"reason":"unsupported-stmt"}
-examples/dyn_fri_test.tv	{"fn":"fri_verify_dyn","var":"r","independent":0,"has_field":1,"ncaps":8,"dispatched":0,"reason":"unsupported-stmt"}
+examples/dyn_fri_test.tv	{"fn":"fri_verify_dyn","var":"r","independent":0,"has_field":1,"ncaps":1,"dispatched":0,"reason":"mutating-call"}
+examples/dyn_fri_test.tv	{"fn":"fri_verify_dyn","var":"r","independent":0,"has_field":1,"ncaps":5,"dispatched":0,"reason":"mutating-call"}
 examples/dyn_fri_test.tv	{"fn":"mds_internal_8_dyn","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
 examples/dyn_fri_test.tv	{"fn":"mds_internal_8_dyn","var":"i","independent":1,"has_field":1,"ncaps":4,"dispatched":1,"reason":""}
 examples/dyn_fri_test.tv	{"fn":"merkle_build_dyn","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
@@ -140,10 +140,10 @@ examples/genus_certify.tv	{"fn":"main","var":"i","independent":1,"has_field":0,"
 examples/genus_edge_test.tv	{"fn":"main","var":"i","independent":1,"has_field":0,"ncaps":1,"dispatched":1,"reason":""}
 examples/genus_global_certify.tv	{"fn":"certify","var":"e","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/genus_global_certify.tv	{"fn":"certify","var":"e","independent":0,"has_field":0,"ncaps":3,"dispatched":0,"reason":"unsupported-stmt"}
-examples/genus_global_certify.tv	{"fn":"certify","var":"s","independent":0,"has_field":0,"ncaps":5,"dispatched":0,"reason":"unsupported-stmt"}
+examples/genus_global_certify.tv	{"fn":"certify","var":"s","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"mutating-call"}
 examples/genus_global_certify.tv	{"fn":"gg_costtable","var":"e","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/genus_global_certify.tv	{"fn":"gg_costtable","var":"e","independent":1,"has_field":0,"ncaps":4,"dispatched":1,"reason":""}
-examples/genus_global_certify.tv	{"fn":"gg_costtable","var":"s","independent":0,"has_field":0,"ncaps":5,"dispatched":0,"reason":"unsupported-stmt"}
+examples/genus_global_certify.tv	{"fn":"gg_costtable","var":"s","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"mutating-call"}
 examples/genus_global_certify.tv	{"fn":"gg_mindeg","var":"d","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/genus_invariance_test.tv	{"fn":"fill_saw","var":"i","independent":1,"has_field":0,"ncaps":5,"dispatched":1,"reason":""}
 examples/genus_probe_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
