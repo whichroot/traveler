@@ -1,0 +1,22 @@
+// Wide values may be worker-local; a captured *i256 output remains cap-elem.
+
+fn fill_wide(out: *i256, n: i32) {
+    for i in 0..n {
+        out[i] = i as i256;
+    }
+}
+
+fn main() -> i32 {
+    let n: i32 = 2048;
+    let out: *i256 = alloc(n);
+    fill_wide(out, n);
+    var sum: i256 = 0;
+    var i: i32 = 0;
+    while i < n {
+        sum = sum + out[i];
+        i = i + 1;
+    }
+    print(sum);
+    free(out);
+    return 0;
+}

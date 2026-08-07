@@ -1,0 +1,91 @@
+// Fresh allocation aliases keep one origin and cannot bypass call-read guards.
+
+fn read_cell(src: *i64, idx: i32) -> i64 {
+    return src[idx];
+}
+
+fn alias_case(result: *i64, n: i32) {
+    let out: *i64 = alloc(n);
+    let alias: *i64 = out;
+    var i: i32 = 0;
+    while i < n {
+        out[i] = (i * 3) as i64;
+        i = i + 1;
+    }
+    for idx in 0..n {
+        out[idx] = read_cell(alias, idx) + 1;
+    }
+    i = 0;
+    while i < n {
+        result[i] = out[i];
+        i = i + 1;
+    }
+    free(out);
+}
+
+fn distinct_case(result: *i64, n: i32) {
+    let src: *i64 = alloc(n);
+    let out: *i64 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        src[i] = (i * 5) as i64;
+        i = i + 1;
+    }
+    for idx in 0..n {
+        out[idx] = read_cell(src, idx) + 1;
+    }
+    i = 0;
+    while i < n {
+        result[i] = out[i];
+        i = i + 1;
+    }
+    free(out); free(src);
+}
+
+fn joined_case(result: *i64, n: i32, choose: bool) {
+    let a: *i64 = alloc(n);
+    let b: *i64 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        a[i] = (i * 7) as i64;
+        b[i] = (i * 11) as i64;
+        i = i + 1;
+    }
+    var selected: *i64 = a;
+    if choose { selected = b; } else { selected = a; }
+    for idx in 0..n {
+        a[idx] = read_cell(selected, idx) + 1;
+    }
+    i = 0;
+    while i < n {
+        result[i] = a[i];
+        i = i + 1;
+    }
+    free(b); free(a);
+}
+
+fn report(result: *i64, n: i32) {
+    var sum: i64 = 0;
+    var i: i32 = 0;
+    while i < n {
+        sum = sum + result[i];
+        i = i + 1;
+    }
+    print(result[n - 1]);
+    print(sum);
+}
+
+fn main() -> i32 {
+    let n: i32 = 2048;
+    let result0: *i64 = alloc(n);
+    let result1: *i64 = alloc(n);
+    let result2: *i64 = alloc(n);
+    alias_case(result0, n);
+    distinct_case(result1, n);
+    joined_case(result2, n, false);
+    report(result0, n);
+    report(result1, n);
+    report(result2, n);
+    free(result2); free(result1); free(result0);
+    return 0;
+}

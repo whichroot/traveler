@@ -1,0 +1,64 @@
+// Native-wide pfor consumer: pointer inputs, local i256 accumulation, i64 output.
+
+fn wide_dot(x: *i64, w: *i64, kdim: i32, ncol: i32, idx: i32) -> i64 {
+    let row: i32 = idx / ncol;
+    let col: i32 = idx - row * ncol;
+    var acc: i256 = 0;
+    var k: i32 = 0;
+    while k < kdim {
+        let xv: i256 = x[row * kdim + k] as i256;
+        let wv: i256 = w[k * ncol + col] as i256;
+        acc = acc + xv * wv;
+        k = k + 1;
+    }
+    let half: i256 = (1 as i256) << 31;
+    return ((acc + half) >> 32) as i64;
+}
+
+fn wide_matmul(x: *i64, w: *i64, result: *i64,
+               rows: i32, kdim: i32, ncol: i32) {
+    let total: i32 = rows * ncol;
+    let out: *i64 = alloc(total);
+    for idx in 0..total {
+        out[idx] = wide_dot(x, w, kdim, ncol, idx);
+    }
+    var i: i32 = 0;
+    while i < total {
+        result[i] = out[i];
+        i = i + 1;
+    }
+    free(out);
+}
+
+fn main() -> i32 {
+    let rows: i32 = 64;
+    let kdim: i32 = 64;
+    let ncol: i32 = 32;
+    let x: *i64 = alloc(rows * kdim);
+    let w: *i64 = alloc(kdim * ncol);
+    let out: *i64 = alloc(rows * ncol);
+
+    var i: i32 = 0;
+    while i < rows * kdim {
+        x[i] = (1 << 40) - 1 - ((i * 17 + 3) % 1024) as i64;
+        i = i + 1;
+    }
+    i = 0;
+    while i < kdim * ncol {
+        w[i] = (1 << 40) - 1 - ((i * 29 + 5) % 1024) as i64;
+        i = i + 1;
+    }
+
+    wide_matmul(x, w, out, rows, kdim, ncol);
+    var checksum: i256 = 0;
+    i = 0;
+    while i < rows * ncol {
+        checksum = checksum + (out[i] as i256);
+        i = i + 1;
+    }
+    print(out[0]);
+    print(out[rows * ncol - 1]);
+    print(checksum);
+    free(out); free(w); free(x);
+    return 0;
+}

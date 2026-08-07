@@ -1193,7 +1193,8 @@ struct SymEntry {
     // Binding immutability (spec §4.4): 0=immutable `let`, 1=mutable (`var`).
     // Default 1; only scalar-let/global-let derive it from source (seed parity, #30).
     is_mut: i32,
-    // ALIAS0 pointer origin: typed parameter/allocation/address lineage only.
+    // ALIAS0 pointer origin: 0 untrusted, 1 trusted without identity,
+    // 2 joined/unknown identity, >=3 one live allocation identity.
     ptr_provenance: i32,
 }
 
@@ -1382,6 +1383,7 @@ let IMP_PATHBUF_CAP: i32 = 65536;
 var g_syms: *SymEntry = null;
 var g_cap_syms: i32 = 0;      // growable: current g_syms element capacity (see grow_syms)
 var g_sym_count: i32 = 0;
+var g_ptr_origin_next: i32 = 3;
 var g_sym_scope: *i32 = null;
 var g_sym_depth: i32 = 0;
 let MAX_SYMS: i32 = 4096;
@@ -8795,6 +8797,15 @@ fn node_ptr_provenance(node: i32, depth: i32) -> i32 {
         }
     }
     return 0;
+}
+
+fn ptr_fresh_origin() -> i32 {
+    if g_ptr_origin_next == 2147483647 {
+        arena_overflow("pointer origin", 2147483647);
+    }
+    let origin: i32 = g_ptr_origin_next;
+    g_ptr_origin_next = g_ptr_origin_next + 1;
+    return origin;
 }
 
 // Element byte size implied by a pointer context type (*Token -> sizeof, *i32
@@ -17340,6 +17351,22 @@ fn pfor_alias_capture_trusted(caps: *i32, cap: i32) -> i32 {
     return 1;
 }
 
+fn pfor_alias_capture_origin(caps: *i32, cap: i32) -> i32 {
+    let si: i32 = sym_find(caps[cap * 4]);
+    if si < 0 || g_syms[si].reg != caps[cap * 4 + 2]
+        || g_syms[si].is_alloca != caps[cap * 4 + 3] { return 0; }
+    return g_syms[si].ptr_provenance;
+}
+
+fn pfor_alias_origins_disjoint(a: i32, b: i32) -> i32 {
+    // Distinct live allocation objects cannot overlap. This proof assumes the
+    // memory model's valid-pointer contract; UAF is undefined on compiled code.
+    if a >= 3 && b == 1 { return 1; }
+    if b >= 3 && a == 1 { return 1; }
+    if a >= 3 && b >= 3 && a != b { return 1; }
+    return 0;
+}
+
 fn proof0_summarize(P: *PForProof0, A: *PForState,
                     loop_stmt: i32, body: i32,
                     iter_name: i32) {
@@ -17850,8 +17877,12 @@ fn codegen_stmt(stmt: i32) {
         ir_wr_reg(store_reg); ir_wr(", ptr "); ir_wr_reg(alloca_r); ir_wr("\n");
         sym_add(var_name, actual_type, alloca_r, 1);
         if type_is_ptr(actual_type) == 1 {
-            g_syms[g_sym_count - 1].ptr_provenance =
-                node_ptr_provenance(init_node, 0);
+            if node_is_sizing_call(init_node) == 1 {
+                g_syms[g_sym_count - 1].ptr_provenance = ptr_fresh_origin();
+            } else {
+                g_syms[g_sym_count - 1].ptr_provenance =
+                    node_ptr_provenance(init_node, 0);
+            }
         }
         // Scalar let: immutable unless `let mut`/`var` (flags bit0); aggregates
         // returned earlier keep the permissive default (seed parity).
@@ -18029,9 +18060,13 @@ fn codegen_stmt(stmt: i32) {
         }
         if type_is_ptr(s_type) == 1 {
             // Provenance is a must-fact across control-flow paths. Once any
-            // assignment can erase it, a later sibling cannot restore it.
-            if node_ptr_provenance(g_nodes[stmt].child0, 0) == 0 {
+            // assignment changes the origin, retain trust but lose identity.
+            let rhs_origin: i32 = node_ptr_provenance(
+                g_nodes[stmt].child0, 0);
+            if g_syms[si].ptr_provenance == 0 || rhs_origin == 0 {
                 g_syms[si].ptr_provenance = 0;
+            } else if rhs_origin != g_syms[si].ptr_provenance {
+                g_syms[si].ptr_provenance = 2;
             }
         }
         return;
@@ -18410,6 +18445,12 @@ fn codegen_stmt(stmt: i32) {
                             if pfor_alias_capture_trusted(caps, wcap) == 0
                                 || pfor_alias_capture_trusted(caps, c2) == 0 {
                                 alias_forced = 1;
+                                check = 0;
+                            }
+                            if check == 1 && pfor_alias_origins_disjoint(
+                                    pfor_alias_capture_origin(caps, wcap),
+                                    pfor_alias_capture_origin(caps, c2)) == 1 {
+                                c_accesses = 1;
                                 check = 0;
                             }
                             let agx_w_words: i32 = pfor_alias_agx_words(
@@ -18924,6 +18965,7 @@ fn codegen_fn(decl: i32) {
 
     // Push scope and spill params to alloca
     sym_push_scope();
+    g_ptr_origin_next = 3;
 
     // Dyn: spill the implicit Field carrier so binary-op codegen can
     // reach it via sym_find("__field").

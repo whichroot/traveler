@@ -268,6 +268,9 @@ if [ -x "$STAGE1" ]; then
         "pfor_alias_eq:1"
         "pfor_alias_interval:1"
         "pfor_alias_provenance:4"
+        "pfor_wide_pointer_input:1"
+        "pfor_fresh_origin_alias:3"
+        "pfor_wide_output_refuse:0"
     )
     for entry in "${EFFECT_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"
@@ -289,6 +292,24 @@ if [ -x "$STAGE1" ]; then
                 && grep -q 'icmp sgt i64 .* 2147483648' "$TMPDIR/${name}.ll" \
                 && ! grep -q 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" \
                 || { status="FAIL"; detail="i32 interval guard or dispatchable path missing"; }
+        fi
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_pointer_input" ]; then
+            forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
+            wide_mul=$(grep -c 'mul i256' "$TMPDIR/${name}.ll" || true)
+            [ "$forced" = "0" ] && [ "$wide_mul" -ge 1 ] \
+                || { status="FAIL"; detail="fresh-output dispatch or native i256 multiply missing"; }
+        fi
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_fresh_origin_alias" ]; then
+            forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
+            [ "$forced" = "2" ] \
+                || { status="FAIL"; detail="fresh-origin accept/refusal boundary changed"; }
+        fi
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_output_refuse" ]; then
+            if ! "$STAGE1" --pfor-report "$PFOR_DIR/${name}.tv" \
+                    > "$TMPDIR/${name}.report" 2>/dev/null \
+               || ! grep -q '"reason":"cap-elem"' "$TMPDIR/${name}.report"; then
+                status="FAIL"; detail="wide output did not retain cap-elem refusal"
+            fi
         fi
         if [ "$status" = "PASS" ]; then
             "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
