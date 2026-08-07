@@ -385,6 +385,49 @@ def check_only() -> None:
         raise ValueError(f"counted kernel size depends on constants: {lengths}")
 
 
+def check_artifact(path: pathlib.Path) -> None:
+    records = []
+    current = None
+    in_code = False
+    for line in path.read_text().splitlines():
+        if line.startswith("worker "):
+            current = {"code": bytearray()}
+            in_code = False
+        elif current is not None and line.startswith("field "):
+            current["field"] = int(line.split()[1])
+        elif current is not None and line.startswith("output-words "):
+            current["output"] = int(line.split()[1])
+        elif current is not None and line.startswith("input0-words "):
+            current["input0"] = int(line.split()[1])
+        elif current is not None and line.startswith("input1-words "):
+            current["input1"] = int(line.split()[1])
+        elif current is not None and line.startswith("input-layout "):
+            current["layout"] = int(line.split()[1])
+        elif current is not None and line.startswith("bytes "):
+            current["bytes"] = int(line.split()[1])
+        elif current is not None and line == "code":
+            in_code = True
+        elif current is not None and line.startswith("end "):
+            records.append(current)
+            current = None
+            in_code = False
+        elif current is not None and in_code and line.startswith("  "):
+            current["code"] += bytes.fromhex(line.strip())
+    if len(records) != 3 or {record["field"] for record in records} != set(PRIMES):
+        raise ValueError("compiler artifact does not contain the three RNS workers")
+    for record in records:
+        if (record.get("output"), record.get("input0"), record.get("input1"),
+                record.get("layout")) != (128, 32, 256, 1):
+            raise ValueError("compiler counted-dot ABI metadata changed")
+        code = bytes(record["code"])
+        expected_code, meta = build_kernel(record["field"], 8)
+        check_kernel(code, meta, 8)
+        if record.get("bytes") != len(code) or code != expected_code:
+            raise ValueError(
+                f"compiler counted-dot bytes differ for Field<{record['field']}>"
+            )
+
+
 def execute(harness: pathlib.Path) -> None:
     sys.path.insert(0, str(harness.resolve()))
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -421,12 +464,19 @@ def execute(harness: pathlib.Path) -> None:
 
 def main() -> int:
     check_only()
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-artifact":
+        check_artifact(pathlib.Path(sys.argv[2]))
+        print("AGX counted-dot compiler artifact PASS: three workers byte-exact")
+        return 0
     if len(sys.argv) == 2 and sys.argv[1] == "--check-only":
         code, _ = build_kernel(PRIMES[0], 8)
         print(f"AGX counted-dot structure PASS: {len(code)} bytes, one backedge")
         return 0
     if len(sys.argv) != 2:
-        raise SystemExit("usage: agx_counted_dot_probe.py HARNESS|--check-only")
+        raise SystemExit(
+            "usage: agx_counted_dot_probe.py HARNESS|--check-only|"
+            "--check-artifact PATH"
+        )
     execute(pathlib.Path(sys.argv[1]))
     print("AGX counted-dot hardware PASS: K=1/2/8 exact over three RNS primes")
     return 0

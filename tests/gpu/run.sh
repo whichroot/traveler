@@ -246,13 +246,16 @@ else
     fi
     if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot_loop.tv" \
            -o "$AGX_DOT_LOOP_DEV" 2>/dev/null \
-       || ! cmp -s "$AGX_DOT_LOOP_DEV" "$AGX_DOT_DEV" \
        || [ "$(grep -c '^worker __pfor_gpu_worker_' "$AGX_DOT_LOOP_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^input-layout 1$' "$AGX_DOT_LOOP_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^bytes 924$' "$AGX_DOT_LOOP_DEV" || true)" -ne 3 ] \
+       || ! python3 "$SCRIPT_DIR/agx_counted_dot_probe.py" \
+           --check-artifact "$AGX_DOT_LOOP_DEV" \
        || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_rns_dot_loop.tv" \
            -o "$AGX_DOT_LOOP_LL" 2>/dev/null \
        || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_DOT_LOOP_LL" || true)" -ne 3 ] \
        || ! "$LLC" -filetype=obj "$AGX_DOT_LOOP_LL" -o "$AGX_DOT_LOOP_OBJ" 2>/dev/null; then
-        echo "  FAIL: canonical nested K=8 RNS dot did not match the unrolled artifact"; fail=1
+        echo "  FAIL: canonical nested K=8 RNS dot did not match counted evidence"; fail=1
         AGX3_READY=0
     fi
     if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
@@ -269,7 +272,7 @@ else
         AGX3_READY=0
     fi
     if [ "$AGX3_READY" = "1" ]; then
-        echo "  ok   AGX-3 packed binary, runtime dispatch, and RNS artifacts compile"
+        echo "  ok   AGX runtime dispatch, RNS, and counted-dot artifacts compile"
     fi
     if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
         echo "  FAIL: AGX control specimens failed their portable structure gate"

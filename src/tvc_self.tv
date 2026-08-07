@@ -14078,6 +14078,7 @@ fn emit_pfor_cpu_call(wid: i32, ctx: i32, bw: i32, iter_w: i32,
 fn emit_agx_try_call(wid: i32, ctx: i32, output_cap: i32,
                      input0_cap: i32, input1_cap: i32,
                      output_words: i32, input0_words: i32, input1_words: i32,
+                     input_layout: i32,
                      start_reg: i32, end_reg: i32, prime: u64,
                      code_hash: u64) -> i32 {
     let result: i32 = ir_tmp();
@@ -14090,6 +14091,7 @@ fn emit_agx_try_call(wid: i32, ctx: i32, output_cap: i32,
     ir_wr(", i32 "); ir_wr_int(output_words as i64);
     ir_wr(", i32 "); ir_wr_int(input0_words as i64);
     ir_wr(", i32 "); ir_wr_int(input1_words as i64);
+    ir_wr(", i32 "); ir_wr_int(input_layout as i64);
     ir_wr(", i32 "); ir_wr_reg(start_reg);
     ir_wr(", i32 "); ir_wr_reg(end_reg);
     ir_wr(", i64 "); ir_wr_int(prime as i64);
@@ -14775,6 +14777,7 @@ fn codegen_stmt(stmt: i32) {
                         agx_shape.output_cap, agx_shape.input0_cap,
                         agx_shape.input1_cap, agx_shape.output_words,
                         agx_shape.input0_words, agx_shape.input1_words,
+                        agx_shape.input_layout,
                         start_reg, end_reg,
                         g_fields[agx_shape.field_index].prime, agx_hash);
                     ir_wr("  br i1 "); ir_wr_reg(agx_ok);
@@ -14798,6 +14801,7 @@ fn codegen_stmt(stmt: i32) {
                         agx_shape.output_cap, agx_shape.input0_cap,
                         agx_shape.input1_cap, agx_shape.output_words,
                         agx_shape.input0_words, agx_shape.input1_words,
+                        agx_shape.input_layout,
                         start_reg, end_reg,
                         g_fields[agx_shape.field_index].prime, agx_hash);
                     ir_wr("  br i1 "); ir_wr_reg(agx_ok);
@@ -16321,6 +16325,7 @@ struct AgxWorkerShape {
     output_words: i32,
     input0_words: i32,
     input1_words: i32,
+    input_layout: i32,
 }
 
 var g_agx_ops: *AgxOp = null;
@@ -16358,6 +16363,8 @@ var g_agx_tap_e: i32 = 0 - 1;
 var g_agx_tap_r0: i32 = 0 - 1;
 var g_agx_tap_r1: i32 = 0 - 1;
 var g_agx_tap_capture: i32 = 0;
+var g_agx_loop_used: *i32 = null;
+var g_agx_loop_ok: i32 = 1;
 
 fn agx_code_reset() {
     if g_agx_code == null {
@@ -16692,6 +16699,293 @@ fn agx_vmont_mul(a: i32, b: i32, p: u64) -> i32 {
     let r2v: i32 = agx_vimm(r2);
     let scaled: AgxPair = agx_vmul(first, r2v);
     return agx_vmont_redc(scaled.hi, scaled.lo, p, pinv);
+}
+
+// Fixed AGX-4 counted-dot dialect. Arithmetic keeps the proved straight-line
+// spelling inside the region; load consumption and control use measured loop
+// forms. This is intentionally separate from the acyclic general allocator.
+fn agx_e_loop_setup() {
+    agx_put(10); agx_put(129); agx_put(34); agx_put(9); agx_put(5); agx_put(34);
+    agx_mark();
+    agx_put(27); agx_put(0); agx_put(0); agx_put(0); agx_mark();
+    agx_put(15); agx_put(5); agx_put(84); agx_put(1); agx_mark();
+    agx_put(15); agx_put(1); agx_put(84); agx_put(0); agx_put(0);
+    agx_put(0); agx_put(0); agx_put(0); agx_put(0); agx_put(0); agx_mark();
+}
+
+fn agx_e_loop_bound(dst: i32, src: i32, span: i32) {
+    agx_put(159); agx_put(1); agx_put(84); agx_put(dst * 2); agx_put(3);
+    agx_put((span << 1) & 255); agx_put((src << 3) & 255);
+    agx_put(136); agx_put(17); agx_put(4); agx_mark();
+}
+
+fn agx_e_loop_top() {
+    agx_put(15); agx_put(5); agx_put(84); agx_put(26); agx_mark();
+}
+
+fn agx_e_loop_load(slot: i32, index: i32) {
+    agx_put(103); agx_put(0); agx_put(4); agx_put(slot); agx_put(1);
+    agx_put(index); agx_put(32); agx_put(0); agx_put(81); agx_put(1);
+    agx_put(0); agx_put(64); agx_put(70); agx_put(0); agx_mark();
+}
+
+fn agx_e_loop_add_load(dst: i32, slot: i32, greg: i32) {
+    agx_put(159); agx_put(1); agx_put(86); agx_put(dst * 2); agx_put(2);
+    agx_put(slot * 2); agx_put((greg << 3) & 255);
+    agx_put(168); agx_put(23); agx_put(5); agx_mark();
+}
+
+fn agx_e_loop_move(dst: i32, src: i32) {
+    agx_put(159); agx_put(1); agx_put(84); agx_put(dst * 2); agx_put(3);
+    agx_put(0); agx_put((src << 3) & 255);
+    agx_put(136); agx_put(21); agx_put(4); agx_mark();
+}
+
+fn agx_e_loop_inc() {
+    agx_put(159); agx_put(1); agx_put(84); agx_put(0); agx_put(3);
+    agx_put(2); agx_put(0); agx_put(136); agx_put(21); agx_put(4); agx_mark();
+}
+
+fn agx_e_loop_cmp() {
+    agx_put(10); agx_put(1); agx_put(34); agx_put(5); agx_put(5); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_loop_branch(target: i32, branch: i32) {
+    agx_put(143); agx_put(4); agx_put(84); agx_put(2); agx_put(15);
+    agx_put(0); agx_put(84);
+    let off: u64 = (target - branch) as u64;
+    var i: i32 = 0;
+    while i < 6 {
+        agx_put(((off >> ((i * 8) as u64)) & 255) as i32);
+        i = i + 1;
+    }
+    agx_put(0); agx_mark();
+}
+
+fn agx_e_loop_exit() {
+    agx_put(15); agx_put(6); agx_put(4); agx_put(2); agx_put(0); agx_put(0);
+    agx_mark();
+    agx_put(15); agx_put(6); agx_put(4); agx_put(1); agx_put(0); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_loop_store(value: i32) {
+    agx_put(231); agx_put(16); agx_put(84); agx_put(value * 2); agx_put(0);
+    agx_put(0); agx_put(33); agx_put(0); agx_put(17); agx_put(0);
+    agx_put(0); agx_put(144); agx_put(17); agx_put(0); agx_mark();
+}
+
+fn agx_loop_reg_allowed(reg: i32) -> i32 {
+    if reg == 4 || reg == 10 || reg == 11 { return 1; }
+    if reg >= 13 && reg <= 31 { return 1; }
+    return 0;
+}
+
+fn agx_loop_regs_reset() {
+    if g_agx_loop_used == null { g_agx_loop_used = alloc(32); }
+    var i: i32 = 0;
+    while i < 32 { g_agx_loop_used[i] = 0; i = i + 1; }
+    g_agx_loop_ok = 1;
+}
+
+fn agx_loop_take() -> i32 {
+    var reg: i32 = 0;
+    while reg < 32 {
+        if agx_loop_reg_allowed(reg) == 1 && g_agx_loop_used[reg] == 0 {
+            g_agx_loop_used[reg] = 1;
+            return reg;
+        }
+        reg = reg + 1;
+    }
+    g_agx_loop_ok = 0;
+    return 0 - 1;
+}
+
+fn agx_loop_take_small() -> i32 {
+    var reg: i32 = 0;
+    while reg <= 15 {
+        if agx_loop_reg_allowed(reg) == 1 && g_agx_loop_used[reg] == 0 {
+            g_agx_loop_used[reg] = 1;
+            return reg;
+        }
+        reg = reg + 1;
+    }
+    g_agx_loop_ok = 0;
+    return 0 - 1;
+}
+
+fn agx_loop_take_pair() -> AgxPair {
+    var reg: i32 = 0;
+    while reg < 31 {
+        if agx_loop_reg_allowed(reg) == 1
+            && agx_loop_reg_allowed(reg + 1) == 1
+            && g_agx_loop_used[reg] == 0
+            && g_agx_loop_used[reg + 1] == 0 {
+            g_agx_loop_used[reg] = 1;
+            g_agx_loop_used[reg + 1] = 1;
+            return AgxPair { lo: reg, hi: reg + 1 };
+        }
+        reg = reg + 1;
+    }
+    g_agx_loop_ok = 0;
+    return AgxPair { lo: 0 - 1, hi: 0 - 1 };
+}
+
+fn agx_loop_release(reg: i32) {
+    if reg < 0 || reg >= 32 || agx_loop_reg_allowed(reg) == 0
+        || g_agx_loop_used[reg] == 0 {
+        g_agx_loop_ok = 0;
+        return;
+    }
+    g_agx_loop_used[reg] = 0;
+}
+
+fn agx_loop_copy(src: i32) -> i32 {
+    let dst: i32 = agx_loop_take();
+    if dst >= 0 { agx_e_alu_imm(dst, src, 0); }
+    return dst;
+}
+
+fn agx_loop_load(slot: i32) -> i32 {
+    agx_e_loop_load(slot, 0);
+    let zero: i32 = agx_loop_take_small();
+    if zero < 0 { return 0 - 1; }
+    agx_e_mov_imm(zero, 0);
+    let dst: i32 = agx_loop_take();
+    if dst >= 0 { agx_e_loop_add_load(dst, slot, zero); }
+    agx_loop_release(zero);
+    return dst;
+}
+
+fn agx_loop_binary(op: i32, a: i32, b: i32) -> i32 {
+    let dst: i32 = agx_loop_take();
+    if dst >= 0 { agx_e_alu_reg(dst, a, b, op); }
+    agx_loop_release(a); agx_loop_release(b);
+    return dst;
+}
+
+fn agx_loop_shift(src: i32, amount: i32) -> i32 {
+    let dst: i32 = agx_loop_take();
+    if dst >= 0 { agx_e_shift(dst, src, amount, 0); }
+    agx_loop_release(src);
+    return dst;
+}
+
+fn agx_loop_extract(src: i32, shift: i32, width: i32) -> i32 {
+    let dst: i32 = agx_loop_take();
+    if dst >= 0 { agx_e_extract(dst, src, shift, width); }
+    agx_loop_release(src);
+    return dst;
+}
+
+fn agx_loop_mul(a: i32, b: i32) -> AgxPair {
+    let product: AgxPair = agx_loop_take_pair();
+    if product.lo >= 0 { agx_e_mul(product.lo, a, b); }
+    agx_loop_release(a); agx_loop_release(b);
+    return product;
+}
+
+fn agx_loop_redc(hi: i32, lo: i32, p_reg: i32, pinv_reg: i32) -> i32 {
+    let lo_m: i32 = agx_loop_copy(lo);
+    let lo_half_src: i32 = agx_loop_copy(lo);
+    let m_pair: AgxPair = agx_loop_mul(lo_m, agx_loop_copy(pinv_reg));
+    agx_loop_release(m_pair.hi);
+    let mp: AgxPair = agx_loop_mul(m_pair.lo, agx_loop_copy(p_reg));
+
+    let mp_half_src: i32 = agx_loop_copy(mp.lo);
+    let lo_half: i32 = agx_loop_shift(lo_half_src, 1);
+    let mp_half: i32 = agx_loop_shift(mp_half_src, 1);
+    let lo_bit: i32 = agx_loop_extract(lo, 0, 1);
+    let mp_bit: i32 = agx_loop_extract(mp.lo, 0, 1);
+    let halves: i32 = agx_loop_binary(AGX_OP_ADD, lo_half, mp_half);
+    let bottoms: i32 = agx_loop_binary(AGX_OP_ADD, lo_bit, mp_bit);
+    let bottom_carry: i32 = agx_loop_shift(bottoms, 1);
+    let carry_sum: i32 = agx_loop_binary(AGX_OP_ADD, halves, bottom_carry);
+    let carry: i32 = agx_loop_shift(carry_sum, 31);
+
+    let high_sum: i32 = agx_loop_binary(AGX_OP_ADD, hi, mp.hi);
+    let total: i32 = agx_loop_binary(AGX_OP_ADD, high_sum, carry);
+    let diff: i32 = agx_loop_binary(AGX_OP_SUB, total, agx_loop_copy(p_reg));
+    let negative: i32 = agx_loop_shift(agx_loop_copy(diff), 31);
+    let correction: AgxPair = agx_loop_mul(negative, agx_loop_copy(p_reg));
+    agx_loop_release(correction.hi);
+    return agx_loop_binary(AGX_OP_ADD, diff, correction.lo);
+}
+
+fn agx_loop_montgomery_mul(a: i32, b: i32, p: u64) -> i32 {
+    let product: AgxPair = agx_loop_mul(a, b);
+    let first: i32 = agx_loop_redc(product.hi, product.lo, 7, 8);
+    let scaled: AgxPair = agx_loop_mul(first, agx_loop_copy(9));
+    return agx_loop_redc(scaled.hi, scaled.lo, 7, 8);
+}
+
+fn agx_loop_field_add(a: i32, b: i32) -> i32 {
+    let total: i32 = agx_loop_binary(AGX_OP_ADD, a, b);
+    let diff: i32 = agx_loop_binary(AGX_OP_SUB, total, agx_loop_copy(7));
+    let negative: i32 = agx_loop_shift(agx_loop_copy(diff), 31);
+    let correction: AgxPair = agx_loop_mul(negative, agx_loop_copy(7));
+    agx_loop_release(correction.hi);
+    return agx_loop_binary(AGX_OP_ADD, diff, correction.lo);
+}
+
+fn agx_loop_regs_empty() -> i32 {
+    var reg: i32 = 0;
+    while reg < 32 {
+        if g_agx_loop_used[reg] != 0 { return 0; }
+        reg = reg + 1;
+    }
+    return 1;
+}
+
+fn agx_build_counted_dot(p: u64) -> i32 {
+    if p != 2013265921 && p != 1811939329 && p != 2130706433 { return 0; }
+    let pinv: u64 = agx_mont_pinv(p);
+    let r2: u64 = agx_mont_r2(p);
+    agx_code_reset();
+    agx_loop_regs_reset();
+
+    agx_e_mov_wide(p); agx_e_alu_imm(7, 0, 0);
+    agx_e_mov_wide(pinv); agx_e_alu_imm(8, 0, 0);
+    agx_e_mov_wide(r2); agx_e_alu_imm(9, 0, 0);
+    agx_e_mov_imm(5, 0);
+    agx_e_prologue(0);
+    agx_e_alu_imm(3, 0, 0);
+    agx_e_shift(0, 3, 4, 1);
+
+    let setup_at: i32 = g_agx_code_len;
+    agx_e_loop_setup();
+    agx_e_loop_bound(2, 0, 16);
+    let loop_top: i32 = g_agx_code_len;
+    agx_e_loop_top();
+    let body_start: i32 = g_agx_code_len;
+
+    let x: i32 = agx_loop_load(6);
+    agx_e_loop_inc();
+    let w: i32 = agx_loop_load(12);
+    agx_e_loop_inc();
+    let product: i32 = agx_loop_montgomery_mul(x, w, p);
+    let result: i32 = agx_loop_field_add(agx_loop_copy(5), product);
+    agx_e_loop_move(5, result);
+    agx_loop_release(result);
+    if g_agx_loop_ok == 0 || agx_loop_regs_empty() == 0 { return 0; }
+    agx_e_loop_cmp();
+
+    let branch: i32 = g_agx_code_len;
+    agx_e_loop_branch(loop_top, branch);
+    agx_e_loop_exit();
+    agx_e_prologue(0);
+    agx_e_loop_store(5);
+    let stop: i32 = g_agx_code_len;
+    agx_e_stop();
+
+    let body_size: i32 = stop - body_start;
+    let size_at: i32 = setup_at + 17;
+    if body_size > 65535 || size_at + 1 >= g_agx_code_len { return 0; }
+    g_agx_code[size_at] = (body_size & 255) as u8;
+    g_agx_code[size_at + 1] = ((body_size >> 8) & 255) as u8;
+    if g_agx_code_len != 924 { return 0; }
+    return 1;
 }
 
 fn agx_vcarry32(x: i32, y: i32) -> i32 {
@@ -17526,7 +17820,12 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     if p != 2147483647
         && (p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31)
             || (p & 1) == 0) { return 0; }
-    shape.kind = 4;
+    shape.kind = 3;
+    shape.input_layout = 0;
+    if p == 2013265921 || p == 1811939329 || p == 2130706433 {
+        shape.kind = 4;
+        shape.input_layout = 1;
+    }
     shape.output_name = output_name;
     shape.input0_name = x_name;
     shape.input1_name = w_name;
@@ -17650,6 +17949,7 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
     shape.input0_cap = input0_cap;
     shape.input1_cap = input1_cap;
     shape.kind = shape_kind;
+    shape.input_layout = 0;
     var words: i32 = grid64 as i32;
     if p == p64_pm59 { words = words * 2; }
     shape.output_words = words;
@@ -17671,6 +17971,7 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
 fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     let p: u64 = g_fields[shape.field_index].prime;
     let p64_pm59: u64 = 18446744073709551557;
+    if shape.kind == 4 { return agx_build_counted_dot(p); }
     agx_vm_reset();
     g_agx_input_v = 0 - 1;
     g_agx_input2_v = 0 - 1;
@@ -17693,7 +17994,7 @@ fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
         }
         if acc < 0 { return 0; }
         agx_vstore(acc, 0);
-    } else if shape.kind == 3 || shape.kind == 4 {
+    } else if shape.kind == 3 {
         let tid: i32 = agx_vtid();
         let row: i32 = agx_vshift(AGX_OP_SHR, tid, 5);
         let x_base: i32 = agx_vshift(AGX_OP_SHL, row, 3);
@@ -17775,6 +18076,9 @@ fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
     ir_wr("output-words "); ir_wr_int(shape.output_words as i64); ir_wr("\n");
     ir_wr("input0-words "); ir_wr_int(shape.input0_words as i64); ir_wr("\n");
     ir_wr("input1-words "); ir_wr_int(shape.input1_words as i64); ir_wr("\n");
+    if shape.input_layout != 0 {
+        ir_wr("input-layout "); ir_wr_int(shape.input_layout as i64); ir_wr("\n");
+    }
     var ci: i32 = 0;
     while ci < ncaps {
         let cn: i32 = g_pfor_workers[caps_base + ci * 4];

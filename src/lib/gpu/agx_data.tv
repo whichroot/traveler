@@ -184,7 +184,8 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
                             code_size_out: *i32, prime_out: *u64,
                             grid_out: *i32, output_words_out: *i32,
                             input0_words_out: *i32,
-                            input1_words_out: *i32) -> i32 {
+                            input1_words_out: *i32,
+                            input_layout_out: *i32) -> i32 {
     if wanted_worker < 0 { return 0; }
     let data_slot: **u8 = alloc(1);
     let size_slot: *i64 = alloc(1);
@@ -203,6 +204,7 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
     var output_words: i32 = 0;
     var input0_words: i32 = 0;
     var input1_words: i32 = 0 - 1;
+    var input_layout: i32 = 0;
     var current_worker: i32 = 0 - 1;
     var selected: i32 = 0;
     var matched: i32 = 0;
@@ -244,6 +246,9 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
         } else if selected != 0 && end - start >= 14
             && agx_bytes_equal(data, start, "input1-words ") == 1 {
             input1_words = agx_parse_decimal(data, start + 13, end) as i32;
+        } else if selected != 0 && end - start >= 14
+            && agx_bytes_equal(data, start, "input-layout ") == 1 {
+            input_layout = agx_parse_decimal(data, start + 13, end) as i32;
         } else if selected != 0 && end - start >= 7
             && agx_bytes_equal(data, start, "bytes ") == 1 {
             declared = agx_parse_decimal(data, start + 6, end) as i32;
@@ -292,5 +297,6 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
     output_words_out[0] = output_words;
     input0_words_out[0] = input0_words;
     input1_words_out[0] = input1_words;
+    input_layout_out[0] = input_layout;
     return 1;
 }
