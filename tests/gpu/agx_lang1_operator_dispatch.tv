@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/agx_runtime.tv";
+import "agx_lang1_operator.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+fn main() -> i32 {
+    let n: i32 = 768;
+    let left: *AgxLang1OperatorF = alloc(n);
+    let right: *AgxLang1OperatorF = alloc(n);
+    let output: *AgxLang1OperatorF = alloc(n);
+    agx_lang1_operator_init(left, right, n);
+    agx_lang1_operator(left, right, output);
+    let requested: i32 = (getenv("TRAVELER_AGX_PROFILE") != null) as i32;
+    if requested != 0 && agx_dispatches() != 1 { return 5; }
+    if requested == 0 && agx_dispatches() != 0 { return 6; }
+    let wrote: i64 = write(1, output as *u8, 3072);
+    free(output); free(right); free(left);
+    if wrote != 3072 { return 4; }
+    return 0;
+}

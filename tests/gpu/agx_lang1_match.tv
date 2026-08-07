@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-H2: integer and enum match lower to scalar CFG/mask operations.
+
+field AgxLang1MatchF = Field<2013265921>;
+
+enum AgxLang1Choice {
+    Bias(i32),
+    Keep,
+}
+
+fn agx_lang1_match_init(left: *AgxLang1MatchF, right: *AgxLang1MatchF,
+                        n: i32) {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang1MatchF;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang1MatchF;
+        i = i + 1;
+    }
+    left[0] = 0; right[0] = 13;
+    left[1] = 3; right[1] = 5;
+    left[2] = 7; right[2] = 11;
+    left[3] = 19; right[3] = 2;
+}
+
+fn agx_lang1_integer_match(left: *AgxLang1MatchF,
+                           right: *AgxLang1MatchF,
+                           output: *AgxLang1MatchF) {
+    for j in 0..768 {
+        let a: AgxLang1MatchF = left[j];
+        let b: AgxLang1MatchF = right[j];
+        var chosen: AgxLang1MatchF = a;
+        match j {
+            0 => { chosen = b; }
+            _ => { if a < b { chosen = b; } }
+        }
+        output[j] = chosen;
+    }
+}
+
+fn agx_lang1_enum_match(left: *AgxLang1MatchF,
+                        right: *AgxLang1MatchF,
+                        output: *AgxLang1MatchF) {
+    for j in 0..768 {
+        let a: AgxLang1MatchF = left[j];
+        let b: AgxLang1MatchF = right[j];
+        var bias: i32 = 0;
+        if a < b { bias = 3; }
+        let choice: AgxLang1Choice = AgxLang1Choice::Bias(bias);
+        var chosen: AgxLang1MatchF = a;
+        match choice {
+            AgxLang1Choice::Bias(delta) => {
+                if delta > 1 { chosen = b; }
+            }
+            AgxLang1Choice::Keep => { chosen = a; }
+        }
+        output[j] = chosen;
+    }
+}

@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1-H5: local closure arguments and scalar captures inline into EIR.
+
+field AgxLang1ClosureF = Field<2013265921>;
+
+fn agx_lang1_closure_init(left: *AgxLang1ClosureF,
+                          right: *AgxLang1ClosureF, n: i32) {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang1ClosureF;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang1ClosureF;
+        i = i + 1;
+    }
+}
+
+fn agx_lang1_closure(left: *AgxLang1ClosureF,
+                     right: *AgxLang1ClosureF,
+                     output: *AgxLang1ClosureF) {
+    for j in 0..768 {
+        let identity = |value: AgxLang1ClosureF| -> AgxLang1ClosureF value;
+        let through_arg: AgxLang1ClosureF = identity(left[j]);
+        let captured: AgxLang1ClosureF = right[j];
+        let choose = |unused: AgxLang1ClosureF| -> AgxLang1ClosureF captured;
+        output[j] = choose(through_arg);
+    }
+}

@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Block-bodied local closures stay outside the expression-only H5 slice.
+
+field AgxLang1ClosureRefuseF = Field<2013265921>;
+
+fn agx_lang1_closure_refuse(input: *AgxLang1ClosureRefuseF,
+                            output: *AgxLang1ClosureRefuseF) {
+    for i in 0..768 {
+        let block = |value: AgxLang1ClosureRefuseF| -> AgxLang1ClosureRefuseF {
+            return value;
+        };
+        output[i] = block(input[i]);
+    }
+}

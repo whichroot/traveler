@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+import "agx_lang1_match.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+fn main() -> i32 {
+    let n: i32 = 768;
+    let left: *AgxLang1MatchF = alloc(n);
+    let right: *AgxLang1MatchF = alloc(n);
+    let int_out: *AgxLang1MatchF = alloc(n);
+    let enum_out: *AgxLang1MatchF = alloc(n);
+    agx_lang1_match_init(left, right, n);
+    agx_lang1_integer_match(left, right, int_out);
+    agx_lang1_enum_match(left, right, enum_out);
+    let a: i64 = write(1, int_out as *u8, 3072);
+    let b: i64 = write(1, enum_out as *u8, 3072);
+    free(enum_out); free(int_out); free(right); free(left);
+    if a != 3072 || b != 3072 { return 4; }
+    return 0;
+}

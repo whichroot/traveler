@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG1 hardware shadow: private aggregates/match and inlineable calls.
+
+type F = Field<2147483647>;
+
+struct Pair {
+    left: i32,
+    right: i32,
+}
+
+struct Cell {
+    value: i32,
+}
+
+enum Choice {
+    Add(i32),
+    Keep,
+}
+
+fn bump(x: F) -> F { return x + 1; }
+
+fn private_struct(input: *i32, output: *i32, n: i32) {
+    for i in 0..n {
+        var pair: Pair = Pair { left: input[i], right: input[i] + 2 };
+        pair.right = pair.right + 3;
+        output[i] = pair.left + pair.right;
+    }
+}
+
+fn pointer_member(cell: *Cell, output: *i32, n: i32) {
+    for i in 0..n {
+        output[i] = cell.value;
+    }
+}
+
+fn integer_match(input: *i32, output: *i32, n: i32) {
+    for i in 0..n {
+        var value: i32 = 0;
+        match i {
+            0 => { value = input[i] + 7; }
+            _ => { value = input[i] + 9; }
+        }
+        output[i] = value;
+    }
+}
+
+fn enum_match(input: *i32, output: *i32, n: i32) {
+    for i in 0..n {
+        let choice: Choice = Choice::Add(input[i]);
+        var value: i32 = 0;
+        match choice {
+            Choice::Add(x) => { value = x + 11; }
+            Choice::Keep => { value = input[i]; }
+        }
+        output[i] = value;
+    }
+}
+
+fn static_call(input: *F, output: *F, n: i32) {
+    for i in 0..n {
+        output[i] = bump(input[i]);
+    }
+}
+
+fn main() -> i32 { return 0; }

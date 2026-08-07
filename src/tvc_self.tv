@@ -1646,6 +1646,7 @@ struct PForProof0 {
     env_names: *i32,
     env_decls: *i32,
     env_kinds: *i32,
+    env_types: *i32,
     outer_reads: i32,
     local_reads: i32,
     capture_reads: i32,
@@ -1656,15 +1657,20 @@ struct PForProof0 {
     capture_writes: i32,
     index_reads: i32,
     index_writes: i32,
+    private_index_reads: i32,
+    private_index_writes: i32,
     affine_safe: i32,
     affine_reason: i32,
     local_index_bases: i32,
     conditional_stores: i32,
     private_stores: i32,
     member_reads: i32,
+    private_member_reads: i32,
     member_writes: i32,
+    private_member_writes: i32,
     capture_member_writes: i32,
     calls: i32,
+    inlineable_calls: i32,
     overload_ops: i32,
     read_calls: i32,
     unknown_calls: i32,
@@ -1681,6 +1687,7 @@ struct PForProof0 {
     qmarks: i32,
     defers: i32,
     short_circuits: i32,
+    matches: i32,
     dynamic_fors: i32,
     iterator_width: i32,
     max_private_depth: i32,
@@ -1689,6 +1696,8 @@ struct PForProof0 {
     cpu_reason: i32,
     elem_ok: i32,
     needs_dyn_field: i32,
+    lang1_complete: i32,
+    lang1_reason: i32,
 }
 
 var g_pf0: *PForProof0 = null;
@@ -9913,8 +9922,15 @@ fn clo_add_capture(name: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
     bound: *i32, nbound: i32) -> i32 {
     if clo_is_bound(name, bound, nbound) == 1 { return ncaps; }
     // Must be a symbol in the enclosing scope to be a capture.
-    let si: i32 = sym_find(name);
-    if si < 0 { return ncaps; }
+    var captured_type: i32 = NULL_STR;
+    if g_lw_active == 1 {
+        let li: i32 = lw_find(name);
+        if li >= 0 { captured_type = g_lw_types[li]; }
+    } else {
+        let si: i32 = sym_find(name);
+        if si >= 0 { captured_type = g_syms[si].type_off; }
+    }
+    if captured_type == NULL_STR { return ncaps; }
     // Dedup.
     var i: i32 = 0;
     while i < ncaps {
@@ -9923,7 +9939,7 @@ fn clo_add_capture(name: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
     }
     if ncaps >= MAX_CLO_CAPS { return ncaps; }
     caps_name[ncaps] = name;
-    caps_type[ncaps] = g_syms[si].type_off;
+    caps_type[ncaps] = captured_type;
     return ncaps + 1;
 }
 
@@ -14981,6 +14997,16 @@ fn proof0_cpu_refuse(P: *PForProof0, reason: i32) {
 fn proof0_mark(P: *PForProof0, reason: i32) {
     P.complete = 0;
     if P.reason == P0R_NONE { P.reason = reason; }
+    P.lang1_complete = 0;
+    if P.lang1_reason == P0R_NONE { P.lang1_reason = reason; }
+    proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
+}
+
+// Keep the authoritative CPU proof conservative while a construct is modeled
+// observationally for the later LANG1 hardware path.
+fn proof0_cpu_mark(P: *PForProof0, reason: i32) {
+    P.complete = 0;
+    if P.reason == P0R_NONE { P.reason = reason; }
     proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
 }
 
@@ -15000,15 +15026,20 @@ fn proof0_reset(P: *PForProof0) {
     P.capture_writes = 0;
     P.index_reads = 0;
     P.index_writes = 0;
+    P.private_index_reads = 0;
+    P.private_index_writes = 0;
     P.affine_safe = 1;
     P.affine_reason = P0A_NONE;
     P.local_index_bases = 0;
     P.conditional_stores = 0;
     P.private_stores = 0;
     P.member_reads = 0;
+    P.private_member_reads = 0;
     P.member_writes = 0;
+    P.private_member_writes = 0;
     P.capture_member_writes = 0;
     P.calls = 0;
+    P.inlineable_calls = 0;
     P.overload_ops = 0;
     P.read_calls = 0;
     P.unknown_calls = 0;
@@ -15025,6 +15056,7 @@ fn proof0_reset(P: *PForProof0) {
     P.qmarks = 0;
     P.defers = 0;
     P.short_circuits = 0;
+    P.matches = 0;
     P.dynamic_fors = 0;
     P.iterator_width = 0;
     P.max_private_depth = 0;
@@ -15033,6 +15065,8 @@ fn proof0_reset(P: *PForProof0) {
     P.cpu_reason = PFR_NONE;
     P.elem_ok = 0;
     P.needs_dyn_field = 0;
+    P.lang1_complete = 1;
+    P.lang1_reason = P0R_NONE;
 }
 
 fn proof0_resolve(P: *PForProof0, name: i32) -> i32 {
@@ -15057,7 +15091,8 @@ fn proof0_name_depth(P: *PForProof0, name: i32) -> i32 {
     return count;
 }
 
-fn proof0_bind(P: *PForProof0, name: i32, decl: i32, kind: i32) -> i32 {
+fn proof0_bind(P: *PForProof0, name: i32, decl: i32,
+               kind: i32, type_off: i32) -> i32 {
     if P.nenv >= MAX_PROOF0_ENV {
         proof0_mark(P, P0R_ENV);
         return 0;
@@ -15068,9 +15103,11 @@ fn proof0_bind(P: *PForProof0, name: i32, decl: i32, kind: i32) -> i32 {
     let env_names: *i32 = P.env_names;
     let env_decls: *i32 = P.env_decls;
     let env_kinds: *i32 = P.env_kinds;
+    let env_types: *i32 = P.env_types;
     env_names[P.nenv] = name;
     env_decls[P.nenv] = decl;
     env_kinds[P.nenv] = kind;
+    env_types[P.nenv] = type_off;
     P.nenv = P.nenv + 1;
     P.nbindings = P.nbindings + 1;
     return 1;
@@ -15381,7 +15418,7 @@ fn proof0_affine_record_call_read(P: *PForProof0, A: *PForState,
 // identities. Their internal indices stay opaque; distinct bases rely on the
 // existing runtime alias fallback, while a same-base write refuses.
 fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
-                                call: i32, fi: i32) {
+                                 call: i32, fi: i32) {
     if g_funcs[fi].reads_nonparam == 1 {
         proof0_affine_refuse(P, P0A_CALL_READ); return;
     }
@@ -15413,6 +15450,10 @@ fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
                 || g_nodes[actual].kind != AST_IDENT {
                 proof0_affine_refuse(P, P0A_CALL_READ); return;
             }
+            if proof0_private_aggregate(P, actual) == 1 {
+                pi = pi + 1;
+                continue;
+            }
             let name: i32 = g_nodes[actual].name0;
             if proof0_resolve(P, name) >= 0 {
                 proof0_affine_refuse(P, P0A_CALL_READ); return;
@@ -15423,6 +15464,29 @@ fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
             }
             proof0_affine_record_call_read(P, A, name);
             if P.affine_safe == 0 { return; }
+        }
+        pi = pi + 1;
+    }
+}
+
+fn proof0_affine_map_operator_reads(P: *PForProof0, A: *PForState,
+                                    binary: i32, fi: i32) {
+    if g_funcs[fi].reads_nonparam == 1 {
+        proof0_affine_refuse(P, P0A_CALL_READ); return;
+    }
+    let mask: u64 = g_funcs[fi].read_param_mask;
+    if g_funcs[fi].reads_arrays == 1 && mask == 0 {
+        proof0_affine_refuse(P, P0A_CALL_READ); return;
+    }
+    var pi: i32 = 0;
+    while pi < 64 {
+        if ((mask >> (pi as u64)) & 1) == 1 {
+            var actual: i32 = 0 - 1;
+            if pi == 0 { actual = g_nodes[binary].child0; }
+            if pi == 1 { actual = g_nodes[binary].child1; }
+            if actual < 0 || proof0_private_aggregate(P, actual) == 0 {
+                proof0_affine_refuse(P, P0A_CALL_READ); return;
+            }
         }
         pi = pi + 1;
     }
@@ -15550,7 +15614,8 @@ fn proof0_let_bind_kind(stmt: i32) -> i32 {
     let init: i32 = g_nodes[stmt].child0;
     if init >= 0 && init < g_nnodes {
         let ik: i32 = g_nodes[init].kind;
-        if ik == AST_STRUCT_LIT || ik == AST_ENUM_CONSTRUCT {
+        if ik == AST_STRUCT_LIT || ik == AST_ENUM_CONSTRUCT
+            || ik == AST_CLOSURE {
             return P0_BIND_LOCAL;
         }
     }
@@ -15564,6 +15629,22 @@ fn proof0_let_bind_kind(stmt: i32) -> i32 {
         return P0_BIND_ALIAS;
     }
     return P0_BIND_LOCAL;
+}
+
+fn proof0_let_type(stmt: i32) -> i32 {
+    let declared: i32 = resolve_type_sub(g_nodes[stmt].name1);
+    if declared != NULL_STR { return declared; }
+    let init: i32 = g_nodes[stmt].child0;
+    if init <= 0 || init >= g_nnodes { return NULL_STR; }
+    if g_nodes[init].kind == AST_STRUCT_LIT
+        || g_nodes[init].kind == AST_ENUM_CONSTRUCT
+        || g_nodes[init].kind == AST_CAST {
+        return resolve_type_sub(g_nodes[init].name0);
+    }
+    if g_nodes[init].kind == AST_CLOSURE {
+        return clo_type_string(g_nodes[init].name2);
+    }
+    return NULL_STR;
 }
 
 // Static iterator width for type-directed call resolution. Unknown expression
@@ -15617,6 +15698,9 @@ fn proof0_loop_iter_type(loop_stmt: i32) -> i32 {
 fn proof0_name_type(P: *PForProof0, name: i32) -> i32 {
     let binding: i32 = proof0_resolve(P, name);
     if binding >= 0 {
+        if P.env_types[binding] != NULL_STR {
+            return resolve_type_sub(P.env_types[binding]);
+        }
         let decl: i32 = P.env_decls[binding];
         if decl < 0 || decl >= g_nnodes { return NULL_STR; }
         if g_nodes[decl].kind == AST_LET {
@@ -15837,6 +15921,39 @@ fn proof0_method_receiver_noescape(fi: i32, recv_type: i32) -> i32 {
                                     g_nodes[param].name0, recv_type, 0);
 }
 
+fn proof0_call_inlineable(fi: i32) -> i32 {
+    if fi < 0 || fi >= g_nfuncs || g_funcs[fi].is_extern == 1
+        || g_funcs[fi].purity_computed == 0 || g_funcs[fi].is_pure == 0
+        || g_funcs[fi].writes_arrays == 1 { return 0; }
+    // A source-level recursive edge has no finite whole-kernel expansion.
+    let owner: i32 = find_func_idx(g_cur_fn);
+    if owner >= 0 {
+        if fi == owner || g_funcs[fi].node == g_funcs[owner].node { return 0; }
+    }
+    return 1;
+}
+
+fn proof0_private_aggregate(P: *PForProof0, node: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || g_nodes[node].kind != AST_IDENT {
+        return 0;
+    }
+    let binding: i32 = proof0_resolve(P, g_nodes[node].name0);
+    if binding < 0 || P.env_kinds[binding] != P0_BIND_LOCAL { return 0; }
+    let ty: i32 = proof0_name_type(P, g_nodes[node].name0);
+    if ty == NULL_STR || type_is_ptr(ty) == 1 { return 0; }
+    if resolve_struct_type(ty) >= 0 || resolve_enum_type(ty) >= 0 { return 1; }
+    return 0;
+}
+
+fn proof0_private_array(P: *PForProof0, node: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || g_nodes[node].kind != AST_IDENT {
+        return 0;
+    }
+    let binding: i32 = proof0_resolve(P, g_nodes[node].name0);
+    if binding < 0 || P.env_kinds[binding] != P0_BIND_LOCAL { return 0; }
+    return type_is_array(proof0_name_type(P, g_nodes[node].name0));
+}
+
 fn proof0_function_effect(P: *PForProof0, A: *PForState,
                           call: i32, fi: i32, map_reads: i32) {
     if fi < 0 || g_funcs[fi].is_extern == 1
@@ -15858,9 +15975,9 @@ fn proof0_function_effect(P: *PForProof0, A: *PForState,
         P.read_calls = P.read_calls + 1;
         if map_reads == 1 {
             proof0_affine_map_call_reads(P, A, call, fi);
+        } else if map_reads == 2 {
+            proof0_affine_map_operator_reads(P, A, call, fi);
         } else {
-            // Operator arguments are not stored in an AST_CALL arg slice. Keep
-            // hidden indexed reads conservative until inlining exposes them.
             proof0_affine_refuse(P, P0A_CALL_READ);
         }
     }
@@ -15892,6 +16009,9 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                 P.shadow_reads = P.shadow_reads + 1;
             }
         }
+        return;
+    }
+    if kind == AST_CLOSURE {
         return;
     }
     if kind == AST_BINARY {
@@ -15933,9 +16053,15 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                         if resolved != NULL_STR { fi = find_func_idx(resolved); }
                     }
                 }
-                proof0_function_effect(P, g_pf0_affine, node, fi, 0);
-                if fi >= 0
-                    && proof0_method_receiver_noescape(fi, lhs_type) == 0 {
+                proof0_function_effect(P, g_pf0_affine, node, fi, 2);
+                var receiver_safe: i32 = 0;
+                if fi >= 0 {
+                    receiver_safe = proof0_method_receiver_noescape(fi, lhs_type);
+                }
+                if proof0_call_inlineable(fi) == 1 && receiver_safe == 1 {
+                    P.inlineable_calls = P.inlineable_calls + 1;
+                }
+                if fi >= 0 && receiver_safe == 0 {
                     P.addresses = P.addresses + 1;
                     proof0_cpu_refuse(P, PFR_PRIVATE_ESCAPE);
                     if lhs_node > 0 && lhs_node < g_nnodes
@@ -15978,8 +16104,12 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
     if kind == AST_INDEX {
         P.index_reads = P.index_reads + 1;
         let base: i32 = g_nodes[node].child0;
-        proof0_affine_record_read(P, g_pf0_affine, base,
-                                  g_nodes[node].child1);
+        if proof0_private_array(P, base) == 1 {
+            P.private_index_reads = P.private_index_reads + 1;
+        } else {
+            proof0_affine_record_read(P, g_pf0_affine, base,
+                                      g_nodes[node].child1);
+        }
         if base >= 0 && base < g_nnodes && g_nodes[base].kind == AST_IDENT {
             if proof0_resolve(P, g_nodes[base].name0) >= 0 {
                 P.local_index_bases = P.local_index_bases + 1;
@@ -15991,6 +16121,9 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
     }
     if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
         P.member_reads = P.member_reads + 1;
+        if proof0_private_aggregate(P, g_nodes[node].child0) == 1 {
+            P.private_member_reads = P.private_member_reads + 1;
+        }
         proof0_cpu_refuse(P, PFR_UNSUPPORTED_EXPR);
         proof0_expr(P, g_nodes[node].child0, depth + 1, control_depth);
         return;
@@ -16019,26 +16152,69 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         // A captured/local `closure#N` is a direct lifted target. Respect the
         // recursive environment first so a body-local shadow cannot inherit an
         // outer closure's identity.
-        if call_handled == 0 && proof0_resolve(P, call_name) < 0
-            && find_func(call_name) < 0 {
-            let clo_si: i32 = sym_find(call_name);
-            if clo_si >= 0 {
-                let clo_ty: i32 = resolve_type_sub(g_syms[clo_si].type_off);
-                if type_is_closure(clo_ty) == 1 {
+        if call_handled == 0 && find_func(call_name) < 0 {
+            let local_clo: i32 = proof0_resolve(P, call_name);
+            var clo_ty: i32 = NULL_STR;
+            if local_clo >= 0 {
+                clo_ty = proof0_name_type(P, call_name);
+                let decl: i32 = P.env_decls[local_clo];
+                var cnode: i32 = 0 - 1;
+                if decl > 0 && decl < g_nnodes
+                    && g_nodes[decl].kind == AST_LET {
+                    let init: i32 = g_nodes[decl].child0;
+                    if init > 0 && init < g_nnodes
+                        && g_nodes[init].kind == AST_CLOSURE { cnode = init; }
+                }
+                if type_is_closure(clo_ty) == 1 && cnode >= 0 {
                     call_handled = 1;
-                    P.capture_reads = P.capture_reads + 1;
-                    closure_capture = call_name;
-                    let ce: i32 = pfor_closure_effect(clo_ty);
-                    if ce == PFOR_CLO_UNKNOWN {
+                    let body: i32 = g_nodes[cnode].child0;
+                    if body <= 0 || body >= g_nnodes
+                        || g_nodes[body].kind == AST_BLOCK {
                         P.unknown_calls = P.unknown_calls + 1;
-                        proof0_cpu_refuse(P, PFR_INDIRECT_CALL);
-                    } else if ce == PFOR_CLO_MUTATING {
+                        proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
+                    } else if expr_is_pure(body) == 0
+                        || expr_calls_array_writer(body) == 1 {
                         P.effectful_calls = P.effectful_calls + 1;
                         proof0_cpu_refuse(P, PFR_MUTATING_CALL);
-                    } else if ce == PFOR_CLO_READ {
-                        P.read_calls = P.read_calls + 1;
-                        proof0_affine_refuse(P, P0A_CALL_READ);
+                    } else {
+                        P.inlineable_calls = P.inlineable_calls + 1;
+                        let saved_env: i32 = P.nenv;
+                        var pi: i32 = 0;
+                        while pi < g_nodes[cnode].nargs {
+                            let param: i32 = g_args[g_nodes[cnode].args_start + pi];
+                            proof0_bind(P, g_nodes[param].name0, param,
+                                P0_BIND_LOCAL,
+                                resolve_type_sub(g_nodes[param].name1));
+                            pi = pi + 1;
+                        }
+                        proof0_expr(P, body, depth + 1, control_depth);
+                        P.nenv = saved_env;
                     }
+                }
+            } else {
+                let clo_si: i32 = sym_find(call_name);
+                if clo_si >= 0 {
+                    clo_ty = resolve_type_sub(g_syms[clo_si].type_off);
+                    if type_is_closure(clo_ty) == 1 {
+                        P.capture_reads = P.capture_reads + 1;
+                        closure_capture = call_name;
+                    }
+                }
+            }
+            if call_handled == 0 && type_is_closure(clo_ty) == 1 {
+                call_handled = 1;
+                let ce: i32 = pfor_closure_effect(clo_ty);
+                if ce == PFOR_CLO_UNKNOWN {
+                    P.unknown_calls = P.unknown_calls + 1;
+                    proof0_cpu_refuse(P, PFR_INDIRECT_CALL);
+                } else if ce == PFOR_CLO_MUTATING {
+                    P.effectful_calls = P.effectful_calls + 1;
+                    proof0_cpu_refuse(P, PFR_MUTATING_CALL);
+                } else if ce == PFOR_CLO_READ {
+                    P.read_calls = P.read_calls + 1;
+                    proof0_affine_refuse(P, P0A_CALL_READ);
+                } else {
+                    P.inlineable_calls = P.inlineable_calls + 1;
                 }
             }
         }
@@ -16073,9 +16249,38 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
             }
             let fi: i32 = find_func_idx(target_name);
             proof0_function_effect(P, g_pf0_affine, node, fi, 1);
-            if target_name != call_name && fi >= 0
-                && proof0_method_receiver_noescape(fi, method_type) == 1 {
-                synthetic_receiver = g_args[g_nodes[node].args_start];
+            var call_receiver_safe: i32 = 1;
+            if fi >= 0 && method_type == NULL_STR && g_nodes[node].nargs > 0 {
+                let recv2: i32 = g_args[g_nodes[node].args_start];
+                if recv2 > 0 && recv2 < g_nnodes
+                    && g_nodes[recv2].kind == AST_UNARY
+                    && g_nodes[recv2].op == OP_ADDR {
+                    let recv_value2: i32 = g_nodes[recv2].child0;
+                    if recv_value2 > 0 && recv_value2 < g_nnodes
+                        && g_nodes[recv_value2].kind == AST_IDENT {
+                        method_type = proof0_name_type(
+                            P, g_nodes[recv_value2].name0);
+                    }
+                }
+            }
+            if fi >= 0 && method_type != NULL_STR {
+                let fdecl2: i32 = g_funcs[fi].node;
+                if fdecl2 > 0 && fdecl2 < g_nnodes
+                    && g_nodes[fdecl2].nargs > 0 {
+                    let first_param: i32 =
+                        g_args[g_nodes[fdecl2].args_start];
+                    if first_param > 0 && first_param < g_nnodes
+                        && g_nodes[first_param].name0 == str_intern("self")
+                        && proof0_method_receiver_noescape(fi, method_type) == 1 {
+                        synthetic_receiver = g_args[g_nodes[node].args_start];
+                    }
+                }
+            }
+            if target_name != call_name {
+                call_receiver_safe = (synthetic_receiver >= 0) as i32;
+            }
+            if proof0_call_inlineable(fi) == 1 && call_receiver_safe == 1 {
+                P.inlineable_calls = P.inlineable_calls + 1;
             }
         }
         var ai: i32 = 0;
@@ -16183,7 +16388,7 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         proof0_note_dyn_type(P, g_nodes[stmt].name1);
         proof0_expr(P, g_nodes[stmt].child0, depth + 1, control_depth);
         proof0_bind(P, g_nodes[stmt].name0, stmt,
-                    proof0_let_bind_kind(stmt));
+                    proof0_let_bind_kind(stmt), proof0_let_type(stmt));
         return;
     }
     if kind == AST_ASSIGN {
@@ -16211,8 +16416,12 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         }
         if private_depth > 0 { P.private_stores = P.private_stores + 1; }
         let base: i32 = g_nodes[stmt].child0;
-        proof0_affine_record_write(P, g_pf0_affine, base,
-                                   g_nodes[stmt].child1);
+        if proof0_private_array(P, base) == 1 {
+            P.private_index_writes = P.private_index_writes + 1;
+        } else {
+            proof0_affine_record_write(P, g_pf0_affine, base,
+                                       g_nodes[stmt].child1);
+        }
         if base >= 0 && base < g_nnodes && g_nodes[base].kind == AST_IDENT {
             if proof0_resolve(P, g_nodes[base].name0) >= 0 {
                 P.local_index_bases = P.local_index_bases + 1;
@@ -16226,8 +16435,12 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
     if kind == AST_MEMBER_ASSIGN {
         P.member_writes = P.member_writes + 1;
         let obj: i32 = g_nodes[stmt].child0;
+        if proof0_private_aggregate(P, obj) == 1 {
+            P.private_member_writes = P.private_member_writes + 1;
+        }
         // Without type/provenance, a local name can still be a pointer alias to
-        // captured storage. PROOF0-b may prove by-value aggregates; P0a refuses.
+        // captured storage. Keep CPU conservative until the LANG1 device
+        // scalarization gate lands; the shadow records the private subset.
         P.capture_member_writes = P.capture_member_writes + 1;
         proof0_cpu_refuse(P, PFR_MUTATING_CALL);
         proof0_expr(P, obj, depth + 1, control_depth);
@@ -16264,7 +16477,8 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         proof0_expr(P, lo, depth + 1, control_depth);
         proof0_expr(P, hi, depth + 1, control_depth);
         let saved_env2: i32 = P.nenv;
-        if proof0_bind(P, g_nodes[stmt].name0, stmt, P0_BIND_ITER) == 1 {
+        if proof0_bind(P, g_nodes[stmt].name0, stmt, P0_BIND_ITER,
+                       proof0_loop_iter_type(stmt)) == 1 {
             proof0_stmt(P, g_nodes[stmt].child2, private_depth + 1,
                         conditional_depth, control_depth + 1, depth + 1);
         }
@@ -16307,17 +16521,58 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         return;
     }
     if kind == AST_MATCH {
-        proof0_mark(P, P0R_MATCH);
+        P.matches = P.matches + 1;
+        // The old CPU surface stays unchanged while LANG1 models each arm.
+        proof0_cpu_mark(P, P0R_MATCH);
         proof0_expr(P, g_nodes[stmt].child0, depth + 1, control_depth);
         if g_nodes[stmt].args_start < 0 || g_nodes[stmt].nargs < 0
             || g_nodes[stmt].args_start > g_narms - g_nodes[stmt].nargs {
             proof0_mark(P, P0R_NODE); return;
         }
+        var match_ei: i32 = 0 - 1;
+        var scan: i32 = 0;
+        while scan < g_nodes[stmt].nargs {
+            let scan_arm: i32 = g_nodes[stmt].args_start + scan;
+            if g_arms[scan_arm].kind == ARM_KIND_ENUM {
+                match_ei = resolve_enum_type(g_arms[scan_arm].name0);
+            }
+            scan = scan + 1;
+        }
+        let scrut: i32 = g_nodes[stmt].child0;
+        if scrut > 0 && scrut < g_nnodes
+            && g_nodes[scrut].kind == AST_IDENT {
+            let scrut_type: i32 = proof0_name_type(P, g_nodes[scrut].name0);
+            let concrete_ei: i32 = resolve_enum_type(scrut_type);
+            if concrete_ei >= 0 { match_ei = concrete_ei; }
+        }
         var mi: i32 = 0;
         while mi < g_nodes[stmt].nargs {
-            proof0_stmt(P, g_arms[g_nodes[stmt].args_start + mi].body,
+            let arm: i32 = g_nodes[stmt].args_start + mi;
+            let saved_env3: i32 = P.nenv;
+            if g_arms[arm].kind == ARM_KIND_ENUM {
+                if match_ei < 0 || g_arms[arm].bindings_start < 0
+                    || g_arms[arm].nbindings < 0
+                    || g_arms[arm].bindings_start
+                        > g_nargs_pool - g_arms[arm].nbindings {
+                    proof0_mark(P, P0R_NODE);
+                } else {
+                    let vi: i32 = enum_variant_index(match_ei, g_arms[arm].name1);
+                    var bi: i32 = 0;
+                    while bi < g_arms[arm].nbindings {
+                        let bname: i32 = g_args[g_arms[arm].bindings_start + bi];
+                        let btype: i32 = resolve_type_sub(
+                            enum_variant_field_type(match_ei, vi, bi));
+                        let synthetic_decl: i32 = 0 - (arm * 64 + bi + 1);
+                        proof0_bind(P, bname, synthetic_decl,
+                                    P0_BIND_LOCAL, btype);
+                        bi = bi + 1;
+                    }
+                }
+            }
+            proof0_stmt(P, g_arms[arm].body,
                         private_depth, conditional_depth + 1,
                         control_depth + 1, depth + 1);
+            P.nenv = saved_env3;
             mi = mi + 1;
         }
         return;
@@ -16356,6 +16611,7 @@ fn proof0_cpu_effects(P: *PForProof0) -> i32 {
         || P.capture_member_writes != 0 || P.unknown_calls != 0
         || P.effectful_calls != 0 || P.addresses != 0
         || P.member_reads != 0
+        || P.private_index_reads != 0 || P.private_index_writes != 0
         || P.iterator_writes != 0 || P.alias_writes != 0
         || P.outer_exits != 0 || P.returns != 0 || P.qmarks != 0
         || P.defers != 0 { return 0; }
@@ -16371,6 +16627,33 @@ fn proof0_agx_effects(P: *PForProof0) -> i32 {
         || P.conditional_stores != 0 || P.private_stores != 0
         || P.iterator_writes != 0 || P.local_index_bases != 0
         || P.index_writes != 1 { return 0; }
+    return 1;
+}
+
+fn proof0_lang1_effects(P: *PForProof0) -> i32 {
+    if P.lang1_complete == 0 || P.capture_writes != 0
+        || P.unknown_calls != 0 || P.effectful_calls != 0
+        || P.addresses != 0 || P.member_reads != P.private_member_reads
+        || P.member_writes != P.private_member_writes
+        || P.calls != P.inlineable_calls
+        || P.iterator_writes != 0 || P.alias_writes != 0
+        || P.outer_exits != 0 || P.returns != 0 || P.qmarks != 0
+        || P.defers != 0 { return 0; }
+    return 1;
+}
+
+fn proof0_lang1_agx_effects(P: *PForProof0) -> i32 {
+    if proof0_lang1_effects(P) == 0 || P.whiles != 0
+        || P.dynamic_fors != 0 || P.max_private_depth > 2
+        || P.iterator_width != 32 || P.max_control_depth > 4
+        || P.conditional_stores != 0 || P.private_stores != 0
+        || P.iterator_writes != 0
+        || P.index_writes - P.private_index_writes != 1 { return 0; }
+    return 1;
+}
+
+fn proof0_lang1_candidate(P: *PForProof0) -> i32 {
+    if proof0_lang1_agx_effects(P) == 0 || P.affine_safe == 0 { return 0; }
     return 1;
 }
 
@@ -16504,7 +16787,8 @@ fn proof0_summarize(P: *PForProof0, A: *PForState,
     if iter_type != NULL_STR { P.iterator_width = type_bits(iter_type); }
     proof0_affine_prepare(P, A, g_nodes[loop_stmt].child0,
                           g_nodes[loop_stmt].child1);
-    if proof0_bind(P, iter_name, loop_stmt, P0_BIND_OUTER) == 1 {
+    if proof0_bind(P, iter_name, loop_stmt, P0_BIND_OUTER,
+                   iter_type) == 1 {
         proof0_stmt(P, body, 0, 0, 0, 0);
     }
     proof0_affine_finish(P, A);
@@ -16570,6 +16854,10 @@ fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
     wr(1, ",\"agx_effects\":"); wr_int(1, proof0_agx_effects(P) as i64);
     wr(1, ",\"cpu_candidate\":"); wr_int(1, proof0_cpu_candidate(P) as i64);
     wr(1, ",\"agx_candidate\":"); wr_int(1, proof0_agx_candidate(P) as i64);
+    wr(1, ",\"lang1_complete\":"); wr_int(1, P.lang1_complete as i64);
+    wr(1, ",\"lang1_reason\":\""); wr(1, proof0_reason_str(P.lang1_reason));
+    wr(1, "\",\"lang1_effects\":"); wr_int(1, proof0_lang1_effects(P) as i64);
+    wr(1, ",\"lang1_candidate\":"); wr_int(1, proof0_lang1_candidate(P) as i64);
     wr(1, ",\"affine_safe\":"); wr_int(1, P.affine_safe as i64);
     wr(1, ",\"affine_reason\":\"");
     wr(1, proof0_affine_reason_str(P.affine_reason));
@@ -16588,14 +16876,23 @@ fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
     wr(1, ",\"capture_writes\":"); wr_int(1, P.capture_writes as i64);
     wr(1, ",\"index_reads\":"); wr_int(1, P.index_reads as i64);
     wr(1, ",\"index_writes\":"); wr_int(1, P.index_writes as i64);
+    wr(1, ",\"private_index_reads\":");
+    wr_int(1, P.private_index_reads as i64);
+    wr(1, ",\"private_index_writes\":");
+    wr_int(1, P.private_index_writes as i64);
     wr(1, ",\"local_index_bases\":"); wr_int(1, P.local_index_bases as i64);
     wr(1, ",\"conditional_stores\":"); wr_int(1, P.conditional_stores as i64);
     wr(1, ",\"private_stores\":"); wr_int(1, P.private_stores as i64);
     wr(1, ",\"member_reads\":"); wr_int(1, P.member_reads as i64);
+    wr(1, ",\"private_member_reads\":");
+    wr_int(1, P.private_member_reads as i64);
     wr(1, ",\"member_writes\":"); wr_int(1, P.member_writes as i64);
+    wr(1, ",\"private_member_writes\":");
+    wr_int(1, P.private_member_writes as i64);
     wr(1, ",\"capture_member_writes\":");
     wr_int(1, P.capture_member_writes as i64);
     wr(1, ",\"calls\":"); wr_int(1, P.calls as i64);
+    wr(1, ",\"inlineable_calls\":"); wr_int(1, P.inlineable_calls as i64);
     wr(1, ",\"overload_ops\":"); wr_int(1, P.overload_ops as i64);
     wr(1, ",\"read_calls\":"); wr_int(1, P.read_calls as i64);
     wr(1, ",\"unknown_calls\":"); wr_int(1, P.unknown_calls as i64);
@@ -16612,6 +16909,7 @@ fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
     wr(1, ",\"qmarks\":"); wr_int(1, P.qmarks as i64);
     wr(1, ",\"defers\":"); wr_int(1, P.defers as i64);
     wr(1, ",\"short_circuits\":"); wr_int(1, P.short_circuits as i64);
+    wr(1, ",\"matches\":"); wr_int(1, P.matches as i64);
     wr(1, ",\"dynamic_fors\":"); wr_int(1, P.dynamic_fors as i64);
     wr(1, ",\"max_private_depth\":"); wr_int(1, P.max_private_depth as i64);
     wr(1, ",\"max_control_depth\":"); wr_int(1, P.max_control_depth as i64);
@@ -17299,14 +17597,28 @@ fn codegen_stmt(stmt: i32) {
 
         var worker_pf: *PForState = g_pf0_affine;
         var dispatch_ready: i32 = g_pf0.cpu_ready;
+        var lang1_device_ready: i32 = 0;
+        if pfor_lang0_mode() == 1 && legacy_disp == 0
+            && proof0_lang1_candidate(g_pf0) == 1
+            && g_pf0_affine.ncaps > 0
+            && proof0_caps_elem_ok(g_pf0_affine) == 1
+            && pfor_device_caps_ok(g_pf0_affine) == 1
+            && g_npfor_workers < MAX_PFOR
+            && pfor_worker_space(g_pf0_affine.ncaps) == 1 {
+            lang1_device_ready = 1;
+        }
         // Device admission remains a separate closed proof with unchanged
-        // AMD/NV/AGX authority. Closures stay CPU-only: device modules do not
-        // emit lifted closure bodies.
+        // AMD/NV authority. AGX may add a LANG1-only recursive candidate, while
+        // every legacy worker retains its prior capture artifact and bytes.
         if g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1
             || g_agx_ir0_shadow == 1 || g_agx_ra0_shadow == 1 {
             worker_pf = pf;
             dispatch_ready = legacy_disp;
             if pfor_device_caps_ok(pf) == 0 { dispatch_ready = 0; }
+            if lang1_device_ready == 1 {
+                worker_pf = g_pf0_affine;
+                dispatch_ready = 1;
+            }
         }
         let caps: *i32 = worker_pf.caps;
 
@@ -17409,7 +17721,8 @@ fn codegen_stmt(stmt: i32) {
                     body_node, iter_name, worker_pf.ncaps, worker_caps_base,
                     agx_shape);
                 var agx_run_shadow: i32 = 1;
-                if agx_classified == 1 && agx_shape.kind == 5
+                if agx_classified == 1
+                    && (agx_shape.kind == 5 || agx_shape.kind == 6)
                     && (g_agx_dispatch_mode == 1
                         || (g_emit_gpu_mode == 1 && g_gpu_target == 2)) {
                     // LANG0's normal path is the IR0/RA0 path; do not run it
@@ -20922,6 +21235,157 @@ fn agx_classify_lang0(body: i32, loop_name: i32, ncaps: i32,
     return 1;
 }
 
+fn agx_lang1_ast_marker(node: i32, depth: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || depth > 256 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LET
+        && type_is_array(resolve_type_sub(g_nodes[node].name1)) == 1 { return 1; }
+    if kind == AST_STRUCT_LIT || kind == AST_ENUM_CONSTRUCT
+        || kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS
+        || kind == AST_MEMBER_ASSIGN || kind == AST_MATCH
+        || kind == AST_CALL { return 1; }
+    if kind == AST_BLOCK {
+        var i: i32 = 0;
+        while i < g_nodes[node].nargs {
+            if agx_lang1_ast_marker(
+                g_args[g_nodes[node].args_start + i], depth + 1) == 1 { return 1; }
+            i = i + 1;
+        }
+        return 0;
+    }
+    if kind == AST_BINARY || kind == AST_INDEX {
+        if agx_lang1_ast_marker(g_nodes[node].child0, depth + 1) == 1 { return 1; }
+        return agx_lang1_ast_marker(g_nodes[node].child1, depth + 1);
+    }
+    if kind == AST_UNARY || kind == AST_CAST || kind == AST_EXPR_STMT
+        || kind == AST_LET || kind == AST_ASSIGN || kind == AST_RETURN {
+        return agx_lang1_ast_marker(g_nodes[node].child0, depth + 1);
+    }
+    if kind == AST_INDEX_ASSIGN {
+        if agx_lang1_ast_marker(g_nodes[node].child0, depth + 1) == 1
+            || agx_lang1_ast_marker(g_nodes[node].child1, depth + 1) == 1 {
+            return 1;
+        }
+        return agx_lang1_ast_marker(g_nodes[node].child2, depth + 1);
+    }
+    if kind == AST_IF {
+        if agx_lang1_ast_marker(g_nodes[node].child0, depth + 1) == 1
+            || agx_lang1_ast_marker(g_nodes[node].child1, depth + 1) == 1 {
+            return 1;
+        }
+        if g_nodes[node].child2 >= 0 {
+            return agx_lang1_ast_marker(g_nodes[node].child2, depth + 1);
+        }
+    }
+    if kind == AST_FOR {
+        return agx_lang1_ast_marker(g_nodes[node].child2, depth + 1);
+    }
+    if kind == AST_WHILE {
+        return agx_lang1_ast_marker(g_nodes[node].child1, depth + 1);
+    }
+    return 0;
+}
+
+fn agx_lang1_find_store(body: i32, loop_name: i32,
+                        caps_base: i32, ncaps: i32,
+                        output_name: *i32) -> i32 {
+    if body <= 0 || body >= g_nnodes || g_nodes[body].kind != AST_BLOCK {
+        return 0;
+    }
+    var stores: i32 = 0;
+    var i: i32 = 0;
+    while i < g_nodes[body].nargs {
+        let stmt: i32 = g_args[g_nodes[body].args_start + i];
+        if stmt > 0 && stmt < g_nnodes && g_nodes[stmt].kind == AST_INDEX_ASSIGN {
+            let obj: i32 = g_nodes[stmt].child0;
+            let idx: i32 = g_nodes[stmt].child1;
+            if obj <= 0 || obj >= g_nnodes
+                || g_nodes[obj].kind != AST_IDENT { return 0; }
+            let name: i32 = g_nodes[obj].name0;
+            if agx_cap_pos(name, caps_base, ncaps) >= 0 {
+                if idx <= 0 || idx >= g_nnodes
+                    || g_nodes[idx].kind != AST_IDENT
+                    || g_nodes[idx].name0 != loop_name { return 0; }
+                output_name[0] = name;
+                stores = stores + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return (stores == 1) as i32;
+}
+
+fn agx_classify_lang1(body: i32, loop_name: i32, ncaps: i32,
+                       caps_base: i32, shape: *AgxWorkerShape) -> i32 {
+    if agx_lang1_ast_marker(body, 0) == 0 || ncaps < 2 || ncaps > 3 {
+        return 0;
+    }
+    let output_name: *i32 = alloc(1);
+    output_name[0] = 0 - 1;
+    if agx_lang1_find_store(
+        body, loop_name, caps_base, ncaps, output_name) == 0 {
+        free(output_name); return 0;
+    }
+    let out_name: i32 = output_name[0];
+    free(output_name);
+    let out_cap: i32 = agx_cap_pos(out_name, caps_base, ncaps);
+    if out_cap < 0 { return 0; }
+    var input0_name: i32 = 0 - 1;
+    var input1_name: i32 = 0 - 1;
+    var input0_cap: i32 = 0 - 1;
+    var input1_cap: i32 = 0 - 1;
+    var field_alias: i32 = NULL_STR;
+    var fi: i32 = 0 - 1;
+    var ci: i32 = 0;
+    while ci < ncaps {
+        let name: i32 = g_pfor_workers[caps_base + ci * 4];
+        let ty: i32 = resolve_type_sub(g_pfor_workers[caps_base + ci * 4 + 1]);
+        if type_is_ptr(ty) == 0 { return 0; }
+        let elem: i32 = resolve_type_sub(type_pointee(ty));
+        let cfi: i32 = find_field_by_alias(elem);
+        if cfi < 0 || g_fields[cfi].field_kind != FIELD_KIND_PRIME
+            || g_fields[cfi].elem_bits != 32 { return 0; }
+        if fi < 0 { fi = cfi; field_alias = elem; }
+        if g_fields[cfi].prime != g_fields[fi].prime { return 0; }
+        if name != out_name {
+            if input0_name < 0 { input0_name = name; input0_cap = ci; }
+            else if input1_name < 0 { input1_name = name; input1_cap = ci; }
+            else { return 0; }
+        }
+        ci = ci + 1;
+    }
+    if input0_name < 0 { return 0; }
+    let p: u64 = g_fields[fi].prime;
+    if p != 2147483647
+        && (p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31)
+            || (p & 1) == 0) { return 0; }
+    let outer: i32 = agx_find_for_body(body);
+    if outer < 0 { return 0; }
+    let lo: i32 = g_nodes[outer].child0;
+    let hi: i32 = g_nodes[outer].child1;
+    if g_nodes[lo].kind != AST_LIT_INT || g_nodes[lo].int_val != 0
+        || g_nodes[hi].kind != AST_LIT_INT || g_nodes[hi].int_val == 0
+        || g_nodes[hi].int_val > 2147483647 { return 0; }
+    let grid: i32 = g_nodes[hi].int_val as i32;
+    shape.kind = 6;
+    shape.output_name = out_name;
+    shape.input0_name = input0_name;
+    shape.input1_name = input1_name;
+    shape.field_alias = field_alias;
+    shape.field_index = fi;
+    shape.rhs = body;
+    shape.grid = grid;
+    shape.output_cap = out_cap;
+    shape.input0_cap = input0_cap;
+    shape.input1_cap = input1_cap;
+    shape.output_words = grid;
+    shape.input0_words = grid;
+    shape.input1_words = 0;
+    if input1_name >= 0 { shape.input1_words = grid; }
+    shape.input_layout = 0;
+    return 1;
+}
+
 fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
                        caps_base: i32, shape: *AgxWorkerShape) -> i32 {
     shape.body = body;
@@ -20932,6 +21396,9 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
         return 1;
     }
     if agx_classify_lang0(body, loop_name, ncaps, caps_base, shape) == 1 {
+        return 1;
+    }
+    if agx_classify_lang1(body, loop_name, ncaps, caps_base, shape) == 1 {
         return 1;
     }
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 { return 0; }
@@ -21058,7 +21525,7 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
 fn agx_build_worker_ops(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     let p: u64 = g_fields[shape.field_index].prime;
     let p64_pm59: u64 = 18446744073709551557;
-    if shape.kind == 4 || shape.kind == 5 { return 0; }
+    if shape.kind == 4 || shape.kind == 5 || shape.kind == 6 { return 0; }
     agx_vm_reset();
     g_agx_input_v = 0 - 1;
     g_agx_input2_v = 0 - 1;
@@ -21137,7 +21604,7 @@ fn agx_build_worker_ops(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
 fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     let p: u64 = g_fields[shape.field_index].prime;
     if shape.kind == 4 { return agx_build_counted_dot(p); }
-    if shape.kind == 5 {
+    if shape.kind == 5 || shape.kind == 6 {
         return agx_ir0_shadow_worker(
             shape.body, shape.loop_name, shape.ncaps, shape.caps_base,
             32, shape);
@@ -24394,6 +24861,20 @@ var g_agx_cfg_slot_types: *i32 = null;
 var g_agx_cfg_marks: *i32 = null;
 var g_agx_cfg_cap_slots: i32 = 0;
 var g_agx_ir0_failed: i32 = 0;
+// LANG1 device normalization maps one private aggregate slot to scalar slots.
+// The first field reuses the source slot; later fields append slots.
+var g_agx_l1_owner: *i32 = null;
+var g_agx_l1_offset: *i32 = null;
+var g_agx_l1_type: *i32 = null;
+var g_agx_l1_slot: *i32 = null;
+var g_agx_l1_nfields: i32 = 0;
+var g_agx_l1_cap_fields: i32 = 0;
+var g_agx_l1_active: i32 = 0;
+var g_agx_l1_inlined: i32 = 0;
+var g_agx_l1_closure_slots: *i32 = null;
+var g_agx_l1_closure_literals: *i32 = null;
+var g_agx_l1_nclosures: i32 = 0;
+var g_agx_l1_cap_closures: i32 = 0;
 var g_agx_ra_words: i32 = 0;
 var g_agx_ra_cells_cap: i32 = 0;
 var g_agx_ra_use: *u64 = null;
@@ -24802,6 +25283,49 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
             }
             coff = coff + 5 + g_closures[coff + 4] * 2 + g_closures[coff + 3] * 2;
             cscan = cscan + 1;
+        }
+        if ccnt == 0 && g_lw_active == 1 {
+            let caps_name: *i32 = alloc(MAX_CLO_CAPS);
+            let caps_type: *i32 = alloc(MAX_CLO_CAPS);
+            let bound: *i32 = alloc(512);
+            let nbound: *i32 = alloc(1);
+            var pi: i32 = 0;
+            while pi < g_nodes[node].nargs {
+                bound[pi] = g_nodes[g_args[g_nodes[node].args_start + pi]].name0;
+                pi = pi + 1;
+            }
+            nbound[0] = g_nodes[node].nargs;
+            let ncaps2: i32 = clo_collect_caps(
+                g_nodes[node].child0, caps_name, caps_type, 0, bound, nbound);
+            if g_clo_off + 5 + g_gen_nsub * 2 + ncaps2 * 2
+                > MAX_CLOSURES_POOL {
+                arena_overflow("closure pool", MAX_CLOSURES_POOL);
+            }
+            crec = g_clo_off;
+            g_closures[g_clo_off] = clo_id; g_clo_off = g_clo_off + 1;
+            g_closures[g_clo_off] = node; g_clo_off = g_clo_off + 1;
+            g_closures[g_clo_off] = g_nodes[node].nargs; g_clo_off = g_clo_off + 1;
+            g_closures[g_clo_off] = ncaps2; g_clo_off = g_clo_off + 1;
+            g_closures[g_clo_off] = g_gen_nsub; g_clo_off = g_clo_off + 1;
+            var gi2: i32 = 0;
+            while gi2 < g_gen_nsub {
+                g_closures[g_clo_off] = g_gen_sub_names[gi2];
+                g_clo_off = g_clo_off + 1;
+                g_closures[g_clo_off] = g_gen_sub_types[gi2];
+                g_clo_off = g_clo_off + 1;
+                gi2 = gi2 + 1;
+            }
+            var ci2: i32 = 0;
+            while ci2 < ncaps2 {
+                g_closures[g_clo_off] = caps_name[ci2];
+                g_clo_off = g_clo_off + 1;
+                g_closures[g_clo_off] = caps_type[ci2];
+                g_clo_off = g_clo_off + 1;
+                ci2 = ci2 + 1;
+            }
+            g_nclosures = g_nclosures + 1;
+            ccnt = 1;
+            free(caps_name); free(caps_type); free(bound); free(nbound);
         }
         if ccnt == 0 { ev_internal("closure literal without descriptor"); }
         if ccnt > 1 { ev_refuse("closure-generic-multi", ln, cl); }
@@ -26913,6 +27437,866 @@ fn lower_stmt(stmt: i32) -> i32 {
 
 // ===== AGX IR0 SHADOW: TYPED WORKER EIR -> PRIVATE CFG =====
 
+fn agx_l1_reset() {
+    g_agx_l1_nfields = 0;
+    g_agx_l1_active = 0;
+}
+
+fn agx_l1_inline_return(stmt: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_neir || depth > 32 { return 0 - 1; }
+    if g_eir[stmt].kind == EIR_RET { return g_eir[stmt].a; }
+    if g_eir[stmt].kind == EIR_BLOCK && g_eir[stmt].nargs == 1 {
+        return agx_l1_inline_return(
+            g_evargs[g_eir[stmt].args_start], depth + 1);
+    }
+    return 0 - 1;
+}
+
+fn agx_l1_inline_stack_has(stack: *i32, nstack: i32, efidx: i32) -> i32 {
+    var i: i32 = 0;
+    while i < nstack {
+        if stack[i] == efidx { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn agx_l1_inline_add_closure(slot: i32, literal: i32) -> i32 {
+    if g_agx_l1_nclosures >= g_agx_l1_cap_closures {
+        var cap: i32 = g_agx_l1_cap_closures;
+        if cap == 0 { cap = 16; }
+        while cap <= g_agx_l1_nclosures { cap = cap * 2; }
+        g_agx_l1_closure_slots = realloc(g_agx_l1_closure_slots, cap);
+        g_agx_l1_closure_literals = realloc(g_agx_l1_closure_literals, cap);
+        g_agx_l1_cap_closures = cap;
+    }
+    g_agx_l1_closure_slots[g_agx_l1_nclosures] = slot;
+    g_agx_l1_closure_literals[g_agx_l1_nclosures] = literal;
+    g_agx_l1_nclosures = g_agx_l1_nclosures + 1;
+    return 1;
+}
+
+fn agx_l1_inline_closure_literal(slot: i32) -> i32 {
+    var i: i32 = 0;
+    while i < g_agx_l1_nclosures {
+        if g_agx_l1_closure_slots[i] == slot {
+            return g_agx_l1_closure_literals[i];
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_l1_inline_closure(call: i32, efidx: i32, stack: *i32,
+                         nstack: i32, depth: i32) -> i32 {
+    if g_eir[call].nargs != g_evfuncs[efidx].nparams
+        || g_eir[call].nargs <= 0
+        || agx_l1_inline_stack_has(stack, nstack, efidx) == 1 {
+        return 0 - 1;
+    }
+    let env: i32 = g_evargs[g_eir[call].args_start];
+    if env < 0 || env >= g_neir || g_eir[env].kind != EIR_LOCAL {
+        return 0 - 1;
+    }
+    let literal: i32 = agx_l1_inline_closure_literal(g_eir[env].a);
+    if literal < 0 || literal >= g_neir
+        || g_eir[literal].kind != EIR_STRUCT_LIT {
+        return 0 - 1;
+    }
+    let body: i32 = g_evfuncs[efidx].body;
+    if body < 0 || body >= g_neir || g_eir[body].kind != EIR_BLOCK
+        || g_eir[body].nargs <= 0 {
+        return 0 - 1;
+    }
+    let nslots: i32 = g_evfuncs[efidx].nslots;
+    let values: *i32 = alloc(nslots + 1);
+    var i: i32 = 0;
+    while i < nslots { values[i] = 0 - 1; i = i + 1; }
+    i = 0;
+    while i < g_eir[call].nargs {
+        values[i] = g_evargs[g_eir[call].args_start + i];
+        i = i + 1;
+    }
+    i = 0;
+    while i + 1 < g_eir[body].nargs {
+        let bind: i32 = g_evargs[g_eir[body].args_start + i];
+        if bind < 0 || bind >= g_neir || g_eir[bind].kind != EIR_LET {
+            free(values); return 0 - 1;
+        }
+        let member: i32 = g_eir[bind].b;
+        if member < 0 || member >= g_neir || g_eir[member].kind != EIR_MEMBER {
+            free(values); return 0 - 1;
+        }
+        let obj: i32 = g_eir[member].a;
+        if obj < 0 || obj >= g_neir || g_eir[obj].kind != EIR_LOCAL
+            || g_eir[obj].a != 0 || g_eir[bind].a < 0
+            || g_eir[bind].a >= nslots {
+            free(values); return 0 - 1;
+        }
+        var captured: i32 = 0 - 1;
+        var ci: i32 = 0;
+        while ci < g_eir[literal].nargs {
+            if g_evargs[g_eir[literal].args_start + ci + 1]
+                == g_eir[member].ival as i32 {
+                captured = g_evargs[g_eir[literal].args_start + ci];
+            }
+            ci = ci + 3;
+        }
+        if captured < 0 {
+            free(values); return 0 - 1;
+        }
+        values[g_eir[bind].a] = captured;
+        i = i + 1;
+    }
+    let tail: i32 = g_evargs[
+        g_eir[body].args_start + g_eir[body].nargs - 1];
+    let ret: i32 = agx_l1_inline_return(tail, 0);
+    if ret < 0 {
+        free(values); return 0 - 1;
+    }
+    let subst_start: i32 = g_nevargs;
+    i = 0;
+    while i < nslots { evargs_push(values[i]); i = i + 1; }
+    free(values);
+    stack[nstack] = efidx;
+    let result: i32 = agx_l1_clone_expr(
+        ret, subst_start, nslots, stack, nstack + 1, depth + 1);
+    if result >= 0 { g_agx_l1_inlined = 1; }
+    return result;
+}
+
+fn agx_l1_inline_call(call: i32, stack: *i32,
+                      nstack: i32, depth: i32) -> i32 {
+    if call < 0 || call >= g_neir || depth > 32 { return 0 - 1; }
+    let efidx: i32 = g_eir[call].a;
+    if efidx < 0 || efidx >= g_nevfuncs || g_evfuncs[efidx].state != 1
+        || g_evfuncs[efidx].nparams != g_eir[call].nargs
+        || agx_l1_inline_stack_has(stack, nstack, efidx) == 1 {
+        return 0 - 1;
+    }
+    if g_evfuncs[efidx].fci < 0 {
+        return agx_l1_inline_closure(call, efidx, stack, nstack, depth);
+    }
+    let ret: i32 = agx_l1_inline_return(g_evfuncs[efidx].body, 0);
+    if ret < 0 { return 0 - 1; }
+    stack[nstack] = efidx;
+    let result: i32 = agx_l1_clone_expr(
+        ret, g_eir[call].args_start, g_eir[call].nargs,
+        stack, nstack + 1, depth + 1);
+    if result >= 0 { g_agx_l1_inlined = 1; }
+    return result;
+}
+
+fn agx_l1_clone_node(e: i32) -> i32 {
+    let copy: i32 = eir_new(g_eir[e].kind, g_eir[e].line, g_eir[e].col);
+    g_eir[copy].op = g_eir[e].op;
+    g_eir[copy].alg = g_eir[e].alg;
+    g_eir[copy].a = g_eir[e].a;
+    g_eir[copy].b = g_eir[e].b;
+    g_eir[copy].c = g_eir[e].c;
+    g_eir[copy].nargs = g_eir[e].nargs;
+    g_eir[copy].args_start = g_eir[e].args_start;
+    g_eir[copy].type_off = g_eir[e].type_off;
+    g_eir[copy].aux_type = g_eir[e].aux_type;
+    g_eir[copy].ival = g_eir[e].ival;
+    return copy;
+}
+
+fn agx_l1_clone_expr(e: i32, subst_start: i32, nsubst: i32,
+                     stack: *i32, nstack: i32, depth: i32) -> i32 {
+    if e < 0 || e >= g_neir || depth > 256 { return 0 - 1; }
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_LOCAL {
+        let slot: i32 = g_eir[e].a;
+        if slot < 0 || slot >= nsubst { return 0 - 1; }
+        return g_evargs[subst_start + slot];
+    }
+    if kind == EIR_CONST || kind == EIR_NULLP || kind == EIR_STR {
+        return e;
+    }
+    if kind == EIR_BIN || kind == EIR_SC {
+        let copy: i32 = agx_l1_clone_node(e);
+        g_eir[copy].a = agx_l1_clone_expr(
+            g_eir[e].a, subst_start, nsubst, stack, nstack, depth + 1);
+        g_eir[copy].b = agx_l1_clone_expr(
+            g_eir[e].b, subst_start, nsubst, stack, nstack, depth + 1);
+        if g_eir[copy].a < 0 || g_eir[copy].b < 0 { return 0 - 1; }
+        return copy;
+    }
+    if kind == EIR_UN || kind == EIR_CAST {
+        let copy: i32 = agx_l1_clone_node(e);
+        g_eir[copy].a = agx_l1_clone_expr(
+            g_eir[e].a, subst_start, nsubst, stack, nstack, depth + 1);
+        if g_eir[copy].a < 0 { return 0 - 1; }
+        return copy;
+    }
+    if kind == EIR_MEMBER {
+        let copy: i32 = agx_l1_clone_node(e);
+        g_eir[copy].a = agx_l1_clone_expr(
+            g_eir[e].a, subst_start, nsubst, stack, nstack, depth + 1);
+        if g_eir[copy].a < 0 { return 0 - 1; }
+        return copy;
+    }
+    if kind == EIR_CALL {
+        let nargs: i32 = g_eir[e].nargs;
+        if nargs < 0 || nargs > MAX_EV_CALL_ARGS { return 0 - 1; }
+        let args: *i32 = alloc(nargs + 1);
+        var i: i32 = 0;
+        while i < nargs {
+            args[i] = agx_l1_clone_expr(
+                g_evargs[g_eir[e].args_start + i], subst_start, nsubst,
+                stack, nstack, depth + 1);
+            if args[i] < 0 { free(args); return 0 - 1; }
+            i = i + 1;
+        }
+        let copy: i32 = agx_l1_clone_node(e);
+        let start: i32 = g_nevargs;
+        i = 0;
+        while i < nargs { evargs_push(args[i]); i = i + 1; }
+        free(args);
+        g_eir[copy].args_start = start;
+        return agx_l1_inline_call(copy, stack, nstack, depth + 1);
+    }
+    return 0 - 1;
+}
+
+fn agx_l1_inline_expr(e: i32, stack: *i32, depth: i32) -> i32 {
+    if e < 0 || e >= g_neir || depth > 256 { return 0 - 1; }
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_CALL {
+        var i: i32 = 0;
+        while i < g_eir[e].nargs {
+            let arg: i32 = agx_l1_inline_expr(
+                g_evargs[g_eir[e].args_start + i], stack, depth + 1);
+            if arg < 0 { return 0 - 1; }
+            g_evargs[g_eir[e].args_start + i] = arg;
+            i = i + 1;
+        }
+        return agx_l1_inline_call(e, stack, 0, depth + 1);
+    }
+    if kind == EIR_BIN || kind == EIR_SC {
+        let a: i32 = agx_l1_inline_expr(g_eir[e].a, stack, depth + 1);
+        let b: i32 = agx_l1_inline_expr(g_eir[e].b, stack, depth + 1);
+        if a < 0 || b < 0 { return 0 - 1; }
+        g_eir[e].a = a;
+        g_eir[e].b = b;
+        return e;
+    }
+    if kind == EIR_UN || kind == EIR_CAST || kind == EIR_MEMBER {
+        let a: i32 = agx_l1_inline_expr(g_eir[e].a, stack, depth + 1);
+        if a < 0 { return 0 - 1; }
+        g_eir[e].a = a;
+        return e;
+    }
+    if kind == EIR_INDEX {
+        let a: i32 = agx_l1_inline_expr(g_eir[e].a, stack, depth + 1);
+        let b: i32 = agx_l1_inline_expr(g_eir[e].b, stack, depth + 1);
+        if a < 0 || b < 0 { return 0 - 1; }
+        g_eir[e].a = a;
+        g_eir[e].b = b;
+        return e;
+    }
+    return e;
+}
+
+fn agx_l1_inline_stmt(stmt: i32, stack: *i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            if agx_l1_inline_stmt(
+                g_evargs[g_eir[stmt].args_start + i], stack, depth + 1) == 0 {
+                return 0;
+            }
+            i = i + 1;
+        }
+        return 1;
+    }
+    if kind == EIR_LET && type_is_closure(g_eir[stmt].type_off) == 1 {
+        let literal: i32 = g_eir[stmt].b;
+        if literal < 0 || literal >= g_neir
+            || g_eir[literal].kind != EIR_STRUCT_LIT { return 0; }
+        agx_l1_inline_add_closure(g_eir[stmt].a, literal);
+        let zero: i32 = eir_new(EIR_CONST, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[zero].ival = 0;
+        g_eir[zero].type_off = str_intern("i32");
+        g_eir[stmt].b = zero;
+        g_eir[stmt].type_off = str_intern("i32");
+        g_agx_l1_inlined = 1;
+        return 1;
+    }
+    if kind == EIR_LET || kind == EIR_SET {
+        let value: i32 = agx_l1_inline_expr(g_eir[stmt].b, stack, depth + 1);
+        if value < 0 { return 0; }
+        g_eir[stmt].b = value;
+        return 1;
+    }
+    if kind == EIR_MEMBER_ST || kind == EIR_INDEX_ST {
+        let a: i32 = agx_l1_inline_expr(g_eir[stmt].a, stack, depth + 1);
+        let b: i32 = agx_l1_inline_expr(g_eir[stmt].b, stack, depth + 1);
+        let c: i32 = agx_l1_inline_expr(g_eir[stmt].c, stack, depth + 1);
+        if a < 0 || b < 0 || c < 0 { return 0; }
+        g_eir[stmt].a = a;
+        g_eir[stmt].b = b;
+        g_eir[stmt].c = c;
+        return 1;
+    }
+    if kind == EIR_EXPR {
+        let value: i32 = agx_l1_inline_expr(g_eir[stmt].a, stack, depth + 1);
+        if value < 0 { return 0; }
+        g_eir[stmt].a = value;
+        return 1;
+    }
+    if kind == EIR_IF {
+        let cond: i32 = agx_l1_inline_expr(g_eir[stmt].a, stack, depth + 1);
+        if cond < 0 || agx_l1_inline_stmt(g_eir[stmt].b, stack, depth + 1) == 0 {
+            return 0;
+        }
+        g_eir[stmt].a = cond;
+        if g_eir[stmt].c >= 0 {
+            return agx_l1_inline_stmt(g_eir[stmt].c, stack, depth + 1);
+        }
+        return 1;
+    }
+    if kind == EIR_FOR {
+        let lo: i32 = agx_l1_inline_expr(g_eir[stmt].b, stack, depth + 1);
+        let hi: i32 = agx_l1_inline_expr(g_eir[stmt].c, stack, depth + 1);
+        if lo < 0 || hi < 0 || g_eir[stmt].nargs != 1 { return 0; }
+        g_eir[stmt].b = lo;
+        g_eir[stmt].c = hi;
+        return agx_l1_inline_stmt(
+            g_evargs[g_eir[stmt].args_start], stack, depth + 1);
+    }
+    if kind == EIR_MATCH {
+        let scrut: i32 = agx_l1_inline_expr(g_eir[stmt].a, stack, depth + 1);
+        if scrut < 0 { return 0; }
+        g_eir[stmt].a = scrut;
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            if agx_l1_inline_stmt(
+                g_evargs[g_eir[stmt].args_start + i * 6 + 3],
+                stack, depth + 1) == 0 { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    return 1;
+}
+
+fn agx_l1_inline_root(root: i32) -> i32 {
+    g_agx_l1_inlined = 0;
+    g_agx_l1_nclosures = 0;
+    let stack: *i32 = alloc(33);
+    let ok: i32 = agx_l1_inline_stmt(root, stack, 0);
+    free(stack);
+    return ok;
+}
+
+fn agx_l1_grow_fields(need: i32) {
+    if need <= g_agx_l1_cap_fields { return; }
+    var cap: i32 = g_agx_l1_cap_fields;
+    if cap == 0 { cap = 32; }
+    while cap < need { cap = cap * 2; }
+    g_agx_l1_owner = realloc(g_agx_l1_owner, cap);
+    g_agx_l1_offset = realloc(g_agx_l1_offset, cap);
+    g_agx_l1_type = realloc(g_agx_l1_type, cap);
+    g_agx_l1_slot = realloc(g_agx_l1_slot, cap);
+    g_agx_l1_cap_fields = cap;
+}
+
+fn agx_l1_add_field(owner: i32, offset: i32,
+                    type_off: i32, slot: i32) -> i32 {
+    agx_l1_grow_fields(g_agx_l1_nfields + 1);
+    let i: i32 = g_agx_l1_nfields;
+    g_agx_l1_owner[i] = owner;
+    g_agx_l1_offset[i] = offset;
+    g_agx_l1_type[i] = type_off;
+    g_agx_l1_slot[i] = slot;
+    g_agx_l1_nfields = i + 1;
+    return 1;
+}
+
+fn agx_l1_field_slot(owner: i32, offset: i32) -> i32 {
+    var i: i32 = 0;
+    while i < g_agx_l1_nfields {
+        if g_agx_l1_owner[i] == owner && g_agx_l1_offset[i] == offset {
+            return g_agx_l1_slot[i];
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_l1_owner_flattened(owner: i32) -> i32 {
+    var i: i32 = 0;
+    while i < g_agx_l1_nfields {
+        if g_agx_l1_owner[i] == owner { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn agx_l1_const_index(e: i32, value: *u64) -> i32 {
+    if e < 0 || e >= g_neir { return 0; }
+    if g_eir[e].kind == EIR_CONST {
+        value[0] = g_eir[e].ival;
+        return 1;
+    }
+    if g_eir[e].kind == EIR_CAST {
+        return agx_l1_const_index(g_eir[e].a, value);
+    }
+    return 0;
+}
+
+fn agx_l1_expr(e: i32, depth: i32) -> i32 {
+    if e < 0 || e >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_CONST || kind == EIR_NULLP || kind == EIR_LOCAL {
+        if kind == EIR_LOCAL && lw_is_agg(g_eir[e].type_off) == 1 { return 0; }
+        return 1;
+    }
+    if kind == EIR_BIN || kind == EIR_SC {
+        if agx_l1_expr(g_eir[e].a, depth + 1) == 0 { return 0; }
+        return agx_l1_expr(g_eir[e].b, depth + 1);
+    }
+    if kind == EIR_UN || kind == EIR_CAST {
+        return agx_l1_expr(g_eir[e].a, depth + 1);
+    }
+    if kind == EIR_INDEX {
+        let base0: i32 = g_eir[e].a;
+        if base0 >= 0 && base0 < g_neir && g_eir[base0].kind == EIR_LOCAL
+            && type_is_array(g_eir[base0].type_off) == 1 {
+            let idx: *u64 = alloc(1);
+            let exact: i32 = agx_l1_const_index(g_eir[e].b, idx);
+            if exact == 0 || idx[0] > 2147483647 {
+                free(idx); return 0;
+            }
+            let field_slot: i32 = agx_l1_field_slot(
+                g_eir[base0].a, (idx[0] as i32) * g_eir[e].c);
+            free(idx);
+            if field_slot < 0 { return 0; }
+            g_eir[e].kind = EIR_LOCAL;
+            g_eir[e].a = field_slot;
+            g_eir[e].b = 0 - 1;
+            g_eir[e].c = 0 - 1;
+            return 1;
+        }
+        if agx_l1_expr(g_eir[e].a, depth + 1) == 0 { return 0; }
+        return agx_l1_expr(g_eir[e].b, depth + 1);
+    }
+    if kind == EIR_MEMBER {
+        let obj: i32 = g_eir[e].a;
+        if obj < 0 || obj >= g_neir || g_eir[obj].kind != EIR_LOCAL { return 0; }
+        let field_slot: i32 = agx_l1_field_slot(
+            g_eir[obj].a, g_eir[e].ival as i32);
+        if field_slot < 0 { return 0; }
+        g_eir[e].kind = EIR_LOCAL;
+        g_eir[e].a = field_slot;
+        g_eir[e].b = 0 - 1;
+        g_eir[e].c = 0 - 1;
+        return 1;
+    }
+    // Calls, aggregate literals, enum values, and qmark require later LANG1
+    // sections. Keep the hardware normal form closed.
+    return 0;
+}
+
+fn agx_l1_struct_let(stmt: i32) -> i32 {
+    let owner: i32 = g_eir[stmt].a;
+    let type_off: i32 = resolve_type_sub(g_eir[stmt].type_off);
+    let si: i32 = resolve_struct_type(type_off);
+    let literal: i32 = g_eir[stmt].b;
+    if si < 0 || literal < 0 || literal >= g_neir
+        || g_eir[literal].kind != EIR_STRUCT_LIT { return 0; }
+    let nf: i32 = g_structs[si].nfields;
+    if nf <= 0 || g_eir[literal].nargs != nf * 3 { return 0; }
+    var fi: i32 = 0;
+    while fi < nf {
+        let ft: i32 = resolve_type_sub(struct_field_type(si, fi));
+        if agx_lang_scalar_type_ok(ft) == 0 { return 0; }
+        let off: i32 = lw_struct_field_off(
+            si, fi, g_eir[stmt].line, g_eir[stmt].col);
+        var slot: i32 = owner;
+        if fi > 0 { slot = g_lw_nslots; g_lw_nslots = g_lw_nslots + 1; }
+        agx_l1_add_field(owner, off, ft, slot);
+        fi = fi + 1;
+    }
+    let start: i32 = g_nevargs;
+    fi = 0;
+    while fi < nf {
+        let off2: i32 = lw_struct_field_off(
+            si, fi, g_eir[stmt].line, g_eir[stmt].col);
+        var value: i32 = 0 - 1;
+        var ai: i32 = 0;
+        while ai < g_eir[literal].nargs {
+            if g_evargs[g_eir[literal].args_start + ai + 1] == off2 {
+                value = g_evargs[g_eir[literal].args_start + ai];
+            }
+            ai = ai + 3;
+        }
+        if value < 0 || agx_l1_expr(value, 0) == 0 { return 0; }
+        let le: i32 = eir_new(EIR_LET, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[le].a = agx_l1_field_slot(owner, off2);
+        g_eir[le].b = value;
+        g_eir[le].type_off = resolve_type_sub(struct_field_type(si, fi));
+        evargs_push(le);
+        fi = fi + 1;
+    }
+    g_eir[stmt].kind = EIR_BLOCK;
+    g_eir[stmt].args_start = start;
+    g_eir[stmt].nargs = nf;
+    g_eir[stmt].type_off = NULL_STR;
+    g_agx_l1_active = 1;
+    return 1;
+}
+
+fn agx_l1_enum_let(stmt: i32) -> i32 {
+    let owner: i32 = g_eir[stmt].a;
+    let type_off: i32 = resolve_type_sub(g_eir[stmt].type_off);
+    let ei: i32 = resolve_enum_type(type_off);
+    let literal: i32 = g_eir[stmt].b;
+    if ei < 0 || literal < 0 || literal >= g_neir
+        || g_eir[literal].kind != EIR_ENUM_LIT { return 0; }
+    agx_l1_add_field(owner, 0, str_intern("i32"), owner);
+    var vi: i32 = 0;
+    while vi < g_enums[ei].nvariants {
+        var fi: i32 = 0;
+        while fi < g_enum_variants[g_enums[ei].variants_start + vi].nfields {
+            let ft: i32 = resolve_type_sub(enum_variant_field_type(ei, vi, fi));
+            if agx_lang_scalar_type_ok(ft) == 0 { return 0; }
+            let off: i32 = enum_payload_offset(ei, vi, fi);
+            let prior: i32 = agx_l1_field_slot(owner, off);
+            if prior < 0 {
+                let slot: i32 = g_lw_nslots;
+                g_lw_nslots = g_lw_nslots + 1;
+                agx_l1_add_field(owner, off, ft, slot);
+            } else {
+                var mi: i32 = 0;
+                var same: i32 = 0;
+                while mi < g_agx_l1_nfields {
+                    if g_agx_l1_owner[mi] == owner
+                        && g_agx_l1_offset[mi] == off
+                        && g_agx_l1_type[mi] == ft { same = 1; }
+                    mi = mi + 1;
+                }
+                if same == 0 { return 0; }
+            }
+            fi = fi + 1;
+        }
+        vi = vi + 1;
+    }
+
+    let start: i32 = g_nevargs;
+    let tag_value: i32 = eir_new(EIR_CONST, g_eir[stmt].line, g_eir[stmt].col);
+    g_eir[tag_value].ival = g_eir[literal].op as u64;
+    g_eir[tag_value].type_off = str_intern("i32");
+    let tag_let: i32 = eir_new(EIR_LET, g_eir[stmt].line, g_eir[stmt].col);
+    g_eir[tag_let].a = owner;
+    g_eir[tag_let].b = tag_value;
+    g_eir[tag_let].type_off = str_intern("i32");
+    evargs_push(tag_let);
+
+    var nlets: i32 = 1;
+    var field_i: i32 = 0;
+    while field_i < g_agx_l1_nfields {
+        if g_agx_l1_owner[field_i] == owner
+            && g_agx_l1_offset[field_i] != 0 {
+            let off2: i32 = g_agx_l1_offset[field_i];
+            let ft2: i32 = g_agx_l1_type[field_i];
+            var value: i32 = 0 - 1;
+            var ai: i32 = 0;
+            while ai < g_eir[literal].nargs {
+                if g_evargs[g_eir[literal].args_start + ai + 1] == off2 {
+                    if g_evargs[g_eir[literal].args_start + ai + 2] != 0 {
+                        return 0;
+                    }
+                    value = g_evargs[g_eir[literal].args_start + ai];
+                }
+                ai = ai + 4;
+            }
+            if value < 0 {
+                value = eir_new(EIR_CONST, g_eir[stmt].line, g_eir[stmt].col);
+                g_eir[value].ival = 0;
+                g_eir[value].type_off = ft2;
+                let cfi: i32 = find_field_by_alias(ft2);
+                if cfi >= 0 { g_eir[value].alg = cfi; }
+            }
+            if agx_l1_expr(value, 0) == 0 { return 0; }
+            let payload_let: i32 = eir_new(
+                EIR_LET, g_eir[stmt].line, g_eir[stmt].col);
+            g_eir[payload_let].a = g_agx_l1_slot[field_i];
+            g_eir[payload_let].b = value;
+            g_eir[payload_let].type_off = ft2;
+            evargs_push(payload_let);
+            nlets = nlets + 1;
+        }
+        field_i = field_i + 1;
+    }
+    g_eir[stmt].kind = EIR_BLOCK;
+    g_eir[stmt].args_start = start;
+    g_eir[stmt].nargs = nlets;
+    g_eir[stmt].type_off = NULL_STR;
+    g_agx_l1_active = 1;
+    return 1;
+}
+
+fn agx_l1_array_count(type_off: i32) -> i32 {
+    let text: *u8 = &g_strings[type_off];
+    var i: i32 = 0;
+    while text[i] != 59 && text[i] != 0 { i = i + 1; }
+    if text[i] == 0 { return 0; }
+    i = i + 1;
+    while text[i] == 32 { i = i + 1; }
+    var count: i32 = 0;
+    while text[i] >= 48 && text[i] <= 57 {
+        count = count * 10 + (text[i] as i32 - 48);
+        i = i + 1;
+    }
+    return count;
+}
+
+fn agx_l1_array_let(stmt: i32) -> i32 {
+    let owner: i32 = g_eir[stmt].a;
+    let type_off: i32 = resolve_type_sub(g_eir[stmt].type_off);
+    if type_is_array(type_off) == 0 { return 0; }
+    let elem: i32 = resolve_type_sub(type_array_elem(type_off));
+    let count: i32 = agx_l1_array_count(type_off);
+    if count <= 0 || count > 16 || agx_lang_scalar_type_ok(elem) == 0 {
+        return 0;
+    }
+    let width: i32 = lw_type_size(elem, g_eir[stmt].line, g_eir[stmt].col);
+    let start: i32 = g_nevargs;
+    var i: i32 = 0;
+    while i < count {
+        var slot: i32 = owner;
+        if i > 0 { slot = g_lw_nslots; g_lw_nslots = g_lw_nslots + 1; }
+        agx_l1_add_field(owner, i * width, elem, slot);
+        let zero: i32 = eir_new(EIR_CONST, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[zero].ival = 0;
+        g_eir[zero].type_off = elem;
+        let fi: i32 = find_field_by_alias(elem);
+        if fi >= 0 { g_eir[zero].alg = fi; }
+        let bind: i32 = eir_new(EIR_LET, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[bind].a = slot;
+        g_eir[bind].b = zero;
+        g_eir[bind].type_off = elem;
+        evargs_push(bind);
+        i = i + 1;
+    }
+    g_eir[stmt].kind = EIR_BLOCK;
+    g_eir[stmt].args_start = start;
+    g_eir[stmt].nargs = count;
+    g_eir[stmt].type_off = NULL_STR;
+    g_agx_l1_active = 1;
+    return 1;
+}
+
+fn agx_l1_empty_block(line: i32, col: i32) -> i32 {
+    let block: i32 = eir_new(EIR_BLOCK, line, col);
+    g_eir[block].args_start = g_nevargs;
+    g_eir[block].nargs = 0;
+    return block;
+}
+
+fn agx_l1_match_arm_body(stmt: i32, arm: i32, owner: i32) -> i32 {
+    let table: i32 = g_eir[stmt].args_start;
+    let body: i32 = g_evargs[table + arm * 6 + 3];
+    let nbind: i32 = g_evargs[table + arm * 6 + 4];
+    let bstart: i32 = g_evargs[table + arm * 6 + 5];
+    if agx_l1_stmt(body, 0) == 0 { return 0 - 1; }
+    if nbind == 0 { return body; }
+    let start: i32 = g_nevargs;
+    var bi: i32 = 0;
+    while bi < nbind {
+        let bslot: i32 = g_evargs[bstart + bi * 5];
+        let off: i32 = g_evargs[bstart + bi * 5 + 1];
+        let bagg: i32 = g_evargs[bstart + bi * 5 + 3];
+        let btype: i32 = resolve_type_sub(g_evargs[bstart + bi * 5 + 4]);
+        let payload_slot: i32 = agx_l1_field_slot(owner, off);
+        if bagg != 0 || payload_slot < 0
+            || agx_lang_scalar_type_ok(btype) == 0 { return 0 - 1; }
+        let payload: i32 = eir_new(EIR_LOCAL, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[payload].a = payload_slot;
+        g_eir[payload].type_off = btype;
+        let bind: i32 = eir_new(EIR_LET, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[bind].a = bslot;
+        g_eir[bind].b = payload;
+        g_eir[bind].type_off = btype;
+        evargs_push(bind);
+        bi = bi + 1;
+    }
+    evargs_push(body);
+    let block: i32 = eir_new(EIR_BLOCK, g_eir[stmt].line, g_eir[stmt].col);
+    g_eir[block].args_start = start;
+    g_eir[block].nargs = nbind + 1;
+    return block;
+}
+
+fn agx_l1_match(stmt: i32) -> i32 {
+    let scrut: i32 = g_eir[stmt].a;
+    var owner: i32 = 0 - 1;
+    var key_expr: i32 = scrut;
+    var key_type: i32 = resolve_type_sub(g_eir[stmt].aux_type);
+    if g_eir[stmt].op == 1 {
+        if scrut < 0 || scrut >= g_neir || g_eir[scrut].kind != EIR_LOCAL {
+            return 0;
+        }
+        owner = g_eir[scrut].a;
+        let tag_slot: i32 = agx_l1_field_slot(owner, 0);
+        if tag_slot < 0 { return 0; }
+        key_expr = eir_new(EIR_LOCAL, g_eir[stmt].line, g_eir[stmt].col);
+        g_eir[key_expr].a = tag_slot;
+        g_eir[key_expr].type_off = str_intern("i32");
+        key_type = str_intern("i32");
+    } else if agx_l1_expr(scrut, 0) == 0 {
+        return 0;
+    }
+    let narms: i32 = g_eir[stmt].nargs;
+    let table: i32 = g_eir[stmt].args_start;
+    let bodies: *i32 = alloc(narms + 1);
+    var fallback: i32 = agx_l1_empty_block(g_eir[stmt].line, g_eir[stmt].col);
+    var ai: i32 = 0;
+    while ai < narms {
+        bodies[ai] = agx_l1_match_arm_body(stmt, ai, owner);
+        if bodies[ai] < 0 { free(bodies); return 0; }
+        if g_evargs[table + ai * 6] == ARM_KIND_WILDCARD {
+            fallback = bodies[ai];
+        }
+        ai = ai + 1;
+    }
+    var chain: i32 = fallback;
+    ai = narms;
+    while ai > 0 {
+        ai = ai - 1;
+        let akind: i32 = g_evargs[table + ai * 6];
+        if akind != ARM_KIND_WILDCARD {
+            let constant: i32 = eir_new(
+                EIR_CONST, g_eir[stmt].line, g_eir[stmt].col);
+            let lo: u64 = (g_evargs[table + ai * 6 + 1] as u64) & 4294967295;
+            let hi: u64 = (g_evargs[table + ai * 6 + 2] as u64) & 4294967295;
+            g_eir[constant].ival = (hi << 32) | lo;
+            g_eir[constant].type_off = key_type;
+            let cond: i32 = eir_new(EIR_BIN, g_eir[stmt].line, g_eir[stmt].col);
+            g_eir[cond].op = OP_EQ;
+            g_eir[cond].a = key_expr;
+            g_eir[cond].b = constant;
+            g_eir[cond].aux_type = key_type;
+            g_eir[cond].type_off = str_intern("i1");
+            let branch: i32 = eir_new(EIR_IF, g_eir[stmt].line, g_eir[stmt].col);
+            g_eir[branch].a = cond;
+            g_eir[branch].b = bodies[ai];
+            g_eir[branch].c = chain;
+            chain = branch;
+        }
+    }
+    free(bodies);
+    g_eir[stmt].kind = g_eir[chain].kind;
+    g_eir[stmt].op = g_eir[chain].op;
+    g_eir[stmt].alg = g_eir[chain].alg;
+    g_eir[stmt].a = g_eir[chain].a;
+    g_eir[stmt].b = g_eir[chain].b;
+    g_eir[stmt].c = g_eir[chain].c;
+    g_eir[stmt].nargs = g_eir[chain].nargs;
+    g_eir[stmt].args_start = g_eir[chain].args_start;
+    g_eir[stmt].type_off = g_eir[chain].type_off;
+    g_eir[stmt].aux_type = g_eir[chain].aux_type;
+    g_eir[stmt].ival = g_eir[chain].ival;
+    g_agx_l1_active = 1;
+    return 1;
+}
+
+fn agx_l1_stmt(stmt: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            if agx_l1_stmt(g_evargs[g_eir[stmt].args_start + i],
+                           depth + 1) == 0 { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    if kind == EIR_LET {
+        if lw_is_agg(g_eir[stmt].type_off) == 1 {
+            if resolve_struct_type(g_eir[stmt].type_off) >= 0 {
+                return agx_l1_struct_let(stmt);
+            }
+            return agx_l1_enum_let(stmt);
+        }
+        return agx_l1_expr(g_eir[stmt].b, 0);
+    }
+    if kind == EIR_SET {
+        if lw_is_agg(g_eir[stmt].type_off) == 1 { return 0; }
+        return agx_l1_expr(g_eir[stmt].b, 0);
+    }
+    if kind == EIR_LET_ARR { return agx_l1_array_let(stmt); }
+    if kind == EIR_MEMBER_ST {
+        let obj: i32 = g_eir[stmt].a;
+        if obj < 0 || obj >= g_neir || g_eir[obj].kind != EIR_LOCAL { return 0; }
+        let field_slot: i32 = agx_l1_field_slot(
+            g_eir[obj].a, g_eir[stmt].ival as i32);
+        if field_slot < 0 || agx_l1_expr(g_eir[stmt].c, 0) == 0 { return 0; }
+        g_eir[stmt].kind = EIR_SET;
+        g_eir[stmt].a = field_slot;
+        g_eir[stmt].b = g_eir[stmt].c;
+        g_eir[stmt].c = 0 - 1;
+        return 1;
+    }
+    if kind == EIR_INDEX_ST {
+        let base0: i32 = g_eir[stmt].a;
+        if base0 >= 0 && base0 < g_neir && g_eir[base0].kind == EIR_LOCAL
+            && type_is_array(g_eir[base0].type_off) == 1 {
+            let idx: *u64 = alloc(1);
+            let exact: i32 = agx_l1_const_index(g_eir[stmt].b, idx);
+            if exact == 0 || idx[0] > 2147483647 {
+                free(idx); return 0;
+            }
+            let field_slot: i32 = agx_l1_field_slot(
+                g_eir[base0].a, (idx[0] as i32) * g_eir[stmt].op);
+            free(idx);
+            if field_slot < 0 || agx_l1_expr(g_eir[stmt].c, 0) == 0 {
+                return 0;
+            }
+            g_eir[stmt].kind = EIR_SET;
+            g_eir[stmt].a = field_slot;
+            g_eir[stmt].b = g_eir[stmt].c;
+            g_eir[stmt].c = 0 - 1;
+            g_eir[stmt].type_off = resolve_type_sub(g_eir[stmt].type_off);
+            return 1;
+        }
+        if agx_l1_expr(g_eir[stmt].a, 0) == 0
+            || agx_l1_expr(g_eir[stmt].b, 0) == 0 { return 0; }
+        return agx_l1_expr(g_eir[stmt].c, 0);
+    }
+    if kind == EIR_EXPR { return agx_l1_expr(g_eir[stmt].a, 0); }
+    if kind == EIR_MATCH { return agx_l1_match(stmt); }
+    if kind == EIR_IF {
+        if agx_l1_expr(g_eir[stmt].a, 0) == 0
+            || agx_l1_stmt(g_eir[stmt].b, depth + 1) == 0 { return 0; }
+        if g_eir[stmt].c >= 0 {
+            return agx_l1_stmt(g_eir[stmt].c, depth + 1);
+        }
+        return 1;
+    }
+    if kind == EIR_FOR {
+        if agx_l1_expr(g_eir[stmt].b, 0) == 0
+            || agx_l1_expr(g_eir[stmt].c, 0) == 0
+            || g_eir[stmt].nargs != 1 { return 0; }
+        return agx_l1_stmt(g_evargs[g_eir[stmt].args_start], depth + 1);
+    }
+    if kind == EIR_BRK || kind == EIR_CONT { return 1; }
+    return 0;
+}
+
+fn agx_l1_normalize(root: i32) -> i32 {
+    agx_l1_reset();
+    if agx_l1_stmt(root, 0) == 0
+        || (g_agx_l1_active == 0 && g_agx_l1_inlined == 0) { return 0; }
+    return 1;
+}
+
 fn agx_ir0_fail() {
     g_agx_ir0_failed = 1;
 }
@@ -26932,6 +28316,10 @@ fn agx_ir0_ensure_arenas() {
         g_lw_slots = alloc(MAX_LW_SYMS);
         g_lw_reprs = alloc(MAX_LW_SYMS);
         g_lw_scope = alloc(MAX_LW_DEPTH);
+    }
+    if g_evfuncs == null {
+        g_evfuncs = alloc(MAX_EVFUNCS);
+        g_lw_pending = alloc(MAX_EVFUNCS);
     }
     if g_agx_cfg_blocks == null {
         g_agx_cfg_cap_blocks = 64;
@@ -27152,16 +28540,86 @@ fn agx_ir0_set_slot_type(slot: i32, type_off: i32) {
     g_agx_cfg_slot_types[slot] = type_off;
 }
 
-fn agx_ir0_collect_slot_types() {
-    var e: i32 = 0;
-    while e < g_neir {
-        let kind: i32 = g_eir[e].kind;
-        if kind == EIR_LOCAL || kind == EIR_LET || kind == EIR_LET_ARR
-            || kind == EIR_SET || kind == EIR_FOR {
-            agx_ir0_set_slot_type(g_eir[e].a, g_eir[e].type_off);
-        }
-        e = e + 1;
+fn agx_ir0_collect_expr_slots(e: i32, depth: i32) {
+    if e < 0 || e >= g_neir || depth > 256 || g_agx_ir0_failed == 1 { return; }
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_LOCAL {
+        if (lw_is_agg(g_eir[e].type_off) == 1
+            || type_is_array(g_eir[e].type_off) == 1)
+            && agx_l1_owner_flattened(g_eir[e].a) == 1 { return; }
+        agx_ir0_set_slot_type(g_eir[e].a, g_eir[e].type_off);
+        return;
     }
+    if kind == EIR_BIN || kind == EIR_SC || kind == EIR_INDEX {
+        agx_ir0_collect_expr_slots(g_eir[e].a, depth + 1);
+        agx_ir0_collect_expr_slots(g_eir[e].b, depth + 1);
+        return;
+    }
+    if kind == EIR_UN || kind == EIR_CAST || kind == EIR_MEMBER {
+        agx_ir0_collect_expr_slots(g_eir[e].a, depth + 1);
+    }
+}
+
+fn agx_ir0_collect_stmt_slots(stmt: i32, depth: i32) {
+    if stmt < 0 || stmt >= g_neir || depth > 256
+        || g_agx_ir0_failed == 1 { return; }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            agx_ir0_collect_stmt_slots(
+                g_evargs[g_eir[stmt].args_start + i], depth + 1);
+            i = i + 1;
+        }
+        return;
+    }
+    if kind == EIR_LET || kind == EIR_SET {
+        agx_ir0_set_slot_type(g_eir[stmt].a, g_eir[stmt].type_off);
+        agx_ir0_collect_expr_slots(g_eir[stmt].b, depth + 1);
+        return;
+    }
+    if kind == EIR_LET_ARR {
+        agx_ir0_set_slot_type(g_eir[stmt].a, g_eir[stmt].type_off);
+        return;
+    }
+    if kind == EIR_INDEX_ST || kind == EIR_MEMBER_ST {
+        agx_ir0_collect_expr_slots(g_eir[stmt].a, depth + 1);
+        agx_ir0_collect_expr_slots(g_eir[stmt].b, depth + 1);
+        agx_ir0_collect_expr_slots(g_eir[stmt].c, depth + 1);
+        return;
+    }
+    if kind == EIR_IF {
+        agx_ir0_collect_expr_slots(g_eir[stmt].a, depth + 1);
+        agx_ir0_collect_stmt_slots(g_eir[stmt].b, depth + 1);
+        if g_eir[stmt].c >= 0 {
+            agx_ir0_collect_stmt_slots(g_eir[stmt].c, depth + 1);
+        }
+        return;
+    }
+    if kind == EIR_WHILE {
+        agx_ir0_collect_expr_slots(g_eir[stmt].a, depth + 1);
+        agx_ir0_collect_stmt_slots(g_eir[stmt].b, depth + 1);
+        return;
+    }
+    if kind == EIR_FOR {
+        agx_ir0_set_slot_type(g_eir[stmt].a, g_eir[stmt].type_off);
+        agx_ir0_collect_expr_slots(g_eir[stmt].b, depth + 1);
+        agx_ir0_collect_expr_slots(g_eir[stmt].c, depth + 1);
+        if g_eir[stmt].nargs == 1 {
+            agx_ir0_collect_stmt_slots(
+                g_evargs[g_eir[stmt].args_start], depth + 1);
+        }
+        return;
+    }
+    if kind == EIR_EXPR || kind == EIR_RET {
+        if g_eir[stmt].a >= 0 {
+            agx_ir0_collect_expr_slots(g_eir[stmt].a, depth + 1);
+        }
+    }
+}
+
+fn agx_ir0_collect_slot_types(root: i32) {
+    agx_ir0_collect_stmt_slots(root, 0);
     var slot: i32 = 0;
     while slot < g_lw_nslots {
         if g_agx_cfg_slot_types[slot] == NULL_STR { agx_ir0_fail(); }
@@ -27926,7 +29384,7 @@ fn agx_cfg_validate(shape_kind: i32) -> i32 {
             }
             b = b + 1;
         }
-    } else if shape_kind == 5 {
+    } else if shape_kind == 5 || shape_kind == 6 {
         if reachable_blocks < 1 || counted_headers > 16 { return 0; }
         b = 0;
         while b < g_agx_cfg_nblocks {
@@ -30048,6 +31506,9 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     let saved_ret_type: i32 = g_lw_ret_type;
     let saved_last_repr: i32 = g_lw_last_repr;
     let saved_npending: i32 = g_lw_npending;
+    let saved_nevfuncs: i32 = g_nevfuncs;
+    let saved_nclosures: i32 = g_nclosures;
+    let saved_clo_off: i32 = g_clo_off;
     let saved_gen_nsub: i32 = g_gen_nsub;
 
     // Shadow lowering is intentionally non-reentrant. Its CLI fences keep the
@@ -30055,7 +31516,7 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     if saved_neir != 0 || saved_nevargs != 0 || saved_active != 0
         || saved_count != 0 || saved_floor != 0 || saved_depth != 0
         || saved_nslots != 0 || saved_narrs != 0 || saved_loop_depth != 0
-        || saved_npending != 0 { return 0; }
+        || saved_npending != 0 || saved_nevfuncs != 0 { return 0; }
 
     g_neir = 0;
     g_nevargs = 0;
@@ -30069,6 +31530,7 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     g_lw_ret_type = str_intern("void");
     g_lw_last_repr = REPR_UNKNOWN;
     g_lw_npending = 0;
+    g_nevfuncs = 0;
 
     lw_push_scope();
     var ci: i32 = 0;
@@ -30084,16 +31546,26 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     let outer_iter_slot: i32 = lw_add(loop_name, iter_type);
     let root: i32 = lower_stmt(body);
     lw_pop_scope();
+    lw_drain();
 
+    var normalized: i32 = 1;
+    if shape.kind == 6 {
+        normalized = agx_l1_inline_root(root);
+        if normalized == 1 { normalized = agx_l1_normalize(root); }
+    }
     agx_cfg_reset(g_lw_nslots);
-    agx_ir0_collect_slot_types();
-    let entry: i32 = agx_cfg_new_block(g_eir[root].line, g_eir[root].col);
-    let last: i32 = agx_cfg_lower_stmt(root, entry);
-    if last >= 0 { agx_cfg_set_return(last, 0 - 1); }
-    if g_agx_cfg_nregions != 0 { agx_ir0_fail(); }
-    agx_cfg_finalize();
+    if normalized == 1 {
+        agx_ir0_collect_slot_types(root);
+        let entry: i32 = agx_cfg_new_block(g_eir[root].line, g_eir[root].col);
+        let last: i32 = agx_cfg_lower_stmt(root, entry);
+        if last >= 0 { agx_cfg_set_return(last, 0 - 1); }
+        if g_agx_cfg_nregions != 0 { agx_ir0_fail(); }
+        agx_cfg_finalize();
+    } else {
+        agx_ir0_fail();
+    }
     var ok: i32 = agx_cfg_validate(shape.kind);
-    if ok == 1 && shape.kind == 5 {
+    if ok == 1 && (shape.kind == 5 || shape.kind == 6) {
         let stats: *AgxRaStats = alloc(1);
         g_agx_ra_reserve_r2 = 1;
         ok = agx_ra_prepare(outer_iter_slot, stats);
@@ -30119,6 +31591,9 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     g_lw_ret_type = saved_ret_type;
     g_lw_last_repr = saved_last_repr;
     g_lw_npending = saved_npending;
+    g_nevfuncs = saved_nevfuncs;
+    g_nclosures = saved_nclosures;
+    g_clo_off = saved_clo_off;
     g_gen_nsub = saved_gen_nsub;
     return ok;
 }
@@ -35117,6 +36592,7 @@ fn main(argc: i32, argv: **u8) {
     g_pf0.env_names = alloc(MAX_PROOF0_ENV);
     g_pf0.env_decls = alloc(MAX_PROOF0_ENV);
     g_pf0.env_kinds = alloc(MAX_PROOF0_ENV);
+    g_pf0.env_types = alloc(MAX_PROOF0_ENV);
     g_pf0_affine = alloc(1);
     g_pf0_affine.caps = alloc(MAX_PFOR_CAP * 4);
     g_pf0_affine.writes = alloc(MAX_PFOR_WRITES * 16);

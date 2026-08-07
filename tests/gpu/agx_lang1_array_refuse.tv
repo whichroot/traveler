@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Dynamic private-array indexing stays outside the measured LANG1 slice.
+
+field AgxLang1ArrayRefuseF = Field<2013265921>;
+
+fn dynamic_private_index(input: *AgxLang1ArrayRefuseF,
+                         output: *AgxLang1ArrayRefuseF) {
+    for j in 0..768 {
+        var local: [i32; 4] = 0;
+        local[j] = 1;
+        var chosen: AgxLang1ArrayRefuseF = input[j];
+        if local[j] == 1 { chosen = input[j]; }
+        output[j] = chosen;
+    }
+}

@@ -42,7 +42,7 @@ def check_corpus(rows: list[dict]) -> None:
             f"cpu={cpu}, agx={agx}"
         )
     incomplete = [row for row in rows if row["complete"] == 0]
-    if len(incomplete) != 1 or incomplete[0]["reason"] != "unsupported-node":
+    if incomplete:
         raise ValueError("unexpected whole-corpus summary incompleteness")
     if (cpu, agx) != (262, 179):
         raise ValueError(
@@ -53,7 +53,7 @@ def check_corpus(rows: list[dict]) -> None:
         for key in ("calls", "unknown_calls", "effectful_calls",
                     "read_calls", "addresses")
     )
-    if call_totals != (148, 33, 68, 1, 14):
+    if call_totals != (148, 32, 68, 1, 14):
         raise ValueError(f"LANG1 call-effect totals changed: {call_totals}")
     widths = tuple(
         sum(row["iterator_width"] == width for row in rows)
@@ -204,7 +204,7 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "715fc45db68650690805e02b449d39270ea198be888bf5677cbe8bd9d5cb8d52"
+        "7ce77a3d1d8686a63015826a64a55ff86698103bf8c30858b4d4547f39bb5924"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")
@@ -341,6 +341,29 @@ def check_static_calls(rows: list[dict]) -> None:
     print("LANG1 static-call PASS: direct, generic, trait, and operator targets resolve")
 
 
+def check_lang1_hardware(rows: list[dict]) -> None:
+    if len(rows) != 5:
+        raise ValueError(f"expected 5 LANG1 hardware summaries, saw {len(rows)}")
+    require(rows[0], complete=1, cpu_candidate=0, member_reads=3,
+            private_member_reads=3, member_writes=1,
+            private_member_writes=1, lang1_complete=1,
+            lang1_effects=1, lang1_candidate=1)
+    require(rows[1], complete=1, cpu_candidate=0, member_reads=1,
+            private_member_reads=0, lang1_complete=1,
+            lang1_effects=0, lang1_candidate=0)
+    require(rows[2], complete=0, reason="match-bindings", matches=1,
+            lang1_complete=1, lang1_effects=1, lang1_candidate=1)
+    require(rows[3], complete=0, reason="match-bindings", matches=1,
+            bindings=4, lang1_complete=1, lang1_effects=1,
+            lang1_candidate=1)
+    require(rows[4], complete=1, calls=1, inlineable_calls=1,
+            lang1_complete=1, lang1_effects=1, lang1_candidate=1)
+    print(
+        "LANG1 hardware shadow PASS: private aggregates, match, and "
+        "static inlining candidates are distinguished"
+    )
+
+
 def check_adversarial(rows: list[dict]) -> None:
     if len(rows) != 12:
         raise ValueError(f"expected 12 adversarial summaries, saw {len(rows)}")
@@ -409,6 +432,9 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--static-calls":
         check_static_calls(read_rows(sys.argv[2]))
         return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--lang1-hardware":
+        check_lang1_hardware(read_rows(sys.argv[2]))
+        return 0
     if len(sys.argv) == 3 and sys.argv[1] == "--dyn-capture":
         check_dyn_capture(read_rows(sys.argv[2]))
         return 0
@@ -417,7 +443,8 @@ def main() -> int:
             "usage: proof0_probe.py REPORT.jsonl | "
             "--adversarial REPORT.jsonl | --affine REPORT.jsonl | "
             "--closures REPORT.jsonl | --static-calls REPORT.jsonl | "
-            "--dyn-capture REPORT.jsonl | --corpus REPORT.jsonl"
+            "--lang1-hardware REPORT.jsonl | --dyn-capture REPORT.jsonl | "
+            "--corpus REPORT.jsonl"
         )
     rows = read_rows(sys.argv[1])
     if len(rows) != 17:

@@ -57,7 +57,7 @@ HAVE_AMD=0; HAVE_NV=0
 echo "$TARGETS" | grep -qiE '^\s*amdgcn'  && HAVE_AMD=1
 echo "$TARGETS" | grep -qiE '^\s*nvptx64' && HAVE_NV=1
 
-STAGE1="$REPO_DIR/src/bootstrap/out/stage1"
+STAGE1="${TVC_SELF:-$REPO_DIR/src/bootstrap/out/stage1}"
 if [ ! -x "$STAGE1" ]; then
     LLC="$LLC" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || true
 fi
@@ -128,6 +128,48 @@ AGX_LANG0_REFUSE="$TMP/agx_lang0_refuse.agx.hex"
 AGX_LANG0_DEVICE_REFUSE="$TMP/agx_lang0_device_refuse.agx.hex"
 AGX_LANG0_SHADOW_REFUSE="$TMP/agx_lang0_shadow_refuse.agx.hex"
 AGX_LANG0_SHADOW_LL="$TMP/agx_lang0_shadow_refuse.ll"
+AGX_LANG1_STRUCT_DEV="$TMP/agx_lang1_struct.agx.hex"
+AGX_LANG1_STRUCT_LL="$TMP/agx_lang1_struct.ll"
+AGX_LANG1_STRUCT_OBJ="$TMP/agx_lang1_struct.o"
+AGX_LANG1_STRUCT_EXE="$TMP/agx-lang1-struct"
+AGX_LANG1_STRUCT_EVAL_LL="$TMP/agx_lang1_struct_eval.ll"
+AGX_LANG1_STRUCT_EVAL_OBJ="$TMP/agx_lang1_struct_eval.o"
+AGX_LANG1_STRUCT_EVAL_EXE="$TMP/agx-lang1-struct-eval"
+AGX_LANG1_MATCH_DEV="$TMP/agx_lang1_match.agx.hex"
+AGX_LANG1_MATCH_LL="$TMP/agx_lang1_match.ll"
+AGX_LANG1_MATCH_OBJ="$TMP/agx_lang1_match.o"
+AGX_LANG1_MATCH_EXE="$TMP/agx-lang1-match"
+AGX_LANG1_MATCH_EVAL_LL="$TMP/agx_lang1_match_eval.ll"
+AGX_LANG1_MATCH_EVAL_OBJ="$TMP/agx_lang1_match_eval.o"
+AGX_LANG1_MATCH_EVAL_EXE="$TMP/agx-lang1-match-eval"
+AGX_LANG1_ARRAY_DEV="$TMP/agx_lang1_array.agx.hex"
+AGX_LANG1_ARRAY_LL="$TMP/agx_lang1_array.ll"
+AGX_LANG1_ARRAY_OBJ="$TMP/agx_lang1_array.o"
+AGX_LANG1_ARRAY_EXE="$TMP/agx-lang1-array"
+AGX_LANG1_ARRAY_EVAL_LL="$TMP/agx_lang1_array_eval.ll"
+AGX_LANG1_ARRAY_EVAL_OBJ="$TMP/agx_lang1_array_eval.o"
+AGX_LANG1_ARRAY_EVAL_EXE="$TMP/agx-lang1-array-eval"
+AGX_LANG1_CALL_DEV="$TMP/agx_lang1_call.agx.hex"
+AGX_LANG1_CALL_LL="$TMP/agx_lang1_call.ll"
+AGX_LANG1_CALL_OBJ="$TMP/agx_lang1_call.o"
+AGX_LANG1_CALL_EXE="$TMP/agx-lang1-call"
+AGX_LANG1_CALL_EVAL_LL="$TMP/agx_lang1_call_eval.ll"
+AGX_LANG1_CALL_EVAL_OBJ="$TMP/agx_lang1_call_eval.o"
+AGX_LANG1_CALL_EVAL_EXE="$TMP/agx-lang1-call-eval"
+AGX_LANG1_OPERATOR_DEV="$TMP/agx_lang1_operator.agx.hex"
+AGX_LANG1_OPERATOR_LL="$TMP/agx_lang1_operator.ll"
+AGX_LANG1_OPERATOR_OBJ="$TMP/agx_lang1_operator.o"
+AGX_LANG1_OPERATOR_EXE="$TMP/agx-lang1-operator"
+AGX_LANG1_OPERATOR_EVAL_LL="$TMP/agx_lang1_operator_eval.ll"
+AGX_LANG1_OPERATOR_EVAL_OBJ="$TMP/agx_lang1_operator_eval.o"
+AGX_LANG1_OPERATOR_EVAL_EXE="$TMP/agx-lang1-operator-eval"
+AGX_LANG1_CLOSURE_DEV="$TMP/agx_lang1_closure.agx.hex"
+AGX_LANG1_CLOSURE_LL="$TMP/agx_lang1_closure.ll"
+AGX_LANG1_CLOSURE_OBJ="$TMP/agx_lang1_closure.o"
+AGX_LANG1_CLOSURE_EXE="$TMP/agx-lang1-closure"
+AGX_LANG1_CLOSURE_EVAL_LL="$TMP/agx_lang1_closure_eval.ll"
+AGX_LANG1_CLOSURE_EVAL_OBJ="$TMP/agx_lang1_closure_eval.o"
+AGX_LANG1_CLOSURE_EVAL_EXE="$TMP/agx-lang1-closure-eval"
 
 if ! "$STAGE1" --emit-gpu-agx "$EXHIBIT" -o "$AGX_DEV" 2>/dev/null; then
     echo "  FAIL: --emit-gpu-agx did not produce the Mersenne artifact"; fail=1
@@ -551,6 +593,446 @@ else
             fi
         fi
     fi
+
+    # LANG1-H1 normalizes a private flat struct to scalar EIR slots before CFG
+    # and RA. The ordinary CPU proof remains conservative; --agx-dispatch owns
+    # the recursive CPU fallback for this newly admitted AGX-only shape.
+    LANG1_STRUCT_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_struct.tv" \
+            -o "$AGX_LANG1_STRUCT_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-artifact "$AGX_LANG1_STRUCT_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang1_struct.tv" \
+            -o "$TMP/agx_lang1_struct.ra.hex" \
+            2>"$TMP/agx_lang1_struct.ra.report" \
+       || ! cmp -s "$AGX_LANG1_STRUCT_DEV" "$TMP/agx_lang1_struct.ra.hex" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=6 iterations=2 copies=4 repairs=0 slot-regs=6 live-regs=5 vm-regs=0 pairs=0 loads=2 outcome=1' \
+            "$TMP/agx_lang1_struct.ra.report"; then
+        echo "  FAIL: AGX LANG1 struct normalization/artifact changed"; fail=1
+        LANG1_STRUCT_READY=0
+    fi
+    if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_struct_eval.tv" \
+            >"$TMP/agx_lang1_struct.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_struct_eval.tv" \
+            -o "$AGX_LANG1_STRUCT_EVAL_LL" 2>/dev/null \
+       || grep -q 'call void @__parallel_for(' "$AGX_LANG1_STRUCT_EVAL_LL" \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_STRUCT_EVAL_LL" \
+            -o "$AGX_LANG1_STRUCT_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG1_STRUCT_EVAL_OBJ" \
+            -o "$AGX_LANG1_STRUCT_EVAL_EXE" 2>/dev/null \
+       || ! "$AGX_LANG1_STRUCT_EVAL_EXE" \
+            >"$TMP/agx_lang1_struct.serial.bin" \
+       || ! cmp -s "$TMP/agx_lang1_struct.eval.bin" \
+            "$TMP/agx_lang1_struct.serial.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-output "$TMP/agx_lang1_struct.eval.bin"; then
+        echo "  FAIL: AGX LANG1 eval/serial struct oracle changed"; fail=1
+        LANG1_STRUCT_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang1_struct_dispatch.tv" \
+            -o "$AGX_LANG1_STRUCT_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                   "$AGX_LANG1_STRUCT_LL" || true)" -ne 1 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                   "$AGX_LANG1_STRUCT_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_STRUCT_LL" \
+            -o "$AGX_LANG1_STRUCT_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX LANG1 dispatch/CPU-fallback artifact changed"; fail=1
+        LANG1_STRUCT_READY=0
+    fi
+    if [ "$LANG1_STRUCT_READY" = "1" ]; then
+        echo "  ok   AGX LANG1 flat struct scalarization and recursive fallback are pinned"
+    fi
+    LANG1_STRUCT_HOST_READY=0
+    if [ "$LANG1_STRUCT_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG1_STRUCT_OBJ" -framework IOKit \
+                -o "$AGX_LANG1_STRUCT_EXE" 2>/dev/null \
+           || ! env TRAVELER_THREADS=1 "$AGX_LANG1_STRUCT_EXE" \
+                >"$TMP/agx_lang1_struct.t1.bin" \
+           || ! env TRAVELER_THREADS=4 "$AGX_LANG1_STRUCT_EXE" \
+                >"$TMP/agx_lang1_struct.t4.bin" \
+           || ! env TRAVELER_THREADS=32 "$AGX_LANG1_STRUCT_EXE" \
+                >"$TMP/agx_lang1_struct.t32.bin" \
+           || ! cmp -s "$TMP/agx_lang1_struct.eval.bin" \
+                "$TMP/agx_lang1_struct.t1.bin" \
+           || ! cmp -s "$TMP/agx_lang1_struct.eval.bin" \
+                "$TMP/agx_lang1_struct.t4.bin" \
+           || ! cmp -s "$TMP/agx_lang1_struct.eval.bin" \
+                "$TMP/agx_lang1_struct.t32.bin"; then
+            echo "  FAIL: AGX LANG1 recursive CPU fallback differs at T=1/4/32"
+            fail=1; LANG1_STRUCT_READY=0
+        else
+            LANG1_STRUCT_HOST_READY=1
+            echo "  ok   AGX LANG1 eval, serial, and recursive CPU fallback agree at T=1/4/32"
+        fi
+    fi
+    LANG1_MATCH_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_match.tv" \
+            -o "$AGX_LANG1_MATCH_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-match-artifact "$AGX_LANG1_MATCH_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang1_match.tv" \
+            -o "$TMP/agx_lang1_match.ra.hex" \
+            2>"$TMP/agx_lang1_match.ra.report" \
+       || ! cmp -s "$AGX_LANG1_MATCH_DEV" "$TMP/agx_lang1_match.ra.hex" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=6 iterations=3 copies=4 repairs=0 slot-regs=4 live-regs=4 vm-regs=0 pairs=0 loads=2 outcome=1' \
+            "$TMP/agx_lang1_match.ra.report" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=11 iterations=3 copies=8 repairs=0 slot-regs=8 live-regs=6 vm-regs=0 pairs=0 loads=2 outcome=1' \
+            "$TMP/agx_lang1_match.ra.report"; then
+        echo "  FAIL: AGX LANG1 integer/enum match normalization changed"; fail=1
+        LANG1_MATCH_READY=0
+    fi
+    if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_match_eval.tv" \
+            >"$TMP/agx_lang1_match.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_match_eval.tv" \
+            -o "$AGX_LANG1_MATCH_EVAL_LL" 2>/dev/null \
+       || grep -q 'call void @__parallel_for(' "$AGX_LANG1_MATCH_EVAL_LL" \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_MATCH_EVAL_LL" \
+            -o "$AGX_LANG1_MATCH_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG1_MATCH_EVAL_OBJ" \
+            -o "$AGX_LANG1_MATCH_EVAL_EXE" 2>/dev/null \
+       || ! "$AGX_LANG1_MATCH_EVAL_EXE" \
+            >"$TMP/agx_lang1_match.serial.bin" \
+       || ! cmp -s "$TMP/agx_lang1_match.eval.bin" \
+            "$TMP/agx_lang1_match.serial.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-match-output "$TMP/agx_lang1_match.eval.bin"; then
+        echo "  FAIL: AGX LANG1 match eval/serial oracle changed"; fail=1
+        LANG1_MATCH_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang1_match_dispatch.tv" \
+            -o "$AGX_LANG1_MATCH_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                   "$AGX_LANG1_MATCH_LL" || true)" -ne 2 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                   "$AGX_LANG1_MATCH_LL" || true)" -ne 2 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_MATCH_LL" \
+            -o "$AGX_LANG1_MATCH_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX LANG1 match dispatch/CPU fallback changed"; fail=1
+        LANG1_MATCH_READY=0
+    fi
+    if [ "$LANG1_MATCH_READY" = "1" ]; then
+        echo "  ok   AGX LANG1 integer/enum match artifacts and fallbacks are pinned"
+    fi
+    LANG1_MATCH_HOST_READY=0
+    if [ "$LANG1_MATCH_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG1_MATCH_OBJ" -framework IOKit \
+                -o "$AGX_LANG1_MATCH_EXE" 2>/dev/null \
+           || ! env TRAVELER_THREADS=1 "$AGX_LANG1_MATCH_EXE" \
+                >"$TMP/agx_lang1_match.t1.bin" \
+           || ! env TRAVELER_THREADS=4 "$AGX_LANG1_MATCH_EXE" \
+                >"$TMP/agx_lang1_match.t4.bin" \
+           || ! env TRAVELER_THREADS=32 "$AGX_LANG1_MATCH_EXE" \
+                >"$TMP/agx_lang1_match.t32.bin" \
+           || ! cmp -s "$TMP/agx_lang1_match.eval.bin" \
+                "$TMP/agx_lang1_match.t1.bin" \
+           || ! cmp -s "$TMP/agx_lang1_match.eval.bin" \
+                "$TMP/agx_lang1_match.t4.bin" \
+           || ! cmp -s "$TMP/agx_lang1_match.eval.bin" \
+                "$TMP/agx_lang1_match.t32.bin"; then
+            echo "  FAIL: AGX LANG1 match fallback differs at T=1/4/32"
+            fail=1; LANG1_MATCH_READY=0
+        else
+            LANG1_MATCH_HOST_READY=1
+            echo "  ok   AGX LANG1 match eval, serial, and CPU fallback agree at T=1/4/32"
+        fi
+    fi
+    LANG1_ARRAY_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_array.tv" \
+            -o "$AGX_LANG1_ARRAY_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-array-artifact "$AGX_LANG1_ARRAY_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang1_array.tv" \
+            -o "$TMP/agx_lang1_array.ra.hex" \
+            2>"$TMP/agx_lang1_array.ra.report" \
+       || ! cmp -s "$AGX_LANG1_ARRAY_DEV" "$TMP/agx_lang1_array.ra.hex" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=3 iterations=2 copies=2 repairs=0 slot-regs=8 live-regs=3 vm-regs=0 pairs=0 loads=2 outcome=1' \
+            "$TMP/agx_lang1_array.ra.report" \
+       || ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_array_refuse.tv" \
+            -o "$TMP/agx_lang1_array_refuse.hex" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$TMP/agx_lang1_array_refuse.hex" \
+       || ! grep -q '^skip __pfor_gpu_worker_0 reason=unsupported-agx0-worker$' \
+            "$TMP/agx_lang1_array_refuse.hex"; then
+        echo "  FAIL: AGX LANG1 fixed-array artifact/refusal changed"; fail=1
+        LANG1_ARRAY_READY=0
+    fi
+    if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_array_eval.tv" \
+            >"$TMP/agx_lang1_array.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_array_eval.tv" \
+            -o "$AGX_LANG1_ARRAY_EVAL_LL" 2>/dev/null \
+       || grep -q 'call void @__parallel_for(' "$AGX_LANG1_ARRAY_EVAL_LL" \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_ARRAY_EVAL_LL" \
+            -o "$AGX_LANG1_ARRAY_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG1_ARRAY_EVAL_OBJ" \
+            -o "$AGX_LANG1_ARRAY_EVAL_EXE" 2>/dev/null \
+       || ! "$AGX_LANG1_ARRAY_EVAL_EXE" \
+            >"$TMP/agx_lang1_array.serial.bin" \
+       || ! cmp -s "$TMP/agx_lang1_array.eval.bin" \
+            "$TMP/agx_lang1_array.serial.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-array-output "$TMP/agx_lang1_array.eval.bin"; then
+        echo "  FAIL: AGX LANG1 array eval/serial oracle changed"; fail=1
+        LANG1_ARRAY_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang1_array_dispatch.tv" \
+            -o "$AGX_LANG1_ARRAY_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                   "$AGX_LANG1_ARRAY_LL" || true)" -ne 1 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                   "$AGX_LANG1_ARRAY_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_ARRAY_LL" \
+            -o "$AGX_LANG1_ARRAY_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX LANG1 array dispatch/CPU fallback changed"; fail=1
+        LANG1_ARRAY_READY=0
+    fi
+    if [ "$LANG1_ARRAY_READY" = "1" ]; then
+        echo "  ok   AGX LANG1 fixed-array scalarization and dynamic-index refusal are pinned"
+    fi
+    LANG1_ARRAY_HOST_READY=0
+    if [ "$LANG1_ARRAY_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG1_ARRAY_OBJ" -framework IOKit \
+                -o "$AGX_LANG1_ARRAY_EXE" 2>/dev/null \
+           || ! env TRAVELER_THREADS=1 "$AGX_LANG1_ARRAY_EXE" \
+                >"$TMP/agx_lang1_array.t1.bin" \
+           || ! env TRAVELER_THREADS=4 "$AGX_LANG1_ARRAY_EXE" \
+                >"$TMP/agx_lang1_array.t4.bin" \
+           || ! env TRAVELER_THREADS=32 "$AGX_LANG1_ARRAY_EXE" \
+                >"$TMP/agx_lang1_array.t32.bin" \
+           || ! cmp -s "$TMP/agx_lang1_array.eval.bin" \
+                "$TMP/agx_lang1_array.t1.bin" \
+           || ! cmp -s "$TMP/agx_lang1_array.eval.bin" \
+                "$TMP/agx_lang1_array.t4.bin" \
+           || ! cmp -s "$TMP/agx_lang1_array.eval.bin" \
+                "$TMP/agx_lang1_array.t32.bin"; then
+            echo "  FAIL: AGX LANG1 array fallback differs at T=1/4/32"
+            fail=1; LANG1_ARRAY_READY=0
+        else
+            LANG1_ARRAY_HOST_READY=1
+            echo "  ok   AGX LANG1 array eval, serial, and CPU fallback agree at T=1/4/32"
+        fi
+    fi
+    LANG1_CALL_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_call.tv" \
+            -o "$AGX_LANG1_CALL_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-call-artifact "$AGX_LANG1_CALL_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang1_call.tv" \
+            -o "$TMP/agx_lang1_call.ra.hex" \
+            2>"$TMP/agx_lang1_call.ra.report" \
+       || ! cmp -s "$AGX_LANG1_CALL_DEV" "$TMP/agx_lang1_call.ra.hex" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=3 iterations=2 copies=2 repairs=0 slot-regs=2 live-regs=2 vm-regs=0 pairs=0 loads=4 outcome=1' \
+            "$TMP/agx_lang1_call.ra.report"; then
+        echo "  FAIL: AGX LANG1 direct/generic call artifact changed"; fail=1
+        LANG1_CALL_READY=0
+    fi
+    if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_call_eval.tv" \
+            >"$TMP/agx_lang1_call.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_call_eval.tv" \
+            -o "$AGX_LANG1_CALL_EVAL_LL" 2>/dev/null \
+       || [ "$(grep -c 'call void @__parallel_for(' \
+                    "$AGX_LANG1_CALL_EVAL_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_CALL_EVAL_LL" \
+            -o "$AGX_LANG1_CALL_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG1_CALL_EVAL_OBJ" \
+            -o "$AGX_LANG1_CALL_EVAL_EXE" 2>/dev/null \
+       || ! env TRAVELER_THREADS=4 "$AGX_LANG1_CALL_EVAL_EXE" \
+            >"$TMP/agx_lang1_call.cpu.bin" \
+       || ! cmp -s "$TMP/agx_lang1_call.eval.bin" \
+            "$TMP/agx_lang1_call.cpu.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-call-output "$TMP/agx_lang1_call.eval.bin"; then
+        echo "  FAIL: AGX LANG1 direct/generic call oracle changed"; fail=1
+        LANG1_CALL_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang1_call_dispatch.tv" \
+            -o "$AGX_LANG1_CALL_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                    "$AGX_LANG1_CALL_LL" || true)" -ne 1 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                    "$AGX_LANG1_CALL_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_CALL_LL" \
+            -o "$AGX_LANG1_CALL_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX LANG1 direct/generic dispatch artifact changed"; fail=1
+        LANG1_CALL_READY=0
+    fi
+    LANG1_CALL_HOST_READY=0
+    if [ "$LANG1_CALL_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG1_CALL_OBJ" -framework IOKit \
+                -o "$AGX_LANG1_CALL_EXE" 2>/dev/null \
+           || ! env TRAVELER_THREADS=1 "$AGX_LANG1_CALL_EXE" \
+                >"$TMP/agx_lang1_call.t1.bin" \
+           || ! env TRAVELER_THREADS=4 "$AGX_LANG1_CALL_EXE" \
+                >"$TMP/agx_lang1_call.t4.bin" \
+           || ! env TRAVELER_THREADS=32 "$AGX_LANG1_CALL_EXE" \
+                >"$TMP/agx_lang1_call.t32.bin" \
+           || ! cmp -s "$TMP/agx_lang1_call.eval.bin" \
+                "$TMP/agx_lang1_call.t1.bin" \
+           || ! cmp -s "$TMP/agx_lang1_call.eval.bin" \
+                "$TMP/agx_lang1_call.t4.bin" \
+           || ! cmp -s "$TMP/agx_lang1_call.eval.bin" \
+                "$TMP/agx_lang1_call.t32.bin"; then
+            echo "  FAIL: AGX LANG1 call CPU dispatch differs at T=1/4/32"
+            fail=1; LANG1_CALL_READY=0
+        else
+            LANG1_CALL_HOST_READY=1
+            echo "  ok   AGX LANG1 direct/generic calls agree at T=1/4/32"
+        fi
+    fi
+    LANG1_OPERATOR_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_operator.tv" \
+            -o "$AGX_LANG1_OPERATOR_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-operator-artifact "$AGX_LANG1_OPERATOR_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang1_operator.tv" \
+            -o "$TMP/agx_lang1_operator.ra.hex" \
+            2>"$TMP/agx_lang1_operator.ra.report" \
+       || ! cmp -s "$AGX_LANG1_OPERATOR_DEV" \
+            "$TMP/agx_lang1_operator.ra.hex" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=3 iterations=2 copies=2 repairs=0 slot-regs=6 live-regs=3 vm-regs=0 pairs=0 loads=2 outcome=1' \
+            "$TMP/agx_lang1_operator.ra.report"; then
+        echo "  FAIL: AGX LANG1 trait/operator artifact changed"; fail=1
+        LANG1_OPERATOR_READY=0
+    fi
+    if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_operator_eval.tv" \
+            >"$TMP/agx_lang1_operator.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_operator_eval.tv" \
+            -o "$AGX_LANG1_OPERATOR_EVAL_LL" 2>/dev/null \
+       || [ "$(grep -c 'call void @__parallel_for(' \
+                    "$AGX_LANG1_OPERATOR_EVAL_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_OPERATOR_EVAL_LL" \
+            -o "$AGX_LANG1_OPERATOR_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG1_OPERATOR_EVAL_OBJ" \
+            -o "$AGX_LANG1_OPERATOR_EVAL_EXE" 2>/dev/null \
+       || ! env TRAVELER_THREADS=4 "$AGX_LANG1_OPERATOR_EVAL_EXE" \
+            >"$TMP/agx_lang1_operator.cpu.bin" \
+       || ! cmp -s "$TMP/agx_lang1_operator.eval.bin" \
+            "$TMP/agx_lang1_operator.cpu.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-operator-output "$TMP/agx_lang1_operator.eval.bin"; then
+        echo "  FAIL: AGX LANG1 trait/operator oracle changed"; fail=1
+        LANG1_OPERATOR_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang1_operator_dispatch.tv" \
+            -o "$AGX_LANG1_OPERATOR_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                    "$AGX_LANG1_OPERATOR_LL" || true)" -ne 1 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                    "$AGX_LANG1_OPERATOR_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_OPERATOR_LL" \
+            -o "$AGX_LANG1_OPERATOR_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX LANG1 trait/operator dispatch artifact changed"; fail=1
+        LANG1_OPERATOR_READY=0
+    fi
+    LANG1_OPERATOR_HOST_READY=0
+    if [ "$LANG1_OPERATOR_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG1_OPERATOR_OBJ" -framework IOKit \
+                -o "$AGX_LANG1_OPERATOR_EXE" 2>/dev/null \
+           || ! env TRAVELER_THREADS=1 "$AGX_LANG1_OPERATOR_EXE" \
+                >"$TMP/agx_lang1_operator.t1.bin" \
+           || ! env TRAVELER_THREADS=4 "$AGX_LANG1_OPERATOR_EXE" \
+                >"$TMP/agx_lang1_operator.t4.bin" \
+           || ! env TRAVELER_THREADS=32 "$AGX_LANG1_OPERATOR_EXE" \
+                >"$TMP/agx_lang1_operator.t32.bin" \
+           || ! cmp -s "$TMP/agx_lang1_operator.eval.bin" \
+                "$TMP/agx_lang1_operator.t1.bin" \
+           || ! cmp -s "$TMP/agx_lang1_operator.eval.bin" \
+                "$TMP/agx_lang1_operator.t4.bin" \
+           || ! cmp -s "$TMP/agx_lang1_operator.eval.bin" \
+                "$TMP/agx_lang1_operator.t32.bin"; then
+            echo "  FAIL: AGX LANG1 operator CPU dispatch differs at T=1/4/32"
+            fail=1; LANG1_OPERATOR_READY=0
+        else
+            LANG1_OPERATOR_HOST_READY=1
+            echo "  ok   AGX LANG1 trait/operator calls agree at T=1/4/32"
+        fi
+    fi
+    LANG1_CLOSURE_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang1_closure.tv" \
+            -o "$AGX_LANG1_CLOSURE_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-closure-artifact "$AGX_LANG1_CLOSURE_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang1_closure.tv" \
+            -o "$TMP/agx_lang1_closure.ra.hex" \
+            2>"$TMP/agx_lang1_closure.ra.report" \
+       || ! cmp -s "$AGX_LANG1_CLOSURE_DEV" \
+            "$TMP/agx_lang1_closure.ra.hex" \
+       || ! grep -qF 'agx-ra0: shape=6 blocks=1 iterations=2 copies=0 repairs=0 slot-regs=5 live-regs=1 vm-regs=0 pairs=0 loads=2 outcome=1' \
+            "$TMP/agx_lang1_closure.ra.report" \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_closure_refuse.tv" \
+            --pfor-proof0-report >"$TMP/agx_lang1_closure_refuse.jsonl" \
+            2>/dev/null \
+       || ! grep -q '"cpu_reason":"unsupported-stmt"' \
+            "$TMP/agx_lang1_closure_refuse.jsonl" \
+       || ! grep -q '"lang1_candidate":0' \
+            "$TMP/agx_lang1_closure_refuse.jsonl"; then
+        echo "  FAIL: AGX LANG1 closure artifact/refusal changed"; fail=1
+        LANG1_CLOSURE_READY=0
+    fi
+    if ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang1_closure_eval.tv" \
+            >"$TMP/agx_lang1_closure.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang1_closure_eval.tv" \
+            -o "$AGX_LANG1_CLOSURE_EVAL_LL" 2>/dev/null \
+       || [ "$(grep -c 'call void @__parallel_for(' \
+                    "$AGX_LANG1_CLOSURE_EVAL_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_CLOSURE_EVAL_LL" \
+            -o "$AGX_LANG1_CLOSURE_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG1_CLOSURE_EVAL_OBJ" \
+            -o "$AGX_LANG1_CLOSURE_EVAL_EXE" 2>/dev/null \
+       || ! env TRAVELER_THREADS=4 "$AGX_LANG1_CLOSURE_EVAL_EXE" \
+            >"$TMP/agx_lang1_closure.cpu.bin" \
+       || ! cmp -s "$TMP/agx_lang1_closure.eval.bin" \
+            "$TMP/agx_lang1_closure.cpu.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+            --check-closure-output "$TMP/agx_lang1_closure.eval.bin"; then
+        echo "  FAIL: AGX LANG1 closure oracle changed"; fail=1
+        LANG1_CLOSURE_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang1_closure_dispatch.tv" \
+            -o "$AGX_LANG1_CLOSURE_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' \
+                    "$AGX_LANG1_CLOSURE_LL" || true)" -ne 1 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                    "$AGX_LANG1_CLOSURE_LL" || true)" -ne 1 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_CLOSURE_LL" \
+            -o "$AGX_LANG1_CLOSURE_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX LANG1 closure dispatch artifact changed"; fail=1
+        LANG1_CLOSURE_READY=0
+    fi
+    LANG1_CLOSURE_HOST_READY=0
+    if [ "$LANG1_CLOSURE_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG1_CLOSURE_OBJ" -framework IOKit \
+                -o "$AGX_LANG1_CLOSURE_EXE" 2>/dev/null \
+           || ! env TRAVELER_THREADS=1 "$AGX_LANG1_CLOSURE_EXE" \
+                >"$TMP/agx_lang1_closure.t1.bin" \
+           || ! env TRAVELER_THREADS=4 "$AGX_LANG1_CLOSURE_EXE" \
+                >"$TMP/agx_lang1_closure.t4.bin" \
+           || ! env TRAVELER_THREADS=32 "$AGX_LANG1_CLOSURE_EXE" \
+                >"$TMP/agx_lang1_closure.t32.bin" \
+           || ! cmp -s "$TMP/agx_lang1_closure.eval.bin" \
+                "$TMP/agx_lang1_closure.t1.bin" \
+           || ! cmp -s "$TMP/agx_lang1_closure.eval.bin" \
+                "$TMP/agx_lang1_closure.t4.bin" \
+           || ! cmp -s "$TMP/agx_lang1_closure.eval.bin" \
+                "$TMP/agx_lang1_closure.t32.bin"; then
+            echo "  FAIL: AGX LANG1 closure CPU dispatch differs at T=1/4/32"
+            fail=1; LANG1_CLOSURE_READY=0
+        else
+            LANG1_CLOSURE_HOST_READY=1
+            echo "  ok   AGX LANG1 closures agree at T=1/4/32"
+        fi
+    fi
     if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
         echo "  FAIL: AGX control specimens failed their portable structure gate"
         fail=1
@@ -655,6 +1137,192 @@ else
             fi
             if [ "$lang0fail" = "0" ]; then
                 echo "  ok   AGX LANG0 eval, CPU pfor, G16X, and independent oracle are byte-exact"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_STRUCT_READY" = "1" ]; then
+            lang1fail=0
+            if [ "$LANG1_STRUCT_HOST_READY" != "1" ]; then
+                echo "  FAIL: AGX LANG1 struct runtime differential is not host-ready"
+                lang1fail=1
+            elif ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG1 struct pre-canary failed"
+                lang1fail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG1_STRUCT_DEV" \
+                    "$AGX_LANG1_STRUCT_EXE" >"$TMP/agx_lang1_struct.gpu.bin"
+                lang1_gpu_status=$?
+                if [ "$lang1_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang1_struct.gpu.bin" | tr -d ' ')" -ne 3072 ] \
+                   || ! cmp -s "$TMP/agx_lang1_struct.eval.bin" \
+                        "$TMP/agx_lang1_struct.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                        --check-output "$TMP/agx_lang1_struct.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG1 struct eval/CPU/G16X differential or canary failed"
+                    lang1fail=1
+                fi
+            fi
+            if [ "$lang1fail" = "0" ]; then
+                echo "  ok   AGX LANG1 struct eval, recursive CPU fallback, G16X, and oracle are byte-exact"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_MATCH_READY" = "1" ]; then
+            lang1matchfail=0
+            if [ "$LANG1_MATCH_HOST_READY" != "1" ]; then
+                echo "  FAIL: AGX LANG1 match runtime differential is not host-ready"
+                lang1matchfail=1
+            elif ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG1 match pre-canary failed"
+                lang1matchfail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG1_MATCH_DEV" \
+                    "$AGX_LANG1_MATCH_EXE" >"$TMP/agx_lang1_match.gpu.bin"
+                lang1_match_gpu_status=$?
+                if [ "$lang1_match_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang1_match.gpu.bin" | tr -d ' ')" -ne 6144 ] \
+                   || ! cmp -s "$TMP/agx_lang1_match.eval.bin" \
+                        "$TMP/agx_lang1_match.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                        --check-match-output "$TMP/agx_lang1_match.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG1 match eval/CPU/G16X differential or canary failed"
+                    lang1matchfail=1
+                fi
+            fi
+            if [ "$lang1matchfail" = "0" ]; then
+                echo "  ok   AGX LANG1 integer/enum match is exact on eval, CPU, G16X, and oracle"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_ARRAY_READY" = "1" ]; then
+            lang1arrayfail=0
+            if [ "$LANG1_ARRAY_HOST_READY" != "1" ]; then
+                echo "  FAIL: AGX LANG1 array runtime differential is not host-ready"
+                lang1arrayfail=1
+            elif ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG1 array pre-canary failed"
+                lang1arrayfail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG1_ARRAY_DEV" \
+                    "$AGX_LANG1_ARRAY_EXE" >"$TMP/agx_lang1_array.gpu.bin"
+                lang1_array_gpu_status=$?
+                if [ "$lang1_array_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang1_array.gpu.bin" | tr -d ' ')" -ne 3072 ] \
+                   || ! cmp -s "$TMP/agx_lang1_array.eval.bin" \
+                        "$TMP/agx_lang1_array.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                        --check-array-output "$TMP/agx_lang1_array.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG1 array eval/CPU/G16X differential or canary failed"
+                    lang1arrayfail=1
+                fi
+            fi
+            if [ "$lang1arrayfail" = "0" ]; then
+                echo "  ok   AGX LANG1 fixed array is exact on eval, CPU, G16X, and oracle"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_CALL_READY" = "1" ]; then
+            lang1callfail=0
+            if [ "$LANG1_CALL_HOST_READY" != "1" ] \
+               || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG1 call runtime differential is not host-ready"
+                lang1callfail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG1_CALL_DEV" \
+                    "$AGX_LANG1_CALL_EXE" >"$TMP/agx_lang1_call.gpu.bin"
+                lang1_call_gpu_status=$?
+                if [ "$lang1_call_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang1_call.gpu.bin" | tr -d ' ')" -ne 3072 ] \
+                   || ! cmp -s "$TMP/agx_lang1_call.eval.bin" \
+                        "$TMP/agx_lang1_call.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                        --check-call-output "$TMP/agx_lang1_call.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG1 call eval/CPU/G16X differential failed"
+                    lang1callfail=1
+                fi
+            fi
+            if [ "$lang1callfail" = "0" ]; then
+                echo "  ok   AGX LANG1 direct/generic calls are exact on eval, CPU, and G16X"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_OPERATOR_READY" = "1" ]; then
+            lang1operatorfail=0
+            if [ "$LANG1_OPERATOR_HOST_READY" != "1" ] \
+               || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG1 operator runtime differential is not host-ready"
+                lang1operatorfail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG1_OPERATOR_DEV" \
+                    "$AGX_LANG1_OPERATOR_EXE" >"$TMP/agx_lang1_operator.gpu.bin"
+                lang1_operator_gpu_status=$?
+                if [ "$lang1_operator_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang1_operator.gpu.bin" | tr -d ' ')" -ne 3072 ] \
+                   || ! cmp -s "$TMP/agx_lang1_operator.eval.bin" \
+                        "$TMP/agx_lang1_operator.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                        --check-operator-output "$TMP/agx_lang1_operator.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG1 operator eval/CPU/G16X differential failed"
+                    lang1operatorfail=1
+                fi
+            fi
+            if [ "$lang1operatorfail" = "0" ]; then
+                echo "  ok   AGX LANG1 trait/operator calls are exact on eval, CPU, and G16X"
+            else
+                fail=1
+            fi
+        fi
+        if [ "$LANG1_CLOSURE_READY" = "1" ]; then
+            lang1closurefail=0
+            if [ "$LANG1_CLOSURE_HOST_READY" != "1" ] \
+               || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG1 closure runtime differential is not host-ready"
+                lang1closurefail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG1_CLOSURE_DEV" \
+                    "$AGX_LANG1_CLOSURE_EXE" >"$TMP/agx_lang1_closure.gpu.bin"
+                lang1_closure_gpu_status=$?
+                if [ "$lang1_closure_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang1_closure.gpu.bin" | tr -d ' ')" -ne 3072 ] \
+                   || ! cmp -s "$TMP/agx_lang1_closure.eval.bin" \
+                        "$TMP/agx_lang1_closure.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang1_probe.py" \
+                        --check-closure-output "$TMP/agx_lang1_closure.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG1 closure eval/CPU/G16X differential failed"
+                    lang1closurefail=1
+                fi
+            fi
+            if [ "$lang1closurefail" = "0" ]; then
+                echo "  ok   AGX LANG1 closures are exact on eval, CPU, and G16X"
             else
                 fail=1
             fi

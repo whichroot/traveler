@@ -169,6 +169,13 @@ if ! "$SELF" "$PROOF0_STATIC_CALLS" --pfor-proof0-report \
         "$TMP/proof0.static-calls.jsonl"; then
     echo "  FAIL proof0 focused static-call summary"; fail=1
 fi
+LANG1_HARDWARE="$SCRIPT_DIR/fixtures/lang1_hardware_effects.tv"
+if ! "$SELF" "$LANG1_HARDWARE" --pfor-proof0-report \
+        >"$TMP/lang1.hardware.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" --lang1-hardware \
+        "$TMP/lang1.hardware.jsonl"; then
+    echo "  FAIL LANG1 hardware effect shadow"; fail=1
+fi
 PROOF1_DYN_CAPTURE="$REPO_DIR/tests/pfor/pfor_self_dyn_cast_capture.tv"
 if ! "$SELF" "$PROOF1_DYN_CAPTURE" --pfor-proof0-report \
         >"$TMP/proof1.dyn-capture.jsonl" 2>/dev/null \
