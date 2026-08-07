@@ -207,6 +207,10 @@ else
     if [ "$AGX3_READY" = "1" ]; then
         echo "  ok   AGX-3 packed binary, runtime dispatch, and RNS artifacts compile"
     fi
+    if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
+        echo "  FAIL: AGX control specimens failed their portable structure gate"
+        fail=1
+    fi
 
     AGX_HARNESS="${AGX_HARNESS:-$REPO_DIR/../qwen35-cli-b1/agx_private}"
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] \
@@ -235,6 +239,11 @@ else
             fi
         else
             echo "  FAIL: could not link Traveler AGX runtime against IOKit"; fail=1
+        fi
+        if python3 "$SCRIPT_DIR/agx_control_probe.py" "$AGX_HARNESS"; then
+            echo "  ok   G16X compare/select/forward-control/backedge contracts exact"
+        else
+            echo "  FAIL: G16X control-flow execution mismatch"; fail=1
         fi
         if [ "$AGX3_READY" = "1" ]; then
             agx3fail=0
