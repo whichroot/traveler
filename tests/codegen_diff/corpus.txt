@@ -236,11 +236,15 @@ examples/zk_loop_test.tv
 examples/zk_range_test.tv
 src/lib/codec/piecewise_codec.tv
 src/lib/core/poly_core.tv
+src/lib/crypto/mds_check.tv
 src/lib/crypto/ntt.tv
+src/lib/crypto/poseidon2_wide.tv
 src/lib/ecc/reed_solomon.tv
 src/lib/ecc/rs_errdec.tv
+src/lib/features/relational.tv
 src/lib/float/embed.tv
 src/lib/float/ieee.tv
+src/lib/genus/genus_alias.tv
 examples/mobius_coeff.tv
 examples/syntax_var.tv
 examples/syntax_type.tv

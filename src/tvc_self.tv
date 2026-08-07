@@ -1512,19 +1512,21 @@ var g_zk_is_dyn: i32 = 0;            // 1 while building/emitting a dyn #[zk] fn
 
 let MAX_PFOR: i32 = 64;
 let MAX_PFOR_CAP: i32 = 16;
+let MAX_PFOR_WORKER_INTS: i32 = MAX_PFOR *
+    (7 + MAX_GEN_PARAMS * 2 + MAX_PFOR_CAP * 4);
 // Dispatch a proven loop only above this output count — a CPU performance knob
 // only; soundness is decided earlier. GPU must NOT inherit it (#45). @internal-design: tvc-self.
 let PFOR_THRESHOLD: i32 = 512;
 
 // Deferred worker info: one per auto-parallelized loop
 // Layout in g_pfor_workers[w]: id, body_node, loop_var_name, ncaps, ngen,
-//   iter_width (#54: 32|64 — the loop's adopted iterator width),
+//   iter_width (#54: 32|64), owner_fn (lexical report identity),
 //   then ngen entries of (sub_name, sub_type); the generic substitution
 //     context captured at record time (the deferred emission pass runs
 //     with g_gen_nsub == 0, so the worker body's generic type annotations
 //     would otherwise reach type_to_ir unresolved),
 //   then ncaps entries of (sym_name, sym_type, sym_reg, sym_is_alloca)
-// Each worker occupies 6 + ngen*2 + ncaps*4 ints in the flat array
+// Each worker occupies 7 + ngen*2 + ncaps*4 ints in the flat array
 var g_pfor_workers: *i32 = null;    // flat array of worker records
 var g_pfor_woff: i32 = 0;          // write offset into g_pfor_workers
 var g_npfor_workers: i32 = 0;      // count of workers
@@ -1607,9 +1609,8 @@ struct PForState {
 // The single live analysis instance (arenas attached in main())
 var g_pf: *PForState = null;
 
-// PROOF0 is observational: scope-aware recursive effects plus declaration-aware
-// affine hazards run only under --pfor-proof0-report. The legacy proof remains
-// the sole dispatch authority.
+// PROOF0 started as an observational recursive proof. PROOF1 completes its CPU
+// dispatch artifact (captures + operational gates) before the authority handoff.
 let MAX_PROOF0_ENV: i32 = 128;
 let P0_BIND_OUTER: i32 = 1;
 let P0_BIND_LOCAL: i32 = 2;
@@ -1684,6 +1685,10 @@ struct PForProof0 {
     iterator_width: i32,
     max_private_depth: i32,
     max_control_depth: i32,
+    cpu_ready: i32,
+    cpu_reason: i32,
+    elem_ok: i32,
+    needs_dyn_field: i32,
 }
 
 var g_pf0: *PForProof0 = null;
@@ -1730,6 +1735,7 @@ let PFR_PRIVATE_BASE: i32 = 26;    // body-local name as an array base (alias-
 // opaque to the name-keyed hazard tables — #46)
 let PFR_CALL_READ: i32 = 27;       // callee has an opaque indexed-read footprint
 let PFR_INDEX_WRAP: i32 = 28;      // affine constants exceed exact i32 modeling
+let PFR_ITER_WIDTH: i32 = 29;      // recursive proof cannot establish i32/i64
 
 // Shared closure-call classification. A `closure#N` has one lifted target, but
 // its body still has to pass the same effect boundary in every pfor proof.
@@ -1756,8 +1762,8 @@ var g_pfor_report_mode: i32 = 0;
 // Distinguishes an explicitly requested legacy report from the PROOF0 schema;
 // the two query formats do not compose.
 var g_pfor_legacy_requested: i32 = 0;
-// 1 = --pfor-proof0-report: replace the legacy report schema with the
-// observational PROOF0 recursive effect summary. It implies pfor report mode.
+// 1 = --pfor-proof0-report: expose the recursive proof artifact beside the
+// legacy verdict used for the authority-handoff audit. Implies report mode.
 var g_pfor_proof0_mode: i32 = 0;
 // 1 = --emit-gpu (Stage 0): ride the /dev/null codegen pass to populate the
 // registries, then re-emit each elementwise-class worker as a device kernel.
@@ -13908,25 +13914,49 @@ fn pfor_prim_int(type_off: i32) -> i32 {
     return 0;
 }
 
-// U1 per-capture admissibility: ptr-to-field/dyn, ptr-to-primitive-int, or
-// primitive-int scalar; struct/**T/wide/closure/fn-ptr/Str refuse (cap-elem).
-// Independence is proven ELSEWHERE (type-blind) — this only guards the ctx-slot
-// protocol. Types resolve through the active generic substitution.
+// Context slots are eight bytes. The closed admissible set includes U1 pointer/
+// integer captures, scalar field values, proven closure environment pointers,
+// and the synthetic dyn carrier. Aggregates/wide values refuse (cap-elem).
+fn pfor_capture_type_ok(name: i32, type_off: i32) -> i32 {
+    let rt: i32 = resolve_type_sub(type_off);
+    if str_eq(&g_strings[name], "__field") == 1
+        && str_eq(&g_strings[rt], "Field") == 1 { return 1; }
+    if type_is_ptr(rt) == 1 {
+        let pt: i32 = resolve_type_sub(type_pointee(rt));
+        if find_field_by_alias(pt) >= 0 || type_is_dyn(pt) == 1
+            || pfor_prim_int(pt) == 1 { return 1; }
+        return 0;
+    }
+    if pfor_prim_int(rt) == 1 || type_is_dyn(rt) == 1
+        || type_is_field_value(rt) == 1 || type_is_closure(rt) == 1 { return 1; }
+    let fi: i32 = find_field_by_alias(rt);
+    if fi >= 0 && g_fields[fi].field_kind != FIELD_KIND_EXTENSION { return 1; }
+    return 0;
+}
+
 fn pfor_caps_elem_ok(pf: *PForState) -> i32 {
     let caps: *i32 = pf.caps;
     var i: i32 = 0;
     while i < pf.ncaps {
-        let rt: i32 = resolve_type_sub(caps[i * 4 + 1]);
-        var ok: i32 = 0;
-        if type_is_ptr(rt) == 1 {
-            let pt: i32 = resolve_type_sub(type_pointee(rt));
-            if find_field_by_alias(pt) >= 0 { ok = 1; }
-            if type_is_dyn(pt) == 1 { ok = 1; }
-            if pfor_prim_int(pt) == 1 { ok = 1; }
-        } else {
-            ok = pfor_prim_int(rt);
-        }
-        if ok == 0 { return 0; }
+        if pfor_capture_type_ok(caps[i * 4], caps[i * 4 + 1]) == 0 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn pfor_worker_space(ncaps: i32) -> i32 {
+    if ncaps < 0 || ncaps > MAX_PFOR_CAP
+        || g_gen_nsub < 0 || g_gen_nsub > MAX_GEN_PARAMS { return 0; }
+    let need: i32 = 7 + g_gen_nsub * 2 + ncaps * 4;
+    if g_pfor_woff > MAX_PFOR_WORKER_INTS - need { return 0; }
+    return 1;
+}
+
+fn pfor_device_caps_ok(pf: *PForState) -> i32 {
+    var i: i32 = 0;
+    while i < pf.ncaps {
+        let rt: i32 = resolve_type_sub(pf.caps[i * 4 + 1]);
+        if type_is_closure(rt) == 1 { return 0; }
         i = i + 1;
     }
     return 1;
@@ -14716,6 +14746,7 @@ fn pfor_reason_str(code: i32) -> *u8 {
     if code == PFR_PRIVATE_BASE { return "private-base"; }
     if code == PFR_CALL_READ { return "call-read"; }
     if code == PFR_INDEX_WRAP { return "index-wrap"; }
+    if code == PFR_ITER_WIDTH { return "iterator-width"; }
     return "";
 }
 
@@ -14943,9 +14974,14 @@ fn pfor_lang0_walk_stmt(pf: *PForState, stmt: i32,
     return 0;
 }
 
+fn proof0_cpu_refuse(P: *PForProof0, reason: i32) {
+    if P.cpu_reason == PFR_NONE { P.cpu_reason = reason; }
+}
+
 fn proof0_mark(P: *PForProof0, reason: i32) {
     P.complete = 0;
     if P.reason == P0R_NONE { P.reason = reason; }
+    proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
 }
 
 fn proof0_reset(P: *PForProof0) {
@@ -14993,6 +15029,10 @@ fn proof0_reset(P: *PForProof0) {
     P.iterator_width = 0;
     P.max_private_depth = 0;
     P.max_control_depth = 0;
+    P.cpu_ready = 0;
+    P.cpu_reason = PFR_NONE;
+    P.elem_ok = 0;
+    P.needs_dyn_field = 0;
 }
 
 fn proof0_resolve(P: *PForProof0, name: i32) -> i32 {
@@ -15036,9 +15076,63 @@ fn proof0_bind(P: *PForProof0, name: i32, decl: i32, kind: i32) -> i32 {
     return 1;
 }
 
+// Materialize a free symbol exactly as the deferred worker context needs it.
+// Declaration-bound names are private to the work item and never captures.
+fn proof0_add_capture(P: *PForProof0, A: *PForState, name: i32) -> i32 {
+    if proof0_resolve(P, name) >= 0 { return 1; }
+    let si: i32 = sym_find(name);
+    // Match codegen's existing recovery behavior: unresolved names diagnose
+    // elsewhere and do not become synthetic context slots.
+    if si < 0 { return 1; }
+    let caps: *i32 = A.caps;
+    var i: i32 = 0;
+    while i < A.ncaps {
+        if caps[i * 4] == name { return 1; }
+        i = i + 1;
+    }
+    if A.ncaps >= MAX_PFOR_CAP {
+        proof0_cpu_refuse(P, PFR_CAPTURE_LIMIT);
+        return 0;
+    }
+    caps[A.ncaps * 4] = name;
+    caps[A.ncaps * 4 + 1] = g_syms[si].type_off;
+    caps[A.ncaps * 4 + 2] = g_syms[si].reg;
+    caps[A.ncaps * 4 + 3] = g_syms[si].is_alloca;
+    A.ncaps = A.ncaps + 1;
+    let rt: i32 = resolve_type_sub(g_syms[si].type_off);
+    if type_is_dyn(rt) == 1 { P.needs_dyn_field = 1; }
+    if type_is_ptr(rt) == 1 {
+        let pt: i32 = resolve_type_sub(type_pointee(rt));
+        if find_field_by_alias(pt) >= 0 || type_is_dyn(pt) == 1 {
+            A.has_field = 1;
+        }
+        if type_is_dyn(pt) == 1 { P.needs_dyn_field = 1; }
+    }
+    return 1;
+}
+
+fn proof0_affine_pfor_reason(reason: i32) -> i32 {
+    if reason == P0A_BASE { return PFR_WRITE_TARGET; }
+    if reason == P0A_PRIVATE_BASE { return PFR_PRIVATE_BASE; }
+    if reason == P0A_CONST_IDX { return PFR_CONST_IDX; }
+    if reason == P0A_NONINJECTIVE { return PFR_NONINJECTIVE; }
+    if reason == P0A_LET_HIDDEN { return PFR_LET_HIDDEN; }
+    if reason == P0A_NONAFFINE { return PFR_NONAFFINE; }
+    if reason == P0A_TERM_LIMIT { return PFR_TERM_LIMIT; }
+    if reason == P0A_WRITE_LIMIT { return PFR_WRITE_LIMIT; }
+    if reason == P0A_READS_OVERFLOW { return PFR_READS_OVERFLOW; }
+    if reason == P0A_WILD_READ { return PFR_WILD_READ; }
+    if reason == P0A_CALL_READ { return PFR_CALL_READ; }
+    if reason == P0A_INDEX_WRAP { return PFR_INDEX_WRAP; }
+    if reason == P0A_RAW_WAR { return PFR_RAW; }
+    if reason == P0A_WAW { return PFR_NONINJECTIVE; }
+    return PFR_UNSUPPORTED_EXPR;
+}
+
 fn proof0_affine_refuse(P: *PForProof0, reason: i32) {
     P.affine_safe = 0;
     if P.affine_reason == P0A_NONE { P.affine_reason = reason; }
+    proof0_cpu_refuse(P, proof0_affine_pfor_reason(reason));
 }
 
 // Serialize invariant terms with lexical declaration identity. Captures use
@@ -15235,10 +15329,12 @@ fn proof0_affine_record_read(P: *PForProof0, A: *PForState,
     A.aff_lv_count = 0;
     let saved_safe: i32 = P.affine_safe;
     let saved_reason: i32 = P.affine_reason;
+    let saved_cpu_reason: i32 = P.cpu_reason;
     var classified: i32 = proof0_affine_classify(P, A, idx, 1);
     if classified == 1 && A.aff_lv_count > 1 { classified = 0; }
     P.affine_safe = saved_safe;
     P.affine_reason = saved_reason;
+    P.cpu_reason = saved_cpu_reason;
     var has_lv: i32 = 0;
     if classified == 1 && A.aff_lv_count == 1 { has_lv = 1; }
     pfor_fill_scratch(A, arr, classified, has_lv, classified);
@@ -15300,6 +15396,19 @@ fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
                 proof0_affine_refuse(P, P0A_CALL_READ); return;
             }
             let actual: i32 = g_args[g_nodes[call].args_start + pi];
+            if actual >= 0 && actual < g_nnodes
+                && g_nodes[actual].kind == AST_UNARY
+                && g_nodes[actual].op == OP_ADDR {
+                let target: i32 = g_nodes[actual].child0;
+                if target >= 0 && target < g_nnodes
+                    && g_nodes[target].kind == AST_IDENT
+                    && proof0_resolve(P, g_nodes[target].name0) >= 0 {
+                    // The argument walk records the more precise no-escape
+                    // refusal for an address of workitem-private storage.
+                    pi = pi + 1;
+                    continue;
+                }
+            }
             if actual <= 0 || actual >= g_nnodes
                 || g_nodes[actual].kind != AST_IDENT {
                 proof0_affine_refuse(P, P0A_CALL_READ); return;
@@ -15321,6 +15430,8 @@ fn proof0_affine_map_call_reads(P: *PForProof0, A: *PForState,
 
 fn proof0_affine_prepare(P: *PForProof0, A: *PForState,
                          start_node: i32, end_node: i32) {
+    A.has_field = 0;
+    A.ncaps = 0;
     A.nwrites = 0;
     A.nreads = 0;
     A.reads_ovf = 0;
@@ -15533,6 +15644,17 @@ fn proof0_name_type(P: *PForProof0, name: i32) -> i32 {
     return NULL_STR;
 }
 
+fn proof0_note_dyn_type(P: *PForProof0, type_off: i32) {
+    if type_off == NULL_STR { return; }
+    let rt: i32 = resolve_type_sub(type_off);
+    if rt == NULL_STR { return; }
+    if type_is_dyn(rt) == 1 { P.needs_dyn_field = 1; return; }
+    if type_is_ptr(rt) == 1 {
+        let pt: i32 = resolve_type_sub(type_pointee(rt));
+        if type_is_dyn(pt) == 1 { P.needs_dyn_field = 1; }
+    }
+}
+
 fn proof0_receiver_field_scalar(recv_type: i32, field_name: i32) -> i32 {
     let si: i32 = resolve_struct_type(recv_type);
     if si < 0 { return 0; }
@@ -15720,10 +15842,16 @@ fn proof0_function_effect(P: *PForProof0, A: *PForState,
     if fi < 0 || g_funcs[fi].is_extern == 1
         || g_funcs[fi].purity_computed == 0 {
         P.unknown_calls = P.unknown_calls + 1;
+        if fi < 0 || g_funcs[fi].is_extern == 1 {
+            proof0_cpu_refuse(P, PFR_EXTERN_CALL);
+        } else {
+            proof0_cpu_refuse(P, PFR_MUTATING_CALL);
+        }
         return;
     }
     if g_funcs[fi].is_pure == 0 || g_funcs[fi].writes_arrays == 1 {
         P.effectful_calls = P.effectful_calls + 1;
+        proof0_cpu_refuse(P, PFR_MUTATING_CALL);
         return;
     }
     if g_funcs[fi].reads_arrays == 1 {
@@ -15748,9 +15876,11 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         || kind == AST_STR_LIT { return; }
     if kind == AST_IDENT {
         let name: i32 = g_nodes[node].name0;
+        proof0_note_dyn_type(P, proof0_name_type(P, name));
         let binding: i32 = proof0_resolve(P, name);
         if binding < 0 {
             P.capture_reads = P.capture_reads + 1;
+            proof0_add_capture(P, g_pf0_affine, name);
         } else {
             let bk: i32 = P.env_kinds[binding];
             if bk == P0_BIND_OUTER {
@@ -15807,6 +15937,7 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                 if fi >= 0
                     && proof0_method_receiver_noescape(fi, lhs_type) == 0 {
                     P.addresses = P.addresses + 1;
+                    proof0_cpu_refuse(P, PFR_PRIVATE_ESCAPE);
                     if lhs_node > 0 && lhs_node < g_nnodes
                         && g_nodes[lhs_node].kind == AST_IDENT
                         && proof0_resolve(P, g_nodes[lhs_node].name0) >= 0 {
@@ -15822,6 +15953,7 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
     if kind == AST_UNARY {
         if g_nodes[node].op == OP_ADDR {
             P.addresses = P.addresses + 1;
+            proof0_cpu_refuse(P, PFR_PRIVATE_ESCAPE);
             let target: i32 = g_nodes[node].child0;
             if target >= 0 && target < g_nnodes
                 && g_nodes[target].kind == AST_IDENT
@@ -15833,7 +15965,13 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         return;
     }
     if kind == AST_CAST || kind == AST_QMARK {
-        if kind == AST_QMARK { P.qmarks = P.qmarks + 1; }
+        if kind == AST_CAST {
+            proof0_note_dyn_type(P, g_nodes[node].name0);
+        }
+        if kind == AST_QMARK {
+            P.qmarks = P.qmarks + 1;
+            proof0_cpu_refuse(P, PFR_UNSUPPORTED_EXPR);
+        }
         proof0_expr(P, g_nodes[node].child0, depth + 1, control_depth);
         return;
     }
@@ -15847,12 +15985,13 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                 P.local_index_bases = P.local_index_bases + 1;
             }
         }
-        proof0_expr(P, base, depth + 1, control_depth);
         proof0_expr(P, g_nodes[node].child1, depth + 1, control_depth);
+        proof0_expr(P, base, depth + 1, control_depth);
         return;
     }
     if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
         P.member_reads = P.member_reads + 1;
+        proof0_cpu_refuse(P, PFR_UNSUPPORTED_EXPR);
         proof0_expr(P, g_nodes[node].child0, depth + 1, control_depth);
         return;
     }
@@ -15864,14 +16003,17 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         let call_name: i32 = g_nodes[node].name0;
         var call_handled: i32 = 0;
         var synthetic_receiver: i32 = 0 - 1;
+        var closure_capture: i32 = NULL_STR;
         // Builtins execute before closure lookup. Classify their own effect,
         // never a same-named closure's body.
         if call_may_use_builtin_precedence(node) == 1 {
             call_handled = 1;
             if is_impure_builtin(call_name) == 1 {
                 P.effectful_calls = P.effectful_calls + 1;
+                proof0_cpu_refuse(P, PFR_MUTATING_CALL);
             } else {
                 P.unknown_calls = P.unknown_calls + 1;
+                proof0_cpu_refuse(P, PFR_EXTERN_CALL);
             }
         }
         // A captured/local `closure#N` is a direct lifted target. Respect the
@@ -15885,11 +16027,14 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                 if type_is_closure(clo_ty) == 1 {
                     call_handled = 1;
                     P.capture_reads = P.capture_reads + 1;
+                    closure_capture = call_name;
                     let ce: i32 = pfor_closure_effect(clo_ty);
                     if ce == PFOR_CLO_UNKNOWN {
                         P.unknown_calls = P.unknown_calls + 1;
+                        proof0_cpu_refuse(P, PFR_INDIRECT_CALL);
                     } else if ce == PFOR_CLO_MUTATING {
                         P.effectful_calls = P.effectful_calls + 1;
+                        proof0_cpu_refuse(P, PFR_MUTATING_CALL);
                     } else if ce == PFOR_CLO_READ {
                         P.read_calls = P.read_calls + 1;
                         proof0_affine_refuse(P, P0A_CALL_READ);
@@ -15942,6 +16087,9 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
                 proof0_expr(P, arg, depth + 1, control_depth);
             }
             ai = ai + 1;
+        }
+        if closure_capture != NULL_STR {
+            proof0_add_capture(P, g_pf0_affine, closure_capture);
         }
         return;
     }
@@ -16032,6 +16180,7 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         return;
     }
     if kind == AST_LET {
+        proof0_note_dyn_type(P, g_nodes[stmt].name1);
         proof0_expr(P, g_nodes[stmt].child0, depth + 1, control_depth);
         proof0_bind(P, g_nodes[stmt].name0, stmt,
                     proof0_let_bind_kind(stmt));
@@ -16042,11 +16191,14 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         let binding: i32 = proof0_resolve(P, g_nodes[stmt].name0);
         if binding < 0 {
             P.capture_writes = P.capture_writes + 1;
+            proof0_cpu_refuse(P, PFR_ASSIGN_CARRIED);
         } else if P.env_kinds[binding] == P0_BIND_ITER
             || P.env_kinds[binding] == P0_BIND_OUTER {
             P.iterator_writes = P.iterator_writes + 1;
+            proof0_cpu_refuse(P, PFR_ASSIGN_CARRIED);
         } else if P.env_kinds[binding] == P0_BIND_ALIAS {
             P.alias_writes = P.alias_writes + 1;
+            proof0_cpu_refuse(P, PFR_ASSIGN_CARRIED);
         } else {
             P.local_writes = P.local_writes + 1;
         }
@@ -16066,9 +16218,9 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
                 P.local_index_bases = P.local_index_bases + 1;
             }
         }
-        proof0_expr(P, base, depth + 1, control_depth);
         proof0_expr(P, g_nodes[stmt].child1, depth + 1, control_depth);
         proof0_expr(P, g_nodes[stmt].child2, depth + 1, control_depth);
+        proof0_expr(P, base, depth + 1, control_depth);
         return;
     }
     if kind == AST_MEMBER_ASSIGN {
@@ -16077,6 +16229,7 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
         // Without type/provenance, a local name can still be a pointer alias to
         // captured storage. PROOF0-b may prove by-value aggregates; P0a refuses.
         P.capture_member_writes = P.capture_member_writes + 1;
+        proof0_cpu_refuse(P, PFR_MUTATING_CALL);
         proof0_expr(P, obj, depth + 1, control_depth);
         proof0_expr(P, g_nodes[stmt].child1, depth + 1, control_depth);
         return;
@@ -16128,11 +16281,15 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
     if kind == AST_BREAK || kind == AST_CONTINUE {
         if kind == AST_BREAK { P.breaks = P.breaks + 1; }
         else { P.continues = P.continues + 1; }
-        if private_depth == 0 { P.outer_exits = P.outer_exits + 1; }
+        if private_depth == 0 {
+            P.outer_exits = P.outer_exits + 1;
+            proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
+        }
         return;
     }
     if kind == AST_RETURN {
         P.returns = P.returns + 1;
+        proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
         if g_nodes[stmt].child0 >= 0 {
             proof0_expr(P, g_nodes[stmt].child0, depth + 1, control_depth);
         }
@@ -16140,6 +16297,7 @@ fn proof0_stmt(P: *PForProof0, stmt: i32, private_depth: i32,
     }
     if kind == AST_DEFER {
         P.defers = P.defers + 1;
+        proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
         // Nested defer is currently a parser refusal; keep recovered/future
         // trees lexically scoped rather than leaking bindings into siblings.
         let saved_defer_env: i32 = P.nenv;
@@ -16226,6 +16384,118 @@ fn proof0_agx_candidate(P: *PForProof0) -> i32 {
     return 1;
 }
 
+// Every context slot is eight bytes. Admit the closed U1 pointer/scalar set,
+// scalar field values, proven closure environment pointers, and the synthetic
+// dyn carrier pointer. Aggregates and wide values cannot fit and always refuse.
+fn proof0_caps_elem_ok(A: *PForState) -> i32 {
+    let caps: *i32 = A.caps;
+    var i: i32 = 0;
+    while i < A.ncaps {
+        if pfor_capture_type_ok(caps[i * 4], caps[i * 4 + 1]) == 0 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn proof0_finalize_cpu(P: *PForProof0, A: *PForState) {
+    // Every loop in a dyn monomorph conservatively carries the ambient field.
+    // This also covers calls/contextual literals hidden beyond local syntax.
+    let ambient_dyn: i32 = sym_find(str_intern("__field"));
+    if ambient_dyn >= 0 { P.needs_dyn_field = 1; }
+    // A dyn-field worker resolves `%__field` through the ordinary capture table.
+    if P.needs_dyn_field == 1 {
+        let dyn_name: i32 = str_intern("__field");
+        let dynf: i32 = sym_find(dyn_name);
+        if dynf < 0 {
+            proof0_cpu_refuse(P, PFR_DYN_CAPTURE);
+        } else if proof0_add_capture(P, A, dyn_name) == 0 {
+            proof0_cpu_refuse(P, PFR_DYN_CAPTURE);
+        }
+    }
+    P.elem_ok = proof0_caps_elem_ok(A);
+    if proof0_cpu_candidate(P) == 0 {
+        if P.cpu_reason == PFR_NONE {
+            proof0_cpu_refuse(P, PFR_UNSUPPORTED_STMT);
+        }
+        return;
+    }
+    if P.iterator_width != 32 && P.iterator_width != 64 {
+        proof0_cpu_refuse(P, PFR_ITER_WIDTH);
+        return;
+    }
+    if A.ncaps == 0 {
+        proof0_cpu_refuse(P, PFR_NO_CAPTURES);
+        return;
+    }
+    if P.elem_ok == 0 {
+        proof0_cpu_refuse(P, PFR_CAP_ELEM);
+        return;
+    }
+    if g_npfor_workers >= MAX_PFOR || pfor_worker_space(A.ncaps) == 0 {
+        proof0_cpu_refuse(P, PFR_WORKER_CAP);
+        return;
+    }
+    if P.cpu_reason == PFR_NONE { P.cpu_ready = 1; }
+}
+
+fn proof0_caps_order_equal(A: *PForState, B: *PForState) -> i32 {
+    if A.ncaps != B.ncaps { return 0; }
+    var i: i32 = 0;
+    while i < A.ncaps * 4 {
+        if A.caps[i] != B.caps[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn proof0_caps_set_equal(A: *PForState, B: *PForState) -> i32 {
+    if A.ncaps != B.ncaps { return 0; }
+    var ai: i32 = 0;
+    while ai < A.ncaps {
+        var found: i32 = 0;
+        var bi: i32 = 0;
+        while bi < B.ncaps {
+            if A.caps[ai * 4] == B.caps[bi * 4]
+                && A.caps[ai * 4 + 1] == B.caps[bi * 4 + 1]
+                && A.caps[ai * 4 + 2] == B.caps[bi * 4 + 2]
+                && A.caps[ai * 4 + 3] == B.caps[bi * 4 + 3] {
+                found = 1;
+            }
+            bi = bi + 1;
+        }
+        if found == 0 { return 0; }
+        ai = ai + 1;
+    }
+    return 1;
+}
+
+// The runtime alias fallback consumes only each affine write's base identity.
+fn proof0_write_order_equal(A: *PForState, B: *PForState) -> i32 {
+    if A.nwrites != B.nwrites { return 0; }
+    var i: i32 = 0;
+    while i < A.nwrites {
+        if A.writes[i * 16] != B.writes[i * 16] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn proof0_write_set_equal(A: *PForState, B: *PForState) -> i32 {
+    if A.nwrites != B.nwrites { return 0; }
+    var ai: i32 = 0;
+    while ai < A.nwrites {
+        var found: i32 = 0;
+        var bi: i32 = 0;
+        while bi < B.nwrites {
+            if A.writes[ai * 16] == B.writes[bi * 16] { found = 1; }
+            bi = bi + 1;
+        }
+        if found == 0 { return 0; }
+        ai = ai + 1;
+    }
+    return 1;
+}
+
 fn proof0_summarize(P: *PForProof0, A: *PForState,
                     loop_stmt: i32, body: i32,
                     iter_name: i32) {
@@ -16241,6 +16511,32 @@ fn proof0_summarize(P: *PForProof0, A: *PForState,
     P.nenv = 0;
 }
 
+fn proof0_emit_capture_names(key: *u8, A: *PForState) {
+    wr(1, key); wr(1, "[");
+    var i: i32 = 0;
+    while i < A.ncaps {
+        if i > 0 { wr(1, ","); }
+        json_emit_intern(A.caps[i * 4]);
+        i = i + 1;
+    }
+    wr(1, "]");
+}
+
+fn proof1_emit_report_record(stmt: i32, iter_name: i32,
+                             P: *PForProof0, A: *PForState) {
+    wr(1, "{\"fn\":"); json_emit_intern(g_cur_fn);
+    wr(1, ",\"line\":"); wr_int(1, g_nodes[stmt].line as i64);
+    wr(1, ",\"col\":"); wr_int(1, g_nodes[stmt].col as i64);
+    wr(1, ",\"var\":"); json_emit_intern(iter_name);
+    wr(1, ",\"independent\":");
+    wr_int(1, proof0_cpu_candidate(P) as i64);
+    wr(1, ",\"has_field\":"); wr_int(1, A.has_field as i64);
+    wr(1, ",\"ncaps\":"); wr_int(1, A.ncaps as i64);
+    wr(1, ",\"dispatched\":"); wr_int(1, P.cpu_ready as i64);
+    wr(1, ",\"reason\":\""); wr(1, pfor_reason_str(P.cpu_reason));
+    wr(1, "\"}\n");
+}
+
 fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
                       A: *PForState,
                       pf: *PForState, legacy_dispatched: i32) {
@@ -16252,7 +16548,23 @@ fn proof0_emit_report(stmt: i32, iter_name: i32, P: *PForProof0,
     wr(1, ",\"legacy_independent\":"); wr_int(1, pf.independent as i64);
     wr(1, ",\"legacy_dispatched\":"); wr_int(1, legacy_dispatched as i64);
     wr(1, ",\"legacy_reason\":\""); wr(1, pfor_reason_str(g_pf_reason));
-    wr(1, "\",\"complete\":"); wr_int(1, P.complete as i64);
+    wr(1, "\",\"cpu_dispatched\":"); wr_int(1, P.cpu_ready as i64);
+    wr(1, ",\"cpu_reason\":\""); wr(1, pfor_reason_str(P.cpu_reason));
+    wr(1, "\",\"proof_has_field\":"); wr_int(1, A.has_field as i64);
+    wr(1, ",\"needs_dyn_field\":"); wr_int(1, P.needs_dyn_field as i64);
+    wr(1, ",\"proof_ncaps\":"); wr_int(1, A.ncaps as i64);
+    wr(1, ",\"proof_elem_ok\":"); wr_int(1, P.elem_ok as i64);
+    wr(1, ",\"capture_set_parity\":");
+    wr_int(1, proof0_caps_set_equal(A, pf) as i64);
+    wr(1, ",\"capture_order_parity\":");
+    wr_int(1, proof0_caps_order_equal(A, pf) as i64);
+    wr(1, ",\"write_set_parity\":");
+    wr_int(1, proof0_write_set_equal(A, pf) as i64);
+    wr(1, ",\"write_order_parity\":");
+    wr_int(1, proof0_write_order_equal(A, pf) as i64);
+    proof0_emit_capture_names(",\"legacy_captures\":", pf);
+    proof0_emit_capture_names(",\"proof_captures\":", A);
+    wr(1, ",\"complete\":"); wr_int(1, P.complete as i64);
     wr(1, ",\"reason\":\""); wr(1, proof0_reason_str(P.reason));
     wr(1, "\",\"cpu_effects\":"); wr_int(1, proof0_cpu_effects(P) as i64);
     wr(1, ",\"agx_effects\":"); wr_int(1, proof0_agx_effects(P) as i64);
@@ -16940,7 +17252,6 @@ fn codegen_stmt(stmt: i32) {
         // Parallel dispatch analysis: walk body for independence
         let pf: *PForState = g_pf;
         pfor_analyze_body(pf, body_node, iter_name, start_node, end_node);
-        let caps: *i32 = pf.caps;
 
         // Dyn context: add the implicit %__field carrier as a capture so the
         // worker finds it via sym_find. Read-only post-construction — no hazard.
@@ -16956,21 +17267,53 @@ fn codegen_stmt(stmt: i32) {
             }
         }
 
-        // U1 dispatch gate: has_field OR every capture admitted by
-        // pfor_caps_elem_ok (the independence proof itself is type-blind).
-        var elem_ok: i32 = pf.has_field;
-        if elem_ok == 0 && pf.independent == 1 && pf.ncaps > 0 {
+        // PROOF1: recursive effects, affine hazards, captures, and operational
+        // gates are the ordinary CPU authority.
+        proof0_summarize(g_pf0, g_pf0_affine, stmt, body_node, iter_name);
+        proof0_finalize_cpu(g_pf0, g_pf0_affine);
+
+        // Device/report modes retain the legacy effect proof, but dyn-carrier
+        // discovery is semantic: casts and local dyn values also need __field.
+        if pf.independent == 1 && g_pf0.needs_dyn_field == 1 {
+            let dyn_name2: i32 = str_intern("__field");
+            let dynf2: i32 = sym_find(dyn_name2);
+            if dynf2 < 0 || pfor_add_capture(pf, dyn_name2, str_intern("Field"),
+                    g_syms[dynf2].reg, g_syms[dynf2].is_alloca) == 0 {
+                pfor_refuse(PFR_DYN_CAPTURE);
+                pf.independent = 0;
+            }
+        }
+
+        // Context-layout gate is independent of the effect/hazard proof.
+        var elem_ok: i32 = 0;
+        if pf.independent == 1 && pf.ncaps > 0 {
             elem_ok = pfor_caps_elem_ok(pf);
         }
+
+        var legacy_disp: i32 = 0;
+        if pf.independent == 1 && elem_ok == 1 && pf.ncaps > 0
+            && g_npfor_workers < MAX_PFOR
+            && pfor_worker_space(pf.ncaps) == 1 {
+            legacy_disp = 1;
+        }
+
+        var worker_pf: *PForState = g_pf0_affine;
+        var dispatch_ready: i32 = g_pf0.cpu_ready;
+        // Device admission remains a separate closed proof with unchanged
+        // AMD/NV/AGX authority. Closures stay CPU-only: device modules do not
+        // emit lifted closure bodies.
+        if g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1
+            || g_agx_ir0_shadow == 1 || g_agx_ra0_shadow == 1 {
+            worker_pf = pf;
+            dispatch_ready = legacy_disp;
+            if pfor_device_caps_ok(pf) == 0 { dispatch_ready = 0; }
+        }
+        let caps: *i32 = worker_pf.caps;
 
         // --pfor-report: emit this loop's verdict (query mode, no IR effect).
         // The dispatch predicate is mirrored so `dispatched` matches exactly.
         if g_pfor_report_mode == 1 {
-            var rep_disp: i32 = 0;
-            if pf.independent == 1 && elem_ok == 1 && pf.ncaps > 0 && g_npfor_workers < MAX_PFOR {
-                rep_disp = 1;
-            }
-            if rep_disp == 0 && pf.independent == 1 && g_pf_reason == 0 {
+            if legacy_disp == 0 && pf.independent == 1 && g_pf_reason == 0 {
                 if pf.ncaps == 0 {
                     g_pf_reason = PFR_NO_CAPTURES;
                 } else if elem_ok == 0 {
@@ -16980,12 +17323,15 @@ fn codegen_stmt(stmt: i32) {
                 }
             }
             if g_pfor_proof0_mode == 1 {
-                proof0_summarize(g_pf0, g_pf0_affine,
-                                 stmt, body_node, iter_name);
                 proof0_emit_report(stmt, iter_name, g_pf0, g_pf0_affine,
-                                   pf, rep_disp);
+                                   pf, legacy_disp);
+            } else if g_pf0.cpu_ready == legacy_disp {
+                // Keep unchanged records byte-stable so the golden diff remains
+                // an exact decision-flip audit rather than metadata churn.
+                pfor_emit_report_record(stmt, iter_name, pf, legacy_disp);
             } else {
-                pfor_emit_report_record(stmt, iter_name, pf, rep_disp);
+                proof1_emit_report_record(stmt, iter_name, g_pf0,
+                                          g_pf0_affine);
             }
         }
 
@@ -17016,8 +17362,8 @@ fn codegen_stmt(stmt: i32) {
         let end_reg: i32 = emit_implicit_convert(end_val.reg,
             end_val.type_off, iter_w);
 
-        // If independent, emit parallel dispatch instead of sequential loop
-        if pf.independent == 1 && elem_ok == 1 && pf.ncaps > 0 && g_npfor_workers < MAX_PFOR {
+        // Emit parallel dispatch from the selected proof artifact.
+        if dispatch_ready == 1 {
             // Record deferred worker
             let wid: i32 = g_pfor_id;
             g_pfor_id = g_pfor_id + 1;
@@ -17025,10 +17371,11 @@ fn codegen_stmt(stmt: i32) {
             g_pfor_workers[woff] = wid;
             g_pfor_workers[woff + 1] = body_node;
             g_pfor_workers[woff + 2] = iter_name;
-            g_pfor_workers[woff + 3] = pf.ncaps;
+            g_pfor_workers[woff + 3] = worker_pf.ncaps;
             g_pfor_workers[woff + 4] = g_gen_nsub;
             g_pfor_workers[woff + 5] = bw;  // #54: iterator width (32|64)
-            g_pfor_woff = g_pfor_woff + 6;
+            g_pfor_workers[woff + 6] = g_cur_fn;
+            g_pfor_woff = g_pfor_woff + 7;
             // Snapshot the generic substitution context — the deferred emission
             // pass runs with g_gen_nsub == 0 and must restore it.
             var gci: i32 = 0;
@@ -17042,7 +17389,7 @@ fn codegen_stmt(stmt: i32) {
             // Copy captures into the worker record, resolving types through the
             // active substitution NOW — both sides must agree on the canonical type.
             var ci: i32 = 0;
-            while ci < pf.ncaps {
+            while ci < worker_pf.ncaps {
                 g_pfor_workers[g_pfor_woff] = caps[ci * 4];
                 g_pfor_workers[g_pfor_woff + 1] = resolve_type_sub(caps[ci * 4 + 1]);
                 g_pfor_workers[g_pfor_woff + 2] = caps[ci * 4 + 2];
@@ -17059,7 +17406,7 @@ fn codegen_stmt(stmt: i32) {
                 || g_agx_ra0_shadow == 1) && bw != 64 {
                 agx_shape = alloc(1);
                 let agx_classified: i32 = agx_classify_worker(
-                    body_node, iter_name, pf.ncaps, worker_caps_base,
+                    body_node, iter_name, worker_pf.ncaps, worker_caps_base,
                     agx_shape);
                 var agx_run_shadow: i32 = 1;
                 if agx_classified == 1 && agx_shape.kind == 5
@@ -17072,7 +17419,7 @@ fn codegen_stmt(stmt: i32) {
                 if agx_classified == 1 && agx_run_shadow == 1
                     && (g_agx_ir0_shadow == 1 || g_agx_ra0_shadow == 1) {
                     let agx_shadow_ok: i32 = agx_ir0_shadow_worker(
-                        body_node, iter_name, pf.ncaps, worker_caps_base,
+                        body_node, iter_name, worker_pf.ncaps, worker_caps_base,
                         bw, agx_shape);
                     if g_agx_ra0_shadow == 1 {
                         agx_ra0_require(agx_shadow_ok, body_node);
@@ -17087,7 +17434,7 @@ fn codegen_stmt(stmt: i32) {
             }
 
             // Emit context struct fill on the stack
-            let ctx_size: i32 = pf.ncaps * 8;
+            let ctx_size: i32 = worker_pf.ncaps * 8;
             let ctx_alloca: i32 = ir_tmp();
             g_use_prelude = 1;
             ir_wr("  "); ir_wr_reg(ctx_alloca); ir_wr(" = alloca [");
@@ -17097,7 +17444,7 @@ fn codegen_stmt(stmt: i32) {
             // Per-capture loaded SSA register (for the aliasing guard)
             let cap_loaded: *i32 = alloc(MAX_PFOR_CAP);
             ci = 0;
-            while ci < pf.ncaps {
+            while ci < worker_pf.ncaps {
                 let cap_type: i32 = caps[ci * 4 + 1];
                 let cap_reg: i32 = caps[ci * 4 + 2];
                 let cap_is_alloca: i32 = caps[ci * 4 + 3];
@@ -17130,19 +17477,19 @@ fn codegen_stmt(stmt: i32) {
             // Runtime aliasing guard: base-pointer equality between every WRITTEN
             // array and every other captured ptr -> serial fallback on hit.
             // Base equality only — partial overlap stays a documented assumption.
-            let pwrites: *i64 = pf.writes;
+            let pwrites: *i64 = worker_pf.writes;
             var alias_acc: i32 = 0 - 1;
             var wi: i32 = 0;
-            while wi < pf.nwrites {
+            while wi < worker_pf.nwrites {
                 let warr: i64 = pwrites[wi * 16];
                 // Capture index of this written array (pointer-typed)
                 var wcap: i32 = 0 - 1;
                 var c2: i32 = 0;
-                while c2 < pf.ncaps {
+                while c2 < worker_pf.ncaps {
                     if caps[c2 * 4] as i64 == warr {
                         if type_is_ptr(caps[c2 * 4 + 1]) == 1 {
                             wcap = c2;
-                            c2 = pf.ncaps;  // break
+                            c2 = worker_pf.ncaps;  // break
                         }
                     }
                     c2 = c2 + 1;
@@ -17156,7 +17503,7 @@ fn codegen_stmt(stmt: i32) {
                 }
                 if wcap >= 0 && dup == 0 {
                     c2 = 0;
-                    while c2 < pf.ncaps {
+                    while c2 < worker_pf.ncaps {
                         var check: i32 = 1;
                         if c2 == wcap { check = 0; }
                         if check == 1 && type_is_ptr(caps[c2 * 4 + 1]) == 0 { check = 0; }
@@ -17164,7 +17511,7 @@ fn codegen_stmt(stmt: i32) {
                         if check == 1 {
                             var c_written: i32 = 0;
                             wj = 0;
-                            while wj < pf.nwrites {
+                            while wj < worker_pf.nwrites {
                                 if pwrites[wj * 16] == caps[c2 * 4] as i64 { c_written = 1; }
                                 wj = wj + 1;
                             }
@@ -18508,7 +18855,8 @@ fn emit_pfor_workers() {
         let ncaps: i32 = g_pfor_workers[roff + 3];
         let wngen: i32 = g_pfor_workers[roff + 4];
         let wbw: i32 = g_pfor_workers[roff + 5];  // #54: iterator width
-        roff = roff + 6;
+        let owner_fn: i32 = g_pfor_workers[roff + 6];
+        roff = roff + 7;
         var wty: i32 = str_intern("i32");
         if wbw == 64 {
             wty = str_intern("i64");
@@ -18535,12 +18883,14 @@ fn emit_pfor_workers() {
         let saved_bl: i32 = g_body_len;
         let saved_pl: i32 = g_prelude_len;
         let saved_up: i32 = g_use_prelude;
+        let saved_cur_fn: i32 = g_cur_fn;
 
         // Reset for worker function
         g_tmp = 0;
         g_label = 0;
         g_block_terminated = 0;
         g_body_mode = 0;
+        g_cur_fn = owner_fn;
 
         // Function header: void @__pfor_worker_N(ptr %p0, iW %p1, iW %p2)
         ir_wr("\ndefine internal void @__pfor_worker_");
@@ -18692,6 +19042,7 @@ fn emit_pfor_workers() {
         g_body_len = saved_bl;
         g_prelude_len = saved_pl;
         g_use_prelude = saved_up;
+        g_cur_fn = saved_cur_fn;
         g_gen_nsub = saved_gen_nsub;
 
         w = w + 1;
@@ -20875,7 +21226,7 @@ fn emit_agx_module() {
         let ncaps: i32 = g_pfor_workers[roff + 3];
         let wngen: i32 = g_pfor_workers[roff + 4];
         let wbw: i32 = g_pfor_workers[roff + 5];
-        roff = roff + 6;
+        roff = roff + 7;
 
         let saved_gen_nsub: i32 = g_gen_nsub;
         g_gen_nsub = wngen;
@@ -20966,7 +21317,7 @@ fn emit_gpu_module() {
         let ncaps: i32 = g_pfor_workers[roff + 3];
         let wngen: i32 = g_pfor_workers[roff + 4];
         let wbw: i32 = g_pfor_workers[roff + 5];  // #54: iterator width
-        roff = roff + 6;
+        roff = roff + 7;
 
         // Restore the generic substitution context (mirrors emit_pfor_workers)
         // so resolve_type_sub / body codegen resolve generic annotations.
@@ -34447,8 +34798,8 @@ fn main(argc: i32, argv: **u8) {
             g_pfor_report_mode = 1;
             g_pfor_legacy_requested = 1;
         } else if str_eq(argv[ai], "--pfor-proof0-report") == 1 {
-            // PROOF0: recursive effects + affine hazards beside the unchanged
-            // legacy verdict. Query-only; never participates in dispatch.
+            // Detailed recursive CPU proof artifact beside the legacy verdict.
+            // The mode is query-only; ordinary compilation uses the same proof.
             g_pfor_report_mode = 1;
             g_pfor_proof0_mode = 1;
         } else if str_eq(argv[ai], "--eval") == 1 {
@@ -34743,7 +35094,7 @@ fn main(argc: i32, argv: **u8) {
     g_zk_uf = alloc(MAX_ZK_GATES * 3);
 
     // Parallel dispatch arrays
-    g_pfor_workers = alloc(MAX_PFOR * 128);  // flat worker records
+    g_pfor_workers = alloc(MAX_PFOR_WORKER_INTS);  // flat worker records
     // Closure descriptor pool (B2-closures)
     g_closures = alloc(MAX_CLOSURES_POOL);
     // Analysis state: one PForState instance, arenas attached once.
@@ -34760,22 +35111,23 @@ fn main(argc: i32, argv: **u8) {
     g_pf.aff_signs = alloc(4);
     g_pf.dlt_terms = alloc(4);
     g_pf.dlt_signs = alloc(4);
-    if g_pfor_proof0_mode == 1 {
-        g_pf0 = alloc(1);
-        g_pf0.env_names = alloc(MAX_PROOF0_ENV);
-        g_pf0.env_decls = alloc(MAX_PROOF0_ENV);
-        g_pf0.env_kinds = alloc(MAX_PROOF0_ENV);
-        g_pf0_affine = alloc(1);
-        g_pf0_affine.writes = alloc(MAX_PFOR_WRITES * 16);
-        g_pf0_affine.reads = alloc(MAX_PFOR_READS * 16);
-        g_pf0_affine.call_reads = alloc(MAX_PFOR_READS);
-        g_pf0_affine.keybuf = alloc(512);
-        g_pf0_affine.scratch = alloc(16);
-        g_pf0_affine.aff_terms = alloc(4);
-        g_pf0_affine.aff_signs = alloc(4);
-        g_pf0_affine.dlt_terms = alloc(4);
-        g_pf0_affine.dlt_signs = alloc(4);
-    }
+    // The recursive proof now builds a shadow CPU dispatch artifact in every
+    // compilation; --pfor-proof0-report only controls its JSONL observation.
+    g_pf0 = alloc(1);
+    g_pf0.env_names = alloc(MAX_PROOF0_ENV);
+    g_pf0.env_decls = alloc(MAX_PROOF0_ENV);
+    g_pf0.env_kinds = alloc(MAX_PROOF0_ENV);
+    g_pf0_affine = alloc(1);
+    g_pf0_affine.caps = alloc(MAX_PFOR_CAP * 4);
+    g_pf0_affine.writes = alloc(MAX_PFOR_WRITES * 16);
+    g_pf0_affine.reads = alloc(MAX_PFOR_READS * 16);
+    g_pf0_affine.call_reads = alloc(MAX_PFOR_READS);
+    g_pf0_affine.keybuf = alloc(512);
+    g_pf0_affine.scratch = alloc(16);
+    g_pf0_affine.aff_terms = alloc(4);
+    g_pf0_affine.aff_signs = alloc(4);
+    g_pf0_affine.dlt_terms = alloc(4);
+    g_pf0_affine.dlt_signs = alloc(4);
 
     // Set parser state
     g_tokens  = tokens;

@@ -280,12 +280,17 @@ else
        || grep -q '^worker __pfor_gpu_worker_' "$AGX_DOT_REFUSE_DEV" \
        || ! grep -q '^; no AGX-0 workers emitted$' "$AGX_DOT_REFUSE_DEV" \
        || ! "$STAGE1" "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
-           -o "$AGX_DOT_REFUSE_LL" 2>/dev/null \
-       || grep -q '^define internal void @__pfor_worker_' "$AGX_DOT_REFUSE_LL" \
+            -o "$AGX_DOT_REFUSE_LL" 2>/dev/null \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                    "$AGX_DOT_REFUSE_LL" || true)" -ne 2 ] \
+       || [ "$(grep -c 'call void @__parallel_for(' \
+                    "$AGX_DOT_REFUSE_LL" || true)" -ne 2 ] \
        || ! "$STAGE1" --pfor-report "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
-           >"$AGX_DOT_REFUSE_REPORT" 2>/dev/null \
-       || [ "$(grep -c '"reason":"unsupported-stmt"' "$AGX_DOT_REFUSE_REPORT" || true)" -ne 2 ]; then
-        echo "  FAIL: noncanonical nested RNS dots did not stay serial"; fail=1
+            >"$AGX_DOT_REFUSE_REPORT" 2>/dev/null \
+       || [ "$(grep -c '"dispatched":1' "$AGX_DOT_REFUSE_REPORT" || true)" -ne 2 ] \
+       || [ "$(grep -c '"reason":"assign-carried"' \
+                    "$AGX_DOT_REFUSE_REPORT" || true)" -ne 2 ]; then
+        echo "  FAIL: noncanonical nested RNS dot CPU/AGX boundary changed"; fail=1
         AGX3_READY=0
     fi
     if [ "$AGX3_READY" = "1" ]; then
@@ -444,7 +449,7 @@ else
     fi
 
     # LANG0 is the first authoritative IR0/RA0 path. Its closed AGX-only proof
-    # admits structured scalar control without changing ordinary pfor decisions.
+    # admits structured scalar control; PROOF1 independently owns CPU dispatch.
     LANG0_READY=1
     if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang0_dispatch.tv" \
             -o "$AGX_LANG0_DEV" 2>/dev/null \
@@ -471,15 +476,25 @@ else
             >"$TMP/agx_lang0.eval.bin" 2>/dev/null \
        || ! "$STAGE1" "$SCRIPT_DIR/agx_lang0_eval.tv" \
             -o "$AGX_LANG0_EVAL_LL" 2>/dev/null \
-       || grep -q '^define internal void @__pfor_worker_' "$AGX_LANG0_EVAL_LL" \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' \
+                    "$AGX_LANG0_EVAL_LL" || true)" -ne 4 ] \
+       || [ "$(grep -c 'call void @__parallel_for(' \
+                    "$AGX_LANG0_EVAL_LL" || true)" -ne 4 ] \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG0_EVAL_LL" \
-            -o "$AGX_LANG0_EVAL_OBJ" 2>/dev/null \
+             -o "$AGX_LANG0_EVAL_OBJ" 2>/dev/null \
        || ! cc $HOST_LINK_PIE "$AGX_LANG0_EVAL_OBJ" \
-            -o "$AGX_LANG0_EVAL_EXE" 2>/dev/null \
-       || ! "$AGX_LANG0_EVAL_EXE" >"$TMP/agx_lang0.compiled.bin" \
-       || ! cmp -s "$TMP/agx_lang0.eval.bin" "$TMP/agx_lang0.compiled.bin" \
+             -o "$AGX_LANG0_EVAL_EXE" 2>/dev/null \
+       || ! env TRAVELER_THREADS=1 "$AGX_LANG0_EVAL_EXE" \
+             >"$TMP/agx_lang0.t1.bin" \
+       || ! env TRAVELER_THREADS=4 "$AGX_LANG0_EVAL_EXE" \
+             >"$TMP/agx_lang0.t4.bin" \
+       || ! env TRAVELER_THREADS=32 "$AGX_LANG0_EVAL_EXE" \
+             >"$TMP/agx_lang0.t32.bin" \
+       || ! cmp -s "$TMP/agx_lang0.eval.bin" "$TMP/agx_lang0.t1.bin" \
+       || ! cmp -s "$TMP/agx_lang0.eval.bin" "$TMP/agx_lang0.t4.bin" \
+       || ! cmp -s "$TMP/agx_lang0.eval.bin" "$TMP/agx_lang0.t32.bin" \
        || ! python3 "$SCRIPT_DIR/agx_lang0_probe.py" \
-            --check-output "$TMP/agx_lang0.eval.bin"; then
+             --check-output "$TMP/agx_lang0.eval.bin"; then
         echo "  FAIL: AGX LANG0 eval/compiled/CPU-pfor substrate changed"; fail=1
         LANG0_READY=0
     fi
@@ -909,6 +924,48 @@ fi
 fi
 else
     echo "  SKIP: no nvptx64 target in this llc (NVPTX leg)"
+fi
+
+# PROOF1 changes ordinary CPU authority only. This source gains three CPU
+# workers, so its pre-handoff device artifacts pin the mode-selection fence.
+echo "  -- PROOF1 device-authority fence"
+PROOF1_DEVICE_SRC="$REPO_DIR/examples/poly_core_generic_test.tv"
+PROOF1_DEVICE_MODES=("--emit-gpu" "--emit-gpu-nvptx" "--emit-gpu-agx")
+PROOF1_DEVICE_HASHES=(
+    "40ad76d7a19b0c595c6fa039b20d2c6de1bbe8f4887b301227a4c96b2129081c"
+    "95cf24e57e37f703060d52d7a0d5b57249846619754cc4ae0840d58428963111"
+    "713440392fe735167eca32a9cba5e60de0a3bef56364c8589c595ddf11197b9b"
+)
+for pi in 0 1 2; do
+    proof1_out="$TMP/proof1-device-$pi.out"
+    if ! "$STAGE1" "${PROOF1_DEVICE_MODES[$pi]}" "$PROOF1_DEVICE_SRC" \
+            -o "$proof1_out" 2>/dev/null; then
+        echo "  FAIL: PROOF1 device fence compile ${PROOF1_DEVICE_MODES[$pi]}"; fail=1
+        continue
+    fi
+    proof1_hash="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$proof1_out")"
+    if [ "$proof1_hash" != "${PROOF1_DEVICE_HASHES[$pi]}" ]; then
+        echo "  FAIL: PROOF1 changed ${PROOF1_DEVICE_MODES[$pi]} admission/bytes"; fail=1
+    else
+        echo "  ok   ${PROOF1_DEVICE_MODES[$pi]} unchanged across CPU authority handoff"
+    fi
+done
+
+# Static closure identity restores CPU prove-through, but device modules do not
+# contain lifted closure bodies. Keep that context strictly outside all targets.
+PROOF1_CLOSURE_SRC="$REPO_DIR/examples/closure_prove_through.tv"
+if ! "$STAGE1" --emit-gpu "$PROOF1_CLOSURE_SRC" \
+        -o "$TMP/proof1-closure-amd.ll" 2>/dev/null \
+   || grep -q 'define amdgpu_kernel' "$TMP/proof1-closure-amd.ll" \
+   || ! "$STAGE1" --emit-gpu-nvptx "$PROOF1_CLOSURE_SRC" \
+        -o "$TMP/proof1-closure-nv.ll" 2>/dev/null \
+   || grep -q 'define ptx_kernel' "$TMP/proof1-closure-nv.ll" \
+   || ! "$STAGE1" --emit-gpu-agx "$PROOF1_CLOSURE_SRC" \
+        -o "$TMP/proof1-closure-agx.hex" 2>/dev/null \
+   || grep -q '^worker __pfor_gpu_worker_' "$TMP/proof1-closure-agx.hex"; then
+    echo "  FAIL: PROOF1 closure context crossed a device boundary"; fail=1
+else
+    echo "  ok   static closure contexts remain CPU-only on AMD/NV/AGX"
 fi
 
 echo ""

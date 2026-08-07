@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// A dyn cast needs the implicit field carrier even when explicit captures are
+// primitive. Missing `__field` makes deferred worker codegen fail loudly.
+
+fn cast_map<F: Field>(out: *u64, n: i32) {
+    for i in 0..n {
+        out[i] = (i as F) as u64;
+    }
+}
+
+instantiate cast_map<dyn>;
+
+fn main() -> i32 {
+    let f: Field = field(251);
+    let n: i32 = 4096;
+    let out: *u64 = alloc(n);
+    cast_map_dyn(f, out, n);
+    print(out[0]);
+    print(out[3]);
+    print(out[4095]);
+    free(out);
+    return 0;
+}

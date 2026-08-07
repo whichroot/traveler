@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: Apache-2.0
+// PROOF1 CPU authority: six structured loops rejected by the legacy flat walk.
+// Every range exceeds PFOR_THRESHOLD, so T=4/32 executes through pthreads.
+
+type F251 = Field<251>;
+type F65521 = Field<65521>;
+
+fn field_if<F: Field>(out: *F, n: i32, cut: i32, base: F) {
+    for i in 0..n {
+        if i <= cut { out[i] = base + (i as F); }
+        else { out[i] = base; }
+    }
+}
+
+fn field_if2<F: Field>(out: *F, n: i32, base: F) {
+    for i in 0..n {
+        if i > 3000 { out[i] = base + (2 as F); }
+        else { out[i] = base; }
+    }
+}
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let P: i32 = 12;
+    let a: *i64 = alloc(n);
+    let b: *i64 = alloc(n);
+    let c: *i64 = alloc(n);
+    let f1: *F251 = alloc(n);
+    let f2: *F65521 = alloc(n);
+    let f3: *F251 = alloc(n);
+
+    for i in 0..n {
+        if i % 2 == 0 { a[i] = i as i64; }
+        else { a[i] = (0 - i) as i64; }
+    }
+    for i in 0..n {
+        let ph: i32 = i % P;
+        if ph <= P / 2 { b[i] = (ph * 2) as i64; }
+        else { b[i] = ((P - ph) * 2) as i64; }
+    }
+    for i in 0..n {
+        let ph: i32 = i % P;
+        if ph < P / 2 { c[i] = 100; } else { c[i] = 0; }
+    }
+    field_if(f1, n, 2048, 10);
+    field_if(f2, n, 2048, 20);
+    field_if2(f3, n, 30);
+
+    print(a[4095]);
+    print(b[4095]);
+    print(c[4095]);
+    print(f1[4095]);
+    print(f2[4095]);
+    print(f3[4095]);
+    var sa: i64 = 0;
+    var sb: i64 = 0;
+    var sc: i64 = 0;
+    var sf1: F251 = 0;
+    var sf2: F65521 = 0;
+    var sf3: F251 = 0;
+    var w: i32 = 0;
+    while w < n {
+        sa = sa + a[w]; sb = sb + b[w]; sc = sc + c[w];
+        sf1 = sf1 + f1[w]; sf2 = sf2 + f2[w]; sf3 = sf3 + f3[w];
+        w = w + 1;
+    }
+    print(sa); print(sb); print(sc);
+    print(sf1); print(sf2); print(sf3);
+    free(a); free(b); free(c); free(f1); free(f2); free(f3);
+    return 0;
+}

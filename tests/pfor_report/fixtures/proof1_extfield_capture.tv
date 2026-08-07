@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// PROOF1: an ExtField scalar does not fit the eight-byte worker context slot.
+
+field Proof1Base = Field<251>;
+type Proof1Ext = ExtField<Field<251>, 2>;
+
+fn main() -> i32 {
+    let output: *Proof1Ext = alloc(512);
+    let scalar: Proof1Ext = 7;
+    for i in 0..32 {
+        output[i] = scalar;
+    }
+    free(output);
+    return 0;
+}

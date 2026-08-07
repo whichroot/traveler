@@ -34,8 +34,8 @@
  * tokens (~143k) when the evaluator landed; the static token array has no
  * overflow guard, so the old cap was silent memory corruption. A capacity
  * constant only — the sanctioned "guard needed to keep Stage 1 building"
- * class of seed edit (no behavior change; matches tvc_self's own MAX_TOKENS). */
-#define MAX_TOKENS   262144
+ * class of seed edit. PROOF1 crossed 262144; the self compiler grows its pool. */
+#define MAX_TOKENS   524288
 #define MAX_AST      131072
 #define MAX_SYMBOLS  4096
 #define MAX_FIELDS   64

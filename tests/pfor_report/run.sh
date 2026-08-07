@@ -128,9 +128,12 @@ assert_reason "$REPO_DIR/tests/pfor/pfor_race_assign_carried.tv" "assign-carried
 assert_reason "$REPO_DIR/tests/pfor/pfor_race_alias_letptr.tv"   "private-base"
 assert_reason "$REPO_DIR/tests/pfor/pfor_private_escape.tv"      "private-escape"
 assert_dispatch "$REPO_DIR/tests/pfor/pfor_ok_private_var.tv"
+assert_dispatch "$REPO_DIR/tests/pfor/pfor_self_proof1_parallel.tv"
+assert_dispatch "$REPO_DIR/tests/pfor/pfor_self_dyn_cast_capture.tv"
+assert_reason "$SCRIPT_DIR/fixtures/proof1_extfield_capture.tv" "cap-elem"
 
-# PROOF0 is a separate query schema: scope-aware effects and declaration-aware
-# affine hazards beside the unchanged legacy verdict. It has no admission path.
+# The detailed recursive-proof schema exposes effects, affine hazards, captures,
+# and the legacy verdict used to audit the PROOF1 CPU authority handoff.
 PROOF0_FIXTURE="$SCRIPT_DIR/fixtures/proof0_effects.tv"
 if ! "$SELF" "$PROOF0_FIXTURE" --pfor-proof0-report \
         >"$TMP/proof0.focused.jsonl" 2>/dev/null \
@@ -165,6 +168,13 @@ if ! "$SELF" "$PROOF0_STATIC_CALLS" --pfor-proof0-report \
    || ! python3 "$SCRIPT_DIR/proof0_probe.py" --static-calls \
         "$TMP/proof0.static-calls.jsonl"; then
     echo "  FAIL proof0 focused static-call summary"; fail=1
+fi
+PROOF1_DYN_CAPTURE="$REPO_DIR/tests/pfor/pfor_self_dyn_cast_capture.tv"
+if ! "$SELF" "$PROOF1_DYN_CAPTURE" --pfor-proof0-report \
+        >"$TMP/proof1.dyn-capture.jsonl" 2>/dev/null \
+   || ! python3 "$SCRIPT_DIR/proof0_probe.py" --dyn-capture \
+        "$TMP/proof1.dyn-capture.jsonl"; then
+    echo "  FAIL proof1 implicit dyn-carrier capture"; fail=1
 fi
 legacy_focus="$("$SELF" "$PROOF0_FIXTURE" --pfor-report 2>/dev/null)"
 if ! lines_valid_json "$legacy_focus" \

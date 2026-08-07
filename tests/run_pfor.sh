@@ -215,7 +215,14 @@ done
 # ------------------------------------------------------------
 STAGE1="${TVC_SELF:-$REPO_DIR/src/bootstrap/out/stage1}"
 if [ ! -x "$STAGE1" ]; then
-    LLC="$LLC" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || true
+    LLC="$LLC" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || {
+        echo "FATAL: stage1 build failed; self-compiler pfor gates cannot run" >&2
+        exit 1
+    }
+fi
+if [ ! -x "$STAGE1" ]; then
+    echo "FATAL: self compiler is not executable at $STAGE1" >&2
+    exit 1
 fi
 if [ -x "$STAGE1" ]; then
     TOTAL=$((TOTAL + 1))
@@ -258,6 +265,7 @@ if [ -x "$STAGE1" ]; then
         "pfor_self_affine_point_wrap:0"
         "pfor_self_shadowed_read:0"
         "pfor_parity_bigliteral:2"
+        "pfor_alias_eq:1"
     )
     for entry in "${EFFECT_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"
@@ -290,6 +298,170 @@ if [ -x "$STAGE1" ]; then
             FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"
         fi
     done
+fi
+
+# PROOF1 authority handoff (tvc_self only): pin the existing-example worker
+# totals/context transfers, a 4,096-lane six-loop pthread fixture, and a dyn cast
+# whose only explicit pointer capture is primitive. Device admission remains on
+# the legacy proof and is gated separately in tests/gpu/.
+if [ -x "$STAGE1" ]; then
+    proof1_setup=1
+    "$STAGE1" "$REPO_DIR/src/lib/regime/regime_fri.tv" \
+        -o "$TMPDIR/proof1_regime_fri.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$REPO_DIR/src/lib/genus/genus_probe.tv" \
+        -o "$TMPDIR/proof1_genus_probe_lib.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$REPO_DIR/src/lib/genus/genus_alias.tv" \
+        -o "$TMPDIR/proof1_genus_alias_lib.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$REPO_DIR/examples/genus_alias_test.tv" \
+        -o "$TMPDIR/proof1_genus_alias.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$REPO_DIR/examples/genus_probe_test.tv" \
+        -o "$TMPDIR/proof1_genus_probe.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$REPO_DIR/examples/poly_core_generic_test.tv" \
+        -o "$TMPDIR/proof1_poly_core.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$PFOR_DIR/pfor_self_proof1_parallel.tv" \
+        -o "$TMPDIR/proof1_parallel.ll" >/dev/null 2>&1 \
+      && "$STAGE1" "$PFOR_DIR/pfor_self_dyn_cast_capture.tv" \
+        -o "$TMPDIR/proof1_dyn_cast.ll" >/dev/null 2>&1 \
+      || proof1_setup=0
+    if [ "$proof1_setup" = "1" ]; then
+        "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_regime_fri.ll" \
+            -o "$TMPDIR/proof1_regime_fri.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_genus_probe_lib.ll" \
+            -o "$TMPDIR/proof1_genus_probe_lib.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_genus_alias_lib.ll" \
+            -o "$TMPDIR/proof1_genus_alias_lib.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_genus_alias.ll" \
+            -o "$TMPDIR/proof1_genus_alias.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_genus_probe.ll" \
+            -o "$TMPDIR/proof1_genus_probe.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_poly_core.ll" \
+            -o "$TMPDIR/proof1_poly_core.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_parallel.ll" \
+            -o "$TMPDIR/proof1_parallel.o" 2>/dev/null \
+          && "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/proof1_dyn_cast.ll" \
+            -o "$TMPDIR/proof1_dyn_cast.o" 2>/dev/null \
+          || proof1_setup=0
+    fi
+    if [ "$proof1_setup" = "1" ]; then
+        clang $LINK_PIE "$TMPDIR/proof1_regime_fri.o" \
+            "$TMPDIR/proof1_genus_probe_lib.o" \
+            "$TMPDIR/proof1_genus_alias_lib.o" \
+            "$TMPDIR/proof1_genus_alias.o" -o "$TMPDIR/proof1_genus_alias" \
+            2>/dev/null \
+          && clang $LINK_PIE "$TMPDIR/proof1_regime_fri.o" \
+            "$TMPDIR/proof1_genus_probe_lib.o" \
+            "$TMPDIR/proof1_genus_probe.o" -o "$TMPDIR/proof1_genus_probe" \
+            2>/dev/null \
+          && clang $LINK_PIE "$TMPDIR/proof1_poly_core.o" \
+            -o "$TMPDIR/proof1_poly_core" 2>/dev/null \
+          && clang $LINK_PIE "$TMPDIR/proof1_parallel.o" \
+            -o "$TMPDIR/proof1_parallel" 2>/dev/null \
+          && clang $LINK_PIE "$TMPDIR/proof1_dyn_cast.o" \
+            -o "$TMPDIR/proof1_dyn_cast" 2>/dev/null \
+          || proof1_setup=0
+    fi
+
+    proof1_added_gate() {
+        local name="$1" ll="$2" bin="$3" want_workers="$4" expected="$5"
+        TOTAL=$((TOTAL + 1)); status="PASS"; detail=""
+        if [ "$proof1_setup" != "1" ]; then
+            status="FAIL"; detail="compile/link"
+        fi
+        if [ "$status" = "PASS" ]; then
+            got_workers=$(grep -c "define internal void @__pfor_worker" "$ll" || true)
+            if [ "$got_workers" != "$want_workers" ]; then
+                status="FAIL"; detail="workers: want $want_workers, got $got_workers"
+            fi
+        fi
+        if [ "$status" = "PASS" ]; then
+            got_calls=$(grep -c "call void @__parallel_for(" "$ll" || true)
+            if [ "$got_calls" != "$want_workers" ]; then
+                status="FAIL"; detail="dispatch calls: want $want_workers, got $got_calls"
+            fi
+        fi
+        if [ "$status" = "PASS" ]; then
+            t1=$(TRAVELER_THREADS=1 "$bin" 2>/dev/null); t1_status=$?
+            t4=$(TRAVELER_THREADS=4 "$bin" 2>/dev/null); t4_status=$?
+            t32=$(TRAVELER_THREADS=32 "$bin" 2>/dev/null); t32_status=$?
+            if [ "$t1_status" != "0" ] || [ "$t4_status" != "0" ] \
+                || [ "$t32_status" != "0" ]; then
+                status="FAIL"; detail="non-zero exit at T=1/4/32"
+            elif [ "$t1" != "$expected" ]; then
+                status="FAIL"; detail="serial output != fixed oracle"
+            elif [ "$t4" != "$t1" ] || [ "$t32" != "$t1" ]; then
+                status="FAIL"; detail="parallel output != serial oracle"
+            fi
+        fi
+        if [ "$status" = "PASS" ]; then
+            printf "  [%2d] %-32s PASS (PROOF1 T=1/4/32)\n" \
+                "$TOTAL" "$name"; PASS=$((PASS + 1))
+        else
+            printf "  [%2d] %-32s FAIL (%s)\n" "$TOTAL" "$name" "$detail"
+            FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"
+        fi
+    }
+
+    proof1_added_gate "proof1_genus_alias" \
+        "$TMPDIR/proof1_genus_alias.ll" "$TMPDIR/proof1_genus_alias" 1 \
+        "1
+2
+-1
+2
+5031
+2
+2
+71"
+    proof1_added_gate "proof1_genus_probe" \
+        "$TMPDIR/proof1_genus_probe.ll" "$TMPDIR/proof1_genus_probe" 5 \
+        "1
+4
+1
+8
+0
+8
+2
+4
+3
+1"
+    proof1_added_gate "proof1_poly_core" \
+        "$TMPDIR/proof1_poly_core.ll" "$TMPDIR/proof1_poly_core" 5 \
+        "10
+13
+17
+22
+73
+10
+3
+1
+10
+13
+17
+22
+73
+10
+3
+1
+5
+73"
+    proof1_added_gate "proof1_parallel_4096" \
+        "$TMPDIR/proof1_parallel.ll" "$TMPDIR/proof1_parallel" 6 \
+        "-4095
+6
+100
+10
+20
+32
+-2048
+24564
+205000
+114
+17903
+72"
+    proof1_added_gate "proof1_dyn_cast_capture" \
+        "$TMPDIR/proof1_dyn_cast.ll" "$TMPDIR/proof1_dyn_cast" 1 \
+        "0
+3
+79"
 fi
 
 # ------------------------------------------------------------

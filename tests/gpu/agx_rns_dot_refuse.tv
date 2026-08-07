@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Nearby nested dots stay serial unless both the K=8 bound and index map match.
+// Nearby nested dots stay outside AGX unless the K=8 bound and index map match.
+// PROOF1 may still CPU-dispatch their iteration-independent outer loops.
 field AgxDotRefuse = Field<2013265921>;
 
 fn main() -> i32 {

@@ -25,15 +25,18 @@ def read_rows(path: str) -> list[dict]:
 
 
 def check_corpus(rows: list[dict]) -> None:
-    if len(rows) != 346:
-        raise ValueError(f"expected 346 corpus summaries, saw {len(rows)}")
+    if len(rows) != 408:
+        raise ValueError(f"expected 408 corpus summaries, saw {len(rows)}")
+    if any(row.get("line", 0) <= 0 or row.get("col", 0) <= 0 for row in rows):
+        raise ValueError("PROOF1 emitted a missing/invalid source location")
     dispatched = sum(row["legacy_dispatched"] for row in rows)
     cpu = sum(row["cpu_effects"] for row in rows)
     agx = sum(row["agx_effects"] for row in rows)
     cpu_candidate = sum(row["cpu_candidate"] for row in rows)
+    cpu_dispatched = sum(row["cpu_dispatched"] for row in rows)
     agx_candidate = sum(row["agx_candidate"] for row in rows)
     independent = sum(row["legacy_independent"] for row in rows)
-    if dispatched != 171:
+    if dispatched != 206:
         raise ValueError(
             f"legacy dispatch baseline changed: dispatched={dispatched}, "
             f"cpu={cpu}, agx={agx}"
@@ -41,7 +44,7 @@ def check_corpus(rows: list[dict]) -> None:
     incomplete = [row for row in rows if row["complete"] == 0]
     if len(incomplete) != 1 or incomplete[0]["reason"] != "unsupported-node":
         raise ValueError("unexpected whole-corpus summary incompleteness")
-    if (cpu, agx) != (215, 144):
+    if (cpu, agx) != (262, 179):
         raise ValueError(
             f"PROOF0 effect baseline changed: cpu={cpu} agx={agx}"
         )
@@ -50,13 +53,13 @@ def check_corpus(rows: list[dict]) -> None:
         for key in ("calls", "unknown_calls", "effectful_calls",
                     "read_calls", "addresses")
     )
-    if call_totals != (134, 30, 64, 1, 13):
+    if call_totals != (148, 33, 68, 1, 14):
         raise ValueError(f"LANG1 call-effect totals changed: {call_totals}")
     widths = tuple(
         sum(row["iterator_width"] == width for row in rows)
         for width in (0, 32, 64)
     )
-    if widths != (1, 339, 6):
+    if widths != (1, 401, 6):
         raise ValueError(f"LANG1 iterator-width census changed: {widths}")
     cpu_added = sum(
         row["cpu_candidate"] == 1 and row["legacy_independent"] == 0
@@ -67,10 +70,30 @@ def check_corpus(rows: list[dict]) -> None:
         for row in rows
     )
     census = (independent, cpu_candidate, agx_candidate, cpu_added, cpu_removed)
-    if census != (171, 177, 130, 6, 0):
-        raise ValueError(f"LANG1 candidate census changed: {census}")
+    if census != (206, 216, 163, 10, 0):
+        raise ValueError(f"PROOF1 candidate census changed: {census}")
+    operationally_blocked = [
+        row for row in rows
+        if row["cpu_candidate"] == 1 and row["cpu_dispatched"] == 0
+    ]
+    if cpu_dispatched != 216 or operationally_blocked:
+        raise ValueError(
+            "PROOF1 operational census changed: "
+            f"dispatched={cpu_dispatched} blocked={operationally_blocked}"
+        )
+    prior_workers = [row for row in rows if row["legacy_dispatched"] == 1]
+    parity_keys = (
+        "capture_set_parity", "capture_order_parity",
+        "write_set_parity", "write_order_parity",
+    )
+    for key in parity_keys:
+        mismatches = [row for row in prior_workers if row[key] != 1]
+        if mismatches:
+            raise ValueError(
+                f"PROOF1 {key} failed for {len(mismatches)} prior workers"
+            )
     print(
-        "LANG1 candidate census: "
+        "PROOF1 candidate census: "
         f"legacy-independent={independent} cpu={cpu_candidate} "
         f"agx={agx_candidate} cpu-added={cpu_added} cpu-removed={cpu_removed}"
     )
@@ -97,12 +120,47 @@ def check_corpus(rows: list[dict]) -> None:
         "examples/poly_core_generic_test.tv:forward_sum_F251:ki#1",
         "examples/poly_core_generic_test.tv:forward_sum_F65521:ki#1",
         "examples/poly_core_generic_test.tv:regime_detect_F251:k#1",
+        "src/lib/crypto/mds_check.tv:mds_build_matrix_dyn:j#1",
+        "src/lib/crypto/poseidon2_wide.tv:mds_external_w_dyn:k#1",
+        "src/lib/features/relational.tv:mat_trace_pow_dyn:j#1",
+        "src/lib/genus/genus_alias.tv:genus_onset_modp:i#1",
     ]
     expected_removed: list[str] = []
     if added_ids != expected_added or removed_ids != expected_removed:
         raise ValueError(
             f"LANG1 exact candidate delta changed: "
             f"added={added_ids} removed={removed_ids}"
+        )
+    operational_added_ids: list[str] = []
+    operational_added_caps: dict[str, list[str]] = {}
+    seen.clear()
+    for row in rows:
+        base = (row["source"], row["fn"], row["var"])
+        ordinal = seen.get(base, 0) + 1
+        seen[base] = ordinal
+        if row["cpu_dispatched"] == 1 and row["legacy_dispatched"] == 0:
+            stable_id = f"{base[0]}:{base[1]}:{base[2]}#{ordinal}"
+            operational_added_ids.append(stable_id)
+            operational_added_caps[stable_id] = row["proof_captures"]
+    if operational_added_ids != expected_added:
+        raise ValueError(
+            f"PROOF1 exact operational delta changed: {operational_added_ids}"
+        )
+    expected_added_caps = {
+        expected_added[0]: ["data", "p", "red"],
+        expected_added[1]: ["P", "data"],
+        expected_added[2]: ["P", "data"],
+        expected_added[3]: ["order", "coeffs", "reg"],
+        expected_added[4]: ["order", "coeffs", "reg"],
+        expected_added[5]: ["order", "data", "reg"],
+        expected_added[6]: ["i", "t", "v", "m", "__field"],
+        expected_added[7]: ["state", "nchunks", "sums", "__field"],
+        expected_added[8]: ["m", "i", "P", "M", "Q", "__field"],
+        expected_added[9]: ["data", "p", "red"],
+    }
+    if operational_added_caps != expected_added_caps:
+        raise ValueError(
+            f"PROOF1 addition capture order changed: {operational_added_caps}"
         )
     expected_width_excluded = [
         "examples/for_i64_bounds.tv:main:j#1",
@@ -146,11 +204,15 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "90343e67ce2a12f50a0c288cd90ea4f1d605864b9e283b603a1b9f95ee31da7a"
+        "715fc45db68650690805e02b449d39270ea198be888bf5677cbe8bd9d5cb8d52"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")
-    print(f"LANG1 corpus PASS: 346 records, effects cpu={cpu} agx={agx}")
+    print(
+        "PROOF1 corpus PASS: 408 records, "
+        f"effects cpu={cpu} agx={agx}, dispatch 206->216, "
+        "prior capture/write parity 206/206"
+    )
 
 
 def check_affine(rows: list[dict]) -> None:
@@ -230,7 +292,8 @@ def check_closures(rows: list[dict]) -> None:
             cpu_candidate=0)
     require(rows[7], legacy_independent=1, legacy_reason="", calls=1,
             unknown_calls=0, effectful_calls=0, read_calls=0,
-            cpu_effects=1, affine_safe=1, cpu_candidate=1)
+            cpu_effects=1, affine_safe=1, cpu_candidate=1,
+            proof_elem_ok=1, cpu_dispatched=1)
     print("LANG1 closure PASS: direct identities cross and erased/effectful calls refuse")
 
 
@@ -248,10 +311,12 @@ def check_static_calls(rows: list[dict]) -> None:
             addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
     require(rows[2], legacy_independent=0, legacy_reason="extern-call", calls=1,
             overload_ops=0, unknown_calls=0, effectful_calls=0,
-            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1,
+            proof_elem_ok=0, cpu_dispatched=0, cpu_reason="cap-elem")
     require(rows[3], legacy_independent=0, legacy_reason="mutating-call", calls=1,
             overload_ops=1, unknown_calls=0, effectful_calls=0,
-            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1,
+            proof_elem_ok=0, cpu_dispatched=0, cpu_reason="cap-elem")
     require(rows[4], legacy_independent=0, legacy_reason="extern-call", calls=1,
             overload_ops=0, unknown_calls=0, effectful_calls=0,
             addresses=1, cpu_effects=0, affine_safe=1, cpu_candidate=0)
@@ -263,20 +328,23 @@ def check_static_calls(rows: list[dict]) -> None:
             effectful_calls=1, addresses=0, cpu_effects=0, cpu_candidate=0)
     require(rows[7], legacy_independent=1, legacy_reason="", calls=0,
             overload_ops=0, unknown_calls=0, effectful_calls=0,
-            addresses=1, cpu_effects=0, affine_safe=1, cpu_candidate=0)
+            addresses=1, cpu_effects=0, affine_safe=1, cpu_candidate=0,
+            cpu_dispatched=0, cpu_reason="private-escape")
     require(rows[8], iterator_width=64, legacy_independent=1,
             legacy_reason="", calls=0, overload_ops=0, unknown_calls=0,
             effectful_calls=0, addresses=0, cpu_effects=1, agx_effects=0,
             affine_safe=1, cpu_candidate=1, agx_candidate=0)
     require(rows[9], legacy_independent=0, legacy_reason="extern-call", calls=1,
             overload_ops=0, unknown_calls=0, effectful_calls=0,
-            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1)
+            addresses=0, cpu_effects=1, affine_safe=1, cpu_candidate=1,
+            proof_elem_ok=0, cpu_dispatched=0, cpu_reason="cap-elem")
     print("LANG1 static-call PASS: direct, generic, trait, and operator targets resolve")
 
 
 def check_adversarial(rows: list[dict]) -> None:
     if len(rows) != 12:
         raise ValueError(f"expected 12 adversarial summaries, saw {len(rows)}")
+    rows.sort(key=lambda row: (row["line"], row["col"]))
     if any(row["complete"] != 1 or row["reason"] != "" for row in rows):
         raise ValueError("adversarial PROOF0 summary is incomplete")
     require(rows[0], legacy_reason="mutating-call", calls=1,
@@ -315,6 +383,16 @@ def check_adversarial(rows: list[dict]) -> None:
     print("PROOF0-b adversarial PASS: false-safe counterexamples refused")
 
 
+def check_dyn_capture(rows: list[dict]) -> None:
+    if len(rows) != 1:
+        raise ValueError(f"expected 1 dyn-capture summary, saw {len(rows)}")
+    require(rows[0], complete=1, cpu_candidate=1, needs_dyn_field=1,
+            proof_captures=["out", "__field"], proof_elem_ok=1,
+            capture_set_parity=1, capture_order_parity=1,
+            cpu_dispatched=1, cpu_reason="")
+    print("PROOF1 dyn capture PASS: primitive map carries implicit __field")
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--corpus":
         check_corpus(read_rows(sys.argv[2]))
@@ -331,16 +409,20 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--static-calls":
         check_static_calls(read_rows(sys.argv[2]))
         return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--dyn-capture":
+        check_dyn_capture(read_rows(sys.argv[2]))
+        return 0
     if len(sys.argv) != 2:
         raise SystemExit(
             "usage: proof0_probe.py REPORT.jsonl | "
             "--adversarial REPORT.jsonl | --affine REPORT.jsonl | "
             "--closures REPORT.jsonl | --static-calls REPORT.jsonl | "
-            "--corpus REPORT.jsonl"
+            "--dyn-capture REPORT.jsonl | --corpus REPORT.jsonl"
         )
     rows = read_rows(sys.argv[1])
     if len(rows) != 17:
         raise ValueError(f"expected 17 loop summaries, saw {len(rows)}")
+    rows.sort(key=lambda row: (row["line"], row["col"]))
     if any(row["complete"] != 1 or row["reason"] != "" for row in rows):
         raise ValueError("focused PROOF0 summary is incomplete")
 
