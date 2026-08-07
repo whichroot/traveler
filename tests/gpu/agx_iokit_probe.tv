@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Direct Traveler -> IOKit/Mach ABI probe for the measured G16X profile.
+import "../../src/lib/gpu/agx_ffi.tv";
+
+fn main() -> i32 {
+    let connection: *u32 = alloc(1);
+    let notification: *u32 = alloc(1);
+    connection[0] = 0;
+    notification[0] = 0;
+    let ok: i32 = agx_open_profile(connection, notification);
+    if ok == 0 {
+        print(0);
+        free(notification);
+        free(connection);
+        return 1;
+    }
+    print(1);
+    IOServiceClose(connection[0]);
+    free(notification);
+    free(connection);
+    return 0;
+}

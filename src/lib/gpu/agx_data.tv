@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// File and canonical-hex readers for the G16X runtime. Darwin-specific calls
+// stay in agx_ffi.tv; this module is portable and has no device side effects.
+// @internal-design: apple-silicon
+
+extern "C" fn fopen(path: *u8, mode: *u8) -> *u8;
+extern "C" fn fread(buffer: *u8, size: i64, count: i64, file: *u8) -> i64;
+extern "C" fn fclose(file: *u8) -> i32;
+extern "C" fn fseek(file: *u8, offset: i64, origin: i32) -> i32;
+extern "C" fn ftell(file: *u8) -> i64;
+
+fn agx_read_file(path: *u8, data_out: **u8, size_out: *i64) -> i32 {
+    let file: *u8 = fopen(path, "rb");
+    if file == null { return 0; }
+    if fseek(file, 0, 2) != 0 {
+        fclose(file);
+        return 0;
+    }
+    let size: i64 = ftell(file);
+    if size <= 0 || fseek(file, 0, 0) != 0 {
+        fclose(file);
+        return 0;
+    }
+    let data: *u8 = alloc(size + 1);
+    let got: i64 = fread(data, 1, size, file);
+    fclose(file);
+    if got != size {
+        free(data);
+        return 0;
+    }
+    data[size] = 0;
+    data_out[0] = data;
+    size_out[0] = size;
+    return 1;
+}
+
+fn agx_get_u32(data: *u8, offset: i64) -> u32 {
+    return (data[offset] as u32)
+        | ((data[offset + 1] as u32) << 8)
+        | ((data[offset + 2] as u32) << 16)
+        | ((data[offset + 3] as u32) << 24);
+}
+
+fn agx_get_i32(data: *u8, offset: i64) -> i32 {
+    return agx_get_u32(data, offset) as i32;
+}
+
+fn agx_get_u64(data: *u8, offset: i64) -> u64 {
+    let low: u64 = agx_get_u32(data, offset) as u64;
+    let high: u64 = agx_get_u32(data, offset + 4) as u64;
+    return low | (high << 32);
+}
+
+fn agx_put_u16(data: *u8, offset: i64, value: u32) {
+    data[offset] = value as u8;
+    data[offset + 1] = (value >> 8) as u8;
+}
+
+fn agx_put_u32(data: *u8, offset: i64, value: u32) {
+    data[offset] = value as u8;
+    data[offset + 1] = (value >> 8) as u8;
+    data[offset + 2] = (value >> 16) as u8;
+    data[offset + 3] = (value >> 24) as u8;
+}
+
+fn agx_put_u64(data: *u8, offset: i64, value: u64) {
+    agx_put_u32(data, offset, value as u32);
+    agx_put_u32(data, offset + 4, (value >> 32) as u32);
+}
+
+fn agx_bytes_equal(data: *u8, offset: i64, text: *u8) -> i32 {
+    var i: i64 = 0;
+    while text[i] != 0 {
+        if data[offset + i] != text[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn agx_hex_value(ch: u8) -> i32 {
+    if ch >= 48 && ch <= 57 { return (ch - 48) as i32; }
+    if ch >= 97 && ch <= 102 { return (ch - 87) as i32; }
+    if ch >= 65 && ch <= 70 { return (ch - 55) as i32; }
+    return 0 - 1;
+}
+
+fn agx_parse_decimal(data: *u8, start: i64, end: i64) -> u64 {
+    var value: u64 = 0;
+    var i: i64 = start;
+    while i < end && data[i] >= 48 && data[i] <= 57 {
+        value = value * 10 + ((data[i] - 48) as u64);
+        i = i + 1;
+    }
+    return value;
+}
+
+// Parses the canonical text emitted by --emit-gpu-agx. The runtime accepts the
+// exact G16X profile spelling and one complete code block; skip records and
+// malformed/truncated artifacts are refused.
+fn agx_load_artifact(path: *u8, code_out: **u8, code_size_out: *i32,
+                     prime_out: *u64) -> i32 {
+    let data_slot: **u8 = alloc(1);
+    let size_slot: *i64 = alloc(1);
+    if agx_read_file(path, data_slot, size_slot) == 0 {
+        free(size_slot);
+        free(data_slot as *u8);
+        return 0;
+    }
+    let data: *u8 = data_slot[0];
+    let size: i64 = size_slot[0];
+    free(size_slot);
+    free(data_slot as *u8);
+
+    let code: *u8 = alloc(size);
+    var code_size: i32 = 0;
+    var declared: i32 = 0 - 1;
+    var prime: u64 = 0;
+    var profile_ok: i32 = 0;
+    var in_code: i32 = 0;
+    var saw_code: i32 = 0;
+    var saw_end: i32 = 0;
+    var at: i64 = 0;
+    while at < size {
+        let start: i64 = at;
+        while at < size && data[at] != 10 && data[at] != 13 { at = at + 1; }
+        let end: i64 = at;
+        while at < size && (data[at] == 10 || data[at] == 13) { at = at + 1; }
+
+        if end - start == 26
+            && agx_bytes_equal(data, start, "profile agx-g16x-macos26.3") == 1 {
+            profile_ok = 1;
+        } else if end - start >= 7 && agx_bytes_equal(data, start, "field ") == 1 {
+            prime = agx_parse_decimal(data, start + 6, end);
+        } else if end - start >= 7 && agx_bytes_equal(data, start, "bytes ") == 1 {
+            declared = agx_parse_decimal(data, start + 6, end) as i32;
+        } else if end - start == 4 && agx_bytes_equal(data, start, "code") == 1 {
+            if saw_code != 0 { free(code); free(data); return 0; }
+            in_code = 1;
+            saw_code = 1;
+        } else if end - start >= 4 && agx_bytes_equal(data, start, "end ") == 1 {
+            if in_code == 0 { free(code); free(data); return 0; }
+            in_code = 0;
+            saw_end = 1;
+        } else if in_code != 0 {
+            var i: i64 = start;
+            while i < end {
+                let high: i32 = agx_hex_value(data[i]);
+                if high < 0 { i = i + 1; continue; }
+                if i + 1 >= end {
+                    free(code); free(data); return 0;
+                }
+                let low: i32 = agx_hex_value(data[i + 1]);
+                if low < 0 {
+                    free(code); free(data); return 0;
+                }
+                code[code_size] = ((high << 4) | low) as u8;
+                code_size = code_size + 1;
+                i = i + 2;
+            }
+        }
+    }
+
+    free(data);
+    if profile_ok == 0 || prime == 0 || saw_code == 0 || saw_end == 0
+        || in_code != 0 || declared != code_size || code_size < 4 {
+        free(code);
+        return 0;
+    }
+    if code[code_size - 4] != 14 || code[code_size - 3] != 0
+        || code[code_size - 2] != 0 || code[code_size - 1] != 0 {
+        free(code);
+        return 0;
+    }
+    code_out[0] = code;
+    code_size_out[0] = code_size;
+    prime_out[0] = prime;
+    return 1;
+}

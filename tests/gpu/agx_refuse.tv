@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-0 refusal fixture: each loop passes the CPU pfor proof but is outside the
+// direct target's current arithmetic or body model.
+// @internal-note: plan-gpu-agx-target
+
+field F31 = Field<2147483647>;
+field F64 = Field<18446744069414584321>;
+
+fn main() -> i32 {
+    let a31: *F31 = alloc(8);
+    let out31: *F31 = alloc(8);
+    let a64: *F64 = alloc(8);
+    let out64: *F64 = alloc(8);
+
+    // AGX-0b admits the proved 2^64-59 profile, not every 64-bit prime.
+    for i in 0..8 {
+        out64[i] = a64[i] * a64[i];
+    }
+
+    // Private body locals are outside the Stage-0 all-index-assign class.
+    for j in 0..8 {
+        let x: F31 = a31[j] * a31[j];
+        out31[j] = x + 3;
+    }
+
+    // The current SIMT identity and authored geometry are i32.
+    for k in (0 as i64)..(8 as i64) {
+        out31[k] = a31[k] * a31[k];
+    }
+    return 0;
+}

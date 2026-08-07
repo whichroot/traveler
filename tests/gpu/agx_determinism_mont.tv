@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-2 differential fixture: the same pfor worker emits CPU or raw GPU bytes.
+import "../../src/lib/gpu/agx_runtime.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+field AgxDetF = Field<2013265921>;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc < 2 { return 2; }
+    let n: i32 = 256;
+    let prime: u64 = 2013265921;
+    let input: *AgxDetF = alloc(n);
+    let cpu: *AgxDetF = alloc(n);
+    var state: u64 = 0xbb67ae8584caa73b;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        input[i] = (state % prime) as AgxDetF;
+        i = i + 1;
+    }
+    input[0] = 0; input[1] = 1; input[2] = (prime - 1) as AgxDetF;
+    input[3] = (prime / 2) as AgxDetF;
+    input[4] = (prime / 2 + 1) as AgxDetF;
+
+    if argv[1][0] == 99 {
+        for j in 0..256 {
+            cpu[j] = input[j] * input[j] + 3;
+        }
+        let put: i64 = write(1, cpu as *u8, 1024);
+        free(cpu); free(input);
+        if put != 1024 { return 2; }
+        return 0;
+    }
+    if argv[1][0] == 103 && argc == 4 {
+        let gpu: *u32 = alloc(n);
+        let ok: i32 = agx_run_words(argv[2], argv[3], input as *u32,
+                                    n, n, gpu);
+        var put: i64 = 0;
+        if ok != 0 { put = write(1, gpu as *u8, 1024); }
+        free(gpu); free(cpu); free(input);
+        if ok == 0 { return 1; }
+        if put != 1024 { return 2; }
+        return 0;
+    }
+    free(cpu); free(input);
+    return 2;
+}

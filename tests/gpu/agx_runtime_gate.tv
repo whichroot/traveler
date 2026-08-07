@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: Apache-2.0
+// Native Traveler IOKit runtime gate: emitted code and captured profile in,
+// eight exact field results out. The executable links no project C/Objective-C.
+import "../../src/lib/gpu/agx_runtime.tv";
+
+field AgxGateF64 = Field<18446744073709551557>;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 3 && argc != 4 { return 2; }
+    let code: **u8 = alloc(1);
+    let code_size: *i32 = alloc(1);
+    let prime_slot: *u64 = alloc(1);
+    if agx_load_artifact(argv[2], code, code_size, prime_slot) == 0 {
+        free(prime_slot); free(code_size); free(code as *u8);
+        return 1;
+    }
+    free(code[0]);
+    let prime: u64 = prime_slot[0];
+    free(prime_slot); free(code_size); free(code as *u8);
+
+    let values: *u64 = alloc(8);
+    let input: *u32 = alloc(16);
+    let output: *u32 = alloc(16);
+    values[0] = 0;
+    values[1] = 1;
+    values[2] = prime - 1;
+    values[3] = prime / 2;
+    values[4] = prime / 2 + 1;
+    values[5] = 12345;
+    values[6] = 67890;
+    values[7] = (1073741824 as u64) % prime;
+    var words: i32 = 8;
+    var i: i32 = 0;
+    if prime > (0xffffffff as u64) {
+        words = 16;
+        while i < 8 {
+            input[i * 2] = values[i] as u32;
+            input[i * 2 + 1] = (values[i] >> 32) as u32;
+            i = i + 1;
+        }
+    } else {
+        while i < 8 {
+            input[i] = values[i] as u32;
+            i = i + 1;
+        }
+    }
+    var ran: i32 = 0;
+    if argc == 4 {
+        ran = agx_run_words_recovery(argv[1], argv[2], input, words, 8, output);
+    } else {
+        ran = agx_run_words(argv[1], argv[2], input, words, 8, output);
+    }
+    if ran == 0 {
+        print(g_agx_error);
+        free(output); free(input); free(values);
+        return 1;
+    }
+    i = 0;
+    while i < 8 {
+        var got: u64 = output[i] as u64;
+        var expected: u64 = 0;
+        if prime > (0xffffffff as u64) {
+            got = (output[i * 2] as u64)
+                | ((output[i * 2 + 1] as u64) << 32);
+            let field_value: AgxGateF64 = values[i] as AgxGateF64;
+            let field_expected: AgxGateF64 = field_value * field_value + 3;
+            expected = field_expected as u64;
+        } else {
+            expected = (values[i] * values[i] + 3) % prime;
+        }
+        if got != expected {
+            print(100 + i);
+            print(got as i64);
+            print(expected as i64);
+            free(output); free(input); free(values);
+            return 1;
+        }
+        i = i + 1;
+    }
+    free(output); free(input); free(values);
+    print(1);
+    return 0;
+}

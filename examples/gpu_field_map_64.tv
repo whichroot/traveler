@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// AGX-0b two-limb exhibit: exact elementwise field arithmetic over
+// p = 2^64 - 59, lowered to 32-bit G16X instructions and synthesized carries.
+// @internal-note: plan-gpu-agx-target
+
+field F = Field<18446744073709551557>;
+
+fn main() -> i32 {
+    let n: i32 = 4096;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        a[i] = (i * 2 + 1) as F;
+        i = i + 1;
+    }
+
+    for j in 0..4096 {
+        out[j] = a[j] * a[j] + 3;
+    }
+
+    print(out[0]);
+    print(out[7]);
+    print(out[4095]);
+    return 0;
+}

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
 // gpu_field_map.tv — Stage-0 GPU exhibit: the pfor-dispatched elementwise field
-// map out[j] = a[j]*a[j] + 3, re-emitted as a device kernel — an amdgpu_kernel
-// under --emit-gpu, a ptx_kernel under --emit-gpu-nvptx (CPU output is the
-// correctness anchor; gate: llc lowers it for gfx1100 and for sm_90).
+// map out[j] = a[j]*a[j] + 3, re-emitted as an amdgpu_kernel, a ptx_kernel, or
+// direct AGX G16X instructions. CPU output is the correctness anchor.
 // @internal-note: plan-gpu-purity-runtime
+// @internal-note: plan-gpu-agx-target
 
 field F = Field<2147483647>;
 

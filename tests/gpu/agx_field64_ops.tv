@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-0b arithmetic gate: both modular directions feed a 64-bit multiply.
+// @internal-note: plan-gpu-agx-target
+
+field F = Field<18446744073709551557>;
+
+fn main() -> i32 {
+    let a: *F = alloc(8);
+    let out: *F = alloc(8);
+    for i in 0..8 {
+        out[i] = (a[i] - 5) * (a[i] + 7);
+    }
+    return 0;
+}

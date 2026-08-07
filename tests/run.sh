@@ -1392,9 +1392,8 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
 fi
 
 # --- GPU Stage-0 device codegen gate (@internal-note: plan-gpu-purity-runtime) ---
-# Re-emits a proven-parallel pfor worker as an amdgpu_kernel and asserts llc
-# lowers it to a valid gfx1100 code object (no GPU hardware). Skips cleanly if
-# the local llc lacks the amdgcn target. tvc_self-only (--emit-gpu).
+# AMDGCN object + NVPTX PTX via llc, plus direct AGX G16X byte goldens and
+# optional owned-M4 execution. @internal-note: plan-gpu-agx-target.
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== gpu Stage-0 (tests/gpu/run.sh) ==="

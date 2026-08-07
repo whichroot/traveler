@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// @internal-note: plan-gpu-agx-target
+field F = Field<18446744073709551557>;
+fn main() -> i32 {
+    let a: *F = alloc(8);
+    let out: *F = alloc(8);
+    for i in 0..8 { out[i] = a[i] - 5; }
+    return 0;
+}

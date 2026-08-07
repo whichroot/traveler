@@ -147,12 +147,23 @@ tests/                 test suite (regression, parity, pfor, dynfield, bootstrap
   transport.
 - **Formatter** (`src/tools/tvfmt.tv`) — idempotent, meaning-preserving.
 - **Doc generator** (`src/tools/tvdoc.tv`) — Markdown API docs from source.
+- **GPU codegen** — proven elementwise loops can emit AMDGCN LLVM IR
+  (`--emit-gpu`), NVPTX LLVM IR (`--emit-gpu-nvptx`), or direct Apple AGX G16X
+  instruction hex (`--emit-gpu-agx`). The AGX profile is deliberately narrow
+  and unsupported by Apple: one-input/one-output exact field maps over the
+  execution-proven Mersenne and Montgomery ranges, plus the canonical 64-bit
+  prime `2^64-59` through two u32 limbs. On the measured M4 profile,
+  `src/lib/gpu/` submits those artifacts directly through IOKit; its executable
+  links no Metal, private framework, or project C/Objective-C. A same-source
+  differential runs 256 adversarial/reproducible-random elements per profile
+  through CPU pfor and AGX and requires byte-exact output and equal status.
 
 ## Tests
 
 ```sh
 tests/run_dual.sh    # the full gate: regression + pfor + dynfield + bootstrap,
                      # then Stage 1 build + dual-compiler parity
+tests/gpu/run.sh     # AMD/NV codegen + AGX bytes, IOKit runtime, CPU/GPU parity
 ```
 
 Stage 2 (the compiler compiling itself) must be byte-identical to Stage 3 (Stage 2 compiling

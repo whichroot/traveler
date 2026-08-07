@@ -1,8 +1,8 @@
 #!/bin/bash
-# Stage-0 GPU device-codegen gate. @internal-note: plan-gpu-purity-runtime.
+# GPU device-codegen and measured-profile runtime gate.
+# @internal-note: plan-gpu-purity-runtime.
 #
-# Proves that a proven-parallel pfor worker re-emits as a valid device kernel on
-# BOTH device targets, with NO GPU hardware:
+# Proves that a proven-parallel pfor worker re-emits on three device targets:
 #   AMDGCN (--emit-gpu)        `llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100`
 #                              lowers to a real gfx1100 code object that
 #                              disassembles to sane GCN (s_endpgm + memory op).
@@ -10,7 +10,10 @@
 #                              lowers to PTX with a .visible .entry, the
 #                              .maxntid launch bound, %tid.x/%ctaid.x SIMT reads
 #                              and .global memory ops.
-# Mirrors the IR-graph Stage-0 discipline — pure codegen, zero hardware.
+#   AGX     (--emit-gpu-agx)    directly emits G16X instructions. Canonical
+#                              byte-goldens run everywhere; owned-queue execution
+#                              and the Traveler-native IOKit runtime run on the
+#                              measured M4 profile.
 #
 # Each leg skips cleanly if the local llc lacks that target; the gate fails only
 # on a real lowering failure.
@@ -39,7 +42,7 @@ find_llc
 # The objdump that ships beside llc (for the disasm sanity check).
 OBJDUMP="$(dirname "$LLC")/llvm-objdump"
 
-echo "=== Stage-0 GPU device codegen gate (tests/gpu) ==="
+echo "=== GPU target and AGX runtime gate (tests/gpu) ==="
 
 # Which device targets are built into this llc? Each leg needs its own; a
 # missing target is a SKIP (not a failure), a lowering error is a FAIL.
@@ -47,10 +50,6 @@ TARGETS="$("$LLC" --version 2>/dev/null)"
 HAVE_AMD=0; HAVE_NV=0
 echo "$TARGETS" | grep -qiE '^\s*amdgcn'  && HAVE_AMD=1
 echo "$TARGETS" | grep -qiE '^\s*nvptx64' && HAVE_NV=1
-if [ "$HAVE_AMD" = "0" ] && [ "$HAVE_NV" = "0" ]; then
-    echo "  SKIP: this llc has neither the amdgcn nor the nvptx64 target."
-    exit 0
-fi
 
 STAGE1="$REPO_DIR/src/bootstrap/out/stage1"
 if [ ! -x "$STAGE1" ]; then
@@ -62,9 +61,163 @@ fi
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 EXHIBIT="$REPO_DIR/examples/gpu_field_map.tv"
+MONT_EXHIBIT="$REPO_DIR/examples/gpu_field_map_mont.tv"
+WIDE_EXHIBIT="$REPO_DIR/examples/gpu_field_map_64.tv"
 DEV="$TMP/gpu_dev.ll"
 OBJ="$TMP/gpu_dev.o"
 fail=0
+
+# ============================== AGX leg (--emit-gpu-agx) ====================
+# The compiler is the assembler: portable goldens pin every emitted byte. On the
+# owned M4, the same bytes are injected into the Metal-free queue and executed.
+echo "  -- AGX G16X (--emit-gpu-agx)"
+AGX_DEV="$TMP/gpu_field_map.agx.hex"
+AGX_MONT_DEV="$TMP/gpu_field_map_mont.agx.hex"
+AGX_WIDE_DEV="$TMP/gpu_field_map_64.agx.hex"
+AGX_WIDE_ID="$TMP/agx_field64_identity.hex"
+AGX_WIDE_OPS="$TMP/agx_field64_ops.hex"
+AGX_GOLD="$SCRIPT_DIR/golden/gpu_field_map.agx.hex"
+AGX_MONT_GOLD="$SCRIPT_DIR/golden/gpu_field_map_mont.agx.hex"
+AGX_WIDE_GOLD="$SCRIPT_DIR/golden/gpu_field_map_64.agx.hex"
+AGX_REFUSE="$TMP/agx_refuse.hex"
+AGX_RUNTIME_LL="$TMP/agx_runtime_gate.ll"
+AGX_RUNTIME_OBJ="$TMP/agx_runtime_gate.o"
+AGX_RUNTIME_EXE="$TMP/agx-runtime-gate"
+
+if ! "$STAGE1" --emit-gpu-agx "$EXHIBIT" -o "$AGX_DEV" 2>/dev/null; then
+    echo "  FAIL: --emit-gpu-agx did not produce the Mersenne artifact"; fail=1
+elif ! "$STAGE1" --emit-gpu-agx "$MONT_EXHIBIT" -o "$AGX_MONT_DEV" 2>/dev/null; then
+    echo "  FAIL: --emit-gpu-agx did not produce the Montgomery artifact"; fail=1
+elif ! "$STAGE1" --emit-gpu-agx "$WIDE_EXHIBIT" -o "$AGX_WIDE_DEV" 2>/dev/null; then
+    echo "  FAIL: --emit-gpu-agx did not produce the 64-bit artifact"; fail=1
+elif ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_field64_identity.tv" -o "$AGX_WIDE_ID" 2>/dev/null; then
+    echo "  FAIL: --emit-gpu-agx did not produce the 64-bit identity artifact"; fail=1
+elif ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_field64_ops.tv" -o "$AGX_WIDE_OPS" 2>/dev/null; then
+    echo "  FAIL: --emit-gpu-agx did not produce the 64-bit ops artifact"; fail=1
+elif ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_refuse.tv" -o "$AGX_REFUSE" 2>/dev/null; then
+    echo "  FAIL: --emit-gpu-agx did not produce refusal records"; fail=1
+else
+    agxfail=0
+    cmp -s "$AGX_DEV" "$AGX_GOLD" || { echo "  FAIL: Mersenne AGX bytes differ from golden"; agxfail=1; }
+    cmp -s "$AGX_MONT_DEV" "$AGX_MONT_GOLD" || { echo "  FAIL: Montgomery AGX bytes differ from golden"; agxfail=1; }
+    cmp -s "$AGX_WIDE_DEV" "$AGX_WIDE_GOLD" || { echo "  FAIL: 64-bit AGX bytes differ from golden"; agxfail=1; }
+    grep -q '^profile agx-g16x-macos26.3$' "$AGX_DEV" || { echo "  FAIL: AGX profile absent"; agxfail=1; }
+    grep -q '^bytes 368$' "$AGX_DEV" || { echo "  FAIL: wrong Mersenne byte count"; agxfail=1; }
+    grep -q '^bytes 806$' "$AGX_MONT_DEV" || { echo "  FAIL: wrong Montgomery byte count"; agxfail=1; }
+    grep -q '^bytes 3348$' "$AGX_WIDE_DEV" || { echo "  FAIL: wrong 64-bit byte count"; agxfail=1; }
+    ntaps=$(grep -c '^tap ' "$AGX_WIDE_DEV" || true)
+    if [ "$ntaps" -ne 16 ]; then echo "  FAIL: expected 16 AGX64 taps, saw $ntaps"; agxfail=1; fi
+    grep -q '^  0e000000$' "$AGX_DEV" || { echo "  FAIL: Mersenne kernel has no stop"; agxfail=1; }
+    grep -q '^  0e000000$' "$AGX_MONT_DEV" || { echo "  FAIL: Montgomery kernel has no stop"; agxfail=1; }
+    nskip=$(grep -c '^skip __pfor_gpu_worker_.*reason=unsupported-agx0-worker$' "$AGX_REFUSE" || true)
+    if [ "$nskip" -ne 3 ]; then echo "  FAIL: expected 3 AGX refusal records, saw $nskip"; agxfail=1; fi
+    if [ "$agxfail" = "0" ]; then
+        echo "  ok   direct machine code: 368-byte Mersenne + 806-byte Montgomery + 3348-byte 64-bit goldens"
+    else
+        fail=1
+    fi
+
+    # Compile the in-tree runtime on every host. Linking is Darwin-only because
+    # its only non-libSystem dependency is the public IOKit framework.
+    if ! "$STAGE1" "$SCRIPT_DIR/agx_runtime_gate.tv" -o "$AGX_RUNTIME_LL" 2>/dev/null \
+       || ! "$LLC" -filetype=obj "$AGX_RUNTIME_LL" -o "$AGX_RUNTIME_OBJ" 2>/dev/null; then
+        echo "  FAIL: Traveler-native AGX runtime did not compile"; fail=1
+    else
+        echo "  ok   Traveler-native IOKit runtime compiles without project C/Objective-C"
+    fi
+
+    # One source and one proven pfor provide both sides of each AGX-2
+    # differential. The emitted files are portable; execution is hardware-gated.
+    AGX_DET_READY=1
+    for det in agx_determinism_mersenne agx_determinism_mont agx_determinism_64; do
+        if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/$det.tv" -o "$TMP/$det.agx.hex" 2>/dev/null \
+           || ! "$STAGE1" "$SCRIPT_DIR/$det.tv" -o "$TMP/$det.ll" 2>/dev/null \
+           || ! grep -q 'call void @__parallel_for' "$TMP/$det.ll" \
+           || ! "$LLC" -filetype=obj "$TMP/$det.ll" -o "$TMP/$det.o" 2>/dev/null; then
+            echo "  FAIL: $det did not compile for both CPU pfor and AGX"; fail=1
+            AGX_DET_READY=0
+        fi
+    done
+    if [ "$AGX_DET_READY" = "1" ]; then
+        echo "  ok   AGX determinism fixtures compile from one pfor for both targets"
+    fi
+
+    AGX_HARNESS="${AGX_HARNESS:-$REPO_DIR/../qwen35-cli-b1/agx_private}"
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] \
+       && [ -x "$AGX_HARNESS/agx-own-queue" ] && command -v python3 >/dev/null; then
+        if python3 "$SCRIPT_DIR/agx_execute.py" "$AGX_DEV" "$AGX_HARNESS" \
+           && python3 "$SCRIPT_DIR/agx_execute.py" "$AGX_MONT_DEV" "$AGX_HARNESS" \
+           && python3 "$SCRIPT_DIR/agx_execute.py" "$AGX_WIDE_DEV" "$AGX_HARNESS" \
+           && python3 "$SCRIPT_DIR/agx64_taps.py" "$AGX_WIDE_DEV" "$AGX_HARNESS" \
+           && python3 "$SCRIPT_DIR/agx_execute.py" "$AGX_WIDE_ID" "$AGX_HARNESS" --formula identity \
+           && python3 "$SCRIPT_DIR/agx_execute.py" "$AGX_WIDE_OPS" "$AGX_HARNESS" --formula add-sub; then
+            echo "  ok   owned G16X queue: narrow + 64-bit kernels and 16 limb taps exact"
+        else
+            echo "  FAIL: owned G16X execution mismatch"; fail=1
+        fi
+        if [ -f "$AGX_RUNTIME_OBJ" ] \
+           && cc "$AGX_RUNTIME_OBJ" -framework IOKit -o "$AGX_RUNTIME_EXE" 2>/dev/null; then
+            deps="$(otool -L "$AGX_RUNTIME_EXE" 2>/dev/null)"
+            if echo "$deps" | grep -qE 'Metal|Foundation|IOGPU'; then
+                echo "  FAIL: closed/private framework leaked into Traveler AGX runtime"; fail=1
+            elif "$AGX_RUNTIME_EXE" "$AGX_HARNESS/dispatch.img" "$AGX_DEV" \
+                 && "$AGX_RUNTIME_EXE" "$AGX_HARNESS/dispatch.img" "$AGX_MONT_DEV" \
+                 && "$AGX_RUNTIME_EXE" "$AGX_HARNESS/dispatch.img" "$AGX_WIDE_DEV"; then
+                echo "  ok   Traveler IOKit runtime: narrow + 64-bit compiler output exact; image has only IOKit + libSystem"
+            else
+                echo "  FAIL: Traveler-native IOKit submission mismatch"; fail=1
+            fi
+        else
+            echo "  FAIL: could not link Traveler AGX runtime against IOKit"; fail=1
+        fi
+        if [ "$AGX_DET_READY" = "1" ]; then
+            agxdetfail=0
+            for det in agx_determinism_mersenne agx_determinism_mont agx_determinism_64; do
+                case "$det" in
+                    agx_determinism_64) det_bytes=2048 ;;
+                    *) det_bytes=1024 ;;
+                esac
+                if ! cc "$TMP/$det.o" -framework IOKit -o "$TMP/$det" 2>/dev/null; then
+                    echo "  FAIL: $det did not link against IOKit"
+                    agxdetfail=1
+                    continue
+                fi
+                TRAVELER_THREADS=4 "$TMP/$det" cpu >"$TMP/$det.cpu.bin"
+                cpu_status=$?
+                "$TMP/$det" gpu "$AGX_HARNESS/dispatch.img" "$TMP/$det.agx.hex" \
+                    >"$TMP/$det.gpu.bin"
+                gpu_status=$?
+                cpu_bytes=$(wc -c <"$TMP/$det.cpu.bin" | tr -d ' ')
+                gpu_bytes=$(wc -c <"$TMP/$det.gpu.bin" | tr -d ' ')
+                if [ "$cpu_status" -ne "$gpu_status" ] || [ "$cpu_status" -ne 0 ]; then
+                    echo "  FAIL: $det CPU/GPU status differs ($cpu_status vs $gpu_status)"
+                    agxdetfail=1
+                elif [ "$cpu_bytes" -ne "$det_bytes" ] || [ "$gpu_bytes" -ne "$det_bytes" ]; then
+                    echo "  FAIL: $det output size differs ($cpu_bytes vs $gpu_bytes; want $det_bytes)"
+                    agxdetfail=1
+                elif ! cmp -s "$TMP/$det.cpu.bin" "$TMP/$det.gpu.bin"; then
+                    echo "  FAIL: $det CPU/GPU output is not byte-exact"
+                    agxdetfail=1
+                fi
+            done
+            if [ "$agxdetfail" = "0" ]; then
+                echo "  ok   AGX randomized CPU/GPU output and status are byte-exact for all three profiles"
+            else
+                fail=1
+            fi
+        fi
+        if [ "${AGX_FAULT_RECOVERY:-0}" = "1" ]; then
+            if [ -x "$AGX_RUNTIME_EXE" ] \
+               && "$AGX_RUNTIME_EXE" "$AGX_HARNESS/dispatch.img" "$AGX_DEV" recovery; then
+                echo "  ok   Traveler queue recovery after controlled fault"
+            else
+                echo "  FAIL: Traveler queue recovery after controlled fault"; fail=1
+            fi
+        fi
+    else
+        echo "  SKIP: owned G16X execution harness unavailable"
+    fi
+fi
 
 # ============================== AMDGCN leg (--emit-gpu) ======================
 if [ "$HAVE_AMD" = "1" ]; then
@@ -169,9 +322,9 @@ fi
 
 echo ""
 if [ "$fail" = "0" ]; then
-    echo "  GPU-STAGE0: PASS"
+    echo "  GPU: PASS"
     exit 0
 else
-    echo "  GPU-STAGE0: FAIL"
+    echo "  GPU: FAIL"
     exit 1
 fi

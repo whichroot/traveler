@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Portable parser gate for the canonical --emit-gpu-agx artifact.
+import "../../src/lib/gpu/agx_data.tv";
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 2; }
+    let code: **u8 = alloc(1);
+    let size: *i32 = alloc(1);
+    let prime: *u64 = alloc(1);
+    code[0] = null; size[0] = 0; prime[0] = 0;
+    let ok: i32 = agx_load_artifact(argv[1], code, size, prime);
+    if ok == 0 || size[0] != 368 || prime[0] != (2147483647 as u64) {
+        if code[0] != null { free(code[0]); }
+        free(prime); free(size); free(code as *u8);
+        return 1;
+    }
+    if code[0][0] != 0x1c || code[0][367] != 0 {
+        free(code[0]); free(prime); free(size); free(code as *u8);
+        return 1;
+    }
+    free(code[0]); free(prime); free(size); free(code as *u8);
+    print(1);
+    return 0;
+}

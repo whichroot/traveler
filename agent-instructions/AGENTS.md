@@ -89,6 +89,7 @@ Read-only compiler query modes (parse/analyze, no program emitted):
 | `--eval` | Run in a tree-walking interpreter (no LLVM). |
 | `--emit-gpu` | Re-emit elementwise parallel loops as AMD GCN kernels (early). |
 | `--emit-gpu-nvptx` | Same, NVIDIA target: `nvptx64-nvidia-cuda` PTX kernels (early). |
+| `--emit-gpu-agx` | Direct AGX G16X instruction hex for the proved narrow and canonical `2^64-59` field-map profiles. |
 | `-target <triple>` | Cross-compile IR (default `arm64-apple-darwin`). |
 
 ---
@@ -398,9 +399,16 @@ Key signatures (grep the module file for the full set — every module is plain
 - **ecc:** `rs_encode<F>` `rs_decode<F>` (+ syndrome/Berlekamp-Massey error decode).
 - **nt:** `bm<F>` (Berlekamp-Massey); `la_nullspace`/`la_solve`; `sqrt_mod`.
 
-GPU codegen (`--emit-gpu` for AMD GCN, `--emit-gpu-nvptx` for NVIDIA) is
-early-stage: device-module emission only, gated by `llc` lowering — there is no
-runtime, no launch, no host-device transfer yet.
+GPU codegen is early-stage. AMD GCN (`--emit-gpu`) and NVIDIA
+(`--emit-gpu-nvptx`) emit LLVM device modules gated by `llc`. AGX
+(`--emit-gpu-agx`) directly emits measured G16X instructions for one-input/
+one-output field maps over the proved narrow-prime profiles and canonical
+`2^64-59`; arbitrary 64-bit primes remain refused. `src/lib/gpu/` contains the
+measured-profile Traveler IOKit runtime: it consumes an exact-build `AGXDISP3`
+profile image, authors the executed dispatch, and links only IOKit + libSystem.
+The hardware gate compiles the same pfor for CPU and AGX and compares raw bytes
+and status over 256 reproducible adversarial/random values for each profile.
+There is not yet a general runtime dispatch seam; unsupported workers skip.
 
 ---
 

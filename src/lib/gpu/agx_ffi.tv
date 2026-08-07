@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// Public C ABI floor for the unsupported G16X IOKit runtime. Darwin only.
+// @internal-design: apple-silicon
+
+extern "C" fn task_self_trap() -> u32;
+extern "C" fn mach_port_allocate(task: u32, right: i32, name: *u32) -> i32;
+extern "C" fn mach_port_insert_right(task: u32, name: u32, poly: u32,
+                                      poly_type: i32) -> i32;
+extern "C" fn mach_port_destroy(task: u32, name: u32) -> i32;
+extern "C" fn mach_msg(msg: *u8, option: u32, send_size: u32, recv_size: u32,
+                        recv_name: u32, timeout: u32, notify: u32) -> i32;
+
+extern "C" fn IOServiceMatching(name: *u8) -> *u8;
+extern "C" fn IOServiceGetMatchingService(main_port: u32,
+                                            matching: *u8) -> u32;
+extern "C" fn IOObjectGetClass(object: u32, class_name: *u8) -> i32;
+extern "C" fn IOObjectRelease(object: u32) -> i32;
+extern "C" fn IOServiceOpen(service: u32, task: u32, kind: u32,
+                             connection: *u32) -> i32;
+extern "C" fn IOServiceClose(connection: u32) -> i32;
+extern "C" fn IOConnectSetNotificationPort(connection: u32, kind: u32,
+                                             port: u32,
+                                             reference: usize) -> i32;
+extern "C" fn IOConnectCallMethod(connection: u32, selector: u32,
+                                   input: *u64, input_count: u32,
+                                   input_struct: *u8, input_struct_size: usize,
+                                   output: *u64, output_count: *u32,
+                                   output_struct: *u8,
+                                   output_struct_size: *usize) -> i32;
+extern "C" fn IOConnectCallStructMethod(connection: u32, selector: u32,
+                                         input_struct: *u8,
+                                         input_struct_size: usize,
+                                         output_struct: *u8,
+                                         output_struct_size: *usize) -> i32;
+extern "C" fn IOConnectCallScalarMethod(connection: u32, selector: u32,
+                                         input: *u64, input_count: u32,
+                                         output: *u64,
+                                         output_count: *u32) -> i32;
+extern "C" fn IOConnectTrap4(connection: u32, index: u32, p1: usize,
+                              p2: usize, p3: usize, p4: usize) -> i32;
+
+extern "C" fn sysctlbyname(name: *u8, old_value: *u8,
+                            old_size: *usize, new_value: *u8,
+                            new_size: usize) -> i32;
+extern "C" fn usleep(microseconds: u32) -> i32;
+extern "C" fn memcpy(destination: *u8, source: *u8, count: usize) -> *u8;
+extern "C" fn memset(destination: *u8, value: i32, count: usize) -> *u8;
+
+fn agx_cstr_equal(a: *u8, b: *u8) -> i32 {
+    var i: i32 = 0;
+    while a[i] != 0 && b[i] != 0 {
+        if a[i] != b[i] { return 0; }
+        i = i + 1;
+    }
+    if a[i] != b[i] { return 0; }
+    return 1;
+}
+
+fn agx_fnv1a(data: *u8, size: i32) -> u64 {
+    var hash: u64 = 14695981039346656037;
+    var i: i32 = 0;
+    while i < size {
+        hash = (hash ^ (data[i] as u64)) * (1099511628211 as u64);
+        i = i + 1;
+    }
+    return hash;
+}
+
+fn agx_init_selector(connection: u32, selector: u32, expected: i32,
+                     hash_out: *u64) -> i32 {
+    let output: *u8 = alloc(1024);
+    let output_size: *usize = alloc(1);
+    memset(output, 0, 1024);
+    output_size[0] = expected as usize;
+    let status: i32 = IOConnectCallStructMethod(connection, selector, null, 0,
+                                                 output, output_size);
+    if status != 0 || output_size[0] != (expected as usize) {
+        free(output_size);
+        free(output);
+        return 0;
+    }
+    if hash_out != null { hash_out[0] = agx_fnv1a(output, expected); }
+    free(output_size);
+    free(output);
+    return 1;
+}
+
+// Opens only the measured G16X/macOS-26.3 profile. Stable init-output hashes
+// are checked before any resource or queue state is created.
+fn agx_open_profile(connection_out: *u32, notification_out: *u32) -> i32 {
+    let matching: *u8 = IOServiceMatching("AGXAccelerator");
+    if matching == null { return 0; }
+    let service: u32 = IOServiceGetMatchingService(0, matching);
+    if service == 0 { return 0; }
+
+    let class_name: *u8 = alloc(128);
+    memset(class_name, 0, 128);
+    if IOObjectGetClass(service, class_name) != 0
+        || agx_cstr_equal(class_name, "AGXAcceleratorG16X") == 0 {
+        free(class_name);
+        IOObjectRelease(service);
+        return 0;
+    }
+    free(class_name);
+
+    let build: *u8 = alloc(32);
+    let build_size: *usize = alloc(1);
+    memset(build, 0, 32);
+    build_size[0] = 32;
+    if sysctlbyname("kern.osversion", build, build_size, null, 0) != 0
+        || agx_cstr_equal(build, "25D125") == 0 {
+        free(build_size);
+        free(build);
+        IOObjectRelease(service);
+        return 0;
+    }
+    free(build_size);
+    free(build);
+
+    let connection: *u32 = alloc(1);
+    connection[0] = 0;
+    let opened: i32 = IOServiceOpen(service, task_self_trap(), 0x100005,
+                                     connection);
+    IOObjectRelease(service);
+    if opened != 0 || connection[0] == 0 {
+        free(connection);
+        return 0;
+    }
+
+    let hashes: *u64 = alloc(3);
+    hashes[0] = 0; hashes[1] = 0; hashes[2] = 0;
+    var ok: i32 = 1;
+    if agx_init_selector(connection[0], 2, 536, null) == 0 { ok = 0; }
+    if agx_init_selector(connection[0], 0, 64, &hashes[0]) == 0 { ok = 0; }
+    if agx_init_selector(connection[0], 5, 32, null) == 0 { ok = 0; }
+    if agx_init_selector(connection[0], 258, 456, &hashes[1]) == 0 { ok = 0; }
+    if agx_init_selector(connection[0], 256, 136, &hashes[2]) == 0 { ok = 0; }
+    if ok == 0
+        || hashes[0] != (0xdeedf92a859e5d6f as u64)
+        || hashes[1] != (0xa1166c8eb34e8da4 as u64)
+        || hashes[2] != (0x9d098cf16d8c5f30 as u64) {
+        free(hashes);
+        IOServiceClose(connection[0]);
+        free(connection);
+        return 0;
+    }
+    free(hashes);
+
+    let port: *u32 = alloc(1);
+    port[0] = 0;
+    let task: u32 = task_self_trap();
+    var port_status: i32 = mach_port_allocate(task, 1, port);
+    if port_status == 0 {
+        port_status = mach_port_insert_right(task, port[0], port[0], 20);
+    }
+    if port_status != 0 {
+        if port[0] != 0 { mach_port_destroy(task, port[0]); }
+        free(port);
+        IOServiceClose(connection[0]);
+        free(connection);
+        return 0;
+    }
+
+    connection_out[0] = connection[0];
+    notification_out[0] = port[0];
+    free(port);
+    free(connection);
+    return 1;
+}

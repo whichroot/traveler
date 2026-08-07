@@ -1,0 +1,822 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// G16X userspace submission over IOKit. The private ABI is fail-closed to the
+// measured macOS 26.3 profile; Metal and project C/Objective-C are not used.
+// @internal-design: apple-silicon
+
+import "agx_ffi.tv";
+import "agx_data.tv";
+
+// Last fail-closed boundary reached by agx_run_words. Zero means success;
+// callers may report this without exposing private-driver return structures.
+var g_agx_error: i32 = 0;
+
+struct AgxResourceMap {
+    captured_cpu: u64,
+    captured_size: u64,
+    actual_cpu: u64,
+    actual_gpu: u64,
+    actual_size: u64,
+}
+
+struct AgxRuntime {
+    connection: u32,
+    notification: u32,
+    queue_id: u64,
+    event_log: u64,
+    event_writer: u32,
+    sel14_0: u64,
+    sel14_1: u64,
+    resources: *AgxResourceMap,
+    resource_count: i32,
+    queue_input: *u8,
+    queue_input_size: i32,
+    descriptors_alloc: *u8,
+    descriptors: *u8,
+    output_cpu: u64,
+    input_offset: u64,
+}
+
+fn agx_resource(runtime: *AgxRuntime, index: i32) -> *AgxResourceMap {
+    let resources: *AgxResourceMap = runtime.resources;
+    return &resources[index];
+}
+
+fn agx_runtime_new(connection: u32, notification: u32) -> *AgxRuntime {
+    let runtime: *AgxRuntime = alloc(1);
+    let resources: *AgxResourceMap = alloc(64);
+    var i: i32 = 0;
+    while i < 64 {
+        resources[i] = AgxResourceMap {
+            captured_cpu: 0, captured_size: 0, actual_cpu: 0,
+            actual_gpu: 0, actual_size: 0
+        };
+        i = i + 1;
+    }
+    let descriptor_memory: *u8 = alloc(256);
+    let aligned: u64 = ((descriptor_memory as u64) + 63) & (0 - (64 as u64));
+    runtime.connection = connection;
+    runtime.notification = notification;
+    runtime.queue_id = 0;
+    runtime.event_log = 0;
+    runtime.event_writer = 0;
+    runtime.sel14_0 = 0;
+    runtime.sel14_1 = 0;
+    runtime.resources = resources;
+    runtime.resource_count = 0;
+    runtime.queue_input = null;
+    runtime.queue_input_size = 0;
+    runtime.descriptors_alloc = descriptor_memory;
+    runtime.descriptors = aligned as *u8;
+    runtime.output_cpu = 0;
+    runtime.input_offset = 0x100;
+    memset(runtime.descriptors, 0, 128);
+    return runtime;
+}
+
+fn agx_queue_destroy(runtime: *AgxRuntime) -> i32 {
+    if runtime.queue_id == 0 { return 1; }
+    var input: [u64; 1] = 0;
+    input[0] = runtime.queue_id;
+    let first: i32 = IOConnectCallMethod(runtime.connection, 8, &input[0], 1,
+                                         null, 0, null, null, null, null);
+    let second: i32 = IOConnectCallMethod(runtime.connection, 17, &input[0], 1,
+                                          null, 0, null, null, null, null);
+    if first != 0 || second != 0 { return 0; }
+    runtime.queue_id = 0;
+    return 1;
+}
+
+fn agx_runtime_free(runtime: *AgxRuntime) {
+    agx_queue_destroy(runtime);
+    IOServiceClose(runtime.connection);
+    mach_port_destroy(task_self_trap(), runtime.notification);
+    if runtime.queue_input != null { free(runtime.queue_input); }
+    free(runtime.descriptors_alloc);
+    free(runtime.resources);
+    free(runtime);
+}
+
+fn agx_relocate_resource_input(runtime: *AgxRuntime, input: *u8,
+                               size: i32) -> i32 {
+    var relocated: i32 = 0;
+    var offset: i32 = 0;
+    while offset + 8 <= size {
+        let value: u64 = agx_get_u64(input, offset as i64);
+        if value >= 0x1000 {
+            var resource: i32 = 0;
+            while resource < runtime.resource_count {
+                let mapping: *AgxResourceMap = agx_resource(runtime, resource);
+                var span: u64 = mapping.captured_size;
+                if span == 0 { span = 0x1000; }
+                if mapping.captured_cpu != 0 && mapping.actual_cpu != 0
+                    && value >= mapping.captured_cpu
+                    && value - mapping.captured_cpu < span {
+                    agx_put_u64(input, offset as i64,
+                                mapping.actual_cpu
+                                    + (value - mapping.captured_cpu));
+                    relocated = relocated + 1;
+                    resource = runtime.resource_count;
+                } else {
+                    resource = resource + 1;
+                }
+            }
+        }
+        offset = offset + 8;
+    }
+    // Captured selector-9 cookies are process pointers. This field is proven
+    // zero-safe for the exact profile and never replayed across processes.
+    if size >= 104 { agx_put_u64(input, 0x60, 0); }
+    return relocated;
+}
+
+fn agx_emit_move_immediate(output: *u8, offset: i32, destination: i32,
+                           value: u32, extension_mode: u8) -> i32 {
+    memset(&output[offset], 0, 8);
+    output[offset] = (0x0c | (destination << 4)) as u8;
+    output[offset + 1] = (0x80 | (value & 0x7f)) as u8;
+    output[offset + 2] = extension_mode;
+    output[offset + 4] = output[offset + 4]
+        | ((((value >> 7) & 0x0f) << 1) as u8);
+    output[offset + 5] = output[offset + 5]
+        | ((((value >> 11) & 0x03) << 2) as u8);
+    output[offset + 6] = output[offset + 6]
+        | (((value >> 13) & 0xff) as u8);
+    output[offset + 7] = output[offset + 7]
+        | (((value >> 21) & 0x0f) as u8);
+    output[offset + 3] = output[offset + 3]
+        | ((((value >> 25) & 0x7f) << 1) as u8);
+    return offset + 8;
+}
+
+fn agx_emit_pointer(output: *u8, offset: i32, destination: i32,
+                    value: u64, extension_mode: u8) -> i32 {
+    var next: i32 = agx_emit_move_immediate(output, offset, destination,
+                                             value as u32, extension_mode);
+    next = agx_emit_move_immediate(output, next, destination + 1,
+                                   (value >> 32) as u32, extension_mode);
+    return next;
+}
+
+fn agx_emit_setup_load(output: *u8, offset: i32, destination: i32,
+                       source_slot: i32, address_mode: i32,
+                       address_flags: i32, argument_selector: i32) -> i32 {
+    let bytes: *u8 = &output[offset];
+    bytes[0] = 0x67; bytes[1] = 0x00; bytes[2] = 0x54;
+    bytes[3] = (destination * 2) as u8;
+    bytes[4] = source_slot as u8;
+    bytes[5] = 0; bytes[6] = 0; bytes[7] = 0;
+    bytes[8] = address_mode as u8;
+    bytes[9] = address_flags as u8;
+    bytes[10] = argument_selector as u8;
+    bytes[11] = 0x40; bytes[12] = 0x26; bytes[13] = 0;
+    return offset + 14;
+}
+
+fn agx_author_encoder(runtime: *AgxRuntime) -> i32 {
+    let encoder: *AgxResourceMap = agx_resource(runtime, 23);
+    let constants: *AgxResourceMap = agx_resource(runtime, 2);
+    let bindings: *AgxResourceMap = agx_resource(runtime, 28);
+    if encoder.actual_cpu == 0 || encoder.actual_size < 103
+        || constants.actual_gpu == 0 || bindings.actual_gpu == 0 {
+        return 0;
+    }
+    let output: *u8 = encoder.actual_cpu as *u8;
+    memset(output, 0, encoder.actual_size as usize);
+    var at: i32 = 0;
+    at = agx_emit_pointer(output, at, 2, bindings.actual_gpu + 0x1ba0, 0x02);
+    at = agx_emit_pointer(output, at, 6, constants.actual_gpu + 0x20, 0x42);
+    at = agx_emit_setup_load(output, at, 18, 2, 0x57, 0, 0);
+    at = agx_emit_setup_load(output, at, 22, 22, 0x57, 4, 0);
+    let control: *u8 = &output[at];
+    control[0] = 0x77; control[1] = 0x01; control[2] = 0xaa;
+    control[3] = 0x0d; control[4] = 0; control[5] = 0;
+    control[6] = 0; control[7] = 0x02; control[8] = 0; control[9] = 0;
+    at = at + 10;
+    var uniform: i32 = 0;
+    while uniform < 8 {
+        output[at] = (0x0b | (uniform << 4)) as u8;
+        output[at + 1] = ((18 + uniform) * 2) as u8;
+        output[at + 2] = 0x09;
+        if uniform == 0 { output[at + 3] = 0x44; }
+        else { output[at + 3] = 0x04; }
+        at = at + 4;
+        uniform = uniform + 1;
+    }
+    output[at] = 0x0e;
+    at = at + 1;
+    if at != 103 { return 0; }
+    return 1;
+}
+
+fn agx_author_cdm(runtime: *AgxRuntime, grid: i32) -> i32 {
+    let mapping: *AgxResourceMap = agx_resource(runtime, 25);
+    if mapping.actual_cpu == 0 || mapping.actual_size < 52 || grid < 1 {
+        return 0;
+    }
+    var group: i32 = grid;
+    if group > 32 { group = 32; }
+    let output: *u8 = mapping.actual_cpu as *u8;
+    memset(output, 0, 52);
+    agx_put_u32(output, 0x00, 0x00080000);
+    agx_put_u32(output, 0x04, 0x01000000);
+    agx_put_u32(output, 0x08, 0x00002400);
+    agx_put_u32(output, 0x0c, 0x40000001);
+    agx_put_u32(output, 0x10, grid as u32);
+    agx_put_u32(output, 0x14, 1);
+    agx_put_u32(output, 0x18, 1);
+    agx_put_u32(output, 0x1c, group as u32);
+    agx_put_u32(output, 0x20, 1);
+    agx_put_u32(output, 0x24, 1);
+    agx_put_u32(output, 0x28, 0x60000160);
+    agx_put_u32(output, 0x2c, 0x40000000);
+    return 1;
+}
+
+fn agx_author_bindings(runtime: *AgxRuntime) -> i32 {
+    let heap: *AgxResourceMap = agx_resource(runtime, 3);
+    let bindings: *AgxResourceMap = agx_resource(runtime, 28);
+    if heap.actual_gpu == 0 || bindings.actual_cpu == 0
+        || bindings.actual_size < 0x1bb0 || runtime.input_offset < 0x100 {
+        return 0;
+    }
+    let output: *u8 = bindings.actual_cpu as *u8;
+    memset(output, 0, 0x1bb0);
+    agx_put_u64(output, 0x1ba0, heap.actual_gpu);
+    agx_put_u64(output, 0x1ba8, heap.actual_gpu + runtime.input_offset);
+    return 1;
+}
+
+fn agx_author_work_path(runtime: *AgxRuntime) -> i32 {
+    if runtime.sel14_0 == 0 || runtime.sel14_1 == 0
+        || agx_resource(runtime, 25).actual_gpu == 0 {
+        return 0;
+    }
+    let control: *u8 = runtime.sel14_0 as *u8;
+    let command: *u8 = runtime.sel14_1 as *u8;
+    memset(command, 0, 0x404);
+    agx_put_u32(command, 0x000, 0x0f);
+    agx_put_u32(command, 0x004, 0xac);
+    agx_put_u32(command, 0x0ac, 0x00010000);
+    agx_put_u32(command, 0x0b0, 0x358);
+    command[0x0b4] = 111; command[0x0b5] = 117;
+    command[0x0b6] = 114; command[0x0b7] = 115;
+    agx_put_u32(command, 0x150, 0x268);
+    agx_put_u32(command, 0x154, 3);
+    agx_put_u64(command, 0x174, agx_resource(runtime, 25).actual_gpu);
+    memset(&command[0x3c8], 0xff, 12);
+
+    memset(control, 0, 263);
+    agx_put_u32(control, 0x008, 1);
+    agx_put_u32(control, 0x00c, 0x40000001);
+    agx_put_u32(control, 0x020, 1);
+    agx_put_u32(control, 0x024, 0x800000f0);
+    agx_put_u32(control, 0x030, 0xac);
+    agx_put_u32(control, 0x034, 0x404);
+    let first: *u32 = alloc(8);
+    first[0] = 15; first[1] = 3; first[2] = 23; first[3] = 24;
+    first[4] = 25; first[5] = 26; first[6] = 27; first[7] = 28;
+    var i: i32 = 0;
+    while i < 8 {
+        agx_put_u32(control, 0x40 + ((i as i64) * 4), first[i]);
+        i = i + 1;
+    }
+    free(first);
+    agx_put_u16(control, 0x78, 1); agx_put_u16(control, 0x7a, 1);
+    agx_put_u16(control, 0x7c, 1); agx_put_u16(control, 0x7e, 1);
+    agx_put_u16(control, 0x80, 1); agx_put_u16(control, 0x82, 1);
+    agx_put_u16(control, 0x84, 0); agx_put_u16(control, 0x86, 6);
+    let second: *u32 = alloc(6);
+    second[0] = 1; second[1] = 29; second[2] = 19;
+    second[3] = 22; second[4] = 15; second[5] = 14;
+    i = 0;
+    while i < 6 {
+        agx_put_u32(control, 0x88 + ((i as i64) * 4), second[i]);
+        i = i + 1;
+    }
+    free(second);
+    let middle: *u8 = &control[0xb0];
+    middle[0] = 0x80; middle[4] = 0x80; middle[8] = 0x80;
+    middle[10] = 0x01; middle[12] = 0x80; middle[14] = 0x80;
+    middle[16] = 0x80; middle[18] = 0x80; middle[22] = 0x06;
+    middle[24] = 0x03; middle[28] = 0x05; middle[32] = 0x06;
+    let tail: *u8 = &control[0xf8];
+    tail[0] = 0x80; tail[2] = 0x03; tail[4] = 0x01; tail[14] = 0x03;
+    return 1;
+}
+
+fn agx_prepare_dispatch(runtime: *AgxRuntime, code: *u8, code_size: i32,
+                        input: *u32, word_count: i32, grid: i32,
+                        prime: u64) -> i32 {
+    if runtime.resource_count != 29 || code_size < 4 || word_count < 1
+        || grid < 1 {
+        return 0;
+    }
+    let code_map: *AgxResourceMap = agx_resource(runtime, 0);
+    let heap: *AgxResourceMap = agx_resource(runtime, 3);
+    let metadata: *AgxResourceMap = agx_resource(runtime, 22);
+    let output_bytes: u64 = (word_count as u64) * 4;
+    var input_offset: u64 = (output_bytes + 255) & (0 - (256 as u64));
+    if input_offset < 0x100 { input_offset = 0x100; }
+    runtime.input_offset = input_offset;
+    if code_map.actual_cpu == 0
+        || code_map.actual_size < ((0x6c0 + code_size) as u64)
+        || heap.actual_cpu == 0
+        || heap.actual_size < input_offset + output_bytes
+        || metadata.actual_cpu == 0 || metadata.actual_size < 0xc0 {
+        return 0;
+    }
+    memcpy((code_map.actual_cpu + 0x6c0) as *u8, code, code_size as usize);
+    let heap_bytes: *u8 = heap.actual_cpu as *u8;
+    var i: i32 = 0;
+    while i < word_count {
+        if prime <= (0xffffffff as u64) {
+            agx_put_u32(heap_bytes, (i * 4) as i64, prime as u32);
+        } else if (i & 1) == 0 {
+            agx_put_u32(heap_bytes, (i * 4) as i64, prime as u32);
+        } else {
+            agx_put_u32(heap_bytes, (i * 4) as i64, (prime >> 32) as u32);
+        }
+        agx_put_u32(heap_bytes, (input_offset + ((i as u64) * 4)) as i64,
+                    input[i]);
+        i = i + 1;
+    }
+    memset(metadata.actual_cpu as *u8, 0, 0xc0);
+    if agx_author_encoder(runtime) == 0
+        || agx_author_cdm(runtime, grid) == 0
+        || agx_author_bindings(runtime) == 0
+        || agx_author_work_path(runtime) == 0 {
+        return 0;
+    }
+    runtime.output_cpu = heap.actual_cpu;
+    return 1;
+}
+
+fn agx_ring_doorbell(runtime: *AgxRuntime) -> i32 {
+    if runtime.event_log == 0 { return 0; }
+    runtime.event_writer = agx_get_u32(runtime.event_log as *u8, 8);
+    let record: *u8 = alloc(64);
+    let completion: *u64 = alloc(1);
+    memset(record, 0, 64);
+    completion[0] = 0;
+    agx_put_u32(record, 0, 2);
+    agx_put_u32(record, 4, runtime.queue_id as u32);
+    agx_put_u64(record, 0x10, runtime.descriptors as u64);
+    agx_put_u64(record, 0x18, (runtime.descriptors as u64) + 64);
+    let status: i32 = IOConnectTrap4(runtime.connection, 0, 1, 64,
+                                     record as usize,
+                                     completion as usize);
+    free(completion);
+    free(record);
+    if status != 0 { return 0; }
+    return 1;
+}
+
+fn agx_wait_results(runtime: *AgxRuntime, prime: u64, word_count: i32,
+                    grid: i32) -> i32 {
+    let message: *u8 = alloc(192);
+    memset(message, 0, 192);
+    let status: i32 = mach_msg(message, 0x102, 0, 192,
+                               runtime.notification, 5000, 0);
+    free(message);
+    if status != 0 { return 0; }
+    let result: *u8 = runtime.output_cpu as *u8;
+    var attempt: i32 = 0;
+    while attempt < 3000 {
+        var complete: i32 = 1;
+        if prime <= (0xffffffff as u64) {
+            var i: i32 = 0;
+            while i < word_count {
+                if agx_get_u32(result, (i * 4) as i64) == (prime as u32) {
+                    complete = 0;
+                }
+                i = i + 1;
+            }
+        } else {
+            var element: i32 = 0;
+            while element < grid {
+                let low: u32 = agx_get_u32(result, (element * 8) as i64);
+                let high: u32 = agx_get_u32(result,
+                                             (element * 8 + 4) as i64);
+                if low == (prime as u32) && high == ((prime >> 32) as u32) {
+                    complete = 0;
+                }
+                element = element + 1;
+            }
+        }
+        let writer: u32 = agx_get_u32(runtime.event_log as *u8, 8);
+        if complete != 0 && writer != runtime.event_writer { return 1; }
+        usleep(100);
+        attempt = attempt + 1;
+    }
+    return 0;
+}
+
+fn agx_arm_controlled_fault(runtime: *AgxRuntime) -> i32 {
+    let code_map: *AgxResourceMap = agx_resource(runtime, 0);
+    if code_map.actual_cpu == 0 || code_map.actual_size < 0x6d8 {
+        return 0;
+    }
+    let code: *u8 = (code_map.actual_cpu + 0x6c0) as *u8;
+    code[0] = 0x0c; code[1] = 0xa0; code[2] = 0x10;
+    code[3] = 0x06; code[4] = 0x1c; code[5] = 0x63;
+    code[6] = 0xe7; code[7] = 0x10; code[8] = 0x54;
+    code[9] = 0; code[10] = 0; code[11] = 0;
+    code[12] = 0x20; code[13] = 0;
+    code[14] = 0x11; code[15] = 0; code[16] = 0;
+    code[17] = 0x90; code[18] = 0x11; code[19] = 0;
+    code[20] = 0x0e; code[21] = 0; code[22] = 0; code[23] = 0;
+    return agx_author_cdm(runtime, 65535);
+}
+
+fn agx_expect_no_completion(runtime: *AgxRuntime) -> i32 {
+    usleep(1000000);
+    let message: *u8 = alloc(192);
+    memset(message, 0, 192);
+    let status: i32 = mach_msg(message, 0x102, 0, 192,
+                               runtime.notification, 500, 0);
+    free(message);
+    if status == 0 { return 0; }
+    return 1;
+}
+
+fn agx_queue_recreate(runtime: *AgxRuntime) -> i32 {
+    if runtime.queue_id != 0 || runtime.queue_input == null
+        || runtime.queue_input_size != 1040 {
+        return 0;
+    }
+    let output: *u8 = alloc(16);
+    let output_size: *usize = alloc(1);
+    memset(output, 0, 16);
+    output_size[0] = 16;
+    var status: i32 = IOConnectCallMethod(runtime.connection, 7, null, 0,
+                                           runtime.queue_input,
+                                           runtime.queue_input_size as usize,
+                                           null, null, output, output_size);
+    if status != 0 || output_size[0] < 8 {
+        free(output_size); free(output); return 0;
+    }
+    runtime.queue_id = agx_get_u64(output, 0);
+
+    var configure: [u64; 2] = 0;
+    configure[0] = 0x100; configure[1] = 0x28;
+    memset(output, 0, 16);
+    output_size[0] = 16;
+    status = IOConnectCallMethod(runtime.connection, 16, &configure[0], 2,
+                                 null, 0, null, null, output, output_size);
+    if status != 0 || output_size[0] < 8 {
+        free(output_size); free(output); return 0;
+    }
+    runtime.event_log = agx_get_u64(output, 0);
+    status = IOConnectSetNotificationPort(runtime.connection, 0,
+                                          runtime.notification,
+                                          runtime.queue_id as usize);
+    if status != 0 {
+        free(output_size); free(output); return 0;
+    }
+
+    var activate: [u64; 2] = 0;
+    activate[0] = runtime.queue_id; activate[1] = 1;
+    status = IOConnectCallMethod(runtime.connection, 28, &activate[0], 2,
+                                 null, 0, null, null, null, null);
+    if status != 0 {
+        free(output_size); free(output); return 0;
+    }
+
+    runtime.sel14_0 = 0;
+    runtime.sel14_1 = 0;
+    var which: i32 = 0;
+    while which < 2 {
+        var map_input: [u64; 2] = 0;
+        map_input[0] = 0x4000;
+        map_input[1] = which as u64;
+        memset(output, 0, 16);
+        output_size[0] = 16;
+        status = IOConnectCallMethod(runtime.connection, 14, &map_input[0], 2,
+                                     null, 0, null, null, output, output_size);
+        if status != 0 || output_size[0] < 8 {
+            free(output_size); free(output); return 0;
+        }
+        if which == 0 { runtime.sel14_0 = agx_get_u64(output, 0); }
+        else { runtime.sel14_1 = agx_get_u64(output, 0); }
+        which = which + 1;
+    }
+    free(output_size);
+    free(output);
+    if runtime.sel14_0 == 0 || runtime.sel14_1 == 0 { return 0; }
+    return 1;
+}
+
+fn agx_image_magic(data: *u8, size: i64) -> i32 {
+    if size < 16 { return 0; }
+    if agx_bytes_equal(data, 0, "AGXDISP3") == 0 { return 0; }
+    return 1;
+}
+
+// Replays only setup calls. All executed dispatch content is authored by the
+// helpers above immediately before the first recorded doorbell.
+fn agx_replay_and_submit(runtime: *AgxRuntime, image_path: *u8,
+                         code: *u8, code_size: i32, input: *u32,
+                         word_count: i32, grid: i32, prime: u64) -> i32 {
+    let data_slot: **u8 = alloc(1);
+    let size_slot: *i64 = alloc(1);
+    g_agx_error = 900;
+    if agx_read_file(image_path, data_slot, size_slot) == 0 {
+        free(size_slot); free(data_slot as *u8); return 0;
+    }
+    let data: *u8 = data_slot[0];
+    let size: i64 = size_slot[0];
+    free(size_slot); free(data_slot as *u8);
+    if agx_image_magic(data, size) == 0 {
+        free(data); return 0;
+    }
+    let op_count: u32 = agx_get_u32(data, 8);
+    let region_count: u32 = agx_get_u32(data, 12);
+    if op_count != 42 || region_count != 3 {
+        free(data); return 0;
+    }
+    var at: i64 = 16;
+    var region: u32 = 0;
+    while region < region_count {
+        if at + 48 > size { free(data); return 0; }
+        let content_size: u32 = agx_get_u32(data, at + 44);
+        at = at + 48 + (content_size as i64);
+        if at > size { free(data); return 0; }
+        region = region + 1;
+    }
+
+    let output: *u8 = alloc(1024);
+    let output_size: *usize = alloc(1);
+    let scalar_output: *u64 = alloc(16);
+    let scalar_count: *u32 = alloc(1);
+    let input_copy: *u8 = alloc(2048);
+    var op_index: u32 = 0;
+    var submitted: i32 = 0;
+    var sel14_seen: i32 = 0;
+    while op_index < op_count {
+        g_agx_error = 1000 + (op_index as i32);
+        if at + 8 > size {
+            free(input_copy); free(scalar_count); free(scalar_output);
+            free(output_size); free(output); free(data); return 0;
+        }
+        let kind: u32 = agx_get_u32(data, at);
+        let selector: u32 = agx_get_u32(data, at + 4);
+        g_agx_error = 100000 + ((op_index as i32) * 1000)
+            + (selector as i32);
+        if kind == 3 {
+            if at + 28 > size {
+                free(input_copy); free(scalar_count); free(scalar_output);
+                free(output_size); free(output); free(data); return 0;
+            }
+            let record_size: u32 = agx_get_u32(data, at + 24);
+            if selector != 0 || agx_get_u64(data, at + 8) != 1
+                || agx_get_u64(data, at + 16) != 64 || record_size != 64
+                || at + 28 + (record_size as i64) > size
+                || agx_prepare_dispatch(runtime, code, code_size, input,
+                                        word_count, grid, prime) == 0
+                || agx_ring_doorbell(runtime) == 0 {
+                free(input_copy); free(scalar_count); free(scalar_output);
+                free(output_size); free(output); free(data); return 0;
+            }
+            submitted = 1;
+            op_index = op_count;
+            continue;
+        }
+        if at + 32 > size {
+            free(input_copy); free(scalar_count); free(scalar_output);
+            free(output_size); free(output); free(data); return 0;
+        }
+        let resource: i32 = agx_get_i32(data, at + 8);
+        let input_scalar_count: u32 = agx_get_u32(data, at + 12);
+        let input_size: u32 = agx_get_u32(data, at + 16);
+        let captured_output_size: u32 = agx_get_u32(data, at + 20);
+        let output_capacity: u32 = agx_get_u32(data, at + 24);
+        let content_size: u32 = agx_get_u32(data, at + 28);
+        let scalar_at: i64 = at + 32;
+        let input_at: i64 = scalar_at + 128;
+        let captured_output_at: i64 = input_at + (input_size as i64);
+        let content_at: i64 = captured_output_at
+            + (captured_output_size as i64);
+        let next: i64 = content_at + (content_size as i64);
+        if next > size || input_size > 2048 || output_capacity > 1024
+            || input_scalar_count > 16 {
+            free(input_copy); free(scalar_count); free(scalar_output);
+            free(output_size); free(output); free(data); return 0;
+        }
+        let scalars: *u64 = (&data[scalar_at]) as *u64;
+        var input_struct: *u8 = null;
+        if input_size > 0 { input_struct = &data[input_at]; }
+        if resource >= 0 {
+            if resource >= 64 || resource != runtime.resource_count {
+                free(input_copy); free(scalar_count); free(scalar_output);
+                free(output_size); free(output); free(data); return 0;
+            }
+            memcpy(input_copy, input_struct, input_size as usize);
+            agx_relocate_resource_input(runtime, input_copy, input_size as i32);
+            input_struct = input_copy;
+        }
+        memset(output, 0, 1024);
+        memset(scalar_output as *u8, 0, 128);
+        output_size[0] = output_capacity as usize;
+        scalar_count[0] = 16;
+        var status: i32 = 0 - 1;
+        if kind == 1 {
+            status = IOConnectCallStructMethod(runtime.connection, selector,
+                                               input_struct,
+                                               input_size as usize,
+                                               output, output_size);
+        } else if kind == 2 {
+            status = IOConnectCallScalarMethod(runtime.connection, selector,
+                                               scalars, input_scalar_count,
+                                               scalar_output, scalar_count);
+        } else if kind == 0 {
+            if output_capacity == 0 {
+                status = IOConnectCallMethod(runtime.connection, selector,
+                                             scalars, input_scalar_count,
+                                             input_struct, input_size as usize,
+                                             null, null, null, null);
+            } else {
+                status = IOConnectCallMethod(runtime.connection, selector,
+                                             scalars, input_scalar_count,
+                                             input_struct, input_size as usize,
+                                             null, null, output, output_size);
+            }
+        }
+        if status != 0 {
+            g_agx_error = status;
+            free(input_copy); free(scalar_count); free(scalar_output);
+            free(output_size); free(output); free(data); return 0;
+        }
+
+        if resource >= 0 {
+            if output_size[0] < 48 || captured_output_size < 48 {
+                free(input_copy); free(scalar_count); free(scalar_output);
+                free(output_size); free(output); free(data); return 0;
+            }
+            let expected_gpu: u64 = agx_get_u64(data, captured_output_at);
+            let actual_gpu: u64 = agx_get_u64(output, 0);
+            let actual_cpu: u64 = agx_get_u64(output, 8);
+            let actual_extent: u64 = agx_get_u64(output, 0x28);
+            let mapping: *AgxResourceMap = agx_resource(runtime, resource);
+            mapping.captured_cpu = agx_get_u64(data, captured_output_at + 8);
+            mapping.captured_size = agx_get_u64(data,
+                                                captured_output_at + 0x28);
+            mapping.actual_cpu = actual_cpu;
+            mapping.actual_gpu = actual_gpu;
+            mapping.actual_size = actual_extent;
+            if expected_gpu != actual_gpu || content_size > actual_extent
+                || (content_size > 0 && actual_cpu == 0) {
+                free(input_copy); free(scalar_count); free(scalar_output);
+                free(output_size); free(output); free(data); return 0;
+            }
+            if content_size > 0 {
+                memcpy(actual_cpu as *u8, &data[content_at],
+                       content_size as usize);
+            }
+            runtime.resource_count = runtime.resource_count + 1;
+        }
+        if selector == 7 && output_size[0] >= 8 {
+            runtime.queue_id = agx_get_u64(output, 0);
+            if runtime.queue_input == null && input_size > 0 {
+                runtime.queue_input = alloc(input_size as i32);
+                runtime.queue_input_size = input_size as i32;
+                memcpy(runtime.queue_input, input_struct, input_size as usize);
+            }
+        }
+        if selector == 16 && output_size[0] >= 8 {
+            runtime.event_log = agx_get_u64(output, 0);
+            if runtime.queue_id == 0
+                || IOConnectSetNotificationPort(runtime.connection, 0,
+                                                runtime.notification,
+                                                runtime.queue_id as usize) != 0 {
+                free(input_copy); free(scalar_count); free(scalar_output);
+                free(output_size); free(output); free(data); return 0;
+            }
+        }
+        if selector == 14 && output_size[0] >= 8 {
+            let mapping: u64 = agx_get_u64(output, 0);
+            if sel14_seen == 0 { runtime.sel14_0 = mapping; }
+            else if sel14_seen == 1 { runtime.sel14_1 = mapping; }
+            sel14_seen = sel14_seen + 1;
+        }
+        at = next;
+        op_index = op_index + 1;
+        g_agx_error = 800000 + (op_index as i32);
+    }
+    free(input_copy); free(scalar_count); free(scalar_output);
+    free(output_size); free(output); free(data);
+    if submitted == 0 { return 0; }
+    g_agx_error = 0;
+    return 1;
+}
+
+// Executes raw u32 words. Narrow fields use one word per element; the canonical
+// 64-bit profile uses two little-endian words per element.
+fn agx_run_words_mode(image_path: *u8, artifact_path: *u8, input: *u32,
+                      word_count: i32, element_count: i32, output: *u32,
+                      recovery_gate: i32) -> i32 {
+    g_agx_error = 0;
+    if word_count < 1 || element_count < 1 || element_count > 65535 {
+        g_agx_error = 10;
+        return 0;
+    }
+    let code_slot: **u8 = alloc(1);
+    let code_size: *i32 = alloc(1);
+    let prime: *u64 = alloc(1);
+    code_slot[0] = null; code_size[0] = 0; prime[0] = 0;
+    if agx_load_artifact(artifact_path, code_slot, code_size, prime) == 0 {
+        g_agx_error = 11;
+        free(prime); free(code_size); free(code_slot as *u8); return 0;
+    }
+    var layout_ok: i32 = 0;
+    if prime[0] <= (0xffffffff as u64) && word_count == element_count {
+        layout_ok = 1;
+    }
+    if prime[0] == (18446744073709551557 as u64)
+        && word_count == element_count * 2 {
+        layout_ok = 1;
+    }
+    if layout_ok == 0 {
+        g_agx_error = 12;
+        free(code_slot[0]); free(prime); free(code_size);
+        free(code_slot as *u8); return 0;
+    }
+
+    let connection: *u32 = alloc(1);
+    let notification: *u32 = alloc(1);
+    connection[0] = 0; notification[0] = 0;
+    if agx_open_profile(connection, notification) == 0 {
+        g_agx_error = 13;
+        free(notification); free(connection); free(code_slot[0]);
+        free(prime); free(code_size); free(code_slot as *u8); return 0;
+    }
+    let runtime: *AgxRuntime = agx_runtime_new(connection[0], notification[0]);
+    free(notification); free(connection);
+    var ok: i32 = agx_replay_and_submit(runtime, image_path, code_slot[0],
+                                         code_size[0], input, word_count,
+                                         element_count, prime[0]);
+    if ok == 0 && g_agx_error == 0 { g_agx_error = 14; }
+    if ok != 0 {
+        ok = agx_wait_results(runtime, prime[0], word_count, element_count);
+        if ok == 0 { g_agx_error = 15; }
+    }
+    if ok != 0 && recovery_gate != 0 {
+        ok = agx_arm_controlled_fault(runtime);
+        if ok == 0 { g_agx_error = 17; }
+        if ok != 0 {
+            ok = agx_ring_doorbell(runtime);
+            if ok == 0 { g_agx_error = 18; }
+        }
+        if ok != 0 {
+            ok = agx_expect_no_completion(runtime);
+            if ok == 0 { g_agx_error = 19; }
+        }
+        if ok != 0 {
+            ok = agx_queue_destroy(runtime);
+            if ok == 0 { g_agx_error = 20; }
+        }
+        if ok != 0 {
+            ok = agx_queue_recreate(runtime);
+            if ok == 0 { g_agx_error = 21; }
+        }
+        if ok != 0 {
+            ok = agx_prepare_dispatch(runtime, code_slot[0], code_size[0],
+                                      input, word_count, element_count,
+                                      prime[0]);
+            if ok != 0 { ok = agx_ring_doorbell(runtime); }
+            if ok == 0 { g_agx_error = 22; }
+        }
+        if ok != 0 {
+            ok = agx_wait_results(runtime, prime[0], word_count, element_count);
+            if ok == 0 { g_agx_error = 23; }
+        }
+    }
+    if ok != 0 && runtime.output_cpu != 0 {
+        let result: *u8 = runtime.output_cpu as *u8;
+        var i: i32 = 0;
+        while i < word_count {
+            output[i] = agx_get_u32(result, (i * 4) as i64);
+            i = i + 1;
+        }
+    } else {
+        if g_agx_error == 0 { g_agx_error = 16; }
+        ok = 0;
+    }
+    agx_runtime_free(runtime);
+    free(code_slot[0]); free(prime); free(code_size);
+    free(code_slot as *u8);
+    return ok;
+}
+
+fn agx_run_words(image_path: *u8, artifact_path: *u8, input: *u32,
+                 word_count: i32, element_count: i32, output: *u32) -> i32 {
+    return agx_run_words_mode(image_path, artifact_path, input, word_count,
+                              element_count, output, 0);
+}
+
+fn agx_run_words_recovery(image_path: *u8, artifact_path: *u8, input: *u32,
+                          word_count: i32, element_count: i32,
+                          output: *u32) -> i32 {
+    return agx_run_words_mode(image_path, artifact_path, input, word_count,
+                              element_count, output, 1);
+}

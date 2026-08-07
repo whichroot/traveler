@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-0b memory-ABI probe: two computed u32 limb loads and stores per element.
+// @internal-note: plan-gpu-agx-target
+
+field F = Field<18446744073709551557>;
+
+fn main() -> i32 {
+    let a: *F = alloc(8);
+    let out: *F = alloc(8);
+    for i in 0..8 {
+        out[i] = a[i];
+    }
+    return 0;
+}

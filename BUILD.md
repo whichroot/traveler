@@ -197,6 +197,52 @@ On a Linux **host**, `build.sh` and the test gates auto-detect the host triple
 default to the canonical triple: pass `-target` yourself (as above) and link
 with `cc -no-pie` on Linux.
 
+### GPU device kernels
+
+The compiler can re-emit proven elementwise pfor workers as standalone device
+artifacts:
+
+```sh
+TVC=src/bootstrap/out/stage1
+$TVC --emit-gpu examples/gpu_field_map.tv -o /tmp/map-amd.ll
+$TVC --emit-gpu-nvptx examples/gpu_field_map.tv -o /tmp/map-nv.ll
+$TVC --emit-gpu-agx examples/gpu_field_map.tv -o /tmp/map-agx.hex
+```
+
+AMDGCN and NVPTX are LLVM device modules; `tests/gpu/run.sh` lowers them with
+`llc` to a gfx1100 object and sm_90 PTX. AGX is different: Traveler directly
+emits measured G16X instruction bytes in canonical hex, with no Metal compiler
+or LLVM device backend. AGX-0/0b currently admit one-input/one-output field maps
+over `Field<2147483647>`, odd primes in `2^30 < p < 2^31`, or the canonical
+64-bit prime `Field<18446744073709551557>` (`2^64-59`) through two u32 limbs;
+other workers emit a skip record. This is not generic 64-bit-prime support. The
+profile targets an M4 Pro G16X private interface and is not an Apple-supported
+ABI. Portable byte goldens run everywhere; owned-device execution runs only
+when the external harness is available.
+
+The measured G16X profile also has an in-tree Traveler submission runtime. It
+needs a regenerated `AGXDISP3` profile image for the exact OS/GPU build; that
+machine-specific image is deliberately not shipped as a portable ABI. On the
+matching M4 profile:
+
+```sh
+AGX_PROFILE=/path/to/dispatch.img
+$TVC tests/gpu/agx_runtime_gate.tv -o /tmp/agx-runtime.ll
+$LLC -filetype=obj /tmp/agx-runtime.ll -o /tmp/agx-runtime.o
+cc /tmp/agx-runtime.o -framework IOKit -o /tmp/agx-runtime
+/tmp/agx-runtime "$AGX_PROFILE" /tmp/map-agx.hex
+```
+
+`cc` only links the Traveler-produced object. `otool -L` must show IOKit and
+libSystem, with no Metal, Foundation, IOGPU, Objective-C, or project C object.
+The runtime refuses any service build, initialization fingerprint, profile call
+shape, or GPU-address allocation order outside the measured profile. Set
+`AGX_FAULT_RECOVERY=1` on `tests/gpu/run.sh` to exercise destroy/recreate recovery
+after the controlled out-of-range kernel. On the measured machine the same gate
+also compiles one pfor source for CPU and AGX, runs 256 reproducible
+adversarial/random elements over each supported field profile, and requires
+equal exit status and byte-exact raw output.
+
 ## 5. Verify self-hosting (Stage 2 / Stage 3)
 
 The compiler can reproduce itself: the compiler compiling itself (Stage 2) must

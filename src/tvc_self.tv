@@ -1655,11 +1655,9 @@ var g_pfor_report_mode: i32 = 0;
 // 1 = --emit-gpu (Stage 0): ride the /dev/null codegen pass to populate the
 // registries, then re-emit each elementwise-class worker as a device kernel.
 var g_emit_gpu_mode: i32 = 0;
-// GPU device target for --emit-gpu: 0 = AMDGCN (amdgcn-amd-amdhsa, the
-// original Stage-0 target), 1 = NVPTX (nvptx64-nvidia-cuda). Selected by
-// --emit-gpu-nvptx. Both ride the identical elementwise-class worker path;
-// only the triple, the SIMT id intrinsics, the kernel calling convention and
-// the launch-bound attribute differ.
+// GPU device target: 0 = AMDGCN, 1 = NVPTX, 2 = AGX G16X. AMD/NV share LLVM
+// emission; AGX directly encodes measured machine instructions from the same
+// proven elementwise worker record. @internal-note: plan-gpu-agx-target.
 var g_gpu_target: i32 = 0;
 // --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
 // (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
@@ -16109,6 +16107,1098 @@ fn emit_pfor_workers() {
     g_pfor_emit_roff = roff;
 }
 
+// ===== DIRECT AGX G16X CODEGEN (--emit-gpu-agx) =====
+// The pfor proof supplies the admitted straight-line worker. This backend lowers
+// its typed AST to a private operation list, allocates the measured register
+// files under consuming-source semantics, then writes AGX instruction bytes as
+// canonical hex. No Metal compiler or LLVM device backend participates.
+// @internal-note: plan-gpu-agx-target.
+
+let AGX_OP_IMM: i32 = 1;
+let AGX_OP_LOAD: i32 = 2;
+let AGX_OP_ADD_IMM: i32 = 3;
+let AGX_OP_ADD: i32 = 4;
+let AGX_OP_SUB: i32 = 5;
+let AGX_OP_MUL: i32 = 6;
+let AGX_OP_SHR: i32 = 7;
+let AGX_OP_SHL: i32 = 8;
+let AGX_OP_EXTRACT: i32 = 9;
+let AGX_OP_STORE: i32 = 10;
+let AGX_OP_TID: i32 = 11;
+
+struct AgxOp {
+    kind: i32,
+    dst: i32,
+    dst2: i32,
+    a: i32,
+    b: i32,
+    imm: u64,
+    aux: i32,
+}
+
+struct AgxPair {
+    lo: i32,
+    hi: i32,
+}
+
+struct AgxQuad {
+    w0: i32,
+    w1: i32,
+    w2: i32,
+    w3: i32,
+}
+
+struct AgxUse {
+    reg: i32,
+    virt: i32,       // -1 for an allocator-inserted temporary copy
+}
+
+var g_agx_ops: *AgxOp = null;
+var g_agx_nops: i32 = 0;
+var g_agx_cap_ops: i32 = 0;
+var g_agx_vnext: i32 = 0;
+var g_agx_code: *u8 = null;
+var g_agx_code_len: i32 = 0;
+var g_agx_code_cap: i32 = 0;
+var g_agx_marks: *i32 = null;
+var g_agx_nmarks: i32 = 0;
+var g_agx_marks_cap: i32 = 0;
+var g_agx_input_v: i32 = 0 - 1;
+var g_agx_input64_lo: i32 = 0 - 1;
+var g_agx_input64_hi: i32 = 0 - 1;
+var g_agx_index_lo: i32 = 0 - 1;
+var g_agx_index_hi: i32 = 0 - 1;
+var g_agx_def_reg: *i32 = null;
+var g_agx_def_mark: *i32 = null;
+var g_agx_tap_t0: i32 = 0 - 1;
+var g_agx_tap_t1: i32 = 0 - 1;
+var g_agx_tap_t2: i32 = 0 - 1;
+var g_agx_tap_t3: i32 = 0 - 1;
+var g_agx_tap_s0: i32 = 0 - 1;
+var g_agx_tap_s1: i32 = 0 - 1;
+var g_agx_tap_c: i32 = 0 - 1;
+var g_agx_tap_x0: i32 = 0 - 1;
+var g_agx_tap_x1: i32 = 0 - 1;
+var g_agx_tap_d: i32 = 0 - 1;
+var g_agx_tap_v0: i32 = 0 - 1;
+var g_agx_tap_v1: i32 = 0 - 1;
+var g_agx_tap_g0: i32 = 0 - 1;
+var g_agx_tap_e: i32 = 0 - 1;
+var g_agx_tap_r0: i32 = 0 - 1;
+var g_agx_tap_r1: i32 = 0 - 1;
+var g_agx_tap_capture: i32 = 0;
+
+fn agx_code_reset() {
+    if g_agx_code == null {
+        g_agx_code_cap = 4096;
+        g_agx_code = alloc(g_agx_code_cap);
+    }
+    if g_agx_marks == null {
+        g_agx_marks_cap = 256;
+        g_agx_marks = alloc(g_agx_marks_cap);
+    }
+    g_agx_code_len = 0;
+    g_agx_nmarks = 0;
+}
+
+fn agx_put(v: i32) {
+    if g_agx_code_len >= g_agx_code_cap {
+        g_agx_code_cap = g_agx_code_cap * 2;
+        g_agx_code = realloc(g_agx_code, g_agx_code_cap);
+    }
+    g_agx_code[g_agx_code_len] = (v & 255) as u8;
+    g_agx_code_len = g_agx_code_len + 1;
+}
+
+fn agx_mark() {
+    if g_agx_nmarks >= g_agx_marks_cap {
+        g_agx_marks_cap = g_agx_marks_cap * 2;
+        g_agx_marks = realloc(g_agx_marks, g_agx_marks_cap);
+    }
+    g_agx_marks[g_agx_nmarks] = g_agx_code_len;
+    g_agx_nmarks = g_agx_nmarks + 1;
+}
+
+fn agx_e_prologue(reg: i32) {
+    agx_put(12 | (reg << 4)); agx_put(160); agx_put(16); agx_put(6);
+    agx_mark();
+}
+
+fn agx_e_mov_imm(reg: i32, value: u64) {
+    agx_put(12 | (reg << 4)); agx_put(value as i32);
+    agx_mark();
+}
+
+fn agx_e_mov_wide(value: u64) {
+    agx_put(12); agx_put(128 | ((value & 127) as i32));
+    agx_put(2);
+    agx_put((((value >> 25) & 127) << 1) as i32);
+    agx_put((((value >> 7) & 15) << 1) as i32);
+    agx_put((((value >> 11) & 3) << 2) as i32);
+    agx_put(((value >> 13) & 255) as i32);
+    agx_put(((value >> 21) & 15) as i32);
+    agx_mark();
+}
+
+fn agx_e_load(dest_slot: i32, buffer_slot: i32, flavor54: i32,
+              index_reg: i32) {
+    // uint32 device load; negative index_reg selects the tid-direct r1 form.
+    agx_put(103);
+    if index_reg < 0 { agx_put(16); } else { agx_put(0); }
+    if flavor54 == 1 {
+        agx_put(84); agx_put(dest_slot * 2);
+    } else {
+        agx_put(68); agx_put(dest_slot);
+    }
+    agx_put(buffer_slot);
+    if index_reg < 0 { agx_put(1); } else { agx_put(128 | index_reg); }
+    agx_put(32); agx_put(0);
+    agx_put(81); agx_put(1); agx_put(0); agx_put(64); agx_put(70); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_move_return(dest: i32, src_slot: i32) {
+    // Extract-identity moves a device return slot into the G register file.
+    agx_put(167); agx_put(0); agx_put(86); agx_put(dest * 2);
+    agx_put(2); agx_put(src_slot * 2); agx_put(0); agx_put(0);
+    agx_put(240); agx_put(17); agx_put(1); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_store(value: i32, buffer_slot: i32, index_reg: i32) {
+    // uint32 device store; negative index_reg selects the tid-direct r1 form.
+    agx_put(231);
+    if index_reg < 0 { agx_put(16); } else { agx_put(0); }
+    agx_put(84); agx_put(value * 2); agx_put(buffer_slot);
+    if index_reg < 0 { agx_put(1); } else { agx_put(index_reg); }
+    agx_put(32); agx_put(0);
+    agx_put(17); agx_put(0); agx_put(0); agx_put(144); agx_put(17); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_alu_imm(dest: i32, src: i32, imm: i32) {
+    agx_put(159); agx_put(17); agx_put(84); agx_put(dest * 2);
+    agx_put(2); agx_put((imm << 1) & 255); agx_put((src << 3) & 255);
+    agx_put(136); agx_put(17); agx_put(4);
+    agx_mark();
+}
+
+fn agx_e_alu_reg(dest: i32, a: i32, b: i32, op: i32) {
+    if op == AGX_OP_SUB {
+        agx_put(31); agx_put(17); agx_put(84); agx_put(dest * 2);
+        agx_put(2); agx_put((a << 2) & 255); agx_put((b << 3) & 255);
+    } else {
+        agx_put(159); agx_put(17); agx_put(84); agx_put(dest * 2);
+        agx_put(2); agx_put((b << 2) & 255); agx_put((a << 3) & 255);
+    }
+    agx_put(168); agx_put(23); agx_put(5);
+    agx_mark();
+}
+
+fn agx_e_mul(dest: i32, a: i32, b: i32) {
+    // Unsigned 32x32 -> pair (dest=low, dest+1=high).
+    agx_put(159); agx_put(0); agx_put(84); agx_put(dest * 2);
+    agx_put(2); agx_put((a << 2) & 255); agx_put((b << 3) & 255);
+    agx_put(0); agx_put(224); agx_put(38); agx_put(10); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_shift(dest: i32, src: i32, amount: i32, left: i32) {
+    if left == 1 { agx_put(39); } else { agx_put(167); }
+    agx_put(0); agx_put(84); agx_put(dest * 2);
+    if left == 1 { agx_put(3); } else { agx_put(2); }
+    agx_put((src << 2) & 255); agx_put((amount << 2) & 255);
+    agx_put(0); agx_put(240); agx_put(17); agx_put(1); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_extract(dest: i32, src: i32, shift: i32, width: i32) {
+    agx_put(167); agx_put(0); agx_put(84); agx_put(dest * 2); agx_put(2);
+    agx_put((src << 2) & 255); agx_put((shift << 2) & 255); agx_put(0);
+    agx_put(240); agx_put(17);
+    agx_put(((((width & 15) << 4) | 1)) & 255); agx_put(0);
+    agx_mark();
+}
+
+fn agx_e_stop() {
+    agx_put(14); agx_put(0); agx_put(0); agx_put(0); agx_mark();
+}
+
+fn agx_vm_reset() {
+    if g_agx_ops == null {
+        g_agx_cap_ops = 256;
+        g_agx_ops = alloc(g_agx_cap_ops);
+    }
+    g_agx_nops = 0;
+    g_agx_vnext = 0;
+    g_agx_tap_t0 = 0 - 1; g_agx_tap_t1 = 0 - 1;
+    g_agx_tap_t2 = 0 - 1; g_agx_tap_t3 = 0 - 1;
+    g_agx_tap_s0 = 0 - 1; g_agx_tap_s1 = 0 - 1; g_agx_tap_c = 0 - 1;
+    g_agx_tap_x0 = 0 - 1; g_agx_tap_x1 = 0 - 1; g_agx_tap_d = 0 - 1;
+    g_agx_tap_v0 = 0 - 1; g_agx_tap_v1 = 0 - 1;
+    g_agx_tap_g0 = 0 - 1; g_agx_tap_e = 0 - 1;
+    g_agx_tap_r0 = 0 - 1; g_agx_tap_r1 = 0 - 1;
+    g_agx_tap_capture = 0;
+}
+
+fn agx_vnew() -> i32 {
+    let v: i32 = g_agx_vnext;
+    g_agx_vnext = g_agx_vnext + 1;
+    return v;
+}
+
+fn agx_push_op(kind: i32, dst: i32, dst2: i32, a: i32, b: i32,
+               imm: u64, aux: i32) {
+    if g_agx_nops >= g_agx_cap_ops {
+        g_agx_cap_ops = g_agx_cap_ops * 2;
+        g_agx_ops = realloc(g_agx_ops, g_agx_cap_ops);
+    }
+    g_agx_ops[g_agx_nops].kind = kind;
+    g_agx_ops[g_agx_nops].dst = dst;
+    g_agx_ops[g_agx_nops].dst2 = dst2;
+    g_agx_ops[g_agx_nops].a = a;
+    g_agx_ops[g_agx_nops].b = b;
+    g_agx_ops[g_agx_nops].imm = imm;
+    g_agx_ops[g_agx_nops].aux = aux;
+    g_agx_nops = g_agx_nops + 1;
+}
+
+fn agx_vimm(value: u64) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(AGX_OP_IMM, v, 0 - 1, 0 - 1, 0 - 1, value, 0);
+    return v;
+}
+
+fn agx_vload(slot: i32) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(AGX_OP_LOAD, v, 0 - 1, 0 - 1, 0 - 1, 0, slot);
+    return v;
+}
+
+fn agx_vload_index(slot: i32, index: i32) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(AGX_OP_LOAD, v, 0 - 1, index, 0 - 1, 0, slot);
+    return v;
+}
+
+fn agx_vtid() -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(AGX_OP_TID, v, 0 - 1, 0 - 1, 0 - 1, 0, 0);
+    return v;
+}
+
+fn agx_vadd_imm(a: i32, imm: i32) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(AGX_OP_ADD_IMM, v, 0 - 1, a, 0 - 1, imm as u64, 0);
+    return v;
+}
+
+fn agx_vbinary(kind: i32, a: i32, b: i32) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(kind, v, 0 - 1, a, b, 0, 0);
+    return v;
+}
+
+fn agx_vmul(a: i32, b: i32) -> AgxPair {
+    let lo: i32 = agx_vnew();
+    let hi: i32 = agx_vnew();
+    agx_push_op(AGX_OP_MUL, lo, hi, a, b, 0, 0);
+    return AgxPair { lo: lo, hi: hi };
+}
+
+fn agx_vshift(kind: i32, a: i32, amount: i32) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(kind, v, 0 - 1, a, 0 - 1, amount as u64, 0);
+    return v;
+}
+
+fn agx_vextract(a: i32, shift: i32, width: i32) -> i32 {
+    let v: i32 = agx_vnew();
+    agx_push_op(AGX_OP_EXTRACT, v, 0 - 1, a, 0 - 1,
+        shift as u64, width);
+    return v;
+}
+
+fn agx_vstore(value: i32, slot: i32) {
+    agx_push_op(AGX_OP_STORE, 0 - 1, 0 - 1, value, 0 - 1, 0, slot);
+}
+
+fn agx_vstore_index(value: i32, slot: i32, index: i32) {
+    agx_push_op(AGX_OP_STORE, 0 - 1, 0 - 1, value, index, 0, slot);
+}
+
+fn agx_vfix_negative(d: i32, p: u64) -> i32 {
+    // d is a wrapped difference in (-p,p), p<2^31. Bit 31 says whether p
+    // must be added back. Source duplication is handled by the allocator.
+    let neg: i32 = agx_vshift(AGX_OP_SHR, d, 31);
+    let pv: i32 = agx_vimm(p);
+    let corr: AgxPair = agx_vmul(neg, pv);
+    return agx_vbinary(AGX_OP_ADD, d, corr.lo);
+}
+
+fn agx_vfield_add(a: i32, b: i32, p: u64) -> i32 {
+    let sum: i32 = agx_vbinary(AGX_OP_ADD, a, b);
+    let pv: i32 = agx_vimm(p);
+    let d: i32 = agx_vbinary(AGX_OP_SUB, sum, pv);
+    return agx_vfix_negative(d, p);
+}
+
+fn agx_vfield_sub(a: i32, b: i32, p: u64) -> i32 {
+    let d: i32 = agx_vbinary(AGX_OP_SUB, a, b);
+    return agx_vfix_negative(d, p);
+}
+
+fn agx_vm31_reduce(s: i32, p: u64) -> i32 {
+    // For p=2^31-1: fold bit 31 into the low 31 bits, then map p to zero.
+    let top: i32 = agx_vshift(AGX_OP_SHR, s, 31);
+    let left: i32 = agx_vshift(AGX_OP_SHL, s, 1);
+    let low: i32 = agx_vshift(AGX_OP_SHR, left, 1);
+    let r: i32 = agx_vbinary(AGX_OP_ADD, low, top);
+    let rp1: i32 = agx_vadd_imm(r, 1);
+    let is_p: i32 = agx_vshift(AGX_OP_SHR, rp1, 31);
+    let pv: i32 = agx_vimm(p);
+    let excess: AgxPair = agx_vmul(is_p, pv);
+    return agx_vbinary(AGX_OP_SUB, r, excess.lo);
+}
+
+fn agx_vm31_mul(a: i32, b: i32, p: u64) -> i32 {
+    let product: AgxPair = agx_vmul(a, b);
+    let lo_top: i32 = agx_vshift(AGX_OP_SHR, product.lo, 31);
+    let lo_left: i32 = agx_vshift(AGX_OP_SHL, product.lo, 1);
+    let c0: i32 = agx_vshift(AGX_OP_SHR, lo_left, 1);
+    let hi2: i32 = agx_vshift(AGX_OP_SHL, product.hi, 1);
+    let c1: i32 = agx_vbinary(AGX_OP_ADD, hi2, lo_top);
+    let s: i32 = agx_vbinary(AGX_OP_ADD, c0, c1);
+    return agx_vm31_reduce(s, p);
+}
+
+fn agx_mont_pinv(p: u64) -> u64 {
+    // Newton inverse modulo 2^32; p is odd.
+    let mask: u64 = 4294967295;
+    var inv: u64 = 1;
+    var i: i32 = 0;
+    while i < 5 {
+        let term: u64 = ((2 as u64) - ((p * inv) & mask)) & mask;
+        inv = (inv * term) & mask;
+        i = i + 1;
+    }
+    return ((0 as u64) - inv) & mask;
+}
+
+fn agx_mont_r2(p: u64) -> u64 {
+    let r: u64 = ((1 as u64) << 32) % p;
+    return mod_mul_u64(r, r, p);
+}
+
+fn agx_vmont_redc(hi: i32, lo: i32, p: u64, pinv: u64) -> i32 {
+    let pinv_v: i32 = agx_vimm(pinv);
+    let m_pair: AgxPair = agx_vmul(lo, pinv_v);
+    let p0: i32 = agx_vimm(p);
+    let mp: AgxPair = agx_vmul(m_pair.lo, p0);
+
+    let lo_half: i32 = agx_vshift(AGX_OP_SHR, lo, 1);
+    let mpl_half: i32 = agx_vshift(AGX_OP_SHR, mp.lo, 1);
+    let lo_bit: i32 = agx_vextract(lo, 0, 1);
+    let mpl_bit: i32 = agx_vextract(mp.lo, 0, 1);
+    let halves: i32 = agx_vbinary(AGX_OP_ADD, lo_half, mpl_half);
+    let bottoms: i32 = agx_vbinary(AGX_OP_ADD, lo_bit, mpl_bit);
+    let bottom_carry: i32 = agx_vshift(AGX_OP_SHR, bottoms, 1);
+    let carry_sum: i32 = agx_vbinary(AGX_OP_ADD, halves, bottom_carry);
+    let carry: i32 = agx_vshift(AGX_OP_SHR, carry_sum, 31);
+
+    let high_sum: i32 = agx_vbinary(AGX_OP_ADD, hi, mp.hi);
+    let t: i32 = agx_vbinary(AGX_OP_ADD, high_sum, carry);
+    let p1: i32 = agx_vimm(p);
+    let d: i32 = agx_vbinary(AGX_OP_SUB, t, p1);
+    return agx_vfix_negative(d, p);
+}
+
+fn agx_vmont_mul(a: i32, b: i32, p: u64) -> i32 {
+    let pinv: u64 = agx_mont_pinv(p);
+    let r2: u64 = agx_mont_r2(p);
+    let product: AgxPair = agx_vmul(a, b);
+    let first: i32 = agx_vmont_redc(product.hi, product.lo, p, pinv);
+    let r2v: i32 = agx_vimm(r2);
+    let scaled: AgxPair = agx_vmul(first, r2v);
+    return agx_vmont_redc(scaled.hi, scaled.lo, p, pinv);
+}
+
+fn agx_vcarry32(x: i32, y: i32) -> i32 {
+    // Exact carry-out of x+y without a carry flag. Halved terms stay below
+    // 2^31, and their bottom bits carry separately.
+    let xh: i32 = agx_vshift(AGX_OP_SHR, x, 1);
+    let yh: i32 = agx_vshift(AGX_OP_SHR, y, 1);
+    let halves: i32 = agx_vbinary(AGX_OP_ADD, xh, yh);
+    let xb: i32 = agx_vextract(x, 0, 1);
+    let yb: i32 = agx_vextract(y, 0, 1);
+    let bottoms: i32 = agx_vbinary(AGX_OP_ADD, xb, yb);
+    let bottom_carry: i32 = agx_vshift(AGX_OP_SHR, bottoms, 1);
+    let carry_sum: i32 = agx_vbinary(AGX_OP_ADD, halves, bottom_carry);
+    return agx_vshift(AGX_OP_SHR, carry_sum, 31);
+}
+
+fn agx_vaddc32(x: i32, y: i32) -> AgxPair {
+    let carry: i32 = agx_vcarry32(x, y);
+    let sum: i32 = agx_vbinary(AGX_OP_ADD, x, y);
+    return AgxPair { lo: sum, hi: carry };
+}
+
+fn agx_vborrow32(x: i32, y: i32) -> i32 {
+    // y>x iff (2^32-1-x)+y carries.
+    let max32: i32 = agx_vimm(4294967295);
+    let complement: i32 = agx_vbinary(AGX_OP_SUB, max32, x);
+    return agx_vcarry32(complement, y);
+}
+
+fn agx_vmul64_raw(a: AgxPair, b: AgxPair) -> AgxQuad {
+    let p00: AgxPair = agx_vmul(a.lo, b.lo);
+    let p01: AgxPair = agx_vmul(a.lo, b.hi);
+    let p10: AgxPair = agx_vmul(a.hi, b.lo);
+    let p11: AgxPair = agx_vmul(a.hi, b.hi);
+
+    let s1: AgxPair = agx_vaddc32(p00.hi, p01.lo);
+    let t1c: AgxPair = agx_vaddc32(s1.lo, p10.lo);
+    let c1: i32 = agx_vbinary(AGX_OP_ADD, s1.hi, t1c.hi);
+
+    let s2: AgxPair = agx_vaddc32(p01.hi, p10.hi);
+    let u2: AgxPair = agx_vaddc32(s2.lo, p11.lo);
+    let t2c: AgxPair = agx_vaddc32(u2.lo, c1);
+    let c20: i32 = agx_vbinary(AGX_OP_ADD, s2.hi, u2.hi);
+    let c2: i32 = agx_vbinary(AGX_OP_ADD, c20, t2c.hi);
+    let t3: i32 = agx_vbinary(AGX_OP_ADD, p11.hi, c2);
+
+    if g_agx_tap_capture == 1 && g_agx_tap_t0 < 0 {
+        g_agx_tap_t0 = p00.lo; g_agx_tap_t1 = t1c.lo;
+        g_agx_tap_t2 = t2c.lo; g_agx_tap_t3 = t3;
+    }
+    return AgxQuad { w0: p00.lo, w1: t1c.lo, w2: t2c.lo, w3: t3 };
+}
+
+fn agx_vpm64_finish(s0: i32, s1: i32, coeff: i32) -> AgxPair {
+    // q=2^64 == 59 (mod q-59). Fold the bounded coefficient, fold its one-bit
+    // overflow once more, then canonicalize the final [0,q) value.
+    let c59: i32 = agx_vimm(59);
+    let kpair: AgxPair = agx_vmul(coeff, c59);
+    let x0c: AgxPair = agx_vaddc32(s0, kpair.lo);
+    let x1c: AgxPair = agx_vaddc32(s1, x0c.hi);
+
+    let d59: i32 = agx_vimm(59);
+    let dpair: AgxPair = agx_vmul(x1c.hi, d59);
+    let v0: i32 = agx_vbinary(AGX_OP_ADD, x0c.lo, dpair.lo);
+    let v1: i32 = x1c.lo;
+
+    let k59: i32 = agx_vimm(59);
+    let g0: i32 = agx_vcarry32(v0, k59);
+    let e: i32 = agx_vcarry32(v1, g0);
+    let e59: i32 = agx_vimm(59);
+    let epair: AgxPair = agx_vmul(e, e59);
+    let r0: i32 = agx_vbinary(AGX_OP_ADD, v0, epair.lo);
+    let r1: i32 = agx_vbinary(AGX_OP_ADD, v1, e);
+    if g_agx_tap_capture == 1 && g_agx_tap_x0 < 0 {
+        g_agx_tap_x0 = x0c.lo; g_agx_tap_x1 = x1c.lo;
+        g_agx_tap_d = x1c.hi;
+        g_agx_tap_v0 = v0; g_agx_tap_v1 = v1;
+        g_agx_tap_g0 = g0; g_agx_tap_e = e;
+        g_agx_tap_r0 = r0; g_agx_tap_r1 = r1;
+    }
+    return AgxPair { lo: r0, hi: r1 };
+}
+
+fn agx_vpm64_reduce(t: AgxQuad) -> AgxPair {
+    // First fold: low64 + 59*high64 = s0 + B*s1 + 2^64*coeff,
+    // with coeff in [0,59].
+    let c59a: i32 = agx_vimm(59);
+    let f2: AgxPair = agx_vmul(t.w2, c59a);
+    let c59b: i32 = agx_vimm(59);
+    let f3: AgxPair = agx_vmul(t.w3, c59b);
+    let s0c: AgxPair = agx_vaddc32(t.w0, f2.lo);
+    let z1c: AgxPair = agx_vaddc32(t.w1, f3.lo);
+    let h: i32 = agx_vbinary(AGX_OP_ADD, f2.hi, s0c.hi);
+    let s1c: AgxPair = agx_vaddc32(z1c.lo, h);
+    let c0: i32 = agx_vbinary(AGX_OP_ADD, f3.hi, z1c.hi);
+    let coeff: i32 = agx_vbinary(AGX_OP_ADD, c0, s1c.hi);
+    if g_agx_tap_capture == 1 && g_agx_tap_s0 < 0 {
+        g_agx_tap_s0 = s0c.lo; g_agx_tap_s1 = s1c.lo;
+        g_agx_tap_c = coeff;
+    }
+    let result: AgxPair = agx_vpm64_finish(s0c.lo, s1c.lo, coeff);
+    return result;
+}
+
+fn agx_vfield64_mul(a: AgxPair, b: AgxPair) -> AgxPair {
+    g_agx_tap_capture = 1;
+    let raw: AgxQuad = agx_vmul64_raw(a, b);
+    let result: AgxPair = agx_vpm64_reduce(raw);
+    g_agx_tap_capture = 0;
+    return result;
+}
+
+fn agx_vfield64_add(a: AgxPair, b: AgxPair) -> AgxPair {
+    let lo: AgxPair = agx_vaddc32(a.lo, b.lo);
+    let hi0: AgxPair = agx_vaddc32(a.hi, b.hi);
+    let hi1: AgxPair = agx_vaddc32(hi0.lo, lo.hi);
+    let coeff: i32 = agx_vbinary(AGX_OP_ADD, hi0.hi, hi1.hi);
+    let result: AgxPair = agx_vpm64_finish(lo.lo, hi1.lo, coeff);
+    return result;
+}
+
+fn agx_vfield64_sub(a: AgxPair, b: AgxPair) -> AgxPair {
+    let borrow0: i32 = agx_vborrow32(a.lo, b.lo);
+    let d0: i32 = agx_vbinary(AGX_OP_SUB, a.lo, b.lo);
+    let borrow1: i32 = agx_vborrow32(a.hi, b.hi);
+    let d1a: i32 = agx_vbinary(AGX_OP_SUB, a.hi, b.hi);
+    let borrow2: i32 = agx_vborrow32(d1a, borrow0);
+    let d1: i32 = agx_vbinary(AGX_OP_SUB, d1a, borrow0);
+    let borrow: i32 = agx_vbinary(AGX_OP_ADD, borrow1, borrow2);
+    let c59: i32 = agx_vimm(59);
+    let corr: AgxPair = agx_vmul(borrow, c59);
+    let low_borrow: i32 = agx_vborrow32(d0, corr.lo);
+    let r0: i32 = agx_vbinary(AGX_OP_SUB, d0, corr.lo);
+    let r1: i32 = agx_vbinary(AGX_OP_SUB, d1, low_borrow);
+    return AgxPair { lo: r0, hi: r1 };
+}
+
+fn agx_ensure_limb_indices() {
+    if g_agx_index_lo >= 0 { return; }
+    let tid: i32 = agx_vtid();
+    g_agx_index_lo = agx_vshift(AGX_OP_SHL, tid, 1);
+    g_agx_index_hi = agx_vadd_imm(g_agx_index_lo, 1);
+}
+
+fn agx_lower_expr64(node: i32, loop_name: i32, input_name: i32,
+                    p: u64) -> AgxPair {
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        let value: u64 = g_nodes[node].int_val % p;
+        return AgxPair { lo: agx_vimm(value & 4294967295),
+                         hi: agx_vimm(value >> 32) };
+    }
+    if kind == AST_CAST {
+        let cast_value: AgxPair = agx_lower_expr64(g_nodes[node].child0,
+            loop_name, input_name, p);
+        return cast_value;
+    }
+    if kind == AST_INDEX {
+        if g_agx_input64_lo < 0 {
+            agx_ensure_limb_indices();
+            g_agx_input64_lo = agx_vload_index(1, g_agx_index_lo);
+            g_agx_input64_hi = agx_vload_index(1, g_agx_index_hi);
+        }
+        return AgxPair { lo: g_agx_input64_lo, hi: g_agx_input64_hi };
+    }
+    if kind == AST_BINARY {
+        let a: AgxPair = agx_lower_expr64(g_nodes[node].child0,
+            loop_name, input_name, p);
+        let b: AgxPair = agx_lower_expr64(g_nodes[node].child1,
+            loop_name, input_name, p);
+        if a.lo < 0 || b.lo < 0 { return AgxPair { lo: 0 - 1, hi: 0 - 1 }; }
+        if g_nodes[node].op == OP_ADD {
+            let sum: AgxPair = agx_vfield64_add(a, b); return sum;
+        }
+        if g_nodes[node].op == OP_SUB {
+            let diff: AgxPair = agx_vfield64_sub(a, b); return diff;
+        }
+        if g_nodes[node].op == OP_MUL {
+            let product: AgxPair = agx_vfield64_mul(a, b); return product;
+        }
+    }
+    return AgxPair { lo: 0 - 1, hi: 0 - 1 };
+}
+
+fn agx_find_for_body(body: i32) -> i32 {
+    var i: i32 = 0;
+    while i < g_nnodes {
+        if g_nodes[i].kind == AST_FOR && g_nodes[i].child2 == body { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_cap_pos(name: i32, caps_base: i32, ncaps: i32) -> i32 {
+    var i: i32 = 0;
+    while i < ncaps {
+        if g_pfor_workers[caps_base + i * 4] == name { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_expr_ok(node: i32, loop_name: i32, input_name: i32,
+               field_alias: i32) -> i32 {
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT { return 1; }
+    if kind == AST_CAST {
+        if resolve_type_sub(g_nodes[node].name0) != field_alias { return 0; }
+        return agx_expr_ok(g_nodes[node].child0, loop_name, input_name, field_alias);
+    }
+    if kind == AST_INDEX {
+        let obj: i32 = g_nodes[node].child0;
+        let idx: i32 = g_nodes[node].child1;
+        if g_nodes[obj].kind != AST_IDENT || g_nodes[obj].name0 != input_name { return 0; }
+        if g_nodes[idx].kind != AST_IDENT || g_nodes[idx].name0 != loop_name { return 0; }
+        return 1;
+    }
+    if kind == AST_BINARY {
+        let op: i32 = g_nodes[node].op;
+        if op != OP_ADD && op != OP_SUB && op != OP_MUL { return 0; }
+        if agx_expr_ok(g_nodes[node].child0, loop_name, input_name, field_alias) == 0 { return 0; }
+        return agx_expr_ok(g_nodes[node].child1, loop_name, input_name, field_alias);
+    }
+    return 0;
+}
+
+fn agx_lower_expr(node: i32, loop_name: i32, input_name: i32,
+                  p: u64) -> i32 {
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT { return agx_vimm(g_nodes[node].int_val % p); }
+    if kind == AST_CAST {
+        return agx_lower_expr(g_nodes[node].child0, loop_name, input_name, p);
+    }
+    if kind == AST_INDEX {
+        // AGX-0 admits one read-only input capture and one statement. Every
+        // admitted index is input[tid], so one load is both sufficient and the
+        // execution-proven shape; the allocator copies it for consuming reuse.
+        if g_agx_input_v < 0 { g_agx_input_v = agx_vload(1); }
+        return g_agx_input_v;
+    }
+    if kind == AST_BINARY {
+        let a: i32 = agx_lower_expr(g_nodes[node].child0, loop_name, input_name, p);
+        let b: i32 = agx_lower_expr(g_nodes[node].child1, loop_name, input_name, p);
+        if a < 0 || b < 0 { return 0 - 1; }
+        if g_nodes[node].op == OP_ADD { return agx_vfield_add(a, b, p); }
+        if g_nodes[node].op == OP_SUB { return agx_vfield_sub(a, b, p); }
+        if g_nodes[node].op == OP_MUL {
+            if p == 2147483647 { return agx_vm31_mul(a, b, p); }
+            return agx_vmont_mul(a, b, p);
+        }
+    }
+    return 0 - 1;
+}
+
+fn agx_alloc_reg(owner: *i32) -> i32 {
+    var r: i32 = 2;
+    while r <= 31 {
+        if owner[r] == (0 - 1) { owner[r] = 0 - 2; return r; }
+        r = r + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_alloc_pair(owner: *i32) -> i32 {
+    var r: i32 = 2;
+    while r <= 30 {
+        if owner[r] == (0 - 1) && owner[r + 1] == (0 - 1) {
+            owner[r] = 0 - 2; owner[r + 1] = 0 - 2; return r;
+        }
+        r = r + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_prepare_use(v: i32, uses: *i32, phys: *i32,
+                   owner: *i32) -> AgxUse {
+    if v < 0 || phys[v] < 0 { return AgxUse { reg: 0 - 1, virt: 0 - 1 }; }
+    let source: i32 = phys[v];
+    if uses[v] > 1 {
+        let copy_reg: i32 = agx_alloc_reg(owner);
+        if copy_reg < 0 { return AgxUse { reg: 0 - 1, virt: 0 - 1 }; }
+        agx_e_alu_imm(copy_reg, source, 0);
+        uses[v] = uses[v] - 1;
+        return AgxUse { reg: copy_reg, virt: 0 - 1 };
+    }
+    uses[v] = uses[v] - 1;
+    return AgxUse { reg: source, virt: v };
+}
+
+fn agx_release_use(u: AgxUse, phys: *i32, owner: *i32) {
+    if u.reg < 0 { return; }
+    owner[u.reg] = 0 - 1;
+    if u.virt >= 0 { phys[u.virt] = 0 - 1; }
+}
+
+fn agx_release_dead(v: i32, uses: *i32, phys: *i32, owner: *i32) {
+    if v >= 0 && uses[v] == 0 && phys[v] >= 0 {
+        owner[phys[v]] = 0 - 1;
+        phys[v] = 0 - 1;
+    }
+}
+
+fn agx_device_return_slot(n: i32) -> i32 {
+    // The execution-proven two-load chain uses distinct destination flavours:
+    // 0x54 slot 0, then 0x44 slot 4. More simultaneous loads are unproven.
+    if n == 0 { return 0; }
+    if n == 1 { return 4; }
+    return 0 - 1;
+}
+
+fn agx_record_def(v: i32, reg: i32) {
+    if v < 0 { return; }
+    g_agx_def_reg[v] = reg;
+    g_agx_def_mark[v] = g_agx_nmarks;
+}
+
+fn agx_allocate_and_encode() -> i32 {
+    let uses: *i32 = alloc(g_agx_vnext);
+    let phys: *i32 = alloc(g_agx_vnext);
+    let owner: *i32 = alloc(32);
+    if g_agx_def_reg == null {
+        g_agx_def_reg = alloc(g_agx_vnext);
+        g_agx_def_mark = alloc(g_agx_vnext);
+    } else {
+        g_agx_def_reg = realloc(g_agx_def_reg, g_agx_vnext);
+        g_agx_def_mark = realloc(g_agx_def_mark, g_agx_vnext);
+    }
+    var i: i32 = 0;
+    while i < g_agx_vnext {
+        uses[i] = 0; phys[i] = 0 - 1;
+        g_agx_def_reg[i] = 0 - 1; g_agx_def_mark[i] = 0 - 1;
+        i = i + 1;
+    }
+    i = 0;
+    while i < 32 { owner[i] = 0 - 1; i = i + 1; }
+    owner[0] = 0 - 3; owner[1] = 0 - 3; // wide-immediate scratch + grid tid
+
+    i = 0;
+    while i < g_agx_nops {
+        let kind: i32 = g_agx_ops[i].kind;
+        if kind == AGX_OP_ADD_IMM || kind == AGX_OP_SHR || kind == AGX_OP_SHL
+        || kind == AGX_OP_EXTRACT || kind == AGX_OP_STORE {
+            uses[g_agx_ops[i].a] = uses[g_agx_ops[i].a] + 1;
+        }
+        if kind == AGX_OP_LOAD && g_agx_ops[i].a >= 0 {
+            uses[g_agx_ops[i].a] = uses[g_agx_ops[i].a] + 1;
+        }
+        if kind == AGX_OP_STORE && g_agx_ops[i].b >= 0 {
+            uses[g_agx_ops[i].b] = uses[g_agx_ops[i].b] + 1;
+        }
+        if kind == AGX_OP_ADD || kind == AGX_OP_SUB || kind == AGX_OP_MUL {
+            uses[g_agx_ops[i].a] = uses[g_agx_ops[i].a] + 1;
+            uses[g_agx_ops[i].b] = uses[g_agx_ops[i].b] + 1;
+        }
+        i = i + 1;
+    }
+
+    agx_code_reset();
+    agx_e_prologue(1);
+    var ok: i32 = 1;
+    var nloads: i32 = 0;
+    i = 0;
+    while i < g_agx_nops && ok == 1 {
+        let op: AgxOp = g_agx_ops[i];
+        if op.kind == AGX_OP_IMM {
+            let d: i32 = agx_alloc_reg(owner);
+            if d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                if op.imm < 128 {
+                    agx_e_mov_imm(d, op.imm);
+                } else {
+                    agx_e_mov_wide(op.imm);
+                    agx_e_alu_imm(d, 0, 0);
+                }
+                agx_record_def(op.dst, d);
+                agx_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_TID {
+            let d: i32 = agx_alloc_reg(owner);
+            if d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_e_alu_imm(d, 1, 0);
+                agx_record_def(op.dst, d);
+                agx_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_LOAD {
+            var ui: AgxUse = AgxUse { reg: 0 - 1, virt: 0 - 1 };
+            if op.a >= 0 { ui = agx_prepare_use(op.a, uses, phys, owner); }
+            let d: i32 = agx_alloc_reg(owner);
+            let load_slot: i32 = agx_device_return_slot(nloads);
+            if d < 0 || load_slot < 0 || (op.a >= 0 && ui.reg < 0) { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_e_load(load_slot, op.aux, 1 - nloads, ui.reg);
+                agx_e_move_return(d, load_slot);
+                agx_record_def(op.dst, d);
+                if op.a >= 0 { agx_release_use(ui, phys, owner); }
+                nloads = nloads + 1;
+                agx_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_ADD_IMM {
+            let src: i32 = phys[op.a];
+            let d: i32 = agx_alloc_reg(owner);
+            if src < 0 || d < 0 || op.imm >= 128 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_e_alu_imm(d, src, op.imm as i32);
+                agx_record_def(op.dst, d);
+                uses[op.a] = uses[op.a] - 1;
+                agx_release_dead(op.a, uses, phys, owner);
+                agx_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_ADD || op.kind == AGX_OP_SUB {
+            let ua: AgxUse = agx_prepare_use(op.a, uses, phys, owner);
+            let ub: AgxUse = agx_prepare_use(op.b, uses, phys, owner);
+            let d: i32 = agx_alloc_reg(owner);
+            if ua.reg < 0 || ub.reg < 0 || d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_e_alu_reg(d, ua.reg, ub.reg, op.kind);
+                agx_record_def(op.dst, d);
+                agx_release_use(ua, phys, owner);
+                agx_release_use(ub, phys, owner);
+                agx_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_MUL {
+            let ua: AgxUse = agx_prepare_use(op.a, uses, phys, owner);
+            let ub: AgxUse = agx_prepare_use(op.b, uses, phys, owner);
+            let d: i32 = agx_alloc_pair(owner);
+            if ua.reg < 0 || ub.reg < 0 || d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; phys[op.dst2] = d + 1;
+                owner[d] = op.dst; owner[d + 1] = op.dst2;
+                agx_e_mul(d, ua.reg, ub.reg);
+                agx_record_def(op.dst, d);
+                agx_record_def(op.dst2, d + 1);
+                agx_release_use(ua, phys, owner);
+                agx_release_use(ub, phys, owner);
+                agx_release_dead(op.dst, uses, phys, owner);
+                agx_release_dead(op.dst2, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_SHR || op.kind == AGX_OP_SHL
+        || op.kind == AGX_OP_EXTRACT {
+            let ua: AgxUse = agx_prepare_use(op.a, uses, phys, owner);
+            let d: i32 = agx_alloc_reg(owner);
+            if ua.reg < 0 || d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                if op.kind == AGX_OP_EXTRACT {
+                    agx_e_extract(d, ua.reg, op.imm as i32, op.aux);
+                } else if op.kind == AGX_OP_SHL {
+                    agx_e_shift(d, ua.reg, op.imm as i32, 1);
+                } else {
+                    agx_e_shift(d, ua.reg, op.imm as i32, 0);
+                }
+                agx_record_def(op.dst, d);
+                agx_release_use(ua, phys, owner);
+                agx_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_STORE {
+            let ua: AgxUse = agx_prepare_use(op.a, uses, phys, owner);
+            var ui: AgxUse = AgxUse { reg: 0 - 1, virt: 0 - 1 };
+            if op.b >= 0 { ui = agx_prepare_use(op.b, uses, phys, owner); }
+            if ua.reg < 0 || (op.b >= 0 && ui.reg < 0) { ok = 0; }
+            if ok == 1 {
+                agx_e_store(ua.reg, op.aux, ui.reg);
+                agx_release_use(ua, phys, owner);
+                if op.b >= 0 { agx_release_use(ui, phys, owner); }
+            }
+        } else {
+            ok = 0;
+        }
+        i = i + 1;
+    }
+    if ok == 1 { agx_e_stop(); }
+    free(uses); free(phys); free(owner);
+    return ok;
+}
+
+fn agx_wr_hex_nibble(n: i32) {
+    if n == 0  { ir_wr("0"); }
+    if n == 1  { ir_wr("1"); }
+    if n == 2  { ir_wr("2"); }
+    if n == 3  { ir_wr("3"); }
+    if n == 4  { ir_wr("4"); }
+    if n == 5  { ir_wr("5"); }
+    if n == 6  { ir_wr("6"); }
+    if n == 7  { ir_wr("7"); }
+    if n == 8  { ir_wr("8"); }
+    if n == 9  { ir_wr("9"); }
+    if n == 10 { ir_wr("a"); }
+    if n == 11 { ir_wr("b"); }
+    if n == 12 { ir_wr("c"); }
+    if n == 13 { ir_wr("d"); }
+    if n == 14 { ir_wr("e"); }
+    if n == 15 { ir_wr("f"); }
+}
+
+fn agx_wr_hex_byte(v: i32) {
+    agx_wr_hex_nibble((v >> 4) & 15);
+    agx_wr_hex_nibble(v & 15);
+}
+
+fn agx_write_code() {
+    var start: i32 = 0;
+    var mi: i32 = 0;
+    while mi < g_agx_nmarks {
+        ir_wr("  ");
+        let stop: i32 = g_agx_marks[mi];
+        var i: i32 = start;
+        while i < stop {
+            agx_wr_hex_byte(g_agx_code[i] as i32);
+            i = i + 1;
+        }
+        ir_wr("\n");
+        start = stop;
+        mi = mi + 1;
+    }
+}
+
+fn agx_write_tap(name: *u8, v: i32) {
+    if v < 0 || g_agx_def_reg[v] < 0 || g_agx_def_mark[v] < 0 { return; }
+    ir_wr("tap "); ir_wr(name); ir_wr(" reg ");
+    ir_wr_int(g_agx_def_reg[v] as i64); ir_wr(" mark ");
+    ir_wr_int(g_agx_def_mark[v] as i64); ir_wr("\n");
+}
+
+fn agx_emit_skip(wid: i32) {
+    ir_wr("skip __pfor_gpu_worker_"); ir_wr_int(wid as i64);
+    ir_wr(" reason=unsupported-agx0-worker\n");
+}
+
+fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
+                   ncaps: i32, caps_base: i32) -> i32 {
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 { return 0; }
+    let stmt: i32 = g_args[g_nodes[body].args_start];
+    if g_nodes[stmt].kind != AST_INDEX_ASSIGN { return 0; }
+    let out_obj: i32 = g_nodes[stmt].child0;
+    let out_idx: i32 = g_nodes[stmt].child1;
+    if g_nodes[out_obj].kind != AST_IDENT || g_nodes[out_idx].kind != AST_IDENT { return 0; }
+    if g_nodes[out_idx].name0 != loop_name { return 0; }
+    let output_name: i32 = g_nodes[out_obj].name0;
+    let out_cap: i32 = agx_cap_pos(output_name, caps_base, ncaps);
+    if out_cap < 0 || ncaps != 2 { return 0; }
+
+    var input_name: i32 = 0 - 1;
+    var field_alias: i32 = 0 - 1;
+    var fi: i32 = 0 - 1;
+    var ci: i32 = 0;
+    while ci < ncaps {
+        let cn: i32 = g_pfor_workers[caps_base + ci * 4];
+        let ct: i32 = resolve_type_sub(g_pfor_workers[caps_base + ci * 4 + 1]);
+        if type_is_ptr(ct) == 0 { return 0; }
+        let elem: i32 = resolve_type_sub(type_pointee(ct));
+        let cfi: i32 = find_field_by_alias(elem);
+        if cfi < 0 || g_fields[cfi].field_kind != FIELD_KIND_PRIME { return 0; }
+        if fi < 0 { fi = cfi; field_alias = elem; }
+        if g_fields[cfi].prime != g_fields[fi].prime { return 0; }
+        if cn != output_name {
+            if input_name >= 0 { return 0; }
+            input_name = cn;
+        }
+        ci = ci + 1;
+    }
+    if input_name < 0 { return 0; }
+    let p: u64 = g_fields[fi].prime;
+    let p64_pm59: u64 = 18446744073709551557;
+    if p != 2147483647 && p != p64_pm59 {
+        if p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31) || (p & 1) == 0 { return 0; }
+    }
+
+    let loop_node: i32 = agx_find_for_body(body);
+    if loop_node < 0 { return 0; }
+    let start_node: i32 = g_nodes[loop_node].child0;
+    let end_node: i32 = g_nodes[loop_node].child1;
+    if g_nodes[start_node].kind != AST_LIT_INT || g_nodes[start_node].int_val != 0 { return 0; }
+    if g_nodes[end_node].kind != AST_LIT_INT { return 0; }
+    let grid: u64 = g_nodes[end_node].int_val;
+    if grid == 0 || grid > 2147483647 { return 0; }
+
+    let rhs: i32 = g_nodes[stmt].child2;
+    if agx_expr_ok(rhs, loop_name, input_name, field_alias) == 0 { return 0; }
+    agx_vm_reset();
+    g_agx_input_v = 0 - 1;
+    g_agx_input64_lo = 0 - 1;
+    g_agx_input64_hi = 0 - 1;
+    g_agx_index_lo = 0 - 1;
+    g_agx_index_hi = 0 - 1;
+    if p == p64_pm59 {
+        let result64: AgxPair = agx_lower_expr64(rhs, loop_name, input_name, p);
+        if result64.lo < 0 { return 0; }
+        // Computed address registers do not survive the load phase reliably,
+        // even through value-form copies. Re-derive the pair for stores.
+        g_agx_index_lo = 0 - 1;
+        g_agx_index_hi = 0 - 1;
+        agx_ensure_limb_indices();
+        agx_vstore_index(result64.lo, 0, g_agx_index_lo);
+        agx_vstore_index(result64.hi, 0, g_agx_index_hi);
+    } else {
+        let result: i32 = agx_lower_expr(rhs, loop_name, input_name, p);
+        if result < 0 { return 0; }
+        agx_vstore(result, 0);
+    }
+    if agx_allocate_and_encode() == 0 { return 0; }
+
+    ir_wr("worker __pfor_gpu_worker_"); ir_wr_int(wid as i64); ir_wr("\n");
+    ir_wr("profile agx-g16x-macos26.3\n");
+    ir_wr("field "); ir_wr_u64(p); ir_wr("\n");
+    ir_wr("grid "); ir_wr_u64(grid); ir_wr("\n");
+    ci = 0;
+    while ci < ncaps {
+        let cn: i32 = g_pfor_workers[caps_base + ci * 4];
+        ir_wr("capture "); ir_wr_sym(cn); ir_wr(" slot ");
+        if cn == output_name { ir_wr("0\n"); } else { ir_wr("1\n"); }
+        ci = ci + 1;
+    }
+    if p == p64_pm59 {
+        agx_write_tap("t0", g_agx_tap_t0); agx_write_tap("t1", g_agx_tap_t1);
+        agx_write_tap("t2", g_agx_tap_t2); agx_write_tap("t3", g_agx_tap_t3);
+        agx_write_tap("s0", g_agx_tap_s0); agx_write_tap("s1", g_agx_tap_s1);
+        agx_write_tap("c", g_agx_tap_c);
+        agx_write_tap("x0", g_agx_tap_x0); agx_write_tap("x1", g_agx_tap_x1);
+        agx_write_tap("d", g_agx_tap_d);
+        agx_write_tap("v0", g_agx_tap_v0); agx_write_tap("v1", g_agx_tap_v1);
+        agx_write_tap("g0", g_agx_tap_g0); agx_write_tap("e", g_agx_tap_e);
+        agx_write_tap("r0", g_agx_tap_r0); agx_write_tap("r1", g_agx_tap_r1);
+    }
+    ir_wr("bytes "); ir_wr_int(g_agx_code_len as i64); ir_wr("\n");
+    ir_wr("instructions "); ir_wr_int(g_agx_nmarks as i64); ir_wr("\n");
+    ir_wr("code\n");
+    agx_write_code();
+    ir_wr("end __pfor_gpu_worker_"); ir_wr_int(wid as i64); ir_wr("\n");
+    return 1;
+}
+
+fn emit_agx_module() {
+    ir_wr("; Traveler AGX device module - AGX-0 direct machine code\n");
+    ir_wr("target agx-g16x\n\n");
+    var roff: i32 = 0;
+    var w: i32 = 0;
+    var nemitted: i32 = 0;
+    while w < g_npfor_workers {
+        let wid: i32 = g_pfor_workers[roff];
+        let body_node: i32 = g_pfor_workers[roff + 1];
+        let loop_var_name: i32 = g_pfor_workers[roff + 2];
+        let ncaps: i32 = g_pfor_workers[roff + 3];
+        let wngen: i32 = g_pfor_workers[roff + 4];
+        let wbw: i32 = g_pfor_workers[roff + 5];
+        roff = roff + 6;
+
+        let saved_gen_nsub: i32 = g_gen_nsub;
+        g_gen_nsub = wngen;
+        var gi: i32 = 0;
+        while gi < wngen {
+            g_gen_sub_names[gi] = g_pfor_workers[roff];
+            g_gen_sub_types[gi] = g_pfor_workers[roff + 1];
+            roff = roff + 2;
+            gi = gi + 1;
+        }
+        let caps_base: i32 = roff;
+        var emitted: i32 = 0;
+        if wbw != 64 && pfor_body_all_index_assign(body_node) == 1 {
+            emitted = agx_emit_worker(wid, body_node, loop_var_name, ncaps, caps_base);
+        }
+        if emitted == 1 {
+            nemitted = nemitted + 1;
+        } else {
+            agx_emit_skip(wid);
+        }
+        roff = roff + ncaps * 4;
+        g_gen_nsub = saved_gen_nsub;
+        w = w + 1;
+    }
+    if nemitted == 0 { ir_wr("; no AGX-0 workers emitted\n"); }
+}
+
 // ===== STAGE-0 GPU DEVICE CODEGEN (--emit-gpu, --emit-gpu-nvptx) =====
 // Re-emit each elementwise-class pfor worker as a device kernel: the SIMT
 // identity idx = wg.id.x*WGSIZE + wi.id.x + lo replaces the serial loop.
@@ -16135,6 +17225,10 @@ fn pfor_body_all_index_assign(body: i32) -> i32 {
 }
 
 fn emit_gpu_module() {
+    if g_gpu_target == 2 {
+        emit_agx_module();
+        return;
+    }
     if g_gpu_target == 1 {
         ir_wr("; Traveler GPU device module — Stage 0 (ptx_kernel, registers-only)\n");
         ir_wr("target triple = \"nvptx64-nvidia-cuda\"\n\n");
@@ -26301,6 +27395,11 @@ fn main(argc: i32, argv: **u8) {
             // lower with `llc -mtriple=nvptx64-nvidia-cuda -mcpu=sm_XX`.
             g_emit_gpu_mode = 1;
             g_gpu_target = 1;
+        } else if str_eq(argv[ai], "--emit-gpu-agx") == 1 {
+            // Direct AGX G16X machine-code emission. No LLVM device backend and
+            // no Metal compiler; the output is canonical reviewable hex.
+            g_emit_gpu_mode = 1;
+            g_gpu_target = 2;
         } else if str_eq(argv[ai], "--emit") == 1 && ai + 1 < argc {
             // --emit ir|obj|exe: ir (default) writes LLVM IR to -o; obj/exe
             // additionally drive llc (+ cc) so -o is a native artifact.
@@ -26608,8 +27707,8 @@ fn main(argc: i32, argv: **u8) {
         exit(0);
     }
 
-    // --emit-gpu[-nvptx]: /dev/null codegen to populate registries, then emit a
-    // standalone device module (AMDGCN or NVPTX, per g_gpu_target) to -o.
+    // GPU modes: /dev/null codegen populates registries, then emit a standalone
+    // LLVM device module (AMD/NV) or direct AGX instruction hex to -o.
     // Normal-mode IR never written.
     if g_emit_gpu_mode == 1 {
         g_ir_fd = creat("/dev/null", 438);
