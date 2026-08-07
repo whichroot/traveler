@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-4 capstone: one thread computes one exact K=8 residue dot product.
+import "../../src/lib/gpu/agx_runtime.tv";
+import "../../src/lib/rns/rns_dyn.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+field AgxDot0 = Field<2013265921>;
+field AgxDot1 = Field<1811939329>;
+field AgxDot2 = Field<2130706433>;
+
+fn main() -> i32 {
+    let T: i32 = 4;
+    let K: i32 = 8;
+    let N: i32 = 32;
+    let outputs: i32 = T * N;
+    let x: *i64 = alloc(T * K);
+    let w: *i64 = alloc(K * N);
+    let x0: *AgxDot0 = alloc(T * K);
+    let x1: *AgxDot1 = alloc(T * K);
+    let x2: *AgxDot2 = alloc(T * K);
+    let w0: *AgxDot0 = alloc(K * N);
+    let w1: *AgxDot1 = alloc(K * N);
+    let w2: *AgxDot2 = alloc(K * N);
+    var i: i32 = 0;
+    while i < T * K {
+        x[i] = ((i as i64 * 37 + 11) % 127) - 63;
+        x0[i] = x[i] as AgxDot0;
+        x1[i] = x[i] as AgxDot1;
+        x2[i] = x[i] as AgxDot2;
+        i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        w[i] = ((i as i64 * 53 + 7) % 131) - 65;
+        w0[i] = w[i] as AgxDot0;
+        w1[i] = w[i] as AgxDot1;
+        w2[i] = w[i] as AgxDot2;
+        i = i + 1;
+    }
+
+    let output0: *AgxDot0 = alloc(outputs);
+    let output1: *AgxDot1 = alloc(outputs);
+    let output2: *AgxDot2 = alloc(outputs);
+    for q in 0..128 {
+        output0[q] = x0[(q / 32) * 8 + 0] * w0[0 + (q % 32)]
+            + x0[(q / 32) * 8 + 1] * w0[32 + (q % 32)]
+            + x0[(q / 32) * 8 + 2] * w0[64 + (q % 32)]
+            + x0[(q / 32) * 8 + 3] * w0[96 + (q % 32)]
+            + x0[(q / 32) * 8 + 4] * w0[128 + (q % 32)]
+            + x0[(q / 32) * 8 + 5] * w0[160 + (q % 32)]
+            + x0[(q / 32) * 8 + 6] * w0[192 + (q % 32)]
+            + x0[(q / 32) * 8 + 7] * w0[224 + (q % 32)];
+    }
+    for q in 0..128 {
+        output1[q] = x1[(q / 32) * 8 + 0] * w1[0 + (q % 32)]
+            + x1[(q / 32) * 8 + 1] * w1[32 + (q % 32)]
+            + x1[(q / 32) * 8 + 2] * w1[64 + (q % 32)]
+            + x1[(q / 32) * 8 + 3] * w1[96 + (q % 32)]
+            + x1[(q / 32) * 8 + 4] * w1[128 + (q % 32)]
+            + x1[(q / 32) * 8 + 5] * w1[160 + (q % 32)]
+            + x1[(q / 32) * 8 + 6] * w1[192 + (q % 32)]
+            + x1[(q / 32) * 8 + 7] * w1[224 + (q % 32)];
+    }
+    for q in 0..128 {
+        output2[q] = x2[(q / 32) * 8 + 0] * w2[0 + (q % 32)]
+            + x2[(q / 32) * 8 + 1] * w2[32 + (q % 32)]
+            + x2[(q / 32) * 8 + 2] * w2[64 + (q % 32)]
+            + x2[(q / 32) * 8 + 3] * w2[96 + (q % 32)]
+            + x2[(q / 32) * 8 + 4] * w2[128 + (q % 32)]
+            + x2[(q / 32) * 8 + 5] * w2[160 + (q % 32)]
+            + x2[(q / 32) * 8 + 6] * w2[192 + (q % 32)]
+            + x2[(q / 32) * 8 + 7] * w2[224 + (q % 32)];
+    }
+
+    let requested: i32 = (getenv("TRAVELER_AGX_PROFILE") != null) as i32;
+    if requested != 0 && agx_dispatches() != 3 { return 3; }
+    if requested == 0 && agx_dispatches() != 0 { return 4; }
+
+    let residue0: *i64 = alloc(outputs);
+    let residue1: *i64 = alloc(outputs);
+    let residue2: *i64 = alloc(outputs);
+    var o: i32 = 0;
+    while o < outputs {
+        residue0[o] = output0[o] as i64;
+        residue1[o] = output1[o] as i64;
+        residue2[o] = output2[o] as i64;
+        o = o + 1;
+    }
+    let primes: *i64 = alloc(3);
+    primes[0] = 2013265921;
+    primes[1] = 1811939329;
+    primes[2] = 2130706433;
+    let residues: **i64 = alloc(3);
+    residues[0] = residue0; residues[1] = residue1; residues[2] = residue2;
+    let exact: *i64 = alloc(outputs);
+    rns_crt_pass(primes, 3, residues, exact, T, N, 0);
+
+    o = 0;
+    while o < outputs {
+        let row: i32 = o / N;
+        let col: i32 = o % N;
+        var want: i64 = 0;
+        var inner: i32 = 0;
+        while inner < K {
+            want = want + x[row * K + inner] * w[inner * N + col];
+            inner = inner + 1;
+        }
+        if exact[o] != want { return 5; }
+        o = o + 1;
+    }
+    let put: i64 = write(1, exact as *u8, 1024);
+    free(exact); free(residues as *u8); free(primes);
+    free(residue2); free(residue1); free(residue0);
+    free(output2); free(output1); free(output0);
+    free(w2); free(w1); free(w0);
+    free(x2); free(x1); free(x0);
+    free(w); free(x);
+    if put != 1024 { return 6; }
+    return 0;
+}

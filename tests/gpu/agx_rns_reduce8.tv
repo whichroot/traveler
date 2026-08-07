@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-4 bridge: AGX forms the product tensor and reduces each K=8 residue row.
+import "../../src/lib/gpu/agx_runtime.tv";
+import "../../src/lib/rns/rns_dyn.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+field AgxReduce0 = Field<2013265921>;
+field AgxReduce1 = Field<1811939329>;
+field AgxReduce2 = Field<2130706433>;
+
+fn main() -> i32 {
+    let T: i32 = 4;
+    let K: i32 = 8;
+    let N: i32 = 32;
+    let outputs: i32 = T * N;
+    let products: i32 = T * K * N;
+    let x: *i64 = alloc(T * K);
+    let w: *i64 = alloc(K * N);
+    var i: i32 = 0;
+    while i < T * K {
+        x[i] = ((i as i64 * 37 + 11) % 127) - 63;
+        i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        w[i] = ((i as i64 * 53 + 7) % 131) - 65;
+        i = i + 1;
+    }
+
+    let left0: *AgxReduce0 = alloc(products);
+    let right0: *AgxReduce0 = alloc(products);
+    let product0: *AgxReduce0 = alloc(products);
+    let left1: *AgxReduce1 = alloc(products);
+    let right1: *AgxReduce1 = alloc(products);
+    let product1: *AgxReduce1 = alloc(products);
+    let left2: *AgxReduce2 = alloc(products);
+    let right2: *AgxReduce2 = alloc(products);
+    let product2: *AgxReduce2 = alloc(products);
+    i = 0;
+    while i < products {
+        let o: i32 = i / K;
+        let inner: i32 = i % K;
+        let row: i32 = o / N;
+        let col: i32 = o % N;
+        let xv: i64 = x[row * K + inner];
+        let wv: i64 = w[inner * N + col];
+        left0[i] = xv as AgxReduce0; right0[i] = wv as AgxReduce0;
+        left1[i] = xv as AgxReduce1; right1[i] = wv as AgxReduce1;
+        left2[i] = xv as AgxReduce2; right2[i] = wv as AgxReduce2;
+        i = i + 1;
+    }
+
+    for q in 0..1024 { product0[q] = left0[q] * right0[q]; }
+    for q in 0..1024 { product1[q] = left1[q] * right1[q]; }
+    for q in 0..1024 { product2[q] = left2[q] * right2[q]; }
+
+    let reduced0: *AgxReduce0 = alloc(outputs);
+    let reduced1: *AgxReduce1 = alloc(outputs);
+    let reduced2: *AgxReduce2 = alloc(outputs);
+    for q in 0..128 {
+        reduced0[q] = product0[q * 8 + 0] + product0[q * 8 + 1]
+            + product0[q * 8 + 2] + product0[q * 8 + 3]
+            + product0[q * 8 + 4] + product0[q * 8 + 5]
+            + product0[q * 8 + 6] + product0[q * 8 + 7];
+    }
+    for q in 0..128 {
+        reduced1[q] = product1[q * 8 + 0] + product1[q * 8 + 1]
+            + product1[q * 8 + 2] + product1[q * 8 + 3]
+            + product1[q * 8 + 4] + product1[q * 8 + 5]
+            + product1[q * 8 + 6] + product1[q * 8 + 7];
+    }
+    for q in 0..128 {
+        reduced2[q] = product2[q * 8 + 0] + product2[q * 8 + 1]
+            + product2[q * 8 + 2] + product2[q * 8 + 3]
+            + product2[q * 8 + 4] + product2[q * 8 + 5]
+            + product2[q * 8 + 6] + product2[q * 8 + 7];
+    }
+
+    let requested: i32 = (getenv("TRAVELER_AGX_PROFILE") != null) as i32;
+    if requested != 0 && agx_dispatches() != 6 { return 3; }
+    if requested == 0 && agx_dispatches() != 0 { return 4; }
+
+    let residue0: *i64 = alloc(outputs);
+    let residue1: *i64 = alloc(outputs);
+    let residue2: *i64 = alloc(outputs);
+    var o: i32 = 0;
+    while o < outputs {
+        residue0[o] = reduced0[o] as i64;
+        residue1[o] = reduced1[o] as i64;
+        residue2[o] = reduced2[o] as i64;
+        o = o + 1;
+    }
+    let primes: *i64 = alloc(3);
+    primes[0] = 2013265921;
+    primes[1] = 1811939329;
+    primes[2] = 2130706433;
+    let residues: **i64 = alloc(3);
+    residues[0] = residue0; residues[1] = residue1; residues[2] = residue2;
+    let exact: *i64 = alloc(outputs);
+    rns_crt_pass(primes, 3, residues, exact, T, N, 0);
+
+    o = 0;
+    while o < outputs {
+        let row: i32 = o / N;
+        let col: i32 = o % N;
+        var want: i64 = 0;
+        var inner: i32 = 0;
+        while inner < K {
+            want = want + x[row * K + inner] * w[inner * N + col];
+            inner = inner + 1;
+        }
+        if exact[o] != want { return 5; }
+        o = o + 1;
+    }
+
+    let put: i64 = write(1, exact as *u8, 1024);
+    free(exact); free(residues as *u8); free(primes);
+    free(residue2); free(residue1); free(residue0);
+    free(reduced2); free(reduced1); free(reduced0);
+    free(product2); free(right2); free(left2);
+    free(product1); free(right1); free(left1);
+    free(product0); free(right0); free(left0);
+    free(w); free(x);
+    if put != 1024 { return 6; }
+    return 0;
+}

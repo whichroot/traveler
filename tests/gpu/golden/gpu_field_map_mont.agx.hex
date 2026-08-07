@@ -5,6 +5,9 @@ worker __pfor_gpu_worker_0
 profile agx-g16x-macos26.3
 field 2013265921
 grid 4096
+output-words 4096
+input0-words 4096
+input1-words 0
 capture a slot 1
 capture out slot 0
 bytes 806

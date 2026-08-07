@@ -52,6 +52,33 @@ LOOP9 = bytes.fromhex(
     "e7105402000021001100009011000e000000"
 )
 
+# The compiler-derived trip-9/16/31 blocks differ only at byte 33, whose value
+# is trip_count*2. This is the first authored control mutation: trip 8.
+LOOP8_AUTHORED = LOOP9[:33] + bytes([16]) + LOOP9[34:]
+
+# Eight authored straight-line loads reuse return slot 0 only after moving its
+# prior value to G registers. Three accumulator registers rotate because ALU
+# sources are consuming.
+REUSE8_AUTHORED = bytes.fromhex(
+    "1ca010066710540001012000510100404600"
+    "a700560402000000f0110100"
+    "1ca010066710540001012000510100404600"
+    "a700560602000000f01101009f115408020c10a81705"
+    "1ca010066710540001012000510100404600"
+    "a700560402000000f01101009f115406020820a81705"
+    "1ca010066710540001012000510100404600"
+    "a700560802000000f01101009f115404021018a81705"
+    "1ca010066710540001012000510100404600"
+    "a700560602000000f01101009f115408020c10a81705"
+    "1ca010066710540001012000510100404600"
+    "a700560402000000f01101009f115406020820a81705"
+    "1ca010066710540001012000510100404600"
+    "a700560802000000f01101009f115404021018a81705"
+    "1ca010066710540001012000510100404600"
+    "a700560602000000f01101009f115408020c10a81705"
+    "1ca01006e7105408000120001100009011000e000000"
+)
+
 # for (k=0; k<i; ++k) s += w[k], so lanes take 0..7 trips.
 LOOP_DIVERGENT = bytes.fromhex(
     "0ca010060a8123800600072200001b0000000f055421"
@@ -66,9 +93,10 @@ LOOP_DIVERGENT = bytes.fromhex(
 
 
 def check_specimens() -> None:
-    expected_lengths = (74, 94, 196, 130, 128)
+    expected_lengths = (74, 94, 196, 130, 130, 332, 128)
     actual_lengths = tuple(map(len, (
-        COMPARE, SELECT, FORWARD_REJOIN, LOOP9, LOOP_DIVERGENT,
+        COMPARE, SELECT, FORWARD_REJOIN, LOOP9, LOOP8_AUTHORED,
+        REUSE8_AUTHORED, LOOP_DIVERGENT,
     )))
     if actual_lengths != expected_lengths:
         raise ValueError(f"control specimen lengths changed: {actual_lengths}")
@@ -83,6 +111,10 @@ def check_specimens() -> None:
                             signed=True)
     if loop_top != 38 or branch != 82 or offset != loop_top - branch:
         raise ValueError("backward-branch base contract changed")
+    changed = [i for i in range(len(LOOP9))
+               if LOOP9[i] != LOOP8_AUTHORED[i]]
+    if changed != [33] or LOOP9[33] != 18 or LOOP8_AUTHORED[33] != 16:
+        raise ValueError("authored trip-8 bound is not the one-field mutation")
 
 
 def execute(harness: pathlib.Path) -> None:
@@ -122,6 +154,35 @@ def execute(harness: pathlib.Path) -> None:
     got = probe_load.run_with_data(LOOP9, words, grid=8, words=8)[:8]
     if got != want_loop9:
         raise ValueError(f"loop9 mismatch: {got} != {want_loop9}")
+
+    # Fresh-process pre-canary, one authored mutation, fresh-process post-canary.
+    got = probe_load.run_with_data(COMPARE, a + b, grid=8, words=8)[:8]
+    if got != want_compare:
+        raise ValueError("trip-8 pre-canary failed")
+    words = [100 + i for i in range(16)]
+    want_loop8 = [sum(words[i:i + 8]) for i in range(8)]
+    got = probe_load.run_with_data(
+        LOOP8_AUTHORED, words, grid=8, words=8,
+    )[:8]
+    if got != want_loop8:
+        raise ValueError(f"authored loop8 mismatch: {got} != {want_loop8}")
+    got = probe_load.run_with_data(COMPARE, a + b, grid=8, words=8)[:8]
+    if got != want_compare:
+        raise ValueError("trip-8 post-canary failed")
+
+    got = probe_load.run_with_data(COMPARE, a + b, grid=8, words=8)[:8]
+    if got != want_compare:
+        raise ValueError("reuse-8 pre-canary failed")
+    words = [3, 5, 7, 11, 13, 17, 19, 23]
+    want_reuse = [8 * value for value in words]
+    got = probe_load.run_with_data(
+        REUSE8_AUTHORED, words, grid=8, words=8,
+    )[:8]
+    if got != want_reuse:
+        raise ValueError(f"authored reuse8 mismatch: {got} != {want_reuse}")
+    got = probe_load.run_with_data(COMPARE, a + b, grid=8, words=8)[:8]
+    if got != want_compare:
+        raise ValueError("reuse-8 post-canary failed")
 
     words = [100 + i for i in range(8)]
     want_divergent = [sum(words[:i]) for i in range(8)]

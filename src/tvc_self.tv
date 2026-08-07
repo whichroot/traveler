@@ -13855,6 +13855,60 @@ fn pfor_emit_report_record(stmt: i32, iter_name: i32, pf: *PForState, dispatched
     wr(1, "\"}\n");
 }
 
+fn pfor_add_dot_capture(pf: *PForState, name: i32) -> i32 {
+    let si: i32 = sym_find(name);
+    if si < 0 { return 0; }
+    if pfor_add_capture(pf, name, g_syms[si].type_off, g_syms[si].reg,
+                        g_syms[si].is_alloca) == 0 { return 0; }
+    if type_is_ptr(g_syms[si].type_off) == 1 {
+        let pt: i32 = type_pointee(g_syms[si].type_off);
+        if find_field_by_alias(pt) >= 0 { pf.has_field = 1; }
+    }
+    return 1;
+}
+
+// The sole nested-loop pfor admission: one private K=8 RNS dot accumulator.
+fn pfor_admit_inner_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
+    if g_nodes[stmt].kind != AST_FOR { return 0; }
+    let start: i32 = g_nodes[stmt].child0;
+    let end: i32 = g_nodes[stmt].child1;
+    let body: i32 = g_nodes[stmt].child2;
+    let inner_var: i32 = g_nodes[stmt].name0;
+    if g_nodes[start].kind != AST_LIT_INT || g_nodes[start].int_val != 0
+        || g_nodes[end].kind != AST_LIT_INT || g_nodes[end].int_val != 8
+        || g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 {
+        return 0;
+    }
+    let assign: i32 = g_args[g_nodes[body].args_start];
+    if g_nodes[assign].kind != AST_ASSIGN
+        || pfor_is_loop_let(pf, g_nodes[assign].name0) == 0 { return 0; }
+    let rhs: i32 = g_nodes[assign].child0;
+    if g_nodes[rhs].kind != AST_BINARY || g_nodes[rhs].op != OP_ADD { return 0; }
+    let acc: i32 = g_nodes[rhs].child0;
+    let product: i32 = g_nodes[rhs].child1;
+    if g_nodes[acc].kind != AST_IDENT
+        || g_nodes[acc].name0 != g_nodes[assign].name0
+        || g_nodes[product].kind != AST_BINARY
+        || g_nodes[product].op != OP_MUL { return 0; }
+    let x: i32 = g_nodes[product].child0;
+    let w: i32 = g_nodes[product].child1;
+    if g_nodes[x].kind != AST_INDEX || g_nodes[w].kind != AST_INDEX { return 0; }
+    let xo: i32 = g_nodes[x].child0;
+    let wo: i32 = g_nodes[w].child0;
+    if g_nodes[xo].kind != AST_IDENT || g_nodes[wo].kind != AST_IDENT {
+        return 0;
+    }
+    if agx_counted_x_index_ok(g_nodes[x].child1, outer_var, inner_var) == 0
+        || agx_counted_w_index_ok(g_nodes[w].child1, outer_var, inner_var) == 0 {
+        return 0;
+    }
+    pfor_record_read(pf, g_nodes[xo].name0, g_nodes[x].child1, outer_var);
+    pfor_record_read(pf, g_nodes[wo].name0, g_nodes[w].child1, outer_var);
+    if pfor_add_dot_capture(pf, g_nodes[xo].name0) == 0
+        || pfor_add_dot_capture(pf, g_nodes[wo].name0) == 0 { return 0; }
+    return 1;
+}
+
 // Analyze a loop body for parallel dispatch (bounds feed the disjointness
 // prover). Verdict in pf.independent.
 fn pfor_analyze_body(pf: *PForState, body: i32, loop_var: i32, start_node: i32, end_node: i32) {
@@ -13962,6 +14016,12 @@ fn pfor_analyze_body(pf: *PForState, body: i32, loop_var: i32, start_node: i32, 
                 pf.independent = 0;
                 return;
             }
+        } else if sk == AST_FOR {
+            if pfor_admit_inner_dot(pf, s, loop_var) == 0 {
+                pfor_refuse(PFR_UNSUPPORTED_STMT);
+                pf.independent = 0;
+                return;
+            }
         } else {
             // Anything else: reject
             pfor_refuse(PFR_UNSUPPORTED_STMT);
@@ -14017,6 +14077,7 @@ fn emit_pfor_cpu_call(wid: i32, ctx: i32, bw: i32, iter_w: i32,
 
 fn emit_agx_try_call(wid: i32, ctx: i32, output_cap: i32,
                      input0_cap: i32, input1_cap: i32,
+                     output_words: i32, input0_words: i32, input1_words: i32,
                      start_reg: i32, end_reg: i32, prime: u64,
                      code_hash: u64) -> i32 {
     let result: i32 = ir_tmp();
@@ -14026,6 +14087,9 @@ fn emit_agx_try_call(wid: i32, ctx: i32, output_cap: i32,
     ir_wr(", i32 "); ir_wr_int(output_cap as i64);
     ir_wr(", i32 "); ir_wr_int(input0_cap as i64);
     ir_wr(", i32 "); ir_wr_int(input1_cap as i64);
+    ir_wr(", i32 "); ir_wr_int(output_words as i64);
+    ir_wr(", i32 "); ir_wr_int(input0_words as i64);
+    ir_wr(", i32 "); ir_wr_int(input1_words as i64);
     ir_wr(", i32 "); ir_wr_reg(start_reg);
     ir_wr(", i32 "); ir_wr_reg(end_reg);
     ir_wr(", i64 "); ir_wr_int(prime as i64);
@@ -14709,7 +14773,9 @@ fn codegen_stmt(stmt: i32) {
                     let lbl_cpu: i32 = ir_label();
                     let agx_ok: i32 = emit_agx_try_call(wid, ctx_alloca,
                         agx_shape.output_cap, agx_shape.input0_cap,
-                        agx_shape.input1_cap, start_reg, end_reg,
+                        agx_shape.input1_cap, agx_shape.output_words,
+                        agx_shape.input0_words, agx_shape.input1_words,
+                        start_reg, end_reg,
                         g_fields[agx_shape.field_index].prime, agx_hash);
                     ir_wr("  br i1 "); ir_wr_reg(agx_ok);
                     ir_wr(", label %"); ir_wr_label(lbl_done);
@@ -14730,7 +14796,9 @@ fn codegen_stmt(stmt: i32) {
                     let lbl_done: i32 = ir_label();
                     let agx_ok: i32 = emit_agx_try_call(wid, ctx_alloca,
                         agx_shape.output_cap, agx_shape.input0_cap,
-                        agx_shape.input1_cap, start_reg, end_reg,
+                        agx_shape.input1_cap, agx_shape.output_words,
+                        agx_shape.input0_words, agx_shape.input1_words,
+                        start_reg, end_reg,
                         g_fields[agx_shape.field_index].prime, agx_hash);
                     ir_wr("  br i1 "); ir_wr_reg(agx_ok);
                     ir_wr(", label %"); ir_wr_label(lbl_done);
@@ -16239,6 +16307,7 @@ struct AgxUse {
 }
 
 struct AgxWorkerShape {
+    kind: i32,
     output_name: i32,
     input0_name: i32,
     input1_name: i32,
@@ -16249,6 +16318,9 @@ struct AgxWorkerShape {
     output_cap: i32,
     input0_cap: i32,
     input1_cap: i32,
+    output_words: i32,
+    input0_words: i32,
+    input1_words: i32,
 }
 
 var g_agx_ops: *AgxOp = null;
@@ -16851,6 +16923,194 @@ fn agx_expr_ok(node: i32, loop_name: i32, input0_name: i32,
     return 0;
 }
 
+fn agx_reduce8_index_ok(node: i32, loop_name: i32, offset: i32) -> i32 {
+    if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
+        return 0;
+    }
+    let left: i32 = g_nodes[node].child0;
+    let right: i32 = g_nodes[node].child1;
+    var mul: i32 = left;
+    var lit: i32 = right;
+    if g_nodes[lit].kind != AST_LIT_INT {
+        mul = right; lit = left;
+    }
+    if g_nodes[lit].kind != AST_LIT_INT
+        || g_nodes[lit].int_val != offset as u64 { return 0; }
+    if g_nodes[mul].kind != AST_BINARY || g_nodes[mul].op != OP_MUL {
+        return 0;
+    }
+    let a: i32 = g_nodes[mul].child0;
+    let b: i32 = g_nodes[mul].child1;
+    if g_nodes[a].kind == AST_IDENT && g_nodes[a].name0 == loop_name
+        && g_nodes[b].kind == AST_LIT_INT && g_nodes[b].int_val == 8 {
+        return 1;
+    }
+    if g_nodes[b].kind == AST_IDENT && g_nodes[b].name0 == loop_name
+        && g_nodes[a].kind == AST_LIT_INT && g_nodes[a].int_val == 8 {
+        return 1;
+    }
+    return 0;
+}
+
+fn agx_reduce8_expr_ok(node: i32, loop_name: i32, input_name: i32,
+                       next: *i32) -> i32 {
+    if g_nodes[node].kind == AST_BINARY && g_nodes[node].op == OP_ADD {
+        if agx_reduce8_expr_ok(g_nodes[node].child0, loop_name,
+                               input_name, next) == 0 { return 0; }
+        return agx_reduce8_expr_ok(g_nodes[node].child1, loop_name,
+                                   input_name, next);
+    }
+    if next[0] >= 8 || g_nodes[node].kind != AST_INDEX { return 0; }
+    let obj: i32 = g_nodes[node].child0;
+    if g_nodes[obj].kind != AST_IDENT || g_nodes[obj].name0 != input_name {
+        return 0;
+    }
+    if agx_reduce8_index_ok(g_nodes[node].child1, loop_name, next[0]) == 0 {
+        return 0;
+    }
+    next[0] = next[0] + 1;
+    return 1;
+}
+
+fn agx_dot_x_index_ok(node: i32, loop_name: i32, offset: i32) -> i32 {
+    if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
+        return 0;
+    }
+    let left: i32 = g_nodes[node].child0;
+    let right: i32 = g_nodes[node].child1;
+    if g_nodes[right].kind != AST_LIT_INT
+        || g_nodes[right].int_val != offset as u64 { return 0; }
+    if g_nodes[left].kind != AST_BINARY || g_nodes[left].op != OP_MUL {
+        return 0;
+    }
+    let row: i32 = g_nodes[left].child0;
+    let scale: i32 = g_nodes[left].child1;
+    if g_nodes[scale].kind != AST_LIT_INT || g_nodes[scale].int_val != 8 {
+        return 0;
+    }
+    if g_nodes[row].kind != AST_BINARY || g_nodes[row].op != OP_DIV {
+        return 0;
+    }
+    let value: i32 = g_nodes[row].child0;
+    let divisor: i32 = g_nodes[row].child1;
+    if g_nodes[value].kind != AST_IDENT || g_nodes[value].name0 != loop_name {
+        return 0;
+    }
+    if g_nodes[divisor].kind != AST_LIT_INT
+        || g_nodes[divisor].int_val != 32 { return 0; }
+    return 1;
+}
+
+fn agx_dot_w_index_ok(node: i32, loop_name: i32, offset: i32) -> i32 {
+    if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
+        return 0;
+    }
+    let left: i32 = g_nodes[node].child0;
+    let right: i32 = g_nodes[node].child1;
+    if g_nodes[left].kind != AST_LIT_INT
+        || g_nodes[left].int_val != (offset * 32) as u64 { return 0; }
+    if g_nodes[right].kind != AST_BINARY || g_nodes[right].op != OP_MOD {
+        return 0;
+    }
+    let value: i32 = g_nodes[right].child0;
+    let modulus: i32 = g_nodes[right].child1;
+    if g_nodes[value].kind != AST_IDENT || g_nodes[value].name0 != loop_name {
+        return 0;
+    }
+    if g_nodes[modulus].kind != AST_LIT_INT
+        || g_nodes[modulus].int_val != 32 { return 0; }
+    return 1;
+}
+
+fn agx_counted_x_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
+    if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
+        return 0;
+    }
+    let left: i32 = g_nodes[node].child0;
+    let right: i32 = g_nodes[node].child1;
+    if g_nodes[right].kind != AST_IDENT || g_nodes[right].name0 != inner_var {
+        return 0;
+    }
+    if g_nodes[left].kind != AST_BINARY || g_nodes[left].op != OP_MUL {
+        return 0;
+    }
+    let row: i32 = g_nodes[left].child0;
+    let scale: i32 = g_nodes[left].child1;
+    if g_nodes[scale].kind != AST_LIT_INT || g_nodes[scale].int_val != 8
+        || g_nodes[row].kind != AST_BINARY || g_nodes[row].op != OP_DIV {
+        return 0;
+    }
+    let value: i32 = g_nodes[row].child0;
+    let divisor: i32 = g_nodes[row].child1;
+    if g_nodes[value].kind != AST_IDENT || g_nodes[value].name0 != outer_var
+        || g_nodes[divisor].kind != AST_LIT_INT
+        || g_nodes[divisor].int_val != 32 { return 0; }
+    return 1;
+}
+
+fn agx_counted_w_index_ok(node: i32, outer_var: i32, inner_var: i32) -> i32 {
+    if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_ADD {
+        return 0;
+    }
+    let left: i32 = g_nodes[node].child0;
+    let right: i32 = g_nodes[node].child1;
+    if g_nodes[left].kind != AST_BINARY || g_nodes[left].op != OP_MUL {
+        return 0;
+    }
+    let counter: i32 = g_nodes[left].child0;
+    let scale: i32 = g_nodes[left].child1;
+    if g_nodes[counter].kind != AST_IDENT || g_nodes[counter].name0 != inner_var
+        || g_nodes[scale].kind != AST_LIT_INT
+        || g_nodes[scale].int_val != 32 { return 0; }
+    if g_nodes[right].kind != AST_BINARY || g_nodes[right].op != OP_MOD {
+        return 0;
+    }
+    let value: i32 = g_nodes[right].child0;
+    let modulus: i32 = g_nodes[right].child1;
+    if g_nodes[value].kind != AST_IDENT || g_nodes[value].name0 != outer_var
+        || g_nodes[modulus].kind != AST_LIT_INT
+        || g_nodes[modulus].int_val != 32 { return 0; }
+    return 1;
+}
+
+fn agx_dot_term_ok(node: i32, loop_name: i32, x_name: i32,
+                   w_name: i32, offset: i32) -> i32 {
+    if g_nodes[node].kind != AST_BINARY || g_nodes[node].op != OP_MUL {
+        return 0;
+    }
+    let x: i32 = g_nodes[node].child0;
+    let w: i32 = g_nodes[node].child1;
+    if g_nodes[x].kind != AST_INDEX || g_nodes[w].kind != AST_INDEX {
+        return 0;
+    }
+    let xo: i32 = g_nodes[x].child0;
+    let wo: i32 = g_nodes[w].child0;
+    if g_nodes[xo].kind != AST_IDENT || g_nodes[xo].name0 != x_name
+        || g_nodes[wo].kind != AST_IDENT || g_nodes[wo].name0 != w_name {
+        return 0;
+    }
+    if agx_dot_x_index_ok(g_nodes[x].child1, loop_name, offset) == 0 {
+        return 0;
+    }
+    return agx_dot_w_index_ok(g_nodes[w].child1, loop_name, offset);
+}
+
+fn agx_dot_expr_ok(node: i32, loop_name: i32, x_name: i32,
+                   w_name: i32, next: *i32) -> i32 {
+    if g_nodes[node].kind == AST_BINARY && g_nodes[node].op == OP_ADD {
+        if agx_dot_expr_ok(g_nodes[node].child0, loop_name,
+                           x_name, w_name, next) == 0 { return 0; }
+        return agx_dot_expr_ok(g_nodes[node].child1, loop_name,
+                               x_name, w_name, next);
+    }
+    if next[0] >= 8
+        || agx_dot_term_ok(node, loop_name, x_name, w_name, next[0]) == 0 {
+        return 0;
+    }
+    next[0] = next[0] + 1;
+    return 1;
+}
+
 fn agx_lower_expr(node: i32, loop_name: i32, input0_name: i32,
                   input1_name: i32, grid: i32, p: u64) -> i32 {
     let kind: i32 = g_nodes[node].kind;
@@ -16955,7 +17215,9 @@ fn agx_device_return_slot(n: i32) -> i32 {
     // 0x54 slot 0, then 0x44 slot 4. More simultaneous loads are unproven.
     if n == 0 { return 0; }
     if n == 1 { return 4; }
-    return 0 - 1;
+    // After an immediate move to G, slot 0 can be reused; the eight-load
+    // authored control probe executes this lifecycle exactly.
+    return 0;
 }
 
 fn agx_record_def(v: i32, reg: i32) {
@@ -17043,7 +17305,9 @@ fn agx_allocate_and_encode() -> i32 {
             if d < 0 || load_slot < 0 || (op.a >= 0 && ui.reg < 0) { ok = 0; }
             if ok == 1 {
                 phys[op.dst] = d; owner[d] = op.dst;
-                agx_e_load(load_slot, op.aux, 1 - nloads, ui.reg);
+                var load_flavor: i32 = 1;
+                if nloads == 1 { load_flavor = 0; }
+                agx_e_load(load_slot, op.aux, load_flavor, ui.reg);
                 agx_e_move_return(d, load_slot);
                 agx_record_def(op.dst, d);
                 if op.a >= 0 { agx_release_use(ui, phys, owner); }
@@ -17182,8 +17446,108 @@ fn agx_emit_skip(wid: i32) {
     ir_wr(" reason=unsupported-agx0-worker\n");
 }
 
+fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
+                             caps_base: i32, shape: *AgxWorkerShape) -> i32 {
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 3
+        || ncaps != 3 { return 0; }
+    let base: i32 = g_nodes[body].args_start;
+    let init: i32 = g_args[base];
+    let inner: i32 = g_args[base + 1];
+    let store: i32 = g_args[base + 2];
+    if g_nodes[init].kind != AST_LET || g_nodes[inner].kind != AST_FOR
+        || g_nodes[store].kind != AST_INDEX_ASSIGN { return 0; }
+    let acc_name: i32 = g_nodes[init].name0;
+    let init_expr: i32 = g_nodes[init].child0;
+    if g_nodes[init_expr].kind != AST_CAST
+        || g_nodes[g_nodes[init_expr].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[init_expr].child0].int_val != 0 { return 0; }
+    let inner_start: i32 = g_nodes[inner].child0;
+    let inner_end: i32 = g_nodes[inner].child1;
+    let inner_body: i32 = g_nodes[inner].child2;
+    let inner_var: i32 = g_nodes[inner].name0;
+    if g_nodes[inner_start].kind != AST_LIT_INT
+        || g_nodes[inner_start].int_val != 0
+        || g_nodes[inner_end].kind != AST_LIT_INT
+        || g_nodes[inner_end].int_val != 8
+        || g_nodes[inner_body].kind != AST_BLOCK
+        || g_nodes[inner_body].nargs != 1 { return 0; }
+    let assign: i32 = g_args[g_nodes[inner_body].args_start];
+    if g_nodes[assign].kind != AST_ASSIGN || g_nodes[assign].name0 != acc_name {
+        return 0;
+    }
+    let rhs: i32 = g_nodes[assign].child0;
+    if g_nodes[rhs].kind != AST_BINARY || g_nodes[rhs].op != OP_ADD
+        || g_nodes[g_nodes[rhs].child0].kind != AST_IDENT
+        || g_nodes[g_nodes[rhs].child0].name0 != acc_name { return 0; }
+    let product: i32 = g_nodes[rhs].child1;
+    if g_nodes[product].kind != AST_BINARY || g_nodes[product].op != OP_MUL {
+        return 0;
+    }
+    let x: i32 = g_nodes[product].child0;
+    let w: i32 = g_nodes[product].child1;
+    if g_nodes[x].kind != AST_INDEX || g_nodes[w].kind != AST_INDEX { return 0; }
+    let xo: i32 = g_nodes[x].child0;
+    let wo: i32 = g_nodes[w].child0;
+    if g_nodes[xo].kind != AST_IDENT || g_nodes[wo].kind != AST_IDENT
+        || agx_counted_x_index_ok(g_nodes[x].child1, loop_name, inner_var) == 0
+        || agx_counted_w_index_ok(g_nodes[w].child1, loop_name, inner_var) == 0 {
+        return 0;
+    }
+    let out_obj: i32 = g_nodes[store].child0;
+    let out_idx: i32 = g_nodes[store].child1;
+    let out_value: i32 = g_nodes[store].child2;
+    if g_nodes[out_obj].kind != AST_IDENT || g_nodes[out_idx].kind != AST_IDENT
+        || g_nodes[out_idx].name0 != loop_name
+        || g_nodes[out_value].kind != AST_IDENT
+        || g_nodes[out_value].name0 != acc_name { return 0; }
+    let output_name: i32 = g_nodes[out_obj].name0;
+    let x_name: i32 = g_nodes[xo].name0;
+    let w_name: i32 = g_nodes[wo].name0;
+    let output_cap: i32 = agx_cap_pos(output_name, caps_base, ncaps);
+    let x_cap: i32 = agx_cap_pos(x_name, caps_base, ncaps);
+    let w_cap: i32 = agx_cap_pos(w_name, caps_base, ncaps);
+    if output_cap < 0 || x_cap < 0 || w_cap < 0 { return 0; }
+    let out_type: i32 = resolve_type_sub(g_pfor_workers[caps_base + output_cap * 4 + 1]);
+    if type_is_ptr(out_type) == 0 { return 0; }
+    let field_alias: i32 = type_pointee(out_type);
+    let fi: i32 = find_field_by_alias(field_alias);
+    if fi < 0 || g_fields[fi].prime == 18446744073709551557 { return 0; }
+    let x_type: i32 = resolve_type_sub(g_pfor_workers[caps_base + x_cap * 4 + 1]);
+    let w_type: i32 = resolve_type_sub(g_pfor_workers[caps_base + w_cap * 4 + 1]);
+    if type_is_ptr(x_type) == 0 || type_is_ptr(w_type) == 0
+        || type_pointee(x_type) != field_alias || type_pointee(w_type) != field_alias
+        || resolve_type_sub(g_nodes[init_expr].name0) != field_alias { return 0; }
+    let loop_node: i32 = agx_find_for_body(body);
+    if loop_node < 0 || g_nodes[g_nodes[loop_node].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[loop_node].child0].int_val != 0
+        || g_nodes[g_nodes[loop_node].child1].kind != AST_LIT_INT
+        || g_nodes[g_nodes[loop_node].child1].int_val != 128 { return 0; }
+    let p: u64 = g_fields[fi].prime;
+    if p != 2147483647
+        && (p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31)
+            || (p & 1) == 0) { return 0; }
+    shape.kind = 4;
+    shape.output_name = output_name;
+    shape.input0_name = x_name;
+    shape.input1_name = w_name;
+    shape.field_alias = field_alias;
+    shape.field_index = fi;
+    shape.rhs = rhs;
+    shape.grid = 128;
+    shape.output_cap = output_cap;
+    shape.input0_cap = x_cap;
+    shape.input1_cap = w_cap;
+    shape.output_words = 128;
+    shape.input0_words = 32;
+    shape.input1_words = 256;
+    return 1;
+}
+
 fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
                        caps_base: i32, shape: *AgxWorkerShape) -> i32 {
+    if agx_classify_counted_dot(body, loop_name, ncaps, caps_base, shape) == 1 {
+        return 1;
+    }
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 { return 0; }
     let stmt: i32 = g_args[g_nodes[body].args_start];
     if g_nodes[stmt].kind != AST_INDEX_ASSIGN { return 0; }
@@ -17244,8 +17608,37 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
     if grid64 == 0 || grid64 > 2147483647 { return 0; }
 
     let rhs: i32 = g_nodes[stmt].child2;
-    if agx_expr_ok(rhs, loop_name, input0_name, input1_name,
-                   field_alias) == 0 { return 0; }
+    var shape_kind: i32 = 1;
+    var reduce_next: i32 = 0;
+    var dot_next: i32 = 0;
+    if input1_name >= 0 && p != p64_pm59 && grid64 == 128
+        && agx_dot_expr_ok(rhs, loop_name, input0_name, input1_name,
+                           &dot_next) == 1
+        && dot_next == 8 {
+        shape_kind = 3;
+    } else {
+        dot_next = 0;
+        if input1_name >= 0 && p != p64_pm59 && grid64 == 128
+            && agx_dot_expr_ok(rhs, loop_name, input1_name, input0_name,
+                               &dot_next) == 1
+            && dot_next == 8 {
+            shape_kind = 3;
+            let swap_name: i32 = input0_name;
+            let swap_cap: i32 = input0_cap;
+            input0_name = input1_name; input0_cap = input1_cap;
+            input1_name = swap_name; input1_cap = swap_cap;
+        }
+    }
+    if shape_kind == 1 && input1_name < 0 && p != p64_pm59
+        && agx_reduce8_expr_ok(rhs, loop_name, input0_name,
+                               &reduce_next) == 1
+        && reduce_next == 8 {
+        shape_kind = 2;
+    } else if shape_kind == 1
+        && agx_expr_ok(rhs, loop_name, input0_name, input1_name,
+                       field_alias) == 0 {
+        return 0;
+    }
     shape.output_name = output_name;
     shape.input0_name = input0_name;
     shape.input1_name = input1_name;
@@ -17256,6 +17649,22 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
     shape.output_cap = out_cap;
     shape.input0_cap = input0_cap;
     shape.input1_cap = input1_cap;
+    shape.kind = shape_kind;
+    var words: i32 = grid64 as i32;
+    if p == p64_pm59 { words = words * 2; }
+    shape.output_words = words;
+    shape.input0_words = words;
+    shape.input1_words = 0;
+    if input1_name >= 0 { shape.input1_words = words; }
+    if shape_kind == 2 {
+        if grid64 > 268435455 { return 0; }
+        shape.input0_words = (grid64 as i32) * 8;
+    }
+    if shape_kind == 3 {
+        shape.output_words = 128;
+        shape.input0_words = 32;
+        shape.input1_words = 256;
+    }
     return 1;
 }
 
@@ -17269,7 +17678,54 @@ fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     g_agx_input64_hi = 0 - 1;
     g_agx_index_lo = 0 - 1;
     g_agx_index_hi = 0 - 1;
-    if p == p64_pm59 {
+    if shape.kind == 2 {
+        let tid: i32 = agx_vtid();
+        let base: i32 = agx_vshift(AGX_OP_SHL, tid, 3);
+        var acc: i32 = 0 - 1;
+        var offset: i32 = 0;
+        while offset < 8 {
+            var index: i32 = base;
+            if offset != 0 { index = agx_vadd_imm(base, offset); }
+            let value: i32 = agx_vload_index(1, index);
+            if acc < 0 { acc = value; }
+            else { acc = agx_vfield_add(acc, value, p); }
+            offset = offset + 1;
+        }
+        if acc < 0 { return 0; }
+        agx_vstore(acc, 0);
+    } else if shape.kind == 3 || shape.kind == 4 {
+        let tid: i32 = agx_vtid();
+        let row: i32 = agx_vshift(AGX_OP_SHR, tid, 5);
+        let x_base: i32 = agx_vshift(AGX_OP_SHL, row, 3);
+        let col: i32 = agx_vextract(tid, 0, 5);
+        var acc: i32 = 0 - 1;
+        var offset: i32 = 0;
+        while offset < 8 {
+            var x_index: i32 = x_base;
+            if offset != 0 { x_index = agx_vadd_imm(x_base, offset); }
+            let w_offset: i32 = (offset + 1) * 32;
+            var w_index: i32 = 0 - 1;
+            if w_offset < 128 {
+                w_index = agx_vadd_imm(col, w_offset);
+            } else {
+                let base: i32 = agx_vimm(w_offset as u64);
+                w_index = agx_vbinary(AGX_OP_ADD, col, base);
+            }
+            let x_value: i32 = agx_vload_index(1, x_index);
+            let w_value: i32 = agx_vload_index(1, w_index);
+            var product: i32 = 0 - 1;
+            if p == 2147483647 {
+                product = agx_vm31_mul(x_value, w_value, p);
+            } else {
+                product = agx_vmont_mul(x_value, w_value, p);
+            }
+            if acc < 0 { acc = product; }
+            else { acc = agx_vfield_add(acc, product, p); }
+            offset = offset + 1;
+        }
+        if acc < 0 { return 0; }
+        agx_vstore(acc, 0);
+    } else if p == p64_pm59 {
         let result64: AgxPair = agx_lower_expr64(shape.rhs, loop_name,
                                                  shape.input0_name, p);
         if result64.lo < 0 { return 0; }
@@ -17316,6 +17772,9 @@ fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
     ir_wr("profile agx-g16x-macos26.3\n");
     ir_wr("field "); ir_wr_u64(p); ir_wr("\n");
     ir_wr("grid "); ir_wr_int(shape.grid as i64); ir_wr("\n");
+    ir_wr("output-words "); ir_wr_int(shape.output_words as i64); ir_wr("\n");
+    ir_wr("input0-words "); ir_wr_int(shape.input0_words as i64); ir_wr("\n");
+    ir_wr("input1-words "); ir_wr_int(shape.input1_words as i64); ir_wr("\n");
     var ci: i32 = 0;
     while ci < ncaps {
         let cn: i32 = g_pfor_workers[caps_base + ci * 4];
@@ -17325,7 +17784,7 @@ fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
         } else {
             ir_wr("1");
             if cn == shape.input1_name {
-                ir_wr(" word-offset "); ir_wr_int(shape.grid as i64);
+                ir_wr(" word-offset "); ir_wr_int(shape.input0_words as i64);
             }
             ir_wr("\n");
         }
@@ -17377,7 +17836,7 @@ fn emit_agx_module() {
         }
         let caps_base: i32 = roff;
         var emitted: i32 = 0;
-        if wbw != 64 && pfor_body_all_index_assign(body_node) == 1 {
+        if wbw != 64 {
             emitted = agx_emit_worker(wid, body_node, loop_var_name, ncaps, caps_base);
         }
         if emitted == 1 {

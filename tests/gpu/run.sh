@@ -96,6 +96,21 @@ AGX_RNS_DEV="$TMP/agx_rns_matmul.agx.hex"
 AGX_RNS_LL="$TMP/agx_rns_matmul.ll"
 AGX_RNS_OBJ="$TMP/agx_rns_matmul.o"
 AGX_RNS_EXE="$TMP/agx-rns-matmul"
+AGX_REDUCE_DEV="$TMP/agx_rns_reduce8.agx.hex"
+AGX_REDUCE_LL="$TMP/agx_rns_reduce8.ll"
+AGX_REDUCE_OBJ="$TMP/agx_rns_reduce8.o"
+AGX_REDUCE_EXE="$TMP/agx-rns-reduce8"
+AGX_DOT_DEV="$TMP/agx_rns_dot.agx.hex"
+AGX_DOT_LL="$TMP/agx_rns_dot.ll"
+AGX_DOT_OBJ="$TMP/agx_rns_dot.o"
+AGX_DOT_EXE="$TMP/agx-rns-dot"
+AGX_DOT_LOOP_DEV="$TMP/agx_rns_dot_loop.agx.hex"
+AGX_DOT_LOOP_LL="$TMP/agx_rns_dot_loop.ll"
+AGX_DOT_LOOP_OBJ="$TMP/agx_rns_dot_loop.o"
+AGX_DOT_LOOP_EXE="$TMP/agx-rns-dot-loop"
+AGX_DOT_REFUSE_DEV="$TMP/agx_rns_dot_refuse.agx.hex"
+AGX_DOT_REFUSE_LL="$TMP/agx_rns_dot_refuse.ll"
+AGX_DOT_REFUSE_REPORT="$TMP/agx_rns_dot_refuse.report"
 
 if ! "$STAGE1" --emit-gpu-agx "$EXHIBIT" -o "$AGX_DEV" 2>/dev/null; then
     echo "  FAIL: --emit-gpu-agx did not produce the Mersenne artifact"; fail=1
@@ -204,6 +219,55 @@ else
         echo "  FAIL: AGX three-prime RNS matmul consumer did not compile"; fail=1
         AGX3_READY=0
     fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_reduce8.tv" \
+          -o "$AGX_REDUCE_DEV" 2>/dev/null \
+       || [ "$(grep -c '^worker __pfor_gpu_worker_' "$AGX_REDUCE_DEV" || true)" -ne 6 ] \
+       || [ "$(grep -c '^output-words 128$' "$AGX_REDUCE_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^input0-words 1024$' "$AGX_REDUCE_DEV" || true)" -ne 6 ] \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_rns_reduce8.tv" \
+          -o "$AGX_REDUCE_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_REDUCE_LL" || true)" -ne 6 ] \
+       || ! "$LLC" -filetype=obj "$AGX_REDUCE_LL" -o "$AGX_REDUCE_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX product-tensor reduce-8 bridge did not compile"; fail=1
+        AGX3_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot.tv" \
+          -o "$AGX_DOT_DEV" 2>/dev/null \
+       || [ "$(grep -c '^worker __pfor_gpu_worker_' "$AGX_DOT_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^output-words 128$' "$AGX_DOT_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^input0-words 32$' "$AGX_DOT_DEV" || true)" -ne 3 ] \
+       || [ "$(grep -c '^input1-words 256$' "$AGX_DOT_DEV" || true)" -ne 3 ] \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_rns_dot.tv" \
+          -o "$AGX_DOT_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_DOT_LL" || true)" -ne 3 ] \
+       || ! "$LLC" -filetype=obj "$AGX_DOT_LL" -o "$AGX_DOT_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX direct exact RNS dot did not compile"; fail=1
+        AGX3_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot_loop.tv" \
+           -o "$AGX_DOT_LOOP_DEV" 2>/dev/null \
+       || ! cmp -s "$AGX_DOT_LOOP_DEV" "$AGX_DOT_DEV" \
+       || [ "$(grep -c '^worker __pfor_gpu_worker_' "$AGX_DOT_LOOP_DEV" || true)" -ne 3 ] \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_rns_dot_loop.tv" \
+           -o "$AGX_DOT_LOOP_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_DOT_LOOP_LL" || true)" -ne 3 ] \
+       || ! "$LLC" -filetype=obj "$AGX_DOT_LOOP_LL" -o "$AGX_DOT_LOOP_OBJ" 2>/dev/null; then
+        echo "  FAIL: canonical nested K=8 RNS dot did not match the unrolled artifact"; fail=1
+        AGX3_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
+           -o "$AGX_DOT_REFUSE_DEV" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$AGX_DOT_REFUSE_DEV" \
+       || ! grep -q '^; no AGX-0 workers emitted$' "$AGX_DOT_REFUSE_DEV" \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
+           -o "$AGX_DOT_REFUSE_LL" 2>/dev/null \
+       || grep -q '^define internal void @__pfor_worker_' "$AGX_DOT_REFUSE_LL" \
+       || ! "$STAGE1" --pfor-report "$SCRIPT_DIR/agx_rns_dot_refuse.tv" \
+           >"$AGX_DOT_REFUSE_REPORT" 2>/dev/null \
+       || [ "$(grep -c '"reason":"unsupported-stmt"' "$AGX_DOT_REFUSE_REPORT" || true)" -ne 2 ]; then
+        echo "  FAIL: noncanonical nested RNS dots did not stay serial"; fail=1
+        AGX3_READY=0
+    fi
     if [ "$AGX3_READY" = "1" ]; then
         echo "  ok   AGX-3 packed binary, runtime dispatch, and RNS artifacts compile"
     fi
@@ -300,8 +364,64 @@ else
                     agx3fail=1
                 fi
             fi
+            if ! cc "$AGX_REDUCE_OBJ" -framework IOKit -o "$AGX_REDUCE_EXE" 2>/dev/null; then
+                echo "  FAIL: AGX reduce-8 bridge did not link"
+                agx3fail=1
+            else
+                (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+                 TRAVELER_THREADS=4 "$AGX_REDUCE_EXE" >"$TMP/agx_reduce8.cpu.bin")
+                reduce_cpu_status=$?
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_REDUCE_DEV" \
+                    "$AGX_REDUCE_EXE" >"$TMP/agx_reduce8.gpu.bin"
+                reduce_gpu_status=$?
+                if [ "$reduce_cpu_status" -ne 0 ] || [ "$reduce_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_reduce8.cpu.bin" | tr -d ' ')" -ne 1024 ] \
+                   || ! cmp -s "$TMP/agx_reduce8.cpu.bin" "$TMP/agx_reduce8.gpu.bin"; then
+                    echo "  FAIL: AGX product-tensor reduce-8 bridge differs from CPU"
+                    agx3fail=1
+                fi
+            fi
+            if ! cc "$AGX_DOT_OBJ" -framework IOKit -o "$AGX_DOT_EXE" 2>/dev/null; then
+                echo "  FAIL: AGX direct RNS dot did not link"
+                agx3fail=1
+            else
+                (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+                 TRAVELER_THREADS=4 "$AGX_DOT_EXE" >"$TMP/agx_dot.cpu.bin")
+                dot_cpu_status=$?
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_DOT_DEV" \
+                    "$AGX_DOT_EXE" >"$TMP/agx_dot.gpu.bin"
+                dot_gpu_status=$?
+                if [ "$dot_cpu_status" -ne 0 ] || [ "$dot_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_dot.cpu.bin" | tr -d ' ')" -ne 1024 ] \
+                   || ! cmp -s "$TMP/agx_dot.cpu.bin" "$TMP/agx_dot.gpu.bin" \
+                   || ! cmp -s "$TMP/agx_reduce8.gpu.bin" "$TMP/agx_dot.gpu.bin"; then
+                    echo "  FAIL: AGX direct RNS dot differs from bridge/CPU"
+                    agx3fail=1
+                fi
+            fi
+            if ! cc "$AGX_DOT_LOOP_OBJ" -framework IOKit -o "$AGX_DOT_LOOP_EXE" 2>/dev/null; then
+                echo "  FAIL: canonical nested K=8 RNS dot did not link"
+                agx3fail=1
+            else
+                (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+                 TRAVELER_THREADS=4 "$AGX_DOT_LOOP_EXE" >"$TMP/agx_dot_loop.cpu.bin")
+                dot_loop_cpu_status=$?
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_DOT_LOOP_DEV" \
+                    "$AGX_DOT_LOOP_EXE" >"$TMP/agx_dot_loop.gpu.bin"
+                dot_loop_gpu_status=$?
+                if [ "$dot_loop_cpu_status" -ne 0 ] || [ "$dot_loop_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_dot_loop.cpu.bin" | tr -d ' ')" -ne 1024 ] \
+                   || ! cmp -s "$TMP/agx_dot_loop.cpu.bin" "$TMP/agx_dot_loop.gpu.bin" \
+                   || ! cmp -s "$TMP/agx_dot.gpu.bin" "$TMP/agx_dot_loop.gpu.bin"; then
+                    echo "  FAIL: canonical nested K=8 RNS dot differs from unrolled/CPU"
+                    agx3fail=1
+                fi
+            fi
             if [ "$agx3fail" = "0" ]; then
-                echo "  ok   AGX-3 code pin + runtime dispatch + exact RNS matmul pass"
+                echo "  ok   AGX RNS product, reduce-8, direct-dot, and nested K=8 paths are exact"
             else
                 fail=1
             fi

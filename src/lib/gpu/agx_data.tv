@@ -182,7 +182,9 @@ fn agx_load_artifact(path: *u8, code_out: **u8, code_size_out: *i32,
 // occur inside that worker's canonical block; duplicate IDs are refused.
 fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
                             code_size_out: *i32, prime_out: *u64,
-                            grid_out: *i32) -> i32 {
+                            grid_out: *i32, output_words_out: *i32,
+                            input0_words_out: *i32,
+                            input1_words_out: *i32) -> i32 {
     if wanted_worker < 0 { return 0; }
     let data_slot: **u8 = alloc(1);
     let size_slot: *i64 = alloc(1);
@@ -198,6 +200,9 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
     var declared: i32 = 0 - 1;
     var prime: u64 = 0;
     var grid: i32 = 0;
+    var output_words: i32 = 0;
+    var input0_words: i32 = 0;
+    var input1_words: i32 = 0 - 1;
     var current_worker: i32 = 0 - 1;
     var selected: i32 = 0;
     var matched: i32 = 0;
@@ -230,6 +235,15 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
         } else if selected != 0 && end - start >= 6
             && agx_bytes_equal(data, start, "grid ") == 1 {
             grid = agx_parse_decimal(data, start + 5, end) as i32;
+        } else if selected != 0 && end - start >= 14
+            && agx_bytes_equal(data, start, "output-words ") == 1 {
+            output_words = agx_parse_decimal(data, start + 13, end) as i32;
+        } else if selected != 0 && end - start >= 14
+            && agx_bytes_equal(data, start, "input0-words ") == 1 {
+            input0_words = agx_parse_decimal(data, start + 13, end) as i32;
+        } else if selected != 0 && end - start >= 14
+            && agx_bytes_equal(data, start, "input1-words ") == 1 {
+            input1_words = agx_parse_decimal(data, start + 13, end) as i32;
         } else if selected != 0 && end - start >= 7
             && agx_bytes_equal(data, start, "bytes ") == 1 {
             declared = agx_parse_decimal(data, start + 6, end) as i32;
@@ -262,6 +276,7 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
 
     free(data);
     if matched == 0 || profile_ok == 0 || prime == 0 || grid < 1
+        || output_words < 1 || input0_words < 1 || input1_words < 0
         || saw_code == 0 || saw_end == 0 || in_code != 0
         || declared != code_size || code_size < 4 {
         free(code); return 0;
@@ -274,5 +289,8 @@ fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
     code_size_out[0] = code_size;
     prime_out[0] = prime;
     grid_out[0] = grid;
+    output_words_out[0] = output_words;
+    input0_words_out[0] = input0_words;
+    input1_words_out[0] = input1_words;
     return 1;
 }

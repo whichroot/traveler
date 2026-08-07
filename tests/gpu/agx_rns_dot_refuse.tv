@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Nearby nested dots stay serial unless both the K=8 bound and index map match.
+field AgxDotRefuse = Field<2013265921>;
+
+fn main() -> i32 {
+    let x: *AgxDotRefuse = alloc(32);
+    let w: *AgxDotRefuse = alloc(256);
+    let output0: *AgxDotRefuse = alloc(128);
+    let output1: *AgxDotRefuse = alloc(128);
+
+    for q in 0..128 {
+        var acc: AgxDotRefuse = 0 as AgxDotRefuse;
+        for k in 0..7 {
+            acc = acc + x[(q / 32) * 8 + k] * w[k * 32 + (q % 32)];
+        }
+        output0[q] = acc;
+    }
+    for q in 0..128 {
+        var acc: AgxDotRefuse = 0 as AgxDotRefuse;
+        for k in 0..8 {
+            acc = acc + x[(q / 32) * 8 + k] * w[k * 31 + (q % 32)];
+        }
+        output1[q] = acc;
+    }
+
+    free(output1); free(output0); free(w); free(x);
+    return 0;
+}
