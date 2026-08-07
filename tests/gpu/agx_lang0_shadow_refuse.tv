@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+// Name-only affine facts must refuse a private iterator shadowing the pfor one.
+
+import "../../src/lib/gpu/agx_runtime.tv";
+
+field AgxLang0ShadowF = Field<2013265921>;
+
+fn main() -> i32 {
+    let input: *AgxLang0ShadowF = alloc(64);
+    let output: *AgxLang0ShadowF = alloc(64);
+    for j in 0..64 {
+        if input[j] == 0 {
+            let j: i32 = 0;
+            output[j] = input[j];
+        }
+    }
+    free(output); free(input);
+    return 0;
+}

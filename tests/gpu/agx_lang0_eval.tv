@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Eval/compiled oracle for the shared LANG0 kernels.
+import "agx_lang0_common.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+fn main() -> i32 {
+    let n: i32 = 768;
+    let left: *AgxLang0F = alloc(n);
+    let right: *AgxLang0F = alloc(n);
+    let branch_out: *AgxLang0F = alloc(n);
+    let loop_out: *AgxLang0F = alloc(n);
+    let nested_out: *AgxLang0F = alloc(n);
+    let exit_out: *AgxLang0F = alloc(n);
+    if agx_lang0_init(left, right, n) != 0 { return 2; }
+    if agx_lang0_run(left, right, branch_out, loop_out, nested_out,
+                     exit_out) != 0 {
+        return 3;
+    }
+    let a: i64 = write(1, branch_out as *u8, 3072);
+    let b: i64 = write(1, loop_out as *u8, 3072);
+    let c: i64 = write(1, nested_out as *u8, 3072);
+    let d: i64 = write(1, exit_out as *u8, 3072);
+    free(exit_out); free(nested_out); free(loop_out); free(branch_out);
+    free(right); free(left);
+    if a != 3072 || b != 3072 || c != 3072 || d != 3072 { return 4; }
+    return 0;
+}

@@ -13679,6 +13679,7 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
     if kind == AST_IDENT {
         let name: i32 = g_nodes[expr].name0;
         if name == loop_var { return 1; }
+        if pfor_is_loop_let(pf, name) == 1 { return 1; }
         let si: i32 = sym_find(name);
         if si < 0 { return 1; }
         return pfor_add_capture(pf, name, g_syms[si].type_off, g_syms[si].reg, g_syms[si].is_alloca);
@@ -13915,6 +13916,152 @@ fn pfor_admit_inner_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
     return 1;
 }
 
+// LANG0 deliberately precedes PROOF0. Structured bodies therefore enter the
+// existing pfor proof only in an explicit AGX compilation, through this closed
+// recursive surface; ordinary CPU/AMD/NV dispatch decisions remain unchanged.
+fn pfor_lang0_mode() -> i32 {
+    if g_agx_dispatch_mode == 1 || g_agx_ir0_shadow == 1
+        || g_agx_ra0_shadow == 1 { return 1; }
+    if g_emit_gpu_mode == 1 && g_gpu_target == 2 { return 1; }
+    return 0;
+}
+
+fn pfor_lang0_has_control(stmt: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_nnodes || depth > 256 { return 0; }
+    let kind: i32 = g_nodes[stmt].kind;
+    if kind == AST_IF || kind == AST_WHILE
+        || kind == AST_BREAK || kind == AST_CONTINUE { return 1; }
+    if kind == AST_BLOCK {
+        var i: i32 = 0;
+        while i < g_nodes[stmt].nargs {
+            if pfor_lang0_has_control(
+                g_args[g_nodes[stmt].args_start + i], depth + 1) == 1 {
+                return 1;
+            }
+            i = i + 1;
+        }
+    }
+    if kind == AST_FOR {
+        return pfor_lang0_has_control(g_nodes[stmt].child2, depth + 1);
+    }
+    return 0;
+}
+
+fn pfor_lang0_add_local(pf: *PForState, name: i32, outer_var: i32) -> i32 {
+    // Name-only affine facts cannot distinguish a shadow from the outer
+    // iterator or another live local. Refuse instead of proving the wrong cell.
+    if name == outer_var || pfor_is_loop_let(pf, name) == 1 {
+        pfor_refuse(PFR_UNSUPPORTED_STMT); return 0;
+    }
+    if pf.nlets >= MAX_PFOR_LETS { pfor_refuse(PFR_LET_LIMIT); return 0; }
+    let lets: *i32 = pf.lets;
+    lets[pf.nlets] = name;
+    pf.nlets = pf.nlets + 1;
+    return 1;
+}
+
+fn pfor_lang0_capture_target(pf: *PForState, name: i32) -> i32 {
+    let si: i32 = sym_find(name);
+    if si < 0 { pfor_refuse(PFR_WRITE_TARGET); return 0; }
+    if pfor_add_capture(pf, name, g_syms[si].type_off,
+                        g_syms[si].reg, g_syms[si].is_alloca) == 0 { return 0; }
+    if type_is_ptr(g_syms[si].type_off) == 1 {
+        let pt: i32 = type_pointee(g_syms[si].type_off);
+        if find_field_by_alias(pt) >= 0 || type_is_dyn(pt) == 1 {
+            pf.has_field = 1;
+        }
+    }
+    return 1;
+}
+
+fn pfor_lang0_walk_stmt(pf: *PForState, stmt: i32,
+                        outer_var: i32, private_depth: i32,
+                        depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_nnodes || depth > 256 {
+        pfor_refuse(PFR_UNSUPPORTED_STMT); return 0;
+    }
+    let kind: i32 = g_nodes[stmt].kind;
+    if kind == AST_BLOCK {
+        let saved_nlets: i32 = pf.nlets;
+        var i: i32 = 0;
+        while i < g_nodes[stmt].nargs {
+            if pfor_lang0_walk_stmt(pf,
+                g_args[g_nodes[stmt].args_start + i], outer_var,
+                private_depth, depth + 1) == 0 {
+                pf.nlets = saved_nlets;
+                return 0;
+            }
+            i = i + 1;
+        }
+        pf.nlets = saved_nlets;
+        return 1;
+    }
+    if kind == AST_LET {
+        if pfor_walk_expr(pf, g_nodes[stmt].child0, outer_var) == 0 { return 0; }
+        return pfor_lang0_add_local(pf, g_nodes[stmt].name0, outer_var);
+    }
+    if kind == AST_ASSIGN {
+        if pfor_is_loop_let(pf, g_nodes[stmt].name0) == 0 {
+            pfor_refuse(PFR_ASSIGN_CARRIED); return 0;
+        }
+        return pfor_walk_expr(pf, g_nodes[stmt].child0, outer_var);
+    }
+    if kind == AST_EXPR_STMT {
+        return pfor_walk_expr(pf, g_nodes[stmt].child0, outer_var);
+    }
+    if kind == AST_INDEX_ASSIGN {
+        let obj: i32 = g_nodes[stmt].child0;
+        if g_nodes[obj].kind != AST_IDENT {
+            pfor_refuse(PFR_WRITE_TARGET); return 0;
+        }
+        let name: i32 = g_nodes[obj].name0;
+        if pfor_is_loop_let(pf, name) == 1 || sym_find(name) < 0 {
+            pfor_refuse(PFR_PRIVATE_BASE); return 0;
+        }
+        if pfor_record_write(pf, name, g_nodes[stmt].child1, outer_var) == 0 {
+            return 0;
+        }
+        if pfor_walk_expr(pf, g_nodes[stmt].child2, outer_var) == 0 { return 0; }
+        return pfor_lang0_capture_target(pf, name);
+    }
+    if kind == AST_IF {
+        if pfor_walk_expr(pf, g_nodes[stmt].child0, outer_var) == 0 { return 0; }
+        if pfor_lang0_walk_stmt(pf, g_nodes[stmt].child1, outer_var,
+                               private_depth, depth + 1) == 0 { return 0; }
+        if g_nodes[stmt].child2 >= 0 {
+            return pfor_lang0_walk_stmt(pf, g_nodes[stmt].child2, outer_var,
+                                        private_depth, depth + 1);
+        }
+        return 1;
+    }
+    if kind == AST_FOR {
+        if pfor_walk_expr(pf, g_nodes[stmt].child0, outer_var) == 0
+            || pfor_walk_expr(pf, g_nodes[stmt].child1, outer_var) == 0 {
+            return 0;
+        }
+        let saved_nlets: i32 = pf.nlets;
+        if pfor_lang0_add_local(pf, g_nodes[stmt].name0, outer_var) == 0 {
+            return 0;
+        }
+        let ok: i32 = pfor_lang0_walk_stmt(
+            pf, g_nodes[stmt].child2, outer_var, private_depth + 1, depth + 1);
+        pf.nlets = saved_nlets;
+        return ok;
+    }
+    if kind == AST_WHILE {
+        if pfor_walk_expr(pf, g_nodes[stmt].child0, outer_var) == 0 { return 0; }
+        return pfor_lang0_walk_stmt(pf, g_nodes[stmt].child1, outer_var,
+                                    private_depth + 1, depth + 1);
+    }
+    if kind == AST_BREAK || kind == AST_CONTINUE {
+        if private_depth > 0 { return 1; }
+        pfor_refuse(PFR_UNSUPPORTED_STMT);
+        return 0;
+    }
+    pfor_refuse(PFR_UNSUPPORTED_STMT);
+    return 0;
+}
+
 // Analyze a loop body for parallel dispatch (bounds feed the disjointness
 // prover). Verdict in pf.independent.
 fn pfor_analyze_body(pf: *PForState, body: i32, loop_var: i32, start_node: i32, end_node: i32) {
@@ -13933,6 +14080,17 @@ fn pfor_analyze_body(pf: *PForState, body: i32, loop_var: i32, start_node: i32, 
     if g_nodes[body].kind != AST_BLOCK {
         pfor_refuse(PFR_NONBLOCK);
         pf.independent = 0;
+        return;
+    }
+
+    if pfor_lang0_mode() == 1 && pfor_lang0_has_control(body, 0) == 1 {
+        if pfor_lang0_walk_stmt(pf, body, loop_var, 0, 0) == 0 {
+            pf.independent = 0;
+            return;
+        }
+        if pfor_check_hazards(pf, start_node, end_node) == 0 {
+            pf.independent = 0;
+        }
         return;
     }
 
@@ -14651,7 +14809,15 @@ fn codegen_stmt(stmt: i32) {
                 let agx_classified: i32 = agx_classify_worker(
                     body_node, iter_name, pf.ncaps, worker_caps_base,
                     agx_shape);
-                if agx_classified == 1
+                var agx_run_shadow: i32 = 1;
+                if agx_classified == 1 && agx_shape.kind == 5
+                    && (g_agx_dispatch_mode == 1
+                        || (g_emit_gpu_mode == 1 && g_gpu_target == 2)) {
+                    // LANG0's normal path is the IR0/RA0 path; do not run it
+                    // twice when a shadow flag accompanies real emission.
+                    agx_run_shadow = 0;
+                }
+                if agx_classified == 1 && agx_run_shadow == 1
                     && (g_agx_ir0_shadow == 1 || g_agx_ra0_shadow == 1) {
                     let agx_shadow_ok: i32 = agx_ir0_shadow_worker(
                         body_node, iter_name, pf.ncaps, worker_caps_base,
@@ -16344,6 +16510,10 @@ struct AgxWorkerShape {
     input0_words: i32,
     input1_words: i32,
     input_layout: i32,
+    body: i32,
+    loop_name: i32,
+    ncaps: i32,
+    caps_base: i32,
 }
 
 var g_agx_ops: *AgxOp = null;
@@ -16518,6 +16688,61 @@ fn agx_e_extract(dest: i32, src: i32, shift: i32, width: i32) {
 
 fn agx_e_stop() {
     agx_put(14); agx_put(0); agx_put(0); agx_put(0); agx_mark();
+}
+
+fn agx_e_cmpsel_bool(dest: i32, lhs: i32, rhs: i32,
+                     op: i32, is_signed: i32) -> i32 {
+    if dest < 0 || dest > 15 || lhs < 0 || lhs > 15
+        || rhs < 0 || rhs > 15 { return 0; }
+    var condition: i32 = 0;
+    var equality: i32 = 0;
+    var invert: i32 = 0;
+    if op == OP_EQ || op == OP_NEQ {
+        condition = 7; equality = 1;
+        if op == OP_NEQ { invert = 1; }
+    } else if op == OP_LT || op == OP_GE {
+        if is_signed == 1 { condition = 7; } else { condition = 5; }
+        if op == OP_GE { invert = 1; }
+    } else if op == OP_GT || op == OP_LE {
+        if is_signed == 1 { condition = 6; } else { condition = 4; }
+        if op == OP_LE { invert = 1; }
+    } else {
+        return 0;
+    }
+    var true_value: i32 = 129;
+    var false_value: i32 = 128;
+    if invert == 1 { true_value = 128; false_value = 129; }
+    agx_put(2 | (dest << 4));
+    agx_put((lhs << 1) | 1); agx_put(31); agx_put((rhs << 1) | 1);
+    var true_mode: i32 = 34;
+    if equality == 1 { true_mode = true_mode | 4; }
+    agx_put(true_mode); agx_put(true_value); agx_put(condition); agx_put(0);
+    agx_put(32); agx_put(false_value); agx_mark();
+    return 1;
+}
+
+fn agx_e_if_bool(value: i32, bound: i32, truth: i32) -> i32 {
+    if value < 0 || value > 15 || bound < 0 || bound > 15 { return 0; }
+    // bool is canonical 0/1: true is value>0, false is value<1. The caller
+    // materializes bound 0 or 1 respectively.
+    var condition: i32 = 4;
+    if truth == 0 { condition = 5; }
+    agx_put(10); agx_put(129 | (value << 1)); agx_put(34);
+    agx_put(129 | (bound << 1)); agx_put(condition); agx_put(0); agx_mark();
+    return 1;
+}
+
+fn agx_e_mask_begin() {
+    agx_put(15); agx_put(5); agx_put(84); agx_put(1); agx_mark();
+}
+
+fn agx_e_mask_else() {
+    agx_put(15); agx_put(4); agx_put(4); agx_put(25); agx_mark();
+}
+
+fn agx_e_mask_pop() {
+    agx_put(15); agx_put(6); agx_put(4); agx_put(1);
+    agx_put(0); agx_put(0); agx_mark();
 }
 
 fn agx_vm_reset() {
@@ -17860,9 +18085,250 @@ fn agx_classify_counted_dot(body: i32, loop_name: i32, ncaps: i32,
     return 1;
 }
 
+fn agx_lang0_expr_ast_ok(node: i32, outer_name: i32, depth: i32) -> i32 {
+    if node < 0 || node >= g_nnodes || depth > 256 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL || kind == AST_IDENT {
+        return 1;
+    }
+    // Width-changing and integer/field casts need conversion instructions.
+    // LANG0 owns only already-canonical scalar representations.
+    if kind == AST_CAST { return 0; }
+    if kind == AST_UNARY {
+        if g_nodes[node].op != OP_NOT { return 0; }
+        return agx_lang0_expr_ast_ok(g_nodes[node].child0, outer_name, depth + 1);
+    }
+    if kind == AST_BINARY {
+        let op: i32 = g_nodes[node].op;
+        if op != OP_ADD && op != OP_SUB && op != OP_AND && op != OP_OR
+            && (op < OP_EQ || op > OP_GE) { return 0; }
+        if agx_lang0_expr_ast_ok(g_nodes[node].child0, outer_name, depth + 1) == 0 {
+            return 0;
+        }
+        return agx_lang0_expr_ast_ok(
+            g_nodes[node].child1, outer_name, depth + 1);
+    }
+    if kind == AST_INDEX {
+        let obj: i32 = g_nodes[node].child0;
+        let idx: i32 = g_nodes[node].child1;
+        if g_nodes[obj].kind != AST_IDENT { return 0; }
+        if g_nodes[idx].kind == AST_IDENT
+            && g_nodes[idx].name0 == outer_name { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+fn agx_lang0_stmt_has_exit_ast(stmt: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_nnodes || depth > 256 { return 0; }
+    let kind: i32 = g_nodes[stmt].kind;
+    if kind == AST_BREAK || kind == AST_CONTINUE { return 1; }
+    if kind == AST_FOR || kind == AST_WHILE { return 0; }
+    if kind == AST_IF {
+        if agx_lang0_stmt_has_exit_ast(g_nodes[stmt].child1, depth + 1) == 1 {
+            return 1;
+        }
+        if g_nodes[stmt].child2 >= 0 {
+            return agx_lang0_stmt_has_exit_ast(
+                g_nodes[stmt].child2, depth + 1);
+        }
+        return 0;
+    }
+    if kind == AST_BLOCK {
+        var i: i32 = 0;
+        while i < g_nodes[stmt].nargs {
+            if agx_lang0_stmt_has_exit_ast(
+                g_args[g_nodes[stmt].args_start + i], depth + 1) == 1 {
+                return 1;
+            }
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+fn agx_lang0_scan_ast(stmt: i32, outer_name: i32, private_depth: i32,
+                      private_iter0: i32, private_iter1: i32,
+                      conditional_depth: i32, output_name: *i32, stores: *i32,
+                      depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_nnodes || depth > 256 { return 0; }
+    let kind: i32 = g_nodes[stmt].kind;
+    if kind == AST_BLOCK {
+        var i: i32 = 0;
+        while i < g_nodes[stmt].nargs {
+            if agx_lang0_scan_ast(g_args[g_nodes[stmt].args_start + i],
+                outer_name, private_depth, private_iter0, private_iter1,
+                conditional_depth, output_name, stores,
+                depth + 1) == 0 { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    if kind == AST_ASSIGN {
+        let target: i32 = g_nodes[stmt].name0;
+        if target == outer_name || target == private_iter0
+            || target == private_iter1 { return 0; }
+        return agx_lang0_expr_ast_ok(g_nodes[stmt].child0, outer_name, depth + 1);
+    }
+    if kind == AST_LET || kind == AST_EXPR_STMT {
+        return agx_lang0_expr_ast_ok(g_nodes[stmt].child0, outer_name, depth + 1);
+    }
+    if kind == AST_INDEX_ASSIGN {
+        if private_depth != 0 || conditional_depth != 0 || stores[0] != 0 {
+            return 0;
+        }
+        let obj: i32 = g_nodes[stmt].child0;
+        let idx: i32 = g_nodes[stmt].child1;
+        if g_nodes[obj].kind != AST_IDENT || g_nodes[idx].kind != AST_IDENT
+            || g_nodes[idx].name0 != outer_name
+            || agx_lang0_expr_ast_ok(
+                g_nodes[stmt].child2, outer_name, depth + 1) == 0 { return 0; }
+        output_name[0] = g_nodes[obj].name0;
+        stores[0] = 1;
+        return 1;
+    }
+    if kind == AST_IF {
+        if agx_lang0_expr_ast_ok(g_nodes[stmt].child0, outer_name,
+                                 depth + 1) == 0 { return 0; }
+        if agx_lang0_scan_ast(g_nodes[stmt].child1, outer_name,
+            private_depth, private_iter0, private_iter1,
+            conditional_depth + 1, output_name, stores, depth + 1) == 0 {
+            return 0;
+        }
+        if g_nodes[stmt].child2 >= 0 {
+            return agx_lang0_scan_ast(g_nodes[stmt].child2, outer_name,
+                private_depth, private_iter0, private_iter1,
+                conditional_depth + 1, output_name, stores, depth + 1);
+        }
+        return 1;
+    }
+    if kind == AST_FOR {
+        if private_depth >= 2 { return 0; }
+        let iter_name: i32 = g_nodes[stmt].name0;
+        if iter_name == outer_name || iter_name == private_iter0
+            || iter_name == private_iter1 { return 0; }
+        let lo: i32 = g_nodes[stmt].child0;
+        let hi: i32 = g_nodes[stmt].child1;
+        if g_nodes[lo].kind != AST_LIT_INT || g_nodes[hi].kind != AST_LIT_INT
+            || g_nodes[hi].int_val < g_nodes[lo].int_val { return 0; }
+        let trip: u64 = g_nodes[hi].int_val - g_nodes[lo].int_val;
+        var maximum: u64 = 16;
+        if private_depth == 1 { maximum = 9; }
+        if trip > maximum { return 0; }
+        var next_iter0: i32 = private_iter0;
+        var next_iter1: i32 = private_iter1;
+        if private_depth == 0 { next_iter0 = iter_name; }
+        else { next_iter1 = iter_name; }
+        if agx_lang0_stmt_has_exit_ast(g_nodes[stmt].child2, 0) == 1 {
+            // Device stores in an exit-bearing region remain outside the
+            // execution-proven replay profile.
+            var nested_output: i32 = 0 - 1;
+            var nested_stores: i32 = 0;
+            if agx_lang0_scan_ast(g_nodes[stmt].child2, outer_name,
+                private_depth + 1, next_iter0, next_iter1,
+                conditional_depth, &nested_output, &nested_stores,
+                depth + 1) == 0 { return 0; }
+            if nested_stores != 0 { return 0; }
+            return 1;
+        }
+        return agx_lang0_scan_ast(g_nodes[stmt].child2, outer_name,
+            private_depth + 1, next_iter0, next_iter1, conditional_depth,
+            output_name, stores, depth + 1);
+    }
+    if kind == AST_BREAK || kind == AST_CONTINUE {
+        return (private_depth > 0) as i32;
+    }
+    // Dynamic private loops are deferred; bounded range loops above are the
+    // complete LANG0 loop surface.
+    return 0;
+}
+
+fn agx_classify_lang0(body: i32, loop_name: i32, ncaps: i32,
+                      caps_base: i32, shape: *AgxWorkerShape) -> i32 {
+    if pfor_lang0_has_control(body, 0) == 0 || ncaps < 2 || ncaps > 3 {
+        return 0;
+    }
+    let output_name: *i32 = alloc(1);
+    let stores: *i32 = alloc(1);
+    output_name[0] = 0 - 1;
+    stores[0] = 0;
+    let ast_ok: i32 = agx_lang0_scan_ast(
+        body, loop_name, 0, 0 - 1, 0 - 1, 0, output_name, stores, 0);
+    if ast_ok == 0 || stores[0] != 1 {
+        free(output_name); free(stores); return 0;
+    }
+    let out_name: i32 = output_name[0];
+    free(output_name); free(stores);
+    let out_cap: i32 = agx_cap_pos(out_name, caps_base, ncaps);
+    if out_cap < 0 { return 0; }
+
+    var input0_name: i32 = 0 - 1;
+    var input1_name: i32 = 0 - 1;
+    var input0_cap: i32 = 0 - 1;
+    var input1_cap: i32 = 0 - 1;
+    var field_alias: i32 = 0 - 1;
+    var fi: i32 = 0 - 1;
+    var ci: i32 = 0;
+    while ci < ncaps {
+        let name: i32 = g_pfor_workers[caps_base + ci * 4];
+        let ty: i32 = resolve_type_sub(
+            g_pfor_workers[caps_base + ci * 4 + 1]);
+        if type_is_ptr(ty) == 0 { return 0; }
+        let elem: i32 = resolve_type_sub(type_pointee(ty));
+        let cfi: i32 = find_field_by_alias(elem);
+        if cfi < 0 || g_fields[cfi].field_kind != FIELD_KIND_PRIME
+            || g_fields[cfi].elem_bits > 32 { return 0; }
+        if fi < 0 { fi = cfi; field_alias = elem; }
+        if g_fields[cfi].prime != g_fields[fi].prime { return 0; }
+        if name != out_name {
+            if input0_name < 0 { input0_name = name; input0_cap = ci; }
+            else if input1_name < 0 { input1_name = name; input1_cap = ci; }
+            else { return 0; }
+        }
+        ci = ci + 1;
+    }
+    if input0_name < 0 { return 0; }
+    let p: u64 = g_fields[fi].prime;
+    if p != 2147483647
+        && (p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31)
+            || (p & 1) == 0) { return 0; }
+    let outer: i32 = agx_find_for_body(body);
+    if outer < 0 { return 0; }
+    let lo: i32 = g_nodes[outer].child0;
+    let hi: i32 = g_nodes[outer].child1;
+    if g_nodes[lo].kind != AST_LIT_INT || g_nodes[lo].int_val != 0
+        || g_nodes[hi].kind != AST_LIT_INT || g_nodes[hi].int_val == 0
+        || g_nodes[hi].int_val > 2147483647 { return 0; }
+    let grid: i32 = g_nodes[hi].int_val as i32;
+    shape.kind = 5;
+    shape.output_name = out_name;
+    shape.input0_name = input0_name;
+    shape.input1_name = input1_name;
+    shape.field_alias = field_alias;
+    shape.field_index = fi;
+    shape.rhs = body;
+    shape.grid = grid;
+    shape.output_cap = out_cap;
+    shape.input0_cap = input0_cap;
+    shape.input1_cap = input1_cap;
+    shape.output_words = grid;
+    shape.input0_words = grid;
+    shape.input1_words = 0;
+    if input1_name >= 0 { shape.input1_words = grid; }
+    shape.input_layout = 0;
+    return 1;
+}
+
 fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
                        caps_base: i32, shape: *AgxWorkerShape) -> i32 {
+    shape.body = body;
+    shape.loop_name = loop_name;
+    shape.ncaps = ncaps;
+    shape.caps_base = caps_base;
     if agx_classify_counted_dot(body, loop_name, ncaps, caps_base, shape) == 1 {
+        return 1;
+    }
+    if agx_classify_lang0(body, loop_name, ncaps, caps_base, shape) == 1 {
         return 1;
     }
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 { return 0; }
@@ -17989,7 +18455,7 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
 fn agx_build_worker_ops(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     let p: u64 = g_fields[shape.field_index].prime;
     let p64_pm59: u64 = 18446744073709551557;
-    if shape.kind == 4 { return 0; }
+    if shape.kind == 4 || shape.kind == 5 { return 0; }
     agx_vm_reset();
     g_agx_input_v = 0 - 1;
     g_agx_input2_v = 0 - 1;
@@ -18068,6 +18534,11 @@ fn agx_build_worker_ops(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
 fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     let p: u64 = g_fields[shape.field_index].prime;
     if shape.kind == 4 { return agx_build_counted_dot(p); }
+    if shape.kind == 5 {
+        return agx_ir0_shadow_worker(
+            shape.body, shape.loop_name, shape.ncaps, shape.caps_base,
+            32, shape);
+    }
     if agx_build_worker_ops(shape, loop_name) == 0 { return 0; }
     return agx_allocate_and_encode();
 }
@@ -21335,6 +21806,20 @@ var g_agx_ra_slot_cap: i32 = 0;
 var g_agx_ra_copies: *AgxRaCopy = null;
 var g_agx_ra_ncopies: i32 = 0;
 var g_agx_ra_cap_copies: i32 = 0;
+var g_agx_ra_reserve_r2: i32 = 0;
+var g_agx_lang_shape: *AgxWorkerShape = null;
+var g_agx_lang_fixed: u64 = 0;
+var g_agx_lang_temps: u64 = 0;
+var g_agx_lang_failed: i32 = 0;
+var g_agx_lang_mask_depth: i32 = 0;
+var g_agx_lang_loads: i32 = 0;
+var g_agx_lang_outer_slot: i32 = 0 - 1;
+var g_agx_lang_loop_depth: i32 = 0;
+var g_agx_lang_alive: *i32 = null;
+var g_agx_lang_step: *i32 = null;
+var g_agx_lang_mask_value: *i32 = null;
+var g_agx_lang_mask_bound: *i32 = null;
+var g_agx_lang_mask_release: *i32 = null;
 
 // ---- Refusal (the cardinal rule): loud, located, exit 97 ----
 fn ev_refuse(what: *u8, line: i32, col: i32) {
@@ -24839,6 +25324,60 @@ fn agx_cfg_validate(shape_kind: i32) -> i32 {
             }
             b = b + 1;
         }
+    } else if shape_kind == 5 {
+        if reachable_blocks < 1 || counted_headers > 16 { return 0; }
+        b = 0;
+        while b < g_agx_cfg_nblocks {
+            if g_agx_cfg_reachable[b] == 1
+                && g_agx_cfg_blocks[b].term == AGX_CFG_TERM_BRANCH {
+                let owner3: i32 = g_agx_cfg_blocks[b].term_value;
+                if owner3 >= 0 && owner3 < g_neir
+                    && g_eir[owner3].kind == EIR_FOR {
+                    if g_eir[owner3].nargs != 1
+                        || g_eir[g_eir[owner3].b].kind != EIR_CONST
+                        || g_eir[g_eir[owner3].c].kind != EIR_CONST
+                        || g_eir[owner3].type_off != str_intern("i32") {
+                        return 0;
+                    }
+                    let iter_slot3: i32 = g_eir[owner3].a;
+                    var saw_iter3: i32 = 0;
+                    var pi3: i32 = 0;
+                    while pi3 < g_agx_cfg_blocks[b].nparams {
+                        let pidx3: i32 =
+                            g_agx_cfg_blocks[b].param_start + pi3;
+                        if g_agx_cfg_params[pidx3].slot == iter_slot3 {
+                            saw_iter3 = 1;
+                            var ii4: i32 = 0;
+                            while ii4 < g_agx_cfg_params[pidx3].nincoming {
+                                let incoming3: i32 =
+                                    g_agx_cfg_params[pidx3].incoming_start + ii4;
+                                let pred3: i32 =
+                                    g_agx_cfg_incoming[incoming3].pred;
+                                let edge3: i32 = agx_cfg_find_edge(pred3, b);
+                                let value3: i32 =
+                                    g_agx_cfg_incoming[incoming3].value;
+                                if edge3 < 0
+                                    || g_agx_cfg_edges[edge3].owner != owner3 {
+                                    return 0;
+                                }
+                                if g_agx_cfg_edges[edge3].kind
+                                    == AGX_CFG_EDGE_FOR_INIT {
+                                    if value3 != g_eir[owner3].b { return 0; }
+                                } else if g_agx_cfg_edges[edge3].kind
+                                    == AGX_CFG_EDGE_FOR_NEXT {
+                                    if agx_ir0_for_next_ok(value3, iter_slot3,
+                                        g_eir[owner3].type_off) == 0 { return 0; }
+                                } else { return 0; }
+                                ii4 = ii4 + 1;
+                            }
+                        }
+                        pi3 = pi3 + 1;
+                    }
+                    if saw_iter3 == 0 { return 0; }
+                }
+            }
+            b = b + 1;
+        }
     } else {
         return 0;
     }
@@ -25198,6 +25737,7 @@ fn agx_ra_build_interference() -> i32 {
             w = w + 1;
         }
         if agx_ra_term_slots(b, live) == 0 { free(live); return 0; }
+        agx_ra_add_clique(live, 0);
         var ii: i32 = g_agx_cfg_blocks[b].nitems - 1;
         while ii >= 0 {
             let item: i32 = g_agx_cfg_blocks[b].first_item + ii;
@@ -25210,16 +25750,19 @@ fn agx_ra_build_interference() -> i32 {
                 if agx_ra_expr_slots(g_eir[stmt].b, live, 0, 0) == 0 {
                     free(live); return 0;
                 }
+                agx_ra_add_clique(live, 0);
             } else if kind == EIR_INDEX_ST {
                 if agx_ra_expr_slots(g_eir[stmt].a, live, 0, 0) == 0
                     || agx_ra_expr_slots(g_eir[stmt].b, live, 0, 0) == 0
                     || agx_ra_expr_slots(g_eir[stmt].c, live, 0, 0) == 0 {
                     free(live); return 0;
                 }
+                agx_ra_add_clique(live, 0);
             } else if kind == EIR_EXPR {
                 if agx_ra_expr_slots(g_eir[stmt].a, live, 0, 0) == 0 {
                     free(live); return 0;
                 }
+                agx_ra_add_clique(live, 0);
             } else {
                 free(live); return 0;
             }
@@ -25319,6 +25862,7 @@ fn agx_ra_allocate_slots(outer_iter_slot: i32, stats: *AgxRaStats) -> i32 {
         if slot != outer_iter_slot && width > 0
             && agx_ra_slot_active(slot) == 1 {
             var candidate: i32 = 2;
+            if g_agx_ra_reserve_r2 == 1 { candidate = 3; }
             var chosen: i32 = 0 - 1;
             while candidate + width - 1 <= 31 && chosen < 0 {
                 var ok: i32 = 1;
@@ -26224,6 +26768,589 @@ fn agx_ra_counted_shadow(p: u64, stats: *AgxRaStats) -> i32 {
     return outcome;
 }
 
+// ===== AGX LANG0: BOUNDED STRUCTURED SCALAR LOWERING =====
+
+fn agx_lang_fail() {
+    g_agx_lang_failed = 1;
+}
+
+fn agx_lang_reg_bit(reg: i32) -> u64 {
+    if reg < 0 || reg >= 32 { return 0; }
+    return (1 as u64) << (reg as u64);
+}
+
+fn agx_lang_take() -> i32 {
+    var reg: i32 = 2;
+    while reg <= 15 {
+        let bit: u64 = agx_lang_reg_bit(reg);
+        if (g_agx_lang_fixed & bit) == 0
+            && (g_agx_lang_temps & bit) == 0 {
+            g_agx_lang_temps = g_agx_lang_temps | bit;
+            return reg;
+        }
+        reg = reg + 1;
+    }
+    agx_lang_fail();
+    return 0 - 1;
+}
+
+fn agx_lang_release(reg: i32) {
+    let bit: u64 = agx_lang_reg_bit(reg);
+    if bit == 0 || (g_agx_lang_temps & bit) == 0 {
+        agx_lang_fail();
+        return;
+    }
+    g_agx_lang_temps = g_agx_lang_temps & ((0 as u64) - 1 - bit);
+}
+
+fn agx_lang_write_imm(reg: i32, value: u64) -> i32 {
+    if reg < 0 || reg > 15 || value > 4294967295 { return 0; }
+    if value < 128 {
+        agx_e_mov_imm(reg, value);
+    } else {
+        agx_e_mov_wide(value);
+        agx_e_alu_imm(reg, 0, 0);
+    }
+    return 1;
+}
+
+fn agx_lang_imm(value: u64) -> i32 {
+    let reg: i32 = agx_lang_take();
+    if reg < 0 || agx_lang_write_imm(reg, value) == 0 {
+        agx_lang_fail();
+        return 0 - 1;
+    }
+    return reg;
+}
+
+fn agx_lang_copy(reg: i32) -> i32 {
+    if reg < 0 || reg > 15 { agx_lang_fail(); return 0 - 1; }
+    let copy: i32 = agx_lang_take();
+    if copy >= 0 { agx_e_alu_imm(copy, reg, 0); }
+    return copy;
+}
+
+fn agx_lang_strip_cast(e_in: i32) -> i32 {
+    var e: i32 = e_in;
+    var depth: i32 = 0;
+    while e >= 0 && e < g_neir && g_eir[e].kind == EIR_CAST && depth < 16 {
+        e = g_eir[e].a;
+        depth = depth + 1;
+    }
+    return e;
+}
+
+fn agx_lang_is_outer_index(e: i32) -> i32 {
+    let base: i32 = agx_lang_strip_cast(e);
+    if base < 0 || base >= g_neir || g_eir[base].kind != EIR_LOCAL {
+        return 0;
+    }
+    return (g_eir[base].a == g_agx_lang_outer_slot) as i32;
+}
+
+fn agx_lang_capture_slot(base_expr: i32) -> i32 {
+    let base: i32 = agx_lang_strip_cast(base_expr);
+    if base < 0 || base >= g_neir || g_eir[base].kind != EIR_LOCAL {
+        return 0 - 1;
+    }
+    let slot: i32 = g_eir[base].a;
+    if slot < 0 || slot >= g_agx_lang_shape.ncaps { return 0 - 1; }
+    return slot;
+}
+
+fn agx_lang_input_offset(cap: i32) -> i32 {
+    if cap == g_agx_lang_shape.input0_cap { return 0; }
+    if cap == g_agx_lang_shape.input1_cap {
+        return g_agx_lang_shape.input0_words;
+    }
+    return 0 - 1;
+}
+
+fn agx_lang_index_reg(offset: i32) -> i32 {
+    if offset == 0 { return 0 - 1; }
+    let tid: i32 = agx_lang_copy(1);
+    if tid < 0 { return 0 - 2; }
+    let index: i32 = agx_lang_take();
+    if index < 0 { agx_lang_release(tid); return 0 - 2; }
+    if offset < 128 {
+        agx_e_alu_imm(index, tid, offset);
+        agx_lang_release(tid);
+        return index;
+    }
+    let off: i32 = agx_lang_imm(offset as u64);
+    if off < 0 {
+        agx_lang_release(index); agx_lang_release(tid); return 0 - 2;
+    }
+    agx_e_alu_reg(index, tid, off, AGX_OP_ADD);
+    agx_lang_release(tid); agx_lang_release(off);
+    return index;
+}
+
+fn agx_lang_load(e: i32) -> i32 {
+    if agx_lang_is_outer_index(g_eir[e].b) == 0 {
+        agx_lang_fail(); return 0 - 1;
+    }
+    let cap: i32 = agx_lang_capture_slot(g_eir[e].a);
+    let offset: i32 = agx_lang_input_offset(cap);
+    if cap < 0 || offset < 0 { agx_lang_fail(); return 0 - 1; }
+    let index: i32 = agx_lang_index_reg(offset);
+    if index == (0 - 2) { return 0 - 1; }
+    let value: i32 = agx_lang_take();
+    if value < 0 {
+        if index >= 0 { agx_lang_release(index); }
+        return 0 - 1;
+    }
+    let return_slot: i32 = agx_device_return_slot(g_agx_lang_loads);
+    var flavor: i32 = 1;
+    if g_agx_lang_loads == 1 { flavor = 0; }
+    agx_e_load(return_slot, 1, flavor, index);
+    agx_e_move_return(value, return_slot);
+    g_agx_lang_loads = g_agx_lang_loads + 1;
+    if index >= 0 { agx_lang_release(index); }
+    return value;
+}
+
+fn agx_lang_load_into(e: i32, dest: i32) -> i32 {
+    if dest < 2 || dest > 15
+        || agx_lang_is_outer_index(g_eir[e].b) == 0 {
+        return 0;
+    }
+    let cap: i32 = agx_lang_capture_slot(g_eir[e].a);
+    let offset: i32 = agx_lang_input_offset(cap);
+    if cap < 0 || offset < 0 { return 0; }
+    let index: i32 = agx_lang_index_reg(offset);
+    if index == (0 - 2) { return 0; }
+    let return_slot: i32 = agx_device_return_slot(g_agx_lang_loads);
+    var flavor: i32 = 1;
+    if g_agx_lang_loads == 1 { flavor = 0; }
+    agx_e_load(return_slot, 1, flavor, index);
+    agx_e_move_return(dest, return_slot);
+    g_agx_lang_loads = g_agx_lang_loads + 1;
+    if index >= 0 { agx_lang_release(index); }
+    return 1;
+}
+
+fn agx_lang_begin_reg(value: i32, truth: i32,
+                      release_value: i32) -> i32 {
+    if g_agx_lang_mask_depth >= 4 || value < 0 || value > 15 {
+        agx_lang_fail(); return 0;
+    }
+    let condition_value: i32 = value;
+    let condition_release: i32 = release_value;
+    var bound_value: u64 = 0;
+    if truth == 0 { bound_value = 1; }
+    let bound: i32 = agx_lang_imm(bound_value);
+    if bound < 0 || agx_e_if_bool(condition_value, bound, truth) == 0 {
+        if bound >= 0 { agx_lang_release(bound); }
+        agx_lang_fail(); return 0;
+    }
+    // Expression-owned condition registers cannot be reused before else/pop.
+    // Loop-state registers already remain allocated by their enclosing region.
+    agx_e_mask_begin();
+    agx_lang_release(bound);
+    g_agx_lang_mask_value[g_agx_lang_mask_depth] = condition_value;
+    g_agx_lang_mask_bound[g_agx_lang_mask_depth] = 0 - 1;
+    g_agx_lang_mask_release[g_agx_lang_mask_depth] = condition_release;
+    g_agx_lang_mask_depth = g_agx_lang_mask_depth + 1;
+    return 1;
+}
+
+fn agx_lang_end_mask() {
+    if g_agx_lang_mask_depth <= 0 { agx_lang_fail(); return; }
+    agx_e_mask_pop();
+    g_agx_lang_mask_depth = g_agx_lang_mask_depth - 1;
+    let frame: i32 = g_agx_lang_mask_depth;
+    if g_agx_lang_mask_bound[frame] >= 0 {
+        agx_lang_release(g_agx_lang_mask_bound[frame]);
+    }
+    if g_agx_lang_mask_release[frame] == 1 {
+        agx_lang_release(g_agx_lang_mask_value[frame]);
+    }
+}
+
+fn agx_lang_scalar_type_ok(type_off: i32) -> i32 {
+    if type_off == str_intern("i1") || type_off == str_intern("i32")
+        || type_off == str_intern("u32") { return 1; }
+    let fi: i32 = find_field_by_alias(type_off);
+    if fi >= 0 && g_fields[fi].field_kind == FIELD_KIND_PRIME
+        && g_fields[fi].elem_bits == 32 { return 1; }
+    return 0;
+}
+
+fn agx_lang_expr(e: i32) -> i32 {
+    if g_agx_lang_failed == 1 || e < 0 || e >= g_neir {
+        agx_lang_fail(); return 0 - 1;
+    }
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_CONST {
+        if agx_lang_scalar_type_ok(g_eir[e].type_off) == 0 {
+            agx_lang_fail(); return 0 - 1;
+        }
+        return agx_lang_imm(g_eir[e].ival);
+    }
+    if kind == EIR_LOCAL {
+        let slot: i32 = g_eir[e].a;
+        if slot < 0 || slot >= g_lw_nslots
+            || agx_lang_scalar_type_ok(g_eir[e].type_off) == 0
+            || g_agx_ra_slot_width[slot] != 1
+            || g_agx_ra_slot_reg[slot] < 0
+            || g_agx_ra_slot_reg[slot] > 15 {
+            agx_lang_fail(); return 0 - 1;
+        }
+        return agx_lang_copy(g_agx_ra_slot_reg[slot]);
+    }
+    if kind == EIR_CAST { agx_lang_fail(); return 0 - 1; }
+    if kind == EIR_INDEX { return agx_lang_load(e); }
+    if kind == EIR_SC {
+        let result: i32 = agx_lang_imm(0);
+        if result < 0 { return 0 - 1; }
+        if g_eir[e].op == OP_AND {
+            let left: i32 = agx_lang_expr(g_eir[e].a);
+            if left < 0 || agx_lang_begin_reg(left, 1, 1) == 0 {
+                if left >= 0 { agx_lang_release(left); }
+                agx_lang_release(result); return 0 - 1;
+            }
+            let right: i32 = agx_lang_expr(g_eir[e].b);
+            if right < 0 || agx_lang_begin_reg(right, 1, 1) == 0 {
+                if right >= 0 { agx_lang_release(right); }
+                agx_lang_end_mask(); agx_lang_release(result); return 0 - 1;
+            }
+            agx_e_mov_imm(result, 1);
+            agx_lang_end_mask(); agx_lang_end_mask();
+            return result;
+        }
+        if g_eir[e].op == OP_OR {
+            agx_e_mov_imm(result, 1);
+            let left2: i32 = agx_lang_expr(g_eir[e].a);
+            if left2 < 0 || agx_lang_begin_reg(left2, 0, 1) == 0 {
+                if left2 >= 0 { agx_lang_release(left2); }
+                agx_lang_release(result); return 0 - 1;
+            }
+            let right2: i32 = agx_lang_expr(g_eir[e].b);
+            if right2 < 0 || agx_lang_begin_reg(right2, 0, 1) == 0 {
+                if right2 >= 0 { agx_lang_release(right2); }
+                agx_lang_end_mask(); agx_lang_release(result); return 0 - 1;
+            }
+            agx_e_mov_imm(result, 0);
+            agx_lang_end_mask(); agx_lang_end_mask();
+            return result;
+        }
+        agx_lang_release(result); agx_lang_fail(); return 0 - 1;
+    }
+    if kind == EIR_UN && g_eir[e].op == OP_NOT {
+        let value: i32 = agx_lang_expr(g_eir[e].a);
+        let zero: i32 = agx_lang_imm(0);
+        let result2: i32 = agx_lang_take();
+        if value < 0 || zero < 0 || result2 < 0
+            || agx_e_cmpsel_bool(result2, value, zero, OP_EQ, 0) == 0 {
+            if value >= 0 { agx_lang_release(value); }
+            if zero >= 0 { agx_lang_release(zero); }
+            if result2 >= 0 { agx_lang_release(result2); }
+            agx_lang_fail(); return 0 - 1;
+        }
+        agx_lang_release(value); agx_lang_release(zero);
+        return result2;
+    }
+    if kind == EIR_BIN {
+        let op: i32 = g_eir[e].op;
+        if op >= OP_EQ && op <= OP_GE {
+            if agx_lang_scalar_type_ok(g_eir[e].aux_type) == 0 {
+                agx_lang_fail(); return 0 - 1;
+            }
+            let lhs: i32 = agx_lang_expr(g_eir[e].a);
+            let rhs: i32 = agx_lang_expr(g_eir[e].b);
+            let result3: i32 = agx_lang_take();
+            var signed_cmp: i32 = type_is_signed(g_eir[e].aux_type);
+            if find_field_by_alias(g_eir[e].aux_type) >= 0 { signed_cmp = 0; }
+            if lhs < 0 || rhs < 0 || result3 < 0
+                || agx_e_cmpsel_bool(
+                    result3, lhs, rhs, op, signed_cmp) == 0 {
+                if lhs >= 0 { agx_lang_release(lhs); }
+                if rhs >= 0 { agx_lang_release(rhs); }
+                if result3 >= 0 { agx_lang_release(result3); }
+                agx_lang_fail(); return 0 - 1;
+            }
+            agx_lang_release(lhs); agx_lang_release(rhs);
+            return result3;
+        }
+        if op == OP_ADD || op == OP_SUB {
+            if g_eir[e].aux_type != str_intern("i32")
+                && g_eir[e].aux_type != str_intern("u32") {
+                agx_lang_fail(); return 0 - 1;
+            }
+            let lhs2: i32 = agx_lang_expr(g_eir[e].a);
+            let rhs2: i32 = agx_lang_expr(g_eir[e].b);
+            let result4: i32 = agx_lang_take();
+            if lhs2 < 0 || rhs2 < 0 || result4 < 0 {
+                if lhs2 >= 0 { agx_lang_release(lhs2); }
+                if rhs2 >= 0 { agx_lang_release(rhs2); }
+                if result4 >= 0 { agx_lang_release(result4); }
+                return 0 - 1;
+            }
+            var machine_op: i32 = AGX_OP_ADD;
+            if op == OP_SUB { machine_op = AGX_OP_SUB; }
+            agx_e_alu_reg(result4, lhs2, rhs2, machine_op);
+            agx_lang_release(lhs2); agx_lang_release(rhs2);
+            return result4;
+        }
+    }
+    agx_lang_fail();
+    return 0 - 1;
+}
+
+fn agx_lang_begin_expr(e: i32, truth: i32) -> i32 {
+    let value: i32 = agx_lang_expr(e);
+    if value < 0 { return 0; }
+    let ok: i32 = agx_lang_begin_reg(value, truth, 1);
+    if ok == 0 { agx_lang_release(value); }
+    return ok;
+}
+
+fn agx_lang_stmt_has_exit(stmt: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_BRK || kind == EIR_CONT { return 1; }
+    if kind == EIR_FOR || kind == EIR_WHILE { return 0; }
+    if kind == EIR_IF {
+        if agx_lang_stmt_has_exit(g_eir[stmt].b, depth + 1) == 1 { return 1; }
+        if g_eir[stmt].c >= 0 {
+            return agx_lang_stmt_has_exit(g_eir[stmt].c, depth + 1);
+        }
+        return 0;
+    }
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            if agx_lang_stmt_has_exit(
+                g_evargs[g_eir[stmt].args_start + i], depth + 1) == 1 {
+                return 1;
+            }
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+fn agx_lang_stmt_has_store(stmt: i32, depth: i32) -> i32 {
+    if stmt < 0 || stmt >= g_neir || depth > 256 { return 1; }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_INDEX_ST { return 1; }
+    if kind == EIR_IF {
+        if agx_lang_stmt_has_store(g_eir[stmt].b, depth + 1) == 1 { return 1; }
+        if g_eir[stmt].c >= 0 {
+            return agx_lang_stmt_has_store(g_eir[stmt].c, depth + 1);
+        }
+        return 0;
+    }
+    if kind == EIR_FOR || kind == EIR_WHILE {
+        var body: i32 = g_eir[stmt].b;
+        if kind == EIR_FOR { body = g_evargs[g_eir[stmt].args_start]; }
+        return agx_lang_stmt_has_store(body, depth + 1);
+    }
+    if kind == EIR_BLOCK {
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs {
+            if agx_lang_stmt_has_store(
+                g_evargs[g_eir[stmt].args_start + i], depth + 1) == 1 {
+                return 1;
+            }
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+fn agx_lang_loop_body(body: i32) {
+    agx_lang_stmt(body);
+}
+
+fn agx_lang_for(stmt: i32) {
+    if g_eir[stmt].nargs != 1 || g_agx_lang_loop_depth >= 2 {
+        agx_lang_fail(); return;
+    }
+    let loe: i32 = agx_lang_strip_cast(g_eir[stmt].b);
+    let hie: i32 = agx_lang_strip_cast(g_eir[stmt].c);
+    if loe < 0 || hie < 0 || g_eir[loe].kind != EIR_CONST
+        || g_eir[hie].kind != EIR_CONST
+        || g_eir[hie].ival < g_eir[loe].ival { agx_lang_fail(); return; }
+    let trip: u64 = g_eir[hie].ival - g_eir[loe].ival;
+    var maximum: u64 = 16;
+    if g_agx_lang_loop_depth == 1 { maximum = 9; }
+    if trip > maximum { agx_lang_fail(); return; }
+    let iter_slot: i32 = g_eir[stmt].a;
+    if iter_slot < 0 || iter_slot >= g_lw_nslots
+        || g_agx_cfg_slot_types[iter_slot] != str_intern("i32")
+        || g_agx_ra_slot_reg[iter_slot] < 2
+        || g_agx_ra_slot_reg[iter_slot] > 15 { agx_lang_fail(); return; }
+    let iter_reg: i32 = g_agx_ra_slot_reg[iter_slot];
+    let body: i32 = g_evargs[g_eir[stmt].args_start];
+    let has_exit: i32 = agx_lang_stmt_has_exit(body, 0);
+    if has_exit == 1 && agx_lang_stmt_has_store(body, 0) == 1 {
+        agx_lang_fail(); return;
+    }
+    g_agx_lang_loop_depth = g_agx_lang_loop_depth + 1;
+    if has_exit == 0 {
+        var i: u64 = 0;
+        while i < trip && g_agx_lang_failed == 0 {
+            if agx_lang_write_imm(iter_reg, g_eir[loe].ival + i) == 0 {
+                agx_lang_fail();
+            } else {
+                agx_lang_stmt(body);
+            }
+            i = i + 1;
+        }
+        g_agx_lang_loop_depth = g_agx_lang_loop_depth - 1;
+        return;
+    }
+    let alive: i32 = agx_lang_imm(1);
+    let step: i32 = agx_lang_imm(0);
+    if alive < 0 || step < 0 {
+        if alive >= 0 { agx_lang_release(alive); }
+        if step >= 0 { agx_lang_release(step); }
+        g_agx_lang_loop_depth = g_agx_lang_loop_depth - 1;
+        return;
+    }
+    g_agx_lang_alive[g_agx_lang_loop_depth - 1] = alive;
+    g_agx_lang_step[g_agx_lang_loop_depth - 1] = step;
+    var j: u64 = 0;
+    while j < trip && g_agx_lang_failed == 0 {
+        if agx_lang_begin_reg(alive, 1, 0) == 0 { j = trip; continue; }
+        if agx_lang_write_imm(iter_reg, g_eir[loe].ival + j) == 0 {
+            agx_lang_fail();
+        } else {
+            agx_e_mov_imm(step, 1);
+            agx_lang_loop_body(body);
+        }
+        agx_lang_end_mask();
+        j = j + 1;
+    }
+    agx_lang_release(step); agx_lang_release(alive);
+    g_agx_lang_loop_depth = g_agx_lang_loop_depth - 1;
+}
+
+fn agx_lang_stmt(stmt: i32) {
+    if g_agx_lang_failed == 1 || stmt < 0 || stmt >= g_neir {
+        agx_lang_fail(); return;
+    }
+    let kind: i32 = g_eir[stmt].kind;
+    if kind == EIR_BLOCK {
+        var prior_exit: i32 = 0;
+        var i: i32 = 0;
+        while i < g_eir[stmt].nargs && g_agx_lang_failed == 0 {
+            let child: i32 = g_evargs[g_eir[stmt].args_start + i];
+            var guarded: i32 = 0;
+            if prior_exit == 1 && g_agx_lang_loop_depth > 0 {
+                let step: i32 = g_agx_lang_step[g_agx_lang_loop_depth - 1];
+                if agx_lang_begin_reg(step, 1, 0) == 0 { return; }
+                guarded = 1;
+            }
+            agx_lang_stmt(child);
+            if guarded == 1 { agx_lang_end_mask(); }
+            if agx_lang_stmt_has_exit(child, 0) == 1 { prior_exit = 1; }
+            i = i + 1;
+        }
+        return;
+    }
+    if kind == EIR_LET || kind == EIR_SET {
+        let slot: i32 = g_eir[stmt].a;
+        if slot < 0 || slot >= g_lw_nslots
+            || agx_lang_scalar_type_ok(g_agx_cfg_slot_types[slot]) == 0
+            || g_agx_ra_slot_width[slot] != 1
+            || g_agx_ra_slot_reg[slot] < 2
+            || g_agx_ra_slot_reg[slot] > 15 { agx_lang_fail(); return; }
+        // A casted load needs real conversion semantics; only the exact
+        // same-type EIR_INDEX shape may use the load-into fast path.
+        let rhs_base: i32 = g_eir[stmt].b;
+        if rhs_base >= 0 && rhs_base < g_neir
+            && g_eir[rhs_base].kind == EIR_INDEX {
+            if agx_lang_load_into(
+                rhs_base, g_agx_ra_slot_reg[slot]) == 0 { agx_lang_fail(); }
+            return;
+        }
+        let value: i32 = agx_lang_expr(g_eir[stmt].b);
+        if value < 0 { return; }
+        agx_e_alu_imm(g_agx_ra_slot_reg[slot], value, 0);
+        agx_lang_release(value);
+        return;
+    }
+    if kind == EIR_INDEX_ST {
+        let cap: i32 = agx_lang_capture_slot(g_eir[stmt].a);
+        if cap != g_agx_lang_shape.output_cap
+            || agx_lang_is_outer_index(g_eir[stmt].b) == 0 {
+            agx_lang_fail(); return;
+        }
+        let value2: i32 = agx_lang_expr(g_eir[stmt].c);
+        if value2 < 0 { return; }
+        agx_e_store(value2, 0, 0 - 1);
+        agx_lang_release(value2);
+        return;
+    }
+    if kind == EIR_EXPR {
+        let discard: i32 = agx_lang_expr(g_eir[stmt].a);
+        if discard >= 0 { agx_lang_release(discard); }
+        return;
+    }
+    if kind == EIR_IF {
+        if agx_lang_begin_expr(g_eir[stmt].a, 1) == 0 { return; }
+        agx_lang_stmt(g_eir[stmt].b);
+        if g_eir[stmt].c >= 0 {
+            agx_e_mask_else();
+            agx_lang_stmt(g_eir[stmt].c);
+        }
+        agx_lang_end_mask();
+        return;
+    }
+    if kind == EIR_FOR { agx_lang_for(stmt); return; }
+    if kind == EIR_BRK || kind == EIR_CONT {
+        if g_agx_lang_loop_depth <= 0 { agx_lang_fail(); return; }
+        let li: i32 = g_agx_lang_loop_depth - 1;
+        if kind == EIR_BRK { agx_e_mov_imm(g_agx_lang_alive[li], 0); }
+        agx_e_mov_imm(g_agx_lang_step[li], 0);
+        return;
+    }
+    agx_lang_fail();
+}
+
+fn agx_lang0_emit(root: i32, shape: *AgxWorkerShape,
+                  outer_iter_slot: i32, stats: *AgxRaStats) -> i32 {
+    if g_agx_lang_alive == null {
+        g_agx_lang_alive = alloc(2);
+        g_agx_lang_step = alloc(2);
+        g_agx_lang_mask_value = alloc(4);
+        g_agx_lang_mask_bound = alloc(4);
+        g_agx_lang_mask_release = alloc(4);
+    }
+    g_agx_lang_shape = shape;
+    g_agx_lang_failed = 0;
+    g_agx_lang_mask_depth = 0;
+    g_agx_lang_loads = 0;
+    g_agx_lang_outer_slot = outer_iter_slot;
+    g_agx_lang_loop_depth = 0;
+    g_agx_lang_fixed = 7;
+    g_agx_lang_temps = 0;
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        let reg: i32 = g_agx_ra_slot_reg[slot];
+        let width: i32 = g_agx_ra_slot_width[slot];
+        if reg >= 0 {
+            if width != 1 || reg > 15 { return 0; }
+            g_agx_lang_fixed = g_agx_lang_fixed | agx_lang_reg_bit(reg);
+        }
+        slot = slot + 1;
+    }
+    if outer_iter_slot < 0 || outer_iter_slot >= g_lw_nslots
+        || g_agx_ra_slot_reg[outer_iter_slot] != 1 { return 0; }
+    agx_code_reset();
+    agx_e_prologue(1);
+    agx_lang_stmt(root);
+    if g_agx_lang_failed == 0 { agx_e_stop(); }
+    if g_agx_lang_mask_depth != 0 || g_agx_lang_loop_depth != 0
+        || g_agx_lang_temps != 0 { return 0; }
+    stats.loads = g_agx_lang_loads;
+    stats.outcome = 1 - g_agx_lang_failed;
+    return stats.outcome;
+}
+
 fn agx_ra0_report(shape_kind: i32, stats: *AgxRaStats) {
     wr(2, "agx-ra0: shape="); wr_int(2, shape_kind as i64);
     wr(2, " blocks="); wr_int(2, g_agx_cfg_nblocks as i64);
@@ -26239,9 +27366,7 @@ fn agx_ra0_report(shape_kind: i32, stats: *AgxRaStats) {
     wr(2, "\n");
 }
 
-fn agx_ra0_run(shape: *AgxWorkerShape, loop_name: i32,
-               outer_iter_slot: i32) -> i32 {
-    let stats: *AgxRaStats = alloc(1);
+fn agx_ra_stats_reset(stats: *AgxRaStats) {
     stats.iterations = 0;
     stats.copies = 0;
     stats.repairs = 0;
@@ -26251,17 +27376,28 @@ fn agx_ra0_run(shape: *AgxWorkerShape, loop_name: i32,
     stats.vm_pairs = 0;
     stats.loads = 0;
     stats.outcome = 0;
+}
+
+fn agx_ra_prepare(outer_iter_slot: i32, stats: *AgxRaStats) -> i32 {
+    agx_ra_stats_reset(stats);
     agx_ra_reset();
     if agx_ra_build_use_def() == 0
         || agx_ra_liveness(stats) == 0
-        || agx_ra_build_interference() == 0 {
-        free(stats);
-        return 0;
-    }
+        || agx_ra_build_interference() == 0 { return 0; }
     if agx_ra_allocate_slots(outer_iter_slot, stats) == 0
-        || agx_ra_build_copies(stats) == 0 {
+        || agx_ra_build_copies(stats) == 0 { return 0; }
+    return 1;
+}
+
+fn agx_ra0_run(shape: *AgxWorkerShape, loop_name: i32,
+               outer_iter_slot: i32) -> i32 {
+    let stats: *AgxRaStats = alloc(1);
+    if agx_ra_prepare(outer_iter_slot, stats) == 0 { free(stats); return 0; }
+    if shape.kind == 5 {
+        stats.outcome = 1;
+        agx_ra0_report(shape.kind, stats);
         free(stats);
-        return 0;
+        return 1;
     }
     if shape.kind == 4 {
         if agx_ra_copy_cycle_selftest(stats) == 0
@@ -26355,7 +27491,17 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     if g_agx_cfg_nregions != 0 { agx_ir0_fail(); }
     agx_cfg_finalize();
     var ok: i32 = agx_cfg_validate(shape.kind);
-    if ok == 1 && g_agx_ra0_shadow == 1 {
+    if ok == 1 && shape.kind == 5 {
+        let stats: *AgxRaStats = alloc(1);
+        g_agx_ra_reserve_r2 = 1;
+        ok = agx_ra_prepare(outer_iter_slot, stats);
+        g_agx_ra_reserve_r2 = 0;
+        if ok == 1 { ok = agx_lang0_emit(root, shape, outer_iter_slot, stats); }
+        if ok == 1 && g_agx_ra0_shadow == 1 {
+            agx_ra0_report(shape.kind, stats);
+        }
+        free(stats);
+    } else if ok == 1 && g_agx_ra0_shadow == 1 {
         ok = agx_ra0_run(shape, loop_name, outer_iter_slot);
     }
 

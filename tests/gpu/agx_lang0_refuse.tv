@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// A runtime-bound private while remains outside bounded LANG0 emission.
+
+field AgxLang0RefuseF = Field<2013265921>;
+
+fn main() -> i32 {
+    let input: *AgxLang0RefuseF = alloc(64);
+    let output: *AgxLang0RefuseF = alloc(64);
+    for j in 0..64 {
+        var k: i32 = 0;
+        while k < 2 { k = k + 1; }
+        output[j] = input[j];
+    }
+    free(output); free(input);
+    return 0;
+}

@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: Apache-2.0
+// Shared LANG0 kernels: structured scalar control over flat field buffers.
+
+field AgxLang0F = Field<2013265921>;
+
+fn agx_lang0_init(left: *AgxLang0F, right: *AgxLang0F,
+                  n: i32) -> i32 {
+    let prime: u64 = 2013265921;
+    var state: u64 = 0x6a09e667f3bcc909;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxLang0F;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxLang0F;
+        i = i + 1;
+    }
+    left[0] = 0; right[0] = 0;
+    left[1] = 3; right[1] = 5;
+    left[2] = 7; right[2] = 11;
+    left[3] = 19; right[3] = 2;
+    return 0;
+}
+
+fn agx_lang0_run(left: *AgxLang0F, right: *AgxLang0F,
+                  branch_out: *AgxLang0F, loop_out: *AgxLang0F,
+                  nested_out: *AgxLang0F, exit_out: *AgxLang0F) -> i32 {
+    for j in 0..768 {
+        let a: AgxLang0F = left[j];
+        let b: AgxLang0F = right[j];
+        var chosen: AgxLang0F = a;
+        if (a < b && a != 7) || b == 11 {
+            chosen = b;
+        } else {
+            chosen = a;
+        }
+        branch_out[j] = chosen;
+    }
+
+    for j in 0..768 {
+        let a: AgxLang0F = left[j];
+        let b: AgxLang0F = right[j];
+        var score: i32 = 0;
+        for k in 0..4 {
+            if k == 1 { continue; }
+            score = score + 1;
+            if k == 3 { break; }
+            score = score + 2;
+        }
+        var chosen: AgxLang0F = a;
+        if score == 7 { chosen = b; }
+        loop_out[j] = chosen;
+    }
+
+    for j in 0..768 {
+        let a: AgxLang0F = left[j];
+        let b: AgxLang0F = right[j];
+        var score: i32 = 0;
+        for k in 0..3 {
+            for m in 0..3 {
+                if m == 1 && a < b { continue; }
+                if m == 2 && b < a { break; }
+                score = score + 1;
+            }
+        }
+        var chosen: AgxLang0F = a;
+        if score < 7 { chosen = b; }
+        nested_out[j] = chosen;
+    }
+
+    for j in 0..768 {
+        let a: AgxLang0F = left[j];
+        let b: AgxLang0F = right[j];
+        var score: i32 = 0;
+        for k in 0..4 {
+            if k == 1 {
+                if a < b { continue; }
+                score = score + 8;
+            }
+            score = score + 1;
+        }
+        var chosen: AgxLang0F = a;
+        if score < 8 { chosen = b; }
+        exit_out[j] = chosen;
+    }
+    return 0;
+}

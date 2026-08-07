@@ -41,6 +41,12 @@ find_llc() {
 find_llc
 # The objdump that ships beside llc (for the disasm sanity check).
 OBJDUMP="$(dirname "$LLC")/llvm-objdump"
+HOST_MTRIPLE=""
+HOST_LINK_PIE=""
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64)  HOST_MTRIPLE="-mtriple=x86_64-linux-gnu";  HOST_LINK_PIE="-no-pie" ;;
+    Linux-aarch64) HOST_MTRIPLE="-mtriple=aarch64-linux-gnu"; HOST_LINK_PIE="-no-pie" ;;
+esac
 
 echo "=== GPU target and AGX runtime gate (tests/gpu) ==="
 
@@ -111,6 +117,17 @@ AGX_DOT_LOOP_EXE="$TMP/agx-rns-dot-loop"
 AGX_DOT_REFUSE_DEV="$TMP/agx_rns_dot_refuse.agx.hex"
 AGX_DOT_REFUSE_LL="$TMP/agx_rns_dot_refuse.ll"
 AGX_DOT_REFUSE_REPORT="$TMP/agx_rns_dot_refuse.report"
+AGX_LANG0_DEV="$TMP/agx_lang0.agx.hex"
+AGX_LANG0_LL="$TMP/agx_lang0.ll"
+AGX_LANG0_OBJ="$TMP/agx_lang0.o"
+AGX_LANG0_EXE="$TMP/agx-lang0"
+AGX_LANG0_EVAL_LL="$TMP/agx_lang0_eval.ll"
+AGX_LANG0_EVAL_OBJ="$TMP/agx_lang0_eval.o"
+AGX_LANG0_EVAL_EXE="$TMP/agx-lang0-eval"
+AGX_LANG0_REFUSE="$TMP/agx_lang0_refuse.agx.hex"
+AGX_LANG0_DEVICE_REFUSE="$TMP/agx_lang0_device_refuse.agx.hex"
+AGX_LANG0_SHADOW_REFUSE="$TMP/agx_lang0_shadow_refuse.agx.hex"
+AGX_LANG0_SHADOW_LL="$TMP/agx_lang0_shadow_refuse.ll"
 
 if ! "$STAGE1" --emit-gpu-agx "$EXHIBIT" -o "$AGX_DEV" 2>/dev/null; then
     echo "  FAIL: --emit-gpu-agx did not produce the Mersenne artifact"; fail=1
@@ -425,6 +442,100 @@ else
     if [ "$RA0_READY" = "1" ]; then
         echo "  ok   AGX RA0 liveness, copies, pairs, loads, and pressure refusal are pinned"
     fi
+
+    # LANG0 is the first authoritative IR0/RA0 path. Its closed AGX-only proof
+    # admits structured scalar control without changing ordinary pfor decisions.
+    LANG0_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang0_dispatch.tv" \
+            -o "$AGX_LANG0_DEV" 2>/dev/null \
+       || ! python3 "$SCRIPT_DIR/agx_lang0_probe.py" \
+            --check-artifact "$AGX_LANG0_DEV" \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_lang0_dispatch.tv" \
+            -o "$TMP/agx_lang0_ra.hex" 2>"$TMP/agx_lang0_ra.report" \
+       || ! cmp -s "$AGX_LANG0_DEV" "$TMP/agx_lang0_ra.hex" \
+       || [ "$(grep -c '^agx-ra0: shape=5 ' "$TMP/agx_lang0_ra.report" || true)" -ne 4 ] \
+       || ! grep -qF 'agx-ra0: shape=5 blocks=4 iterations=2 copies=2 repairs=0 slot-regs=4 live-regs=3 vm-regs=0 pairs=0 loads=2 outcome=1' "$TMP/agx_lang0_ra.report" \
+       || ! grep -qF 'agx-ra0: shape=5 blocks=11 iterations=4 copies=6 repairs=2 slot-regs=6 live-regs=5 vm-regs=0 pairs=0 loads=2 outcome=1' "$TMP/agx_lang0_ra.report" \
+       || ! grep -qF 'agx-ra0: shape=5 blocks=15 iterations=6 copies=10 repairs=4 slot-regs=7 live-regs=6 vm-regs=0 pairs=0 loads=2 outcome=1' "$TMP/agx_lang0_ra.report" \
+       || ! grep -qF 'agx-ra0: shape=5 blocks=11 iterations=5 copies=8 repairs=2 slot-regs=6 live-regs=5 vm-regs=0 pairs=0 loads=2 outcome=1' "$TMP/agx_lang0_ra.report"; then
+        echo "  FAIL: AGX LANG0 artifact, allocation report, or byte stability changed"; fail=1
+        LANG0_READY=0
+    fi
+    if ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang0_dispatch.tv" \
+            -o "$AGX_LANG0_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_LANG0_LL" || true)" -ne 4 ] \
+       || [ "$(grep -c '^define internal void @__pfor_worker_' "$AGX_LANG0_LL" || true)" -ne 4 ] \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG0_LL" -o "$AGX_LANG0_OBJ" 2>/dev/null \
+       || ! "$STAGE1" --eval "$SCRIPT_DIR/agx_lang0_eval.tv" \
+            >"$TMP/agx_lang0.eval.bin" 2>/dev/null \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_lang0_eval.tv" \
+            -o "$AGX_LANG0_EVAL_LL" 2>/dev/null \
+       || grep -q '^define internal void @__pfor_worker_' "$AGX_LANG0_EVAL_LL" \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG0_EVAL_LL" \
+            -o "$AGX_LANG0_EVAL_OBJ" 2>/dev/null \
+       || ! cc $HOST_LINK_PIE "$AGX_LANG0_EVAL_OBJ" \
+            -o "$AGX_LANG0_EVAL_EXE" 2>/dev/null \
+       || ! "$AGX_LANG0_EVAL_EXE" >"$TMP/agx_lang0.compiled.bin" \
+       || ! cmp -s "$TMP/agx_lang0.eval.bin" "$TMP/agx_lang0.compiled.bin" \
+       || ! python3 "$SCRIPT_DIR/agx_lang0_probe.py" \
+            --check-output "$TMP/agx_lang0.eval.bin"; then
+        echo "  FAIL: AGX LANG0 eval/compiled/CPU-pfor substrate changed"; fail=1
+        LANG0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang0_refuse.tv" \
+            -o "$AGX_LANG0_REFUSE" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$AGX_LANG0_REFUSE" \
+       || ! grep -q '^skip __pfor_gpu_worker_0 reason=unsupported-agx0-worker$' \
+            "$AGX_LANG0_REFUSE"; then
+        echo "  FAIL: AGX LANG0 dynamic-loop refusal changed"; fail=1
+        LANG0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang0_device_refuse.tv" \
+            -o "$AGX_LANG0_DEVICE_REFUSE" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$AGX_LANG0_DEVICE_REFUSE" \
+       || [ "$(grep -c '^skip __pfor_gpu_worker_.* reason=unsupported-agx0-worker$' \
+                    "$AGX_LANG0_DEVICE_REFUSE" || true)" -ne 5 ]; then
+        echo "  FAIL: AGX LANG0 iterator/cast/width/store refusals changed"; fail=1
+        LANG0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_lang0_shadow_refuse.tv" \
+            -o "$AGX_LANG0_SHADOW_REFUSE" 2>/dev/null \
+       || grep -q '^worker __pfor_gpu_worker_' "$AGX_LANG0_SHADOW_REFUSE" \
+       || grep -q '^skip __pfor_gpu_worker_' "$AGX_LANG0_SHADOW_REFUSE" \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_lang0_shadow_refuse.tv" \
+            -o "$AGX_LANG0_SHADOW_LL" 2>/dev/null \
+       || grep -q 'call i32 @agx_try_parallel_for' "$AGX_LANG0_SHADOW_LL" \
+       || grep -q '^define internal void @__pfor_worker_' "$AGX_LANG0_SHADOW_LL"; then
+        echo "  FAIL: AGX LANG0 shadowed iterator entered the pfor proof"; fail=1
+        LANG0_READY=0
+    fi
+    if [ "$LANG0_READY" = "1" ]; then
+        echo "  ok   AGX LANG0 structured scalar artifact and eval oracle are pinned"
+    fi
+    LANG0_HOST_READY=0
+    if [ "$LANG0_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
+       && [ "$(uname -m)" = "arm64" ]; then
+        if ! cc "$AGX_LANG0_OBJ" -framework IOKit \
+                -o "$AGX_LANG0_EXE" 2>/dev/null; then
+            echo "  FAIL: AGX LANG0 CPU-fallback differential did not link"; fail=1
+            LANG0_READY=0
+        else
+            (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+             TRAVELER_THREADS=4 "$AGX_LANG0_EXE" >"$TMP/agx_lang0.cpu.bin")
+            lang0_cpu_status=$?
+            if [ "$lang0_cpu_status" -ne 0 ] \
+               || ! cmp -s "$TMP/agx_lang0.eval.bin" "$TMP/agx_lang0.cpu.bin" \
+               || ! python3 "$SCRIPT_DIR/agx_lang0_probe.py" \
+                    --check-output "$TMP/agx_lang0.cpu.bin"; then
+                echo "  FAIL: AGX LANG0 serial/CPU-pfor differential changed"; fail=1
+                LANG0_READY=0
+            else
+                LANG0_HOST_READY=1
+                echo "  ok   AGX LANG0 serial and four-thread CPU pfor are byte-exact"
+            fi
+        fi
+    fi
     if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
         echo "  FAIL: AGX control specimens failed their portable structure gate"
         fail=1
@@ -498,6 +609,40 @@ else
             echo "  ok   G16X fixed-shape counted Montgomery dots exact"
         else
             echo "  FAIL: G16X counted Montgomery dot mismatch"; fail=1
+        fi
+        if [ "$LANG0_READY" = "1" ]; then
+            lang0fail=0
+            if [ "$LANG0_HOST_READY" != "1" ]; then
+                echo "  FAIL: AGX LANG0 runtime differential is not host-ready"
+                lang0fail=1
+            elif ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                    "$AGX_HARNESS" >/dev/null; then
+                echo "  FAIL: AGX LANG0 pre-canary failed"
+                lang0fail=1
+            else
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_LANG0_DEV" \
+                    "$AGX_LANG0_EXE" >"$TMP/agx_lang0.gpu.bin"
+                lang0_gpu_status=$?
+                if [ "$lang0_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_lang0.gpu.bin" | tr -d ' ')" -ne 12288 ] \
+                   || ! cmp -s "$TMP/agx_lang0.cpu.bin" \
+                        "$TMP/agx_lang0.gpu.bin" \
+                   || ! cmp -s "$TMP/agx_lang0.eval.bin" \
+                        "$TMP/agx_lang0.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_lang0_probe.py" \
+                        --check-output "$TMP/agx_lang0.gpu.bin" \
+                   || ! python3 "$SCRIPT_DIR/agx_control_probe.py" \
+                        "$AGX_HARNESS" >/dev/null; then
+                    echo "  FAIL: AGX LANG0 eval/CPU/G16X differential or canary failed"
+                    lang0fail=1
+                fi
+            fi
+            if [ "$lang0fail" = "0" ]; then
+                echo "  ok   AGX LANG0 eval, CPU pfor, G16X, and independent oracle are byte-exact"
+            else
+                fail=1
+            fi
         fi
         if [ "$AGX3_READY" = "1" ]; then
             agx3fail=0

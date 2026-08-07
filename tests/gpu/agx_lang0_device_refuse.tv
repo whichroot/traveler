@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0
+// LANG0 fails closed on semantics not represented by its G16X instruction set.
+
+field AgxLang0DeviceF = Field<2013265921>;
+
+fn main() -> i32 {
+    let input: *AgxLang0DeviceF = alloc(64);
+    let output: *AgxLang0DeviceF = alloc(64);
+
+    for j in 0..64 {
+        let a: AgxLang0DeviceF = input[j];
+        var score: i32 = 0;
+        for k in 0..2 {
+            k = k + 1;
+            if k == 1 { score = score + 1; }
+        }
+        if score == 0 { score = score + 1; }
+        output[j] = a;
+    }
+
+    for j in 0..64 {
+        let a: AgxLang0DeviceF = input[j];
+        let score: i32 = (a == 0) as i32;
+        var chosen: AgxLang0DeviceF = a;
+        if score == 0 { chosen = a; }
+        output[j] = chosen;
+    }
+
+    for j in 0..64 {
+        let a: AgxLang0DeviceF = input[j];
+        var score: u8 = 255;
+        if a == 0 { score = score + 1; }
+        var chosen: AgxLang0DeviceF = a;
+        if score == 0 { chosen = a; }
+        output[j] = chosen;
+    }
+
+    for j in 0..64 {
+        let a: AgxLang0DeviceF = input[j];
+        if a == 0 { output[j] = a; }
+    }
+
+    for j in 0..64 {
+        let a: AgxLang0DeviceF = input[j];
+        var flag = false;
+        flag = input[j];
+        var chosen: AgxLang0DeviceF = a;
+        if flag { chosen = a; }
+        output[j] = chosen;
+    }
+
+    free(output); free(input);
+    return 0;
+}
