@@ -1406,6 +1406,22 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     fi
 fi
 
+# --- Typed-pointer dialect gate (-target tpc, TP-1/TP-2) ---
+# Rewrites emitted opaque IR to LLVM-12-era typed-pointer IR. Asserts the
+# confinement corpus parses at an LLVM-14-era assembler with no -opaque-pointers
+# flag, that typed-lowered output is byte-identical to opaque, and that the
+# mode refusals fire. Skips cleanly without an LLVM-14 toolchain. tvc_self-only.
+if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
+    echo ""
+    echo "=== typed-pointer dialect (tests/typedptr/run.sh) ==="
+    if "$SCRIPT_DIR/typedptr/run.sh"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES typedptr"
+    fi
+fi
+
 # --- --emit driver gate (the one-shot compile: source -> native in one call) ---
 # `tvc x.tv -o x --emit exe` drives llc (+ cc) itself. The default --emit ir path
 # is byte-unchanged (g_emit_mode==0 never touches the driver), so the fixed point

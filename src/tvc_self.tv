@@ -1664,6 +1664,9 @@ var g_gpu_target: i32 = 0;
 // --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
 // (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
 var g_emit_mode: i32 = 0;
+// -target tpc (TP-1): emit opaque IR as always, then rewrite it in place to
+// LLVM-12-era typed-pointer IR (the tp_rewrite post-pass). 0 = opaque (default).
+var g_ptr_typed: i32 = 0;
 // --alloc-debug (memory model M5): opt-in redzones. Every alloc/realloc gets a
 // 16B header (magic + payload size) and a 16B trailer canary; free/realloc
 // verify and abort loudly naming the operation. Flag OFF -> byte-identical
@@ -25162,6 +25165,989 @@ fn drv_cat(dst: *u8, pos: i32, s: *u8) -> i32 {
 }
 
 // "<base><suffix>" into a fresh buffer (for the derived .ll / .o intermediates).
+// ===== TYPED-POINTER DIALECT REWRITE (-target tpc, TP-1) =====
+// Post-pass over FINISHED opaque IR -> LLVM-12-era typed-pointer IR; nothing
+// reads the result back, so the internal type universe stays opaque and the
+// default path is byte-untouched. design: @internal-note: plan-typed-pointer-emission
+var g_tp_arena: *u8 = null;
+var g_tp_alen: i32 = 0;
+var g_tp_acap: i32 = 0;
+var g_tp_src: *u8 = null;
+var g_tp_srclen: i32 = 0;
+var g_tp_out: *u8 = null;
+var g_tp_olen: i32 = 0;
+var g_tp_ocap: i32 = 0;
+var g_tp_pk: *i32 = null;   // persistent table (S/F/G keys): arena offsets, -1 empty
+var g_tp_pv: *i32 = null;
+var g_tp_psize: i32 = 0;
+var g_tp_pcount: i32 = 0;
+var g_tp_vk: *i32 = null;   // per-function value table
+var g_tp_vv: *i32 = null;
+var g_tp_vsize: i32 = 0;
+var g_tp_vcount: i32 = 0;
+var g_tp_castn: i32 = 0;
+var g_tp_ln: *u8 = null;
+
+fn tp_die(line: *u8) {
+    wr(2, "error: -target tpc: unhandled ptr pattern:\n");
+    wr(2, line);
+    wr(2, "\n");
+    exit(1);
+}
+
+// 1 when c can NOT border a "ptr" type token (so the token is real).
+fn tp_bnd(c: i32) -> i32 {
+    if c >= 48 && c <= 57 { return 0; }
+    if c >= 65 && c <= 90 { return 0; }
+    if c >= 97 && c <= 122 { return 0; }
+    if c == 95 || c == 37 || c == 64 || c == 46 { return 0; }  // _ % @ .
+    return 1;
+}
+
+fn tp_aput(s: *u8, n: i32) -> i32 {
+    if g_tp_alen + n + 1 > g_tp_acap {
+        while g_tp_alen + n + 1 > g_tp_acap { g_tp_acap = g_tp_acap * 2; }
+        g_tp_arena = realloc(g_tp_arena, g_tp_acap);
+    }
+    let r: i32 = g_tp_alen;
+    var i: i32 = 0;
+    while i < n { g_tp_arena[r + i] = s[i]; i = i + 1; }
+    g_tp_arena[r + n] = 0;
+    g_tp_alen = r + n + 1;
+    return r;
+}
+
+fn tp_astr(s: *u8) -> i32 { return tp_aput(s, str_len(s)); }
+fn tp_aref(off: i32) -> *u8 { return &g_tp_arena[off]; }
+
+fn tp_map_get(pers: i32, key: *u8) -> i32 {
+    var tab: *i32 = g_tp_vk;
+    var val: *i32 = g_tp_vv;
+    var size: i32 = g_tp_vsize;
+    if pers == 1 { tab = g_tp_pk; val = g_tp_pv; size = g_tp_psize; }
+    var idx: i32 = str_hash(key) & (size - 1);
+    while tab[idx] >= 0 {
+        if str_eq(tp_aref(tab[idx]), key) == 1 { return val[idx]; }
+        idx = (idx + 1) & (size - 1);
+    }
+    return 0 - 1;
+}
+
+fn tp_map_grow(pers: i32) {
+    var ok: *i32 = g_tp_vk;
+    var ov: *i32 = g_tp_vv;
+    var osize: i32 = g_tp_vsize;
+    if pers == 1 { ok = g_tp_pk; ov = g_tp_pv; osize = g_tp_psize; }
+    let nsize: i32 = osize * 2;
+    let nk: *i32 = alloc(nsize * 4) as *i32;
+    let nv: *i32 = alloc(nsize * 4) as *i32;
+    var i: i32 = 0;
+    while i < nsize { nk[i] = 0 - 1; nv[i] = 0 - 1; i = i + 1; }
+    i = 0;
+    while i < osize {
+        if ok[i] >= 0 {
+            let k: *u8 = tp_aref(ok[i]);
+            var idx: i32 = str_hash(k) & (nsize - 1);
+            while nk[idx] >= 0 { idx = (idx + 1) & (nsize - 1); }
+            nk[idx] = ok[i];
+            nv[idx] = ov[i];
+        }
+        i = i + 1;
+    }
+    free(ok as *u8);
+    free(ov as *u8);
+    if pers == 1 { g_tp_pk = nk; g_tp_pv = nv; g_tp_psize = nsize; }
+    else { g_tp_vk = nk; g_tp_vv = nv; g_tp_vsize = nsize; }
+}
+
+fn tp_map_put(pers: i32, key: *u8, val: *u8) {
+    var cnt: i32 = g_tp_vcount;
+    var size: i32 = g_tp_vsize;
+    if pers == 1 { cnt = g_tp_pcount; size = g_tp_psize; }
+    if (cnt + 1) * 10 >= size * 7 { tp_map_grow(pers); size = size * 2; }
+    var tab: *i32 = g_tp_vk;
+    var val_t: *i32 = g_tp_vv;
+    if pers == 1 { tab = g_tp_pk; val_t = g_tp_pv; }
+    var idx: i32 = str_hash(key) & (size - 1);
+    while tab[idx] >= 0 {
+        if str_eq(tp_aref(tab[idx]), key) == 1 {
+            val_t[idx] = tp_astr(val);
+            return;
+        }
+        idx = (idx + 1) & (size - 1);
+    }
+    tab[idx] = tp_astr(key);
+    val_t[idx] = tp_astr(val);
+    if pers == 1 { g_tp_pcount = g_tp_pcount + 1; }
+    else { g_tp_vcount = g_tp_vcount + 1; }
+}
+
+fn tp_vclear() {
+    var i: i32 = 0;
+    while i < g_tp_vsize { g_tp_vk[i] = 0 - 1; g_tp_vv[i] = 0 - 1; i = i + 1; }
+    g_tp_vcount = 0;
+}
+
+fn tp_on(s: *u8, n: i32) {
+    if g_tp_olen + n > g_tp_ocap {
+        while g_tp_olen + n > g_tp_ocap { g_tp_ocap = g_tp_ocap * 2; }
+        g_tp_out = realloc(g_tp_out, g_tp_ocap);
+    }
+    var i: i32 = 0;
+    while i < n { g_tp_out[g_tp_olen + i] = s[i]; i = i + 1; }
+    g_tp_olen = g_tp_olen + n;
+}
+
+fn tp_out(s: *u8) { tp_on(s, str_len(s)); }
+
+// Rewrite standalone "ptr" tokens to "i8*" (bounded both sides). Arena result.
+fn tp_tya(src: *u8) -> *u8 {
+    var buf: [u8; 4096] = 0;
+    var d: i32 = 0;
+    var i: i32 = 0;
+    while src[i] != 0 {
+        if src[i] == 112 && src[i + 1] == 116 && src[i + 2] == 114 {
+            var bok: i32 = 0;
+            if i == 0 { bok = 1; } else { bok = tp_bnd(src[i - 1]); }
+            var aok: i32 = 0;
+            if src[i + 3] == 0 { aok = 1; } else { aok = tp_bnd(src[i + 3]); }
+            if bok == 1 && aok == 1 {
+                buf[d] = 105; buf[d + 1] = 56; buf[d + 2] = 42;  // i8*
+                d = d + 3;
+                i = i + 3;
+            } else { buf[d] = src[i]; d = d + 1; i = i + 1; }
+        } else { buf[d] = src[i]; d = d + 1; i = i + 1; }
+    }
+    buf[d] = 0;
+    return tp_aref(tp_aput(&buf[0], d));
+}
+
+fn tp_cat(a: *u8, b: *u8) -> *u8 {
+    var buf: [u8; 4096] = 0;
+    let la: i32 = str_len(a);
+    let lb: i32 = str_len(b);
+    var i: i32 = 0;
+    while i < la { buf[i] = a[i]; i = i + 1; }
+    i = 0;
+    while i < lb { buf[la + i] = b[i]; i = i + 1; }
+    buf[la + lb] = 0;
+    return tp_aref(tp_aput(&buf[0], la + lb));
+}
+
+// Emit a bitcast pre-line and return the fresh register holding it.
+fn tp_precast(from_ty: *u8, operand: *u8, to_ty: *u8) -> *u8 {
+    var nb: [u8; 32] = 0;
+    nb[0] = 37; nb[1] = 95; nb[2] = 95; nb[3] = 116; nb[4] = 112;  // %__tp
+    let dl: i32 = fmt_i64(&nb[5], g_tp_castn as i64);
+    nb[5 + dl] = 0;
+    g_tp_castn = g_tp_castn + 1;
+    let fresh: *u8 = tp_aref(tp_astr(&nb[0]));
+    tp_out("  ");
+    tp_out(fresh);
+    tp_out(" = bitcast ");
+    tp_out(from_ty);
+    tp_out(" ");
+    tp_out(operand);
+    tp_out(" to ");
+    tp_out(to_ty);
+    tp_out("\n");
+    return fresh;
+}
+
+// Render a %value at demanded pointer type; bitcast pre-line on mismatch.
+fn tp_use(name: *u8, demand: *u8) -> *u8 {
+    var a: *u8 = "i8*";
+    let off: i32 = tp_map_get(0, name);
+    if off >= 0 { a = tp_aref(off); }
+    if str_eq(a, demand) == 1 { return name; }
+    return tp_precast(a, name, demand);
+}
+
+// Render an @global or @fn at demanded pointer type; bitcast on mismatch.
+fn tp_use_at(name: *u8, demand: *u8) -> *u8 {
+    var a: *u8 = null;
+    let goff: i32 = tp_map_get(1, tp_cat("G", name));
+    if goff >= 0 {
+        a = tp_aref(goff);
+    } else {
+        let foff: i32 = tp_map_get(1, tp_cat("F", name));
+        if foff >= 0 { a = tp_cat(tp_aref(foff), "*"); }
+    }
+    if a == null { tp_die(name); }
+    if str_eq(a, demand) == 1 { return name; }
+    return tp_precast(a, name, demand);
+}
+
+// Resolve a pointer operand spelling (register / global / fn-addr / null).
+// Returns the spelling; any needed bitcast pre-line is emitted as a side
+// effect, so call BEFORE emitting any part of the rewritten line.
+fn tp_opnd(tok: *u8, demand: *u8) -> *u8 {
+    if str_eq(tok, "null") == 1 { return "null"; }
+    if tok[0] == 37 { return tp_use(tok, demand); }
+    if tok[0] == 64 { return tp_use_at(tok, demand); }
+    tp_die(tok);
+    return tok;
+}
+
+fn tp_starts(s: *u8, pre: *u8) -> i32 {
+    var i: i32 = 0;
+    while pre[i] != 0 {
+        if s[i] != pre[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// First index of sub in s at/after from, or -1.
+fn tp_find(s: *u8, sub: *u8, from: i32) -> i32 {
+    let sl: i32 = str_len(s);
+    let nl: i32 = str_len(sub);
+    var i: i32 = from;
+    while i + nl <= sl {
+        var j: i32 = 0;
+        while j < nl && s[i + j] == sub[j] { j = j + 1; }
+        if j == nl { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn tp_rfind(s: *u8, sub: *u8) -> i32 {
+    let nl: i32 = str_len(sub);
+    var r: i32 = 0 - 1;
+    var i: i32 = 0;
+    while i >= 0 {
+        let f: i32 = tp_find(s, sub, i);
+        if f < 0 { return r; }
+        r = f;
+        i = f + 1;
+    }
+    return r;
+}
+
+// Copy s[a..b) into an arena string.
+fn tp_slice(s: *u8, a: i32, b: i32) -> *u8 {
+    var buf: [u8; 4096] = 0;
+    var i: i32 = a;
+    while i < b { buf[i - a] = s[i]; i = i + 1; }
+    buf[b - a] = 0;
+    return tp_aref(tp_aput(&buf[0], b - a));
+}
+
+// Register a fn signature from a declare/define line: F@name -> "ret (params)".
+fn tp_reg_fn(line: *u8) {
+    let at: i32 = tp_find(line, " @", 0);
+    if at < 0 { tp_die(line); }
+    let po: i32 = tp_find(line, "(", at);
+    if po < 0 { tp_die(line); }
+    let name: *u8 = tp_slice(line, at + 1, po);
+    // ret = last token before " @"
+    var re: i32 = at - 1;
+    while line[re] == 32 { re = re - 1; }
+    var rs: i32 = re;
+    while rs >= 0 && line[rs] != 32 { rs = rs - 1; }
+    let ret: *u8 = tp_tya(tp_slice(line, rs + 1, re + 1));
+    // params: between parens (no nested parens in Traveler signatures)
+    let pc: i32 = tp_find(line, ")", po);
+    var sig: *u8 = tp_cat(ret, " (");
+    var i: i32 = po + 1;
+    var first: i32 = 1;
+    while i < pc {
+        var ps: i32 = i;
+        while ps < pc && line[ps] == 32 { ps = ps + 1; }
+        var pe: i32 = ps;
+        while pe < pc && line[pe] != 44 { pe = pe + 1; }  // ','
+        var e2: i32 = pe;
+        while e2 > ps && line[e2 - 1] == 32 { e2 = e2 - 1; }
+        if e2 > ps {
+            var pty: *u8 = tp_slice(line, ps, e2);
+            // define form "T %name": keep only T
+            let sp: i32 = tp_rfind(pty, " ");
+            if sp >= 0 && pty[sp + 1] == 37 { pty = tp_slice(pty, 0, sp); }
+            if first == 0 { sig = tp_cat(sig, ", "); }
+            sig = tp_cat(sig, tp_tya(pty));
+            first = 0;
+        }
+        i = pe + 1;
+    }
+    sig = tp_cat(sig, ")");
+    tp_map_put(1, tp_cat("F", name), sig);
+}
+
+// Pass A: persistent tables only (struct members, global addr types, fn sigs).
+fn tp_a_line(line: *u8) {
+    if line[0] == 59 || line[0] == 0 { return; }  // ; comment / empty
+    if line[0] == 37 && str_contains(line, " = type {") == 1 {
+        // %Name = type { m0, m1, ... } -> S%Name = "m0',m1',..."
+        let ne: i32 = tp_find(line, " ", 0);
+        let name: *u8 = tp_slice(line, 0, ne);
+        let bo: i32 = tp_find(line, "{", 0);
+        let bc: i32 = tp_rfind(line, "}");
+        var mems: *u8 = "";
+        var i: i32 = bo + 1;
+        var first: i32 = 1;
+        while i < bc {
+            var ps: i32 = i;
+            while ps < bc && (line[ps] == 32) { ps = ps + 1; }
+            var pe: i32 = ps;
+            while pe < bc && line[pe] != 44 { pe = pe + 1; }
+            var e2: i32 = pe;
+            while e2 > ps && line[e2 - 1] == 32 { e2 = e2 - 1; }
+            if e2 > ps {
+                if first == 0 { mems = tp_cat(mems, ","); }
+                mems = tp_cat(mems, tp_tya(tp_slice(line, ps, e2)));
+                first = 0;
+            }
+            i = pe + 1;
+        }
+        tp_map_put(1, tp_cat("S", name), mems);
+        return;
+    }
+    if line[0] == 64 {
+        // @name = [private|internal] [global|constant] T init
+        var gk: i32 = tp_find(line, " global ", 0);
+        if gk < 0 { gk = tp_find(line, " constant ", 0); }
+        if gk >= 0 {
+            let ne: i32 = tp_find(line, " ", 0);
+            let name: *u8 = tp_slice(line, 0, ne);
+            var ts: i32 = tp_find(line, "global ", gk);
+            let cc: i32 = tp_find(line, "constant ", gk);
+            if cc >= 0 && (ts < 0 || cc < ts) { ts = cc; }
+            ts = tp_find(line, " ", ts) + 1;
+            // type token: bracket-aware
+            var te: i32 = ts;
+            if line[ts] == 91 {  // '['
+                var depth: i32 = 0;
+                while line[te] != 0 {
+                    if line[te] == 91 { depth = depth + 1; }
+                    if line[te] == 93 { depth = depth - 1; }
+                    te = te + 1;
+                    if depth == 0 { break; }
+                }
+            } else {
+                while line[te] != 0 && line[te] != 32 { te = te + 1; }
+            }
+            let ty: *u8 = tp_tya(tp_slice(line, ts, te));
+            tp_map_put(1, tp_cat("G", name), tp_cat(ty, "*"));
+        }
+        return;
+    }
+    if tp_starts(line, "declare ") == 1 || tp_starts(line, "define ") == 1 {
+        tp_reg_fn(line);
+    }
+}
+
+// Emit a global def line with its type rewritten (ptr -> i8*). init must not
+// contain a pointer value (only null is known; anything else dies loudly).
+fn tp_b_global(line: *u8) {
+    var gk: i32 = tp_find(line, " global ", 0);
+    if gk < 0 { gk = tp_find(line, " constant ", 0); }
+    var ts: i32 = tp_find(line, "global ", gk);
+    let cc: i32 = tp_find(line, "constant ", gk);
+    if cc >= 0 && (ts < 0 || cc < ts) { ts = cc; }
+    ts = tp_find(line, " ", ts) + 1;
+    var te: i32 = ts;
+    if line[ts] == 91 {
+        var depth: i32 = 0;
+        while line[te] != 0 {
+            if line[te] == 91 { depth = depth + 1; }
+            if line[te] == 93 { depth = depth - 1; }
+            te = te + 1;
+            if depth == 0 { break; }
+        }
+    } else {
+        while line[te] != 0 && line[te] != 32 { te = te + 1; }
+    }
+    let ty: *u8 = tp_slice(line, ts, te);
+    if str_eq(ty, "ptr") == 1 {
+        let init: *u8 = tp_slice(line, te, str_len(line));
+        if str_contains(init, "@") == 1 || str_contains(init, "%") == 1 { tp_die(line); }
+        tp_out(tp_slice(line, 0, ts));
+        tp_out("i8*");
+        tp_out(init);
+        return;
+    }
+    if str_contains(ty, "ptr") == 1 { tp_die(line); }
+    tp_out(line);
+}
+
+// k-th member of a struct type (already ptr-rewritten in pass A). Arena result.
+fn tp_struct_member(sname: *u8, k: i32) -> *u8 {
+    let off: i32 = tp_map_get(1, tp_cat("S", sname));
+    if off < 0 { tp_die(sname); }
+    let mems: *u8 = tp_aref(off);
+    var idx: i32 = 0;
+    var i: i32 = 0;
+    var ps: i32 = 0;
+    while 1 == 1 {
+        if mems[i] == 44 || mems[i] == 0 {
+            if idx == k { return tp_slice(mems, ps, i); }
+            idx = idx + 1;
+            ps = i + 1;
+        }
+        if mems[i] == 0 { break; }
+        i = i + 1;
+    }
+    tp_die(sname);
+    return sname;
+}
+
+// Element type of "[N x E]". Arena result.
+fn tp_array_elem(ty: *u8) -> *u8 {
+    let x: i32 = tp_rfind(ty, " x ");
+    if x < 0 { tp_die(ty); }
+    let cb: i32 = tp_rfind(ty, "]");
+    return tp_slice(ty, x + 3, cb);
+}
+
+// k-th member of a literal struct type "{ m0, m1, ... }" (rewritten). Arena.
+fn tp_lit_member(ty: *u8, k: i32) -> *u8 {
+    let n: i32 = str_len(ty);
+    var i: i32 = 1;
+    var idx: i32 = 0;
+    var ps: i32 = 1;
+    var depth: i32 = 0;
+    while i < n {
+        let ch: i32 = ty[i];
+        if ch == 91 { depth = depth + 1; }
+        if ch == 93 { depth = depth - 1; }
+        if (ch == 44 && depth == 0) || ch == 125 {
+            var s2: i32 = ps;
+            var e2: i32 = i;
+            while s2 < e2 && ty[s2] == 32 { s2 = s2 + 1; }
+            while e2 > s2 && ty[e2 - 1] == 32 { e2 = e2 - 1; }
+            if idx == k { return tp_tya(tp_slice(ty, s2, e2)); }
+            idx = idx + 1;
+            ps = i + 1;
+        }
+        i = i + 1;
+    }
+    tp_die(ty);
+    return ty;
+}
+
+// Rewrite a call line. cl = text after "call "; rname/has_res for the result.
+fn tp_call_line(line: *u8, ls: i32, cl: *u8, rname: *u8, has_res: i32) {
+    let re_sp: i32 = tp_find(cl, " ", 0);
+    if re_sp < 0 { tp_die(line); }
+    let cret: *u8 = tp_slice(cl, 0, re_sp);
+    var cur: i32 = re_sp + 1;
+    var vsig: *u8 = null;
+    if cl[cur] == 40 {  // varargs-spelled: "i32 (ptr, ...) @printf(...)"
+        let vc: i32 = tp_find(cl, ")", cur);
+        if vc < 0 { tp_die(line); }
+        vsig = tp_tya(tp_slice(cl, cur, vc + 1));
+        cur = vc + 1;
+        while cl[cur] == 32 { cur = cur + 1; }
+    }
+    var ce: i32 = cur;
+    while cl[ce] != 40 && cl[ce] != 0 { ce = ce + 1; }
+    if cl[ce] == 0 { tp_die(line); }
+    let callee: *u8 = tp_slice(cl, cur, ce);
+    let argc2: i32 = tp_rfind(cl, ")");
+    if argc2 <= ce { tp_die(line); }
+    var argstr: *u8 = "";
+    var argtys: *u8 = "";
+    var i: i32 = ce + 1;
+    var first: i32 = 1;
+    while i < argc2 {
+        var ps: i32 = i;
+        while ps < argc2 && cl[ps] == 32 { ps = ps + 1; }
+        var pe: i32 = ps;
+        var depth: i32 = 0;
+        while pe < argc2 {
+            let ch: i32 = cl[pe];
+            if ch == 91 || ch == 40 { depth = depth + 1; }
+            if ch == 93 || ch == 41 { depth = depth - 1; }
+            if ch == 44 && depth == 0 { break; }
+            pe = pe + 1;
+        }
+        var e2: i32 = pe;
+        while e2 > ps && cl[e2 - 1] == 32 { e2 = e2 - 1; }
+        if e2 > ps {
+            let piece: *u8 = tp_slice(cl, ps, e2);
+            let sp2: i32 = tp_rfind(piece, " ");
+            if sp2 < 0 { tp_die(line); }
+            let aty: *u8 = tp_slice(piece, 0, sp2);
+            let aop: *u8 = tp_slice(piece, sp2 + 1, str_len(piece));
+            let atyr: *u8 = tp_tya(aty);
+            var opx: *u8 = aop;
+            if str_eq(aty, "ptr") == 1 {
+                if aop[0] == 37 { opx = tp_use(aop, "i8*"); }
+                else if aop[0] == 64 { opx = tp_use_at(aop, "i8*"); }
+                else if str_eq(aop, "null") == 1 { opx = "null"; }
+                else { tp_die(line); }
+            }
+            if first == 0 { argstr = tp_cat(argstr, ", "); argtys = tp_cat(argtys, ", "); }
+            argstr = tp_cat(tp_cat(argstr, atyr), " ");
+            argstr = tp_cat(argstr, opx);
+            argtys = tp_cat(argtys, atyr);
+            first = 0;
+        }
+        i = pe + 1;
+    }
+    var calx: *u8 = callee;
+    if callee[0] == 37 {
+        let fty: *u8 = tp_cat(tp_cat(tp_tya(cret), " ("), tp_cat(argtys, ")*"));
+        calx = tp_use(callee, fty);
+    } else if vsig == null {
+        // direct call to a varargs fn: spell the signature — typed LLVM
+        // requires the call-site fn type to match the declaration exactly
+        let fsig_off: i32 = tp_map_get(1, tp_cat("F", callee));
+        if fsig_off >= 0 {
+            let fsig: *u8 = tp_aref(fsig_off);
+            if str_contains(fsig, "...") == 1 {
+                let po2: i32 = tp_find(fsig, "(", 0);
+                vsig = tp_slice(fsig, po2, str_len(fsig));
+            }
+        }
+    }
+    if str_eq(cret, "ptr") == 1 && has_res == 1 { tp_map_put(0, rname, "i8*"); }
+    tp_out(tp_slice(line, 0, ls));
+    if has_res == 1 { tp_out(rname); tp_out(" = "); }
+    tp_out("call ");
+    tp_out(tp_tya(cret));
+    tp_out(" ");
+    if vsig != null { tp_out(vsig); tp_out(" "); }
+    tp_out(calx);
+    tp_out("(");
+    tp_out(argstr);
+    tp_out(")");
+    tp_out("\n");
+}
+
+// Pass B: rewrite one line, emitting bitcast pre-lines as needed.
+fn tp_b_line(line: *u8) {
+    if line[0] == 0 { tp_out("\n"); return; }
+    if line[0] == 59 { tp_out(line); tp_out("\n"); return; }  // comment
+    let has_ptr: i32 = str_contains(line, "ptr");
+    if has_ptr == 0 {
+        if tp_starts(line, "define ") == 1 { tp_vclear(); tp_out(line); tp_out("\n"); return; }
+        // register non-ptr alloca defs: "  %r = alloca T"
+        let ai: i32 = tp_find(line, " = alloca ", 0);
+        if ai >= 0 && line[0] == 32 {
+            var ns: i32 = 0;
+            while line[ns] == 32 { ns = ns + 1; }
+            tp_map_put(0, tp_slice(line, ns, ai), tp_cat(tp_tya(tp_slice(line, ai + 10, str_len(line))), "*"));
+        }
+        // indirect call with no ptr text: "call RET %fn(...)" — the callee
+        // still needs its fn-pointer type in the typed dialect
+        let ci: i32 = tp_find(line, "call ", 0);
+        if ci >= 0 {
+            var p: i32 = ci + 5;
+            while line[p] == 32 { p = p + 1; }
+            while line[p] != 32 && line[p] != 0 { p = p + 1; }
+            while line[p] == 32 { p = p + 1; }
+            if line[p] == 40 {
+                while line[p] != 41 && line[p] != 0 { p = p + 1; }
+                p = p + 1;
+                while line[p] == 32 { p = p + 1; }
+            }
+            if line[p] == 37 {
+                var ns2: i32 = 0;
+                while line[ns2] == 32 { ns2 = ns2 + 1; }
+                var rn2: *u8 = "";
+                var hr2: i32 = 0;
+                let eq3: i32 = tp_find(line, " = ", 0);
+                if eq3 >= 0 && eq3 < ci {
+                    rn2 = tp_slice(line, ns2, eq3);
+                    hr2 = 1;
+                }
+                tp_call_line(line, ns2, tp_slice(line, ci + 5, str_len(line)), rn2, hr2);
+                return;
+            }
+        }
+        tp_out(line);
+        tp_out("\n");
+        return;
+    }
+    if line[0] == 37 && str_contains(line, " = type {") == 1 {
+        // struct def: bounded token rewrite of the member list
+        let bo: i32 = tp_find(line, "{", 0);
+        let bc: i32 = tp_rfind(line, "}");
+        tp_out(tp_slice(line, 0, bo + 1));
+        tp_out(tp_tya(tp_slice(line, bo + 1, bc)));
+        tp_out("}");
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(line, "declare ") == 1 { tp_out(tp_tya(line)); tp_out("\n"); return; }
+    if tp_starts(line, "define ") == 1 {
+        tp_vclear();
+        // register pointer params as i8* (uniform-signature rule)
+        let po: i32 = tp_find(line, "(", 0);
+        let pc: i32 = tp_find(line, ")", po);
+        var i: i32 = po + 1;
+        while i < pc {
+            var ps: i32 = i;
+            while ps < pc && line[ps] == 32 { ps = ps + 1; }
+            var pe: i32 = ps;
+            while pe < pc && line[pe] != 44 { pe = pe + 1; }
+            var e2: i32 = pe;
+            while e2 > ps && line[e2 - 1] == 32 { e2 = e2 - 1; }
+            if e2 > ps {
+                let piece: *u8 = tp_slice(line, ps, e2);
+                let sp: i32 = tp_rfind(piece, " ");
+                if sp >= 0 && piece[sp + 1] == 37 {
+                    let pty: *u8 = tp_slice(piece, 0, sp);
+                    if str_eq(pty, "ptr") == 1 {
+                        tp_map_put(0, tp_slice(piece, sp + 1, e2 - ps), "i8*");
+                    }
+                }
+            }
+            i = pe + 1;
+        }
+        tp_out(tp_tya(line));
+        tp_out("\n");
+        return;
+    }
+    if line[0] == 64 { tp_b_global(line); tp_out("\n"); return; }
+    // instruction lines: leading spaces, optional result, opcode
+    var ls: i32 = 0;
+    while line[ls] == 32 { ls = ls + 1; }
+    let body: *u8 = tp_slice(line, ls, str_len(line));
+    // no-result opcodes first
+    if tp_starts(body, "store ") == 1 {
+        let ap: i32 = tp_rfind(body, ", ptr ");
+        if ap < 0 { tp_die(line); }
+        let addr: *u8 = tp_slice(body, ap + 6, str_len(body));
+        let hv: *u8 = tp_slice(body, 6, ap);  // "T V"
+        let vs: i32 = tp_rfind(hv, " ");
+        let ty: *u8 = tp_slice(hv, 0, vs);
+        let vtok: *u8 = tp_slice(hv, vs + 1, str_len(hv));
+        if str_eq(ty, "ptr") == 1 {
+            var vx: *u8 = "i8*";
+            if vtok[0] == 37 { vx = tp_use(vtok, "i8*"); }
+            else if vtok[0] == 64 { vx = tp_use_at(vtok, "i8*"); }
+            else if str_eq(vtok, "null") == 1 { vx = "null"; }
+            else { tp_die(line); }
+            var ax: *u8 = null;
+            if addr[0] == 37 { ax = tp_use(addr, "i8**"); }
+            else if addr[0] == 64 { ax = tp_use_at(addr, "i8**"); }
+            else { tp_die(line); }
+            tp_out(tp_slice(line, 0, ls));
+            tp_out("store i8* ");
+            tp_out(vx);
+            tp_out(", i8** ");
+            tp_out(ax);
+            tp_out("\n");
+            return;
+        }
+        if str_contains(ty, "ptr") == 1 { tp_die(line); }
+        let d: *u8 = tp_cat(tp_tya(ty), "*");
+        var ax: *u8 = null;
+        if addr[0] == 37 { ax = tp_use(addr, d); }
+        else if addr[0] == 64 { ax = tp_use_at(addr, d); }
+        else { tp_die(line); }
+        tp_out(tp_slice(line, 0, ls));
+        tp_out("store ");
+        tp_out(tp_tya(ty));
+        tp_out(" ");
+        tp_out(vtok);
+        tp_out(", ");
+        tp_out(d);
+        tp_out(" ");
+        tp_out(ax);
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(body, "ret ") == 1 {
+        let tok: *u8 = tp_slice(body, 8, str_len(body));
+        // body is "ret ptr X"; resolve the operand BEFORE emitting (pre-lines)
+        let rx: *u8 = tp_opnd(tok, "i8*");
+        tp_out(tp_slice(line, 0, ls));
+        tp_out("ret i8* ");
+        tp_out(rx);
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(body, "call ") == 1 {
+        tp_call_line(line, ls, tp_slice(body, 5, str_len(body)), "", 0);
+        return;
+    }
+    // result-bearing: "%r = op ..."
+    let eq: i32 = tp_find(body, " = ", 0);
+    if eq < 0 { tp_die(line); }
+    let rname: *u8 = tp_slice(body, 0, eq);
+    let rest: *u8 = tp_slice(body, eq + 3, str_len(body));
+    if tp_starts(rest, "alloca ") == 1 {
+        let ty: *u8 = tp_tya(tp_slice(rest, 7, str_len(rest)));
+        tp_map_put(0, rname, tp_cat(ty, "*"));
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = alloca ");
+        tp_out(ty);
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "load ") == 1 {
+        let ap: i32 = tp_rfind(rest, ", ptr ");
+        if ap < 0 { tp_die(line); }
+        let ty: *u8 = tp_slice(rest, 5, ap);
+        let addr: *u8 = tp_slice(rest, ap + 6, str_len(rest));
+        let tyr: *u8 = tp_tya(ty);
+        let d: *u8 = tp_cat(tyr, "*");
+        var ax: *u8 = null;
+        if addr[0] == 37 { ax = tp_use(addr, d); }
+        else if addr[0] == 64 { ax = tp_use_at(addr, d); }
+        else { tp_die(line); }
+        if str_eq(ty, "ptr") == 1 { tp_map_put(0, rname, "i8*"); }
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = load ");
+        tp_out(tyr);
+        tp_out(", ");
+        tp_out(d);
+        tp_out(" ");
+        tp_out(ax);
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "getelementptr ") == 1 {
+        let ap: i32 = tp_find(rest, ", ptr ", 0);
+        if ap < 0 { tp_die(line); }
+        let ty: *u8 = tp_slice(rest, 14, ap);
+        let tyr: *u8 = tp_tya(ty);
+        let d: *u8 = tp_cat(tyr, "*");
+        let after: *u8 = tp_slice(rest, ap + 6, str_len(rest));  // "B, i32 0, ..."
+        let bc2: i32 = tp_find(after, ",", 0);
+        let bop: *u8 = tp_slice(after, 0, bc2);
+        var bx: *u8 = null;
+        if bop[0] == 37 { bx = tp_use(bop, d); }
+        else if bop[0] == 64 { bx = tp_use_at(bop, d); }
+        else { tp_die(line); }
+        // result type: descend T through the indices after the first
+        let idxs: *u8 = tp_slice(after, bc2 + 1, str_len(after));
+        var cur: *u8 = tyr;
+        var pi: i32 = 0;
+        var first_idx: i32 = 1;
+        let il: i32 = str_len(idxs);
+        while pi <= il {
+            var pe: i32 = pi;
+            var depth: i32 = 0;
+            while pe < il {
+                let ch: i32 = idxs[pe];
+                if ch == 91 || ch == 40 || ch == 123 { depth = depth + 1; }
+                if ch == 93 || ch == 41 || ch == 125 { depth = depth - 1; }
+                if ch == 44 && depth == 0 { break; }
+                pe = pe + 1;
+            }
+            if first_idx == 0 {
+                let piece: *u8 = tp_slice(idxs, pi, pe);
+                let sp: i32 = tp_rfind(piece, " ");
+                let mtok: *u8 = tp_slice(piece, sp + 1, str_len(piece));
+                var k: i32 = 0 - 1;
+                if mtok[0] >= 48 && mtok[0] <= 57 {
+                    k = 0;
+                    var ki: i32 = 0;
+                    while mtok[ki] != 0 { k = k * 10 + (mtok[ki] as i32 - 48); ki = ki + 1; }
+                }
+                if cur[0] == 91 { cur = tp_tya(tp_array_elem(cur)); }
+                else if cur[0] == 37 {
+                    if k < 0 { tp_die(line); }
+                    cur = tp_struct_member(cur, k);
+                } else if cur[0] == 123 {
+                    if k < 0 { tp_die(line); }
+                    cur = tp_lit_member(cur, k);
+                } else { tp_die(line); }
+            }
+            first_idx = 0;
+            if pe >= il { break; }
+            pi = pe + 1;
+        }
+        let rt: *u8 = tp_cat(cur, "*");
+        tp_map_put(0, rname, rt);
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = getelementptr ");
+        tp_out(tyr);
+        tp_out(", ");
+        tp_out(d);
+        tp_out(" ");
+        tp_out(bx);
+        tp_out(",");
+        tp_out(idxs);
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "bitcast ") == 1 {
+        let tp2: i32 = tp_find(rest, " to ptr", 0);
+        if tp2 < 0 { tp_die(line); }
+        let sv: *u8 = tp_slice(rest, 8, tp2);  // "S* %x"
+        let sp: i32 = tp_rfind(sv, " ");
+        let sty: *u8 = tp_slice(sv, 0, sp);
+        if str_eq(sty, "ptr") == 1 { tp_die(line); }  // ptr->ptr bitcast: needs aliasing
+        let sop: *u8 = tp_slice(sv, sp + 1, str_len(sv));
+        let styr: *u8 = tp_tya(sty);
+        var sx: *u8 = null;
+        if sop[0] == 37 { sx = tp_use(sop, styr); }
+        else if sop[0] == 64 { sx = tp_use_at(sop, styr); }
+        else { tp_die(line); }
+        tp_map_put(0, rname, "i8*");
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = bitcast ");
+        tp_out(styr);
+        tp_out(" ");
+        tp_out(sx);
+        tp_out(" to i8*");
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "inttoptr ") == 1 {
+        let tp2: i32 = tp_find(rest, " to ptr", 0);
+        if tp2 < 0 { tp_die(line); }
+        tp_map_put(0, rname, "i8*");
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = ");
+        tp_out(tp_slice(rest, 0, tp2));
+        tp_out(" to i8*");
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "ptrtoint ") == 1 {
+        // "%r = ptrtoint ptr %x to i64"
+        let from: i32 = tp_find(rest, "ptr ", 0);
+        let to: i32 = tp_find(rest, " to ", 0);
+        let sop: *u8 = tp_slice(rest, from + 4, to);
+        let sx: *u8 = tp_use(sop, "i8*");
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = ptrtoint i8* ");
+        tp_out(sx);
+        tp_out(tp_slice(rest, to, str_len(rest)));
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "icmp ") == 1 {
+        // "%r = icmp eq|ne ptr A, B"
+        let sp: i32 = tp_find(rest, " ptr ", 0);
+        if sp < 0 { tp_die(line); }
+        let pred: *u8 = tp_slice(rest, 0, sp);
+        let ops: *u8 = tp_slice(rest, sp + 5, str_len(rest));
+        let cm: i32 = tp_find(ops, ", ", 0);
+        if cm < 0 { tp_die(line); }
+        let oa: *u8 = tp_slice(ops, 0, cm);
+        let ob: *u8 = tp_slice(ops, cm + 2, str_len(ops));
+        var d: *u8 = "i8*";
+        if oa[0] == 37 {
+            let off: i32 = tp_map_get(0, oa);
+            if off >= 0 { d = tp_aref(off); }
+        } else if oa[0] == 64 {
+            let goff: i32 = tp_map_get(1, tp_cat("G", oa));
+            if goff >= 0 { d = tp_aref(goff); }
+        } else if str_eq(oa, "null") == 1 {
+            if ob[0] == 37 {
+                let off2: i32 = tp_map_get(0, ob);
+                if off2 >= 0 { d = tp_aref(off2); }
+            }
+        }
+        let oax: *u8 = tp_opnd(oa, d);
+        let obx: *u8 = tp_opnd(ob, d);
+        tp_out(tp_slice(line, 0, ls));
+        tp_out(rname);
+        tp_out(" = ");
+        tp_out(pred);
+        tp_out(" ");
+        tp_out(d);
+        tp_out(" ");
+        tp_out(oax);
+        tp_out(", ");
+        tp_out(obx);
+        tp_out("\n");
+        return;
+    }
+    if tp_starts(rest, "call ") == 1 {
+        tp_call_line(line, ls, tp_slice(rest, 5, str_len(rest)), rname, 1);
+        return;
+    }
+    tp_die(line);
+}
+
+fn tp_slurp(path: *u8) {
+    let f: *u8 = fopen(path, "rb");
+    if f == null {
+        wr(2, "error: -target tpc: cannot read staged IR\n");
+        exit(1);
+    }
+    fseek(f, 0, 2);
+    let n: i64 = ftell(f);
+    fseek(f, 0, 0);
+    g_tp_src = alloc(n as i32 + 1);
+    fread(g_tp_src, 1, n, f);
+    fclose(f);
+    g_tp_src[n as i32] = 0;
+    g_tp_srclen = n as i32;
+}
+
+fn tp_rewrite(in_path: *u8, out_path: *u8) {
+    g_tp_arena = alloc(1048576);
+    g_tp_acap = 1048576;
+    g_tp_alen = 0;
+    g_tp_out = alloc(4194304);
+    g_tp_ocap = 4194304;
+    g_tp_olen = 0;
+    g_tp_psize = 4096;
+    g_tp_pk = alloc(g_tp_psize * 4) as *i32;
+    g_tp_pv = alloc(g_tp_psize * 4) as *i32;
+    g_tp_vsize = 4096;
+    g_tp_vk = alloc(g_tp_vsize * 4) as *i32;
+    g_tp_vv = alloc(g_tp_vsize * 4) as *i32;
+    var i: i32 = 0;
+    while i < g_tp_psize { g_tp_pk[i] = 0 - 1; g_tp_pv[i] = 0 - 1; i = i + 1; }
+    i = 0;
+    while i < g_tp_vsize { g_tp_vk[i] = 0 - 1; g_tp_vv[i] = 0 - 1; i = i + 1; }
+    g_tp_pcount = 0;
+    g_tp_vcount = 0;
+    g_tp_castn = 0;
+    g_tp_ln = alloc(1048576);
+    tp_slurp(in_path);
+    // pass A: persistent tables
+    i = 0;
+    while i < g_tp_srclen {
+        let ls: i32 = i;
+        while i < g_tp_srclen && g_tp_src[i] != 10 { i = i + 1; }
+        let ll: i32 = i - ls;
+        if ll > 0 && ll < 1048576 {
+            var j: i32 = 0;
+            while j < ll { g_tp_ln[j] = g_tp_src[ls + j]; j = j + 1; }
+            g_tp_ln[ll] = 0;
+            tp_a_line(g_tp_ln);
+        }
+        i = i + 1;
+    }
+    // pass B: rewrite
+    i = 0;
+    while i < g_tp_srclen {
+        let ls: i32 = i;
+        while i < g_tp_srclen && g_tp_src[i] != 10 { i = i + 1; }
+        let ll: i32 = i - ls;
+        if ll < 1048576 {
+            var j: i32 = 0;
+            while j < ll { g_tp_ln[j] = g_tp_src[ls + j]; j = j + 1; }
+            g_tp_ln[ll] = 0;
+            tp_b_line(g_tp_ln);
+        }
+        i = i + 1;
+    }
+    let fd: i32 = creat(out_path, 438);
+    if fd < 0 {
+        wr(2, "error: -target tpc: cannot write output\n");
+        exit(1);
+    }
+    write(fd, g_tp_out, g_tp_olen as i64);
+    close(fd);
+    free(g_tp_src);
+    free(g_tp_out);
+    free(g_tp_arena);
+    free(g_tp_ln);
+    free(g_tp_pk as *u8);
+    free(g_tp_pv as *u8);
+    free(g_tp_vk as *u8);
+    free(g_tp_vv as *u8);
+}
+
 fn drv_tmp(base: *u8, suffix: *u8) -> *u8 {
     let buf: *u8 = alloc(str_len(base) + str_len(suffix) + 1);
     var p: i32 = drv_cat(buf, 0, base);
@@ -25341,6 +26327,8 @@ fn main(argc: i32, argv: **u8) {
             ai = ai + 1;
             g_target_triple = argv[ai];
             g_target_explicit = 1;
+            // "tpc" is a dialect target, not a host triple: typed-pointer IR.
+            if str_eq(g_target_triple, "tpc") == 1 { g_ptr_typed = 1; }
             // Derive sysconf constant from target triple
             if str_contains(g_target_triple, "darwin") == 1 {
                 g_sysconf_nproc = 58;
@@ -25363,6 +26351,18 @@ fn main(argc: i32, argv: **u8) {
     if source_path == null && g_repl_mode == 0 {
         wr(2, "error: no source file\n");
         exit(1);
+    }
+
+    // -target tpc rewrites emitted IR; it composes only with plain codegen.
+    if g_ptr_typed == 1 {
+        if g_eval_mode == 1 || g_emit_gpu_mode == 1 || g_repl_mode == 1 || g_diag_json == 1 || g_pfor_report_mode == 1 {
+            wr(2, "error: -target tpc composes only with plain codegen\n");
+            exit(1);
+        }
+        if output_path == null {
+            wr(2, "error: -target tpc requires -o (it rewrites the emitted IR)\n");
+            exit(1);
+        }
     }
 
     // --repl with no file: nothing to read, but the arenas below are still the
@@ -25664,6 +26664,11 @@ fn main(argc: i32, argv: **u8) {
             }
             unlink(ll_path);
             exit(1);
+        }
+        // -target tpc: rewrite the finished opaque module to typed-pointer IR.
+        // In-place is safe — tp_rewrite slurps the whole file before writing.
+        if g_ptr_typed == 1 {
+            tp_rewrite(ll_path, ll_path);
         }
         // --emit obj|exe: hand the temp .ll to llc (+ cc) for the native artifact.
         if g_emit_mode != 0 {
