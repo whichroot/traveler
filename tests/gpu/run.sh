@@ -326,6 +326,105 @@ else
     if [ "$IR0_READY" = "1" ]; then
         echo "  ok   AGX IR0 validates shapes 1-4 with byte-identical host/device output"
     fi
+
+    # RA0 keeps both legacy allocators authoritative, but independently proves
+    # CFG liveness/copies and exact machine-resource feasibility or refusal.
+    RA0_READY=1
+    if ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_dispatch_gate.tv" -o "$TMP/agx_ra0_k1.hex" \
+            2>"$TMP/agx_ra0_k1.report" \
+       || ! "$STAGE1" --agx-dispatch --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_dispatch_gate.tv" -o "$TMP/agx_ra0_k1.ll" \
+            2>"$TMP/agx_ra0_k1_host.report" \
+       || ! cmp -s "$AGX_DISPATCH_DEV" "$TMP/agx_ra0_k1.hex" \
+       || ! cmp -s "$AGX_DISPATCH_LL" "$TMP/agx_ra0_k1.ll" \
+       || ! grep -qF 'agx-ra0: shape=1 blocks=1 iterations=2 copies=0 repairs=9 slot-regs=1 live-regs=1 vm-regs=7 pairs=8 loads=2 outcome=1' \
+            "$TMP/agx_ra0_k1.report" \
+       || ! grep -qF 'agx-ra0: shape=1 blocks=1 iterations=2 copies=0 repairs=9 slot-regs=1 live-regs=1 vm-regs=7 pairs=8 loads=2 outcome=1' \
+            "$TMP/agx_ra0_k1_host.report"; then
+        echo "  FAIL: AGX RA0 map allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_rns_reduce8.tv" -o "$TMP/agx_ra0_k2.hex" \
+            2>"$TMP/agx_ra0_k2.report" \
+       || ! "$STAGE1" --agx-dispatch --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_rns_reduce8.tv" -o "$TMP/agx_ra0_k2.ll" \
+            2>"$TMP/agx_ra0_k2_host.report" \
+       || ! cmp -s "$AGX_REDUCE_DEV" "$TMP/agx_ra0_k2.hex" \
+       || ! cmp -s "$AGX_REDUCE_LL" "$TMP/agx_ra0_k2.ll" \
+       || [ "$(grep -cF 'agx-ra0: shape=2 blocks=1 iterations=2 copies=0 repairs=8 slot-regs=1 live-regs=1 vm-regs=6 pairs=7 loads=8 outcome=1' "$TMP/agx_ra0_k2.report" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX RA0 reduce-8 allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    elif [ "$(grep -cF 'agx-ra0: shape=2 blocks=1 iterations=2 copies=0 repairs=8 slot-regs=1 live-regs=1 vm-regs=6 pairs=7 loads=8 outcome=1' "$TMP/agx_ra0_k2_host.report" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX RA0 reduce-8 allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot.tv" -o "$TMP/agx_ra0_k3.hex" \
+            2>"$TMP/agx_ra0_k3.report" \
+       || ! "$STAGE1" --agx-dispatch --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot.tv" -o "$TMP/agx_ra0_k3.ll" \
+            2>"$TMP/agx_ra0_k3_host.report" \
+       || ! cmp -s "$AGX_DOT_DEV" "$TMP/agx_ra0_k3.hex" \
+       || ! cmp -s "$AGX_DOT_LL" "$TMP/agx_ra0_k3.ll" \
+       || [ "$(grep -cF 'agx-ra0: shape=3 blocks=1 iterations=2 copies=0 repairs=77 slot-regs=1 live-regs=1 vm-regs=10 pairs=71 loads=16 outcome=1' "$TMP/agx_ra0_k3.report" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX RA0 unrolled-dot allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    elif [ "$(grep -cF 'agx-ra0: shape=3 blocks=1 iterations=2 copies=0 repairs=77 slot-regs=1 live-regs=1 vm-regs=10 pairs=71 loads=16 outcome=1' "$TMP/agx_ra0_k3_host.report" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX RA0 unrolled-dot allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot_loop.tv" -o "$TMP/agx_ra0_k4.hex" \
+            2>"$TMP/agx_ra0_k4.report" \
+       || ! "$STAGE1" --agx-dispatch --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_rns_dot_loop.tv" -o "$TMP/agx_ra0_k4.ll" \
+            2>"$TMP/agx_ra0_k4_host.report" \
+       || ! cmp -s "$AGX_DOT_LOOP_DEV" "$TMP/agx_ra0_k4.hex" \
+       || ! cmp -s "$AGX_DOT_LOOP_LL" "$TMP/agx_ra0_k4.ll" \
+       || [ "$(grep -cF 'agx-ra0: shape=4 blocks=5 iterations=3 copies=4 repairs=23 slot-regs=3 live-regs=3 vm-regs=7 pairs=9 loads=2 outcome=1' "$TMP/agx_ra0_k4.report" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX RA0 counted-dot allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    elif [ "$(grep -cF 'agx-ra0: shape=4 blocks=5 iterations=3 copies=4 repairs=23 slot-regs=3 live-regs=3 vm-regs=7 pairs=9 loads=2 outcome=1' "$TMP/agx_ra0_k4_host.report" || true)" -ne 3 ]; then
+        echo "  FAIL: AGX RA0 counted-dot allocation or byte stability changed"; fail=1
+        RA0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$WIDE_EXHIBIT" -o "$TMP/agx_ra0_wide.hex" \
+            2>"$TMP/agx_ra0_wide.report" \
+       || ! cmp -s "$AGX_WIDE_DEV" "$TMP/agx_ra0_wide.hex" \
+       || ! grep -qF 'agx-ra0: shape=1 blocks=1 iterations=2 copies=0 repairs=80 slot-regs=1 live-regs=1 vm-regs=12 pairs=12 loads=2 outcome=1' \
+            "$TMP/agx_ra0_wide.report"; then
+        echo "  FAIL: AGX RA0 64-bit pair allocation changed"; fail=1
+        RA0_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_ra0_pressure.tv" \
+            -o "$TMP/agx_ra0_pressure_base.hex" 2>/dev/null \
+       || ! "$STAGE1" --emit-gpu-agx --agx-ra0-shadow \
+            "$SCRIPT_DIR/agx_ra0_pressure.tv" \
+            -o "$TMP/agx_ra0_pressure.hex" 2>"$TMP/agx_ra0_pressure.report" \
+       || ! cmp -s "$TMP/agx_ra0_pressure_base.hex" "$TMP/agx_ra0_pressure.hex" \
+       || grep -q '^worker __pfor_gpu_worker_' "$TMP/agx_ra0_pressure.hex" \
+       || ! grep -q '^skip __pfor_gpu_worker_0 reason=unsupported-agx0-worker$' \
+            "$TMP/agx_ra0_pressure.hex" \
+       || ! grep -qF 'agx-ra0: shape=1 blocks=1 iterations=2 copies=0 repairs=0 slot-regs=1 live-regs=1 vm-regs=30 pairs=0 loads=0 outcome=0' \
+            "$TMP/agx_ra0_pressure.report"; then
+        echo "  FAIL: AGX RA0 pressure did not refuse without spilling"; fail=1
+        RA0_READY=0
+    fi
+    if "$STAGE1" --agx-ra0-shadow "$SCRIPT_DIR/agx_binary_map.tv" \
+            >"$TMP/agx_ra0_no_output.out" 2>"$TMP/agx_ra0_no_output.err"; then
+        echo "  FAIL: AGX RA0 shadow silently skipped without -o"; fail=1
+        RA0_READY=0
+    elif ! grep -q -- '--agx-ra0-shadow requires -o' \
+            "$TMP/agx_ra0_no_output.err"; then
+        echo "  FAIL: AGX RA0 missing-output refusal changed"; fail=1
+        RA0_READY=0
+    fi
+    if [ "$RA0_READY" = "1" ]; then
+        echo "  ok   AGX RA0 liveness, copies, pairs, loads, and pressure refusal are pinned"
+    fi
     if ! python3 "$SCRIPT_DIR/agx_control_probe.py" --check-only; then
         echo "  FAIL: AGX control specimens failed their portable structure gate"
         fail=1

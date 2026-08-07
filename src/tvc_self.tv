@@ -1666,6 +1666,9 @@ var g_agx_dispatch_mode: i32 = 0;
 // --agx-ir0-shadow: lower already-classified AGX workers through typed EIR and
 // a private CFG, validate it, then discard it. Never changes admission or bytes.
 var g_agx_ir0_shadow: i32 = 0;
+// --agx-ra0-shadow: extend IR0 with CFG liveness, edge copies, and a constrained
+// allocation shadow. The legacy allocators remain the byte-producing authority.
+var g_agx_ra0_shadow: i32 = 0;
 // --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
 // (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
 var g_emit_mode: i32 = 0;
@@ -14642,15 +14645,22 @@ fn codegen_stmt(stmt: i32) {
             var agx_shape: *AgxWorkerShape = null;
             var agx_dispatch: i32 = 0;
             var agx_hash: u64 = 0;
-            if (g_agx_dispatch_mode == 1 || g_agx_ir0_shadow == 1) && bw != 64 {
+            if (g_agx_dispatch_mode == 1 || g_agx_ir0_shadow == 1
+                || g_agx_ra0_shadow == 1) && bw != 64 {
                 agx_shape = alloc(1);
                 let agx_classified: i32 = agx_classify_worker(
                     body_node, iter_name, pf.ncaps, worker_caps_base,
                     agx_shape);
-                if agx_classified == 1 && g_agx_ir0_shadow == 1 {
-                    agx_ir0_require(agx_ir0_shadow_worker(
+                if agx_classified == 1
+                    && (g_agx_ir0_shadow == 1 || g_agx_ra0_shadow == 1) {
+                    let agx_shadow_ok: i32 = agx_ir0_shadow_worker(
                         body_node, iter_name, pf.ncaps, worker_caps_base,
-                        bw, agx_shape.kind), body_node);
+                        bw, agx_shape);
+                    if g_agx_ra0_shadow == 1 {
+                        agx_ra0_require(agx_shadow_ok, body_node);
+                    } else {
+                        agx_ir0_require(agx_shadow_ok, body_node);
+                    }
                 }
                 if g_agx_dispatch_mode == 1 && agx_classified == 1 {
                     agx_dispatch = agx_build_worker_code(agx_shape, iter_name);
@@ -17976,10 +17986,10 @@ fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
     return 1;
 }
 
-fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
+fn agx_build_worker_ops(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
     let p: u64 = g_fields[shape.field_index].prime;
     let p64_pm59: u64 = 18446744073709551557;
-    if shape.kind == 4 { return agx_build_counted_dot(p); }
+    if shape.kind == 4 { return 0; }
     agx_vm_reset();
     g_agx_input_v = 0 - 1;
     g_agx_input2_v = 0 - 1;
@@ -18052,6 +18062,13 @@ fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
         if result < 0 { return 0; }
         agx_vstore(result, 0);
     }
+    return 1;
+}
+
+fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
+    let p: u64 = g_fields[shape.field_index].prime;
+    if shape.kind == 4 { return agx_build_counted_dot(p); }
+    if agx_build_worker_ops(shape, loop_name) == 0 { return 0; }
     return agx_allocate_and_encode();
 }
 
@@ -21139,6 +21156,31 @@ struct AgxCfgRegion {
     continue_block: i32,
 }
 
+struct AgxRaCopy {
+    edge: i32,
+    dst_slot: i32,
+    src_eir: i32,
+    src_slot: i32,
+    dst_reg: i32,
+    src_reg: i32,
+    width: i32,
+    order: i32,
+    temp_reg: i32,
+    save_order: i32,
+}
+
+struct AgxRaStats {
+    iterations: i32,
+    copies: i32,
+    repairs: i32,
+    slot_regs: i32,
+    max_live_regs: i32,
+    vm_max_regs: i32,
+    vm_pairs: i32,
+    loads: i32,
+    outcome: i32,
+}
+
 // Lowered-fn registry entry (keyed by g_funcs index). state: 0 = pending, 1 =
 // lowered. pmeta/ret_bytes = per-param/return aggregate sizes (ev_call copies).
 struct EIRFunc {
@@ -21279,6 +21321,20 @@ var g_agx_cfg_slot_types: *i32 = null;
 var g_agx_cfg_marks: *i32 = null;
 var g_agx_cfg_cap_slots: i32 = 0;
 var g_agx_ir0_failed: i32 = 0;
+var g_agx_ra_words: i32 = 0;
+var g_agx_ra_cells_cap: i32 = 0;
+var g_agx_ra_use: *u64 = null;
+var g_agx_ra_def: *u64 = null;
+var g_agx_ra_live_in: *u64 = null;
+var g_agx_ra_live_out: *u64 = null;
+var g_agx_ra_interf: *u64 = null;
+var g_agx_ra_interf_cap: i32 = 0;
+var g_agx_ra_slot_reg: *i32 = null;
+var g_agx_ra_slot_width: *i32 = null;
+var g_agx_ra_slot_cap: i32 = 0;
+var g_agx_ra_copies: *AgxRaCopy = null;
+var g_agx_ra_ncopies: i32 = 0;
+var g_agx_ra_cap_copies: i32 = 0;
 
 // ---- Refusal (the cardinal rule): loud, located, exit 97 ----
 fn ev_refuse(what: *u8, line: i32, col: i32) {
@@ -24789,9 +24845,1457 @@ fn agx_cfg_validate(shape_kind: i32) -> i32 {
     return 1;
 }
 
+// ===== AGX RA0 SHADOW: CFG LIVENESS + CONSTRAINED ALLOCATION =====
+
+fn agx_ra_bit_get(bits: *u64, base: i32, slot: i32) -> i32 {
+    let word: i32 = slot / 64;
+    let mask: u64 = (1 as u64) << ((slot & 63) as u64);
+    if (bits[base + word] & mask) != 0 { return 1; }
+    return 0;
+}
+
+fn agx_ra_bit_set(bits: *u64, base: i32, slot: i32) {
+    let word: i32 = slot / 64;
+    let mask: u64 = (1 as u64) << ((slot & 63) as u64);
+    bits[base + word] = bits[base + word] | mask;
+}
+
+fn agx_ra_bit_clear(bits: *u64, base: i32, slot: i32) {
+    let word: i32 = slot / 64;
+    let mask: u64 = (1 as u64) << ((slot & 63) as u64);
+    bits[base + word] = bits[base + word] & ((0 as u64) - 1 - mask);
+}
+
+fn agx_ra_reset() {
+    g_agx_ra_words = (g_lw_nslots + 63) / 64;
+    if g_agx_ra_words == 0 { g_agx_ra_words = 1; }
+    let cells: i32 = g_agx_cfg_nblocks * g_agx_ra_words;
+    if cells > g_agx_ra_cells_cap {
+        var cap: i32 = g_agx_ra_cells_cap;
+        if cap == 0 { cap = 128; }
+        while cap < cells { cap = cap * 2; }
+        g_agx_ra_use = realloc(g_agx_ra_use, cap);
+        g_agx_ra_def = realloc(g_agx_ra_def, cap);
+        g_agx_ra_live_in = realloc(g_agx_ra_live_in, cap);
+        g_agx_ra_live_out = realloc(g_agx_ra_live_out, cap);
+        g_agx_ra_cells_cap = cap;
+    }
+    let icells: i32 = g_lw_nslots * g_agx_ra_words;
+    if icells > g_agx_ra_interf_cap {
+        var icap: i32 = g_agx_ra_interf_cap;
+        if icap == 0 { icap = 128; }
+        while icap < icells { icap = icap * 2; }
+        g_agx_ra_interf = realloc(g_agx_ra_interf, icap);
+        g_agx_ra_interf_cap = icap;
+    }
+    if g_lw_nslots > g_agx_ra_slot_cap {
+        var scap: i32 = g_agx_ra_slot_cap;
+        if scap == 0 { scap = 32; }
+        while scap < g_lw_nslots { scap = scap * 2; }
+        g_agx_ra_slot_reg = realloc(g_agx_ra_slot_reg, scap);
+        g_agx_ra_slot_width = realloc(g_agx_ra_slot_width, scap);
+        g_agx_ra_slot_cap = scap;
+    }
+    if g_agx_ra_copies == null {
+        g_agx_ra_cap_copies = 64;
+        g_agx_ra_copies = alloc(g_agx_ra_cap_copies);
+    }
+    var i: i32 = 0;
+    while i < cells {
+        g_agx_ra_use[i] = 0;
+        g_agx_ra_def[i] = 0;
+        g_agx_ra_live_in[i] = 0;
+        g_agx_ra_live_out[i] = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while i < icells { g_agx_ra_interf[i] = 0; i = i + 1; }
+    i = 0;
+    while i < g_lw_nslots {
+        g_agx_ra_slot_reg[i] = 0 - 1;
+        g_agx_ra_slot_width[i] = 0;
+        i = i + 1;
+    }
+    g_agx_ra_ncopies = 0;
+}
+
+fn agx_ra_expr_slots(e: i32, bits: *u64, base: i32, depth: i32) -> i32 {
+    if e < 0 || e >= g_neir || depth > 256 { return 0; }
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_CONST || kind == EIR_NULLP { return 1; }
+    if kind == EIR_LOCAL {
+        if g_eir[e].a < 0 || g_eir[e].a >= g_lw_nslots { return 0; }
+        agx_ra_bit_set(bits, base, g_eir[e].a);
+        return 1;
+    }
+    if kind == EIR_BIN || kind == EIR_SC {
+        if agx_ra_expr_slots(g_eir[e].a, bits, base, depth + 1) == 0 {
+            return 0;
+        }
+        return agx_ra_expr_slots(g_eir[e].b, bits, base, depth + 1);
+    }
+    if kind == EIR_UN || kind == EIR_CAST {
+        return agx_ra_expr_slots(g_eir[e].a, bits, base, depth + 1);
+    }
+    if kind == EIR_INDEX {
+        if agx_ra_expr_slots(g_eir[e].a, bits, base, depth + 1) == 0 {
+            return 0;
+        }
+        return agx_ra_expr_slots(g_eir[e].b, bits, base, depth + 1);
+    }
+    return 0;
+}
+
+fn agx_ra_expr_use(e: i32, block: i32, depth: i32) -> i32 {
+    if e < 0 || e >= g_neir || depth > 256 { return 0; }
+    let base: i32 = block * g_agx_ra_words;
+    let kind: i32 = g_eir[e].kind;
+    if kind == EIR_CONST || kind == EIR_NULLP { return 1; }
+    if kind == EIR_LOCAL {
+        let slot: i32 = g_eir[e].a;
+        if slot < 0 || slot >= g_lw_nslots { return 0; }
+        if agx_ra_bit_get(g_agx_ra_def, base, slot) == 0 {
+            agx_ra_bit_set(g_agx_ra_use, base, slot);
+        }
+        return 1;
+    }
+    if kind == EIR_BIN || kind == EIR_SC {
+        if agx_ra_expr_use(g_eir[e].a, block, depth + 1) == 0 { return 0; }
+        return agx_ra_expr_use(g_eir[e].b, block, depth + 1);
+    }
+    if kind == EIR_UN || kind == EIR_CAST {
+        return agx_ra_expr_use(g_eir[e].a, block, depth + 1);
+    }
+    if kind == EIR_INDEX {
+        if agx_ra_expr_use(g_eir[e].a, block, depth + 1) == 0 { return 0; }
+        return agx_ra_expr_use(g_eir[e].b, block, depth + 1);
+    }
+    return 0;
+}
+
+fn agx_ra_slot_use(block: i32, slot: i32) -> i32 {
+    if slot < 0 || slot >= g_lw_nslots { return 0; }
+    let base: i32 = block * g_agx_ra_words;
+    if agx_ra_bit_get(g_agx_ra_def, base, slot) == 0 {
+        agx_ra_bit_set(g_agx_ra_use, base, slot);
+    }
+    return 1;
+}
+
+fn agx_ra_build_use_def() -> i32 {
+    var b: i32 = 0;
+    while b < g_agx_cfg_nblocks {
+        if g_agx_cfg_reachable[b] == 0 { b = b + 1; continue; }
+        let base: i32 = b * g_agx_ra_words;
+        var pi: i32 = 0;
+        while pi < g_agx_cfg_blocks[b].nparams {
+            let pidx: i32 = g_agx_cfg_blocks[b].param_start + pi;
+            agx_ra_bit_set(g_agx_ra_def, base, g_agx_cfg_params[pidx].slot);
+            pi = pi + 1;
+        }
+        var ii: i32 = 0;
+        while ii < g_agx_cfg_blocks[b].nitems {
+            let item: i32 = g_agx_cfg_blocks[b].first_item + ii;
+            let stmt: i32 = g_agx_cfg_items[item].eir;
+            let kind: i32 = g_eir[stmt].kind;
+            if kind == EIR_LET || kind == EIR_SET {
+                if agx_ra_expr_use(g_eir[stmt].b, b, 0) == 0 { return 0; }
+                agx_ra_bit_set(g_agx_ra_def, base, g_eir[stmt].a);
+            } else if kind == EIR_INDEX_ST {
+                if agx_ra_expr_use(g_eir[stmt].a, b, 0) == 0
+                    || agx_ra_expr_use(g_eir[stmt].b, b, 0) == 0
+                    || agx_ra_expr_use(g_eir[stmt].c, b, 0) == 0 { return 0; }
+            } else if kind == EIR_EXPR {
+                if agx_ra_expr_use(g_eir[stmt].a, b, 0) == 0 { return 0; }
+            } else {
+                return 0;
+            }
+            ii = ii + 1;
+        }
+        if g_agx_cfg_blocks[b].term == AGX_CFG_TERM_BRANCH {
+            let cond: i32 = g_agx_cfg_blocks[b].term_value;
+            if g_eir[cond].kind == EIR_FOR {
+                if agx_ra_slot_use(b, g_eir[cond].a) == 0
+                    || agx_ra_expr_use(g_eir[cond].c, b, 0) == 0 { return 0; }
+            } else if agx_ra_expr_use(cond, b, 0) == 0 { return 0; }
+        } else if g_agx_cfg_blocks[b].term == AGX_CFG_TERM_RETURN
+            && g_agx_cfg_blocks[b].term_value >= 0 {
+            if agx_ra_expr_use(g_agx_cfg_blocks[b].term_value, b, 0) == 0 {
+                return 0;
+            }
+        }
+        b = b + 1;
+    }
+    return 1;
+}
+
+fn agx_ra_incoming_value(pidx: i32, pred: i32) -> i32 {
+    var i: i32 = 0;
+    while i < g_agx_cfg_params[pidx].nincoming {
+        let incoming: i32 = g_agx_cfg_params[pidx].incoming_start + i;
+        if g_agx_cfg_incoming[incoming].pred == pred {
+            return g_agx_cfg_incoming[incoming].value;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_ra_phi_transfer(dst_slots: *i32, src_values: *i32,
+                       nparams: i32, bits: *u64) -> i32 {
+    var i: i32 = 0;
+    while i < nparams {
+        agx_ra_bit_clear(bits, 0, dst_slots[i]);
+        i = i + 1;
+    }
+    i = 0;
+    while i < nparams {
+        if agx_ra_expr_slots(src_values[i], bits, 0, 0) == 0 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn agx_ra_liveness(stats: *AgxRaStats) -> i32 {
+    let next_out: *u64 = alloc(g_agx_ra_words);
+    let edge_bits: *u64 = alloc(g_agx_ra_words);
+    let next_in: *u64 = alloc(g_agx_ra_words);
+    var changed: i32 = 1;
+    var iterations: i32 = 0;
+    let limit: i32 = (g_agx_cfg_nblocks + 1) * (g_lw_nslots + 1) * 4 + 8;
+    while changed == 1 && iterations < limit {
+        changed = 0;
+        iterations = iterations + 1;
+        var b: i32 = g_agx_cfg_nblocks - 1;
+        while b >= 0 {
+            if g_agx_cfg_reachable[b] == 1 {
+                var w: i32 = 0;
+                while w < g_agx_ra_words { next_out[w] = 0; w = w + 1; }
+                var si: i32 = 0;
+                while si < g_agx_cfg_blocks[b].nsuccs {
+                    let succ: i32 =
+                        g_agx_cfg_succs[g_agx_cfg_blocks[b].succ_start + si];
+                    let succ_base: i32 = succ * g_agx_ra_words;
+                    w = 0;
+                    while w < g_agx_ra_words {
+                        edge_bits[w] = g_agx_ra_live_in[succ_base + w];
+                        w = w + 1;
+                    }
+                    let nparams: i32 = g_agx_cfg_blocks[succ].nparams;
+                    let dst_slots: *i32 = alloc(nparams + 1);
+                    let src_values: *i32 = alloc(nparams + 1);
+                    var pi: i32 = 0;
+                    while pi < nparams {
+                        let pidx: i32 = g_agx_cfg_blocks[succ].param_start + pi;
+                        let value: i32 = agx_ra_incoming_value(pidx, b);
+                        if value < 0 {
+                            free(dst_slots); free(src_values);
+                            free(next_out); free(edge_bits); free(next_in);
+                            return 0;
+                        }
+                        dst_slots[pi] = g_agx_cfg_params[pidx].slot;
+                        src_values[pi] = value;
+                        pi = pi + 1;
+                    }
+                    if agx_ra_phi_transfer(
+                        dst_slots, src_values, nparams, edge_bits) == 0 {
+                        free(dst_slots); free(src_values);
+                        free(next_out); free(edge_bits); free(next_in);
+                        return 0;
+                    }
+                    free(dst_slots); free(src_values);
+                    w = 0;
+                    while w < g_agx_ra_words {
+                        next_out[w] = next_out[w] | edge_bits[w];
+                        w = w + 1;
+                    }
+                    si = si + 1;
+                }
+                let base: i32 = b * g_agx_ra_words;
+                w = 0;
+                while w < g_agx_ra_words {
+                    next_in[w] = g_agx_ra_use[base + w]
+                        | (next_out[w] & ((0 as u64) - 1 - g_agx_ra_def[base + w]));
+                    if g_agx_ra_live_out[base + w] != next_out[w]
+                        || g_agx_ra_live_in[base + w] != next_in[w] {
+                        changed = 1;
+                        g_agx_ra_live_out[base + w] = next_out[w];
+                        g_agx_ra_live_in[base + w] = next_in[w];
+                    }
+                    w = w + 1;
+                }
+            }
+            b = b - 1;
+        }
+    }
+    stats.iterations = iterations;
+    free(next_out); free(edge_bits); free(next_in);
+    if changed == 1 { return 0; }
+    return 1;
+}
+
+fn agx_ra_add_interference(slot: i32, live: *u64) {
+    var other: i32 = 0;
+    while other < g_lw_nslots {
+        if other != slot && agx_ra_bit_get(live, 0, other) == 1 {
+            agx_ra_bit_set(
+                g_agx_ra_interf, slot * g_agx_ra_words, other);
+            agx_ra_bit_set(
+                g_agx_ra_interf, other * g_agx_ra_words, slot);
+        }
+        other = other + 1;
+    }
+}
+
+fn agx_ra_add_clique(bits: *u64, base: i32) {
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        if agx_ra_bit_get(bits, base, slot) == 1 {
+            var other: i32 = slot + 1;
+            while other < g_lw_nslots {
+                if agx_ra_bit_get(bits, base, other) == 1 {
+                    agx_ra_bit_set(
+                        g_agx_ra_interf, slot * g_agx_ra_words, other);
+                    agx_ra_bit_set(
+                        g_agx_ra_interf, other * g_agx_ra_words, slot);
+                }
+                other = other + 1;
+            }
+        }
+        slot = slot + 1;
+    }
+}
+
+fn agx_ra_term_slots(block: i32, live: *u64) -> i32 {
+    let term: i32 = g_agx_cfg_blocks[block].term;
+    if term == AGX_CFG_TERM_BRANCH {
+        let cond: i32 = g_agx_cfg_blocks[block].term_value;
+        if g_eir[cond].kind == EIR_FOR {
+            agx_ra_bit_set(live, 0, g_eir[cond].a);
+            return agx_ra_expr_slots(g_eir[cond].c, live, 0, 0);
+        }
+        return agx_ra_expr_slots(cond, live, 0, 0);
+    }
+    if term == AGX_CFG_TERM_RETURN
+        && g_agx_cfg_blocks[block].term_value >= 0 {
+        return agx_ra_expr_slots(
+            g_agx_cfg_blocks[block].term_value, live, 0, 0);
+    }
+    return 1;
+}
+
+fn agx_ra_build_interference() -> i32 {
+    let live: *u64 = alloc(g_agx_ra_words);
+    var b: i32 = 0;
+    while b < g_agx_cfg_nblocks {
+        if g_agx_cfg_reachable[b] == 0 { b = b + 1; continue; }
+        let base: i32 = b * g_agx_ra_words;
+        agx_ra_add_clique(g_agx_ra_live_in, base);
+        agx_ra_add_clique(g_agx_ra_live_out, base);
+        var w: i32 = 0;
+        while w < g_agx_ra_words {
+            live[w] = g_agx_ra_live_out[base + w];
+            w = w + 1;
+        }
+        if agx_ra_term_slots(b, live) == 0 { free(live); return 0; }
+        var ii: i32 = g_agx_cfg_blocks[b].nitems - 1;
+        while ii >= 0 {
+            let item: i32 = g_agx_cfg_blocks[b].first_item + ii;
+            let stmt: i32 = g_agx_cfg_items[item].eir;
+            let kind: i32 = g_eir[stmt].kind;
+            if kind == EIR_LET || kind == EIR_SET {
+                let slot: i32 = g_eir[stmt].a;
+                agx_ra_add_interference(slot, live);
+                agx_ra_bit_clear(live, 0, slot);
+                if agx_ra_expr_slots(g_eir[stmt].b, live, 0, 0) == 0 {
+                    free(live); return 0;
+                }
+            } else if kind == EIR_INDEX_ST {
+                if agx_ra_expr_slots(g_eir[stmt].a, live, 0, 0) == 0
+                    || agx_ra_expr_slots(g_eir[stmt].b, live, 0, 0) == 0
+                    || agx_ra_expr_slots(g_eir[stmt].c, live, 0, 0) == 0 {
+                    free(live); return 0;
+                }
+            } else if kind == EIR_EXPR {
+                if agx_ra_expr_slots(g_eir[stmt].a, live, 0, 0) == 0 {
+                    free(live); return 0;
+                }
+            } else {
+                free(live); return 0;
+            }
+            ii = ii - 1;
+        }
+        var pi: i32 = g_agx_cfg_blocks[b].nparams - 1;
+        while pi >= 0 {
+            let pidx: i32 = g_agx_cfg_blocks[b].param_start + pi;
+            let slot: i32 = g_agx_cfg_params[pidx].slot;
+            agx_ra_add_interference(slot, live);
+            agx_ra_bit_clear(live, 0, slot);
+            pi = pi - 1;
+        }
+        w = 0;
+        while w < g_agx_ra_words {
+            if live[w] != g_agx_ra_live_in[base + w] {
+                free(live); return 0;
+            }
+            w = w + 1;
+        }
+        b = b + 1;
+    }
+    free(live);
+    return 1;
+}
+
+fn agx_ra_slot_active(slot: i32) -> i32 {
+    var b: i32 = 0;
+    while b < g_agx_cfg_nblocks {
+        let base: i32 = b * g_agx_ra_words;
+        if agx_ra_bit_get(g_agx_ra_use, base, slot) == 1
+            || agx_ra_bit_get(g_agx_ra_def, base, slot) == 1
+            || agx_ra_bit_get(g_agx_ra_live_in, base, slot) == 1
+            || agx_ra_bit_get(g_agx_ra_live_out, base, slot) == 1 { return 1; }
+        b = b + 1;
+    }
+    return 0;
+}
+
+fn agx_ra_type_width(type_off: i32) -> i32 {
+    if type_is_ptr(type_off) == 1 || type_is_array(type_off) == 1 { return 0; }
+    var bits: i32 = type_bits(type_off);
+    let fi: i32 = find_field_by_alias(type_off);
+    if fi >= 0 { bits = g_fields[fi].elem_bits; }
+    if bits > 0 && bits <= 32 { return 1; }
+    if bits > 32 && bits <= 64 { return 2; }
+    return 0 - 1;
+}
+
+fn agx_ra_ranges_overlap(a: i32, aw: i32, b: i32, bw: i32) -> i32 {
+    if a < b + bw && b < a + aw { return 1; }
+    return 0;
+}
+
+fn agx_ra_popcount(v_in: u64) -> i32 {
+    var v: u64 = v_in;
+    var n: i32 = 0;
+    while v != 0 { v = v & (v - 1); n = n + 1; }
+    return n;
+}
+
+fn agx_ra_live_regs(bits: *u64, base: i32) -> i32 {
+    var regs: u64 = 0;
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        if agx_ra_bit_get(bits, base, slot) == 1
+            && g_agx_ra_slot_reg[slot] >= 0 {
+            let reg: i32 = g_agx_ra_slot_reg[slot];
+            let width: i32 = g_agx_ra_slot_width[slot];
+            regs = regs | ((1 as u64) << (reg as u64));
+            if width == 2 {
+                regs = regs | ((1 as u64) << ((reg + 1) as u64));
+            }
+        }
+        slot = slot + 1;
+    }
+    return agx_ra_popcount(regs);
+}
+
+fn agx_ra_allocate_slots(outer_iter_slot: i32, stats: *AgxRaStats) -> i32 {
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        let width: i32 = agx_ra_type_width(g_agx_cfg_slot_types[slot]);
+        if width < 0 { return 0; }
+        g_agx_ra_slot_width[slot] = width;
+        slot = slot + 1;
+    }
+    if outer_iter_slot < 0 || outer_iter_slot >= g_lw_nslots
+        || g_agx_ra_slot_width[outer_iter_slot] != 1 { return 0; }
+    if agx_ra_slot_active(outer_iter_slot) == 1 {
+        g_agx_ra_slot_reg[outer_iter_slot] = 1;
+        stats.slot_regs = stats.slot_regs + 1;
+    }
+    slot = 0;
+    while slot < g_lw_nslots {
+        let width: i32 = g_agx_ra_slot_width[slot];
+        if slot != outer_iter_slot && width > 0
+            && agx_ra_slot_active(slot) == 1 {
+            var candidate: i32 = 2;
+            var chosen: i32 = 0 - 1;
+            while candidate + width - 1 <= 31 && chosen < 0 {
+                var ok: i32 = 1;
+                var other: i32 = 0;
+                while other < slot && ok == 1 {
+                    if g_agx_ra_slot_reg[other] >= 0
+                        && agx_ra_bit_get(
+                            g_agx_ra_interf,
+                            slot * g_agx_ra_words, other) == 1
+                        && agx_ra_ranges_overlap(
+                            candidate, width,
+                            g_agx_ra_slot_reg[other],
+                            g_agx_ra_slot_width[other]) == 1 { ok = 0; }
+                    other = other + 1;
+                }
+                if ok == 1 { chosen = candidate; }
+                candidate = candidate + 1;
+            }
+            if chosen < 0 { return 0; }
+            g_agx_ra_slot_reg[slot] = chosen;
+            stats.slot_regs = stats.slot_regs + width;
+        }
+        slot = slot + 1;
+    }
+    var b: i32 = 0;
+    while b < g_agx_cfg_nblocks {
+        let base: i32 = b * g_agx_ra_words;
+        let ni: i32 = agx_ra_live_regs(g_agx_ra_live_in, base);
+        let no: i32 = agx_ra_live_regs(g_agx_ra_live_out, base);
+        if ni > stats.max_live_regs { stats.max_live_regs = ni; }
+        if no > stats.max_live_regs { stats.max_live_regs = no; }
+        b = b + 1;
+    }
+    return 1;
+}
+
+fn agx_ra_reg_mask(reg: i32, width: i32) -> u64 {
+    if reg < 0 || width < 1 || width > 2 { return 0; }
+    var mask: u64 = (1 as u64) << (reg as u64);
+    if width == 2 {
+        mask = mask | ((1 as u64) << ((reg + 1) as u64));
+    }
+    return mask;
+}
+
+fn agx_ra_edge_occupied(edge: i32) -> u64 {
+    var mask: u64 = 3; // r0 wide-immediate scratch, r1 outer work-item id
+    let from: i32 = g_agx_cfg_edges[edge].from;
+    let to: i32 = g_agx_cfg_edges[edge].to;
+    let from_base: i32 = from * g_agx_ra_words;
+    let to_base: i32 = to * g_agx_ra_words;
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        if g_agx_ra_slot_reg[slot] >= 0
+            && (agx_ra_bit_get(g_agx_ra_live_out, from_base, slot) == 1
+                || agx_ra_bit_get(g_agx_ra_live_in, to_base, slot) == 1) {
+            mask = mask | agx_ra_reg_mask(
+                g_agx_ra_slot_reg[slot], g_agx_ra_slot_width[slot]);
+        }
+        slot = slot + 1;
+    }
+    return mask;
+}
+
+fn agx_ra_find_free_reg(occupied: u64, width: i32) -> i32 {
+    var reg: i32 = 2;
+    while reg + width - 1 <= 31 {
+        let mask: u64 = agx_ra_reg_mask(reg, width);
+        if mask != 0 && (occupied & mask) == 0 { return reg; }
+        reg = reg + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_ra_copy_push(edge: i32, dst_slot: i32,
+                    src_eir: i32, src_slot: i32) -> i32 {
+    if g_agx_ra_ncopies >= g_agx_ra_cap_copies {
+        g_agx_ra_cap_copies = g_agx_ra_cap_copies * 2;
+        g_agx_ra_copies = realloc(g_agx_ra_copies, g_agx_ra_cap_copies);
+    }
+    let i: i32 = g_agx_ra_ncopies;
+    g_agx_ra_ncopies = g_agx_ra_ncopies + 1;
+    g_agx_ra_copies[i].edge = edge;
+    g_agx_ra_copies[i].dst_slot = dst_slot;
+    g_agx_ra_copies[i].src_eir = src_eir;
+    g_agx_ra_copies[i].src_slot = src_slot;
+    g_agx_ra_copies[i].dst_reg = g_agx_ra_slot_reg[dst_slot];
+    g_agx_ra_copies[i].src_reg = 0 - 1;
+    g_agx_ra_copies[i].width = g_agx_ra_slot_width[dst_slot];
+    g_agx_ra_copies[i].order = 0 - 1;
+    g_agx_ra_copies[i].temp_reg = 0 - 1;
+    g_agx_ra_copies[i].save_order = 0 - 1;
+    return i;
+}
+
+fn agx_ra_copy_pending(start: i32, stop: i32) -> i32 {
+    var i: i32 = start;
+    while i < stop {
+        if g_agx_ra_copies[i].order < 0 { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn agx_ra_copy_safe(i: i32, start: i32, stop: i32) -> i32 {
+    let dst: i32 = g_agx_ra_copies[i].dst_reg;
+    let width: i32 = g_agx_ra_copies[i].width;
+    var j: i32 = start;
+    while j < stop {
+        if j != i && g_agx_ra_copies[j].order < 0
+            && agx_ra_ranges_overlap(
+                dst, width,
+                g_agx_ra_copies[j].src_reg,
+                g_agx_ra_copies[j].width) == 1 { return 0; }
+        j = j + 1;
+    }
+    return 1;
+}
+
+fn agx_ra_edge_expr_ok(e: i32, edge: i32, width: i32) -> i32 {
+    if e < 0 || e >= g_neir || width != 1 || agx_ir0_expr_ok(e, 0) == 0 {
+        return 0;
+    }
+    if g_eir[e].kind == EIR_CONST { return 1; }
+    if g_eir[e].kind == EIR_CAST {
+        return agx_ra_edge_expr_ok(g_eir[e].a, edge, width);
+    }
+    if g_eir[e].kind == EIR_BIN && g_eir[e].op == OP_ADD {
+        let lhs: i32 = g_eir[e].a;
+        let rhs: i32 = g_eir[e].b;
+        if g_eir[lhs].kind != EIR_LOCAL || g_eir[rhs].kind != EIR_CONST
+            || g_eir[rhs].ival >= 128 { return 0; }
+        let slot: i32 = g_eir[lhs].a;
+        let from: i32 = g_agx_cfg_edges[edge].from;
+        if slot < 0 || slot >= g_lw_nslots
+            || g_agx_ra_slot_width[slot] != width
+            || g_agx_ra_slot_reg[slot] < 0
+            || agx_ra_bit_get(
+                g_agx_ra_live_out, from * g_agx_ra_words, slot) == 0 {
+            return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+fn agx_ra_validate_schedule(start: i32, stop: i32) -> i32 {
+    let n: i32 = stop - start;
+    let reg_value: *i32 = alloc(32);
+    let want0: *i32 = alloc(n + 1);
+    let want1: *i32 = alloc(n + 1);
+    var r: i32 = 0;
+    while r < 32 { reg_value[r] = 100 + r; r = r + 1; }
+    var max_order: i32 = 0;
+    var i: i32 = start;
+    while i < stop {
+        let order: i32 = g_agx_ra_copies[i].order;
+        if order < 0 {
+            free(reg_value); free(want0); free(want1); return 0;
+        }
+        if order > max_order { max_order = order; }
+        var j: i32 = start;
+        while j < i {
+            if agx_ra_ranges_overlap(
+                g_agx_ra_copies[i].dst_reg, g_agx_ra_copies[i].width,
+                g_agx_ra_copies[j].dst_reg, g_agx_ra_copies[j].width) == 1 {
+                free(reg_value); free(want0); free(want1); return 0;
+            }
+            j = j + 1;
+        }
+        let wi: i32 = i - start;
+        if g_agx_ra_copies[i].src_slot >= 0 {
+            let original: i32 = g_agx_ra_slot_reg[g_agx_ra_copies[i].src_slot];
+            want0[wi] = reg_value[original];
+            want1[wi] = 0;
+            if g_agx_ra_copies[i].width == 2 {
+                want1[wi] = reg_value[original + 1];
+            }
+        } else {
+            let token: i32 = 1000 + wi * 2;
+            want0[wi] = token;
+            want1[wi] = token + 1;
+            reg_value[g_agx_ra_copies[i].src_reg] = token;
+            if g_agx_ra_copies[i].width == 2 {
+                reg_value[g_agx_ra_copies[i].src_reg + 1] = token + 1;
+            }
+        }
+        if g_agx_ra_copies[i].temp_reg >= 0 {
+            if g_agx_ra_copies[i].src_slot < 0 {
+                if g_agx_ra_copies[i].src_reg
+                    != g_agx_ra_copies[i].temp_reg {
+                    free(reg_value); free(want0); free(want1); return 0;
+                }
+            } else {
+                var consumed: i32 = 0;
+                j = start;
+                while j < stop {
+                    if g_agx_ra_copies[j].src_reg
+                        == g_agx_ra_copies[i].temp_reg { consumed = 1; }
+                    j = j + 1;
+                }
+                if consumed == 0 || g_agx_ra_copies[i].save_order <= 0 {
+                    free(reg_value); free(want0); free(want1); return 0;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    var expected: i32 = 1;
+    while expected <= max_order {
+        var seen: i32 = 0;
+        i = start;
+        while i < stop {
+            if g_agx_ra_copies[i].order == expected { seen = seen + 1; }
+            i = i + 1;
+        }
+        if seen != 1 {
+            free(reg_value); free(want0); free(want1); return 0;
+        }
+        i = start;
+        while i < stop {
+            if g_agx_ra_copies[i].save_order == expected {
+                let temp: i32 = g_agx_ra_copies[i].temp_reg;
+                let dst: i32 = g_agx_ra_copies[i].dst_reg;
+                reg_value[temp] = reg_value[dst];
+                if g_agx_ra_copies[i].width == 2 {
+                    reg_value[temp + 1] = reg_value[dst + 1];
+                }
+            }
+            i = i + 1;
+        }
+        i = start;
+        while i < stop {
+            if g_agx_ra_copies[i].order == expected {
+                let dst: i32 = g_agx_ra_copies[i].dst_reg;
+                let src: i32 = g_agx_ra_copies[i].src_reg;
+                reg_value[dst] = reg_value[src];
+                if g_agx_ra_copies[i].width == 2 {
+                    reg_value[dst + 1] = reg_value[src + 1];
+                }
+            }
+            i = i + 1;
+        }
+        expected = expected + 1;
+    }
+    i = start;
+    while i < stop {
+        let wi: i32 = i - start;
+        let dst: i32 = g_agx_ra_copies[i].dst_reg;
+        if reg_value[dst] != want0[wi]
+            || (g_agx_ra_copies[i].width == 2
+                && reg_value[dst + 1] != want1[wi]) {
+            free(reg_value); free(want0); free(want1); return 0;
+        }
+        i = i + 1;
+    }
+    free(reg_value); free(want0); free(want1);
+    return 1;
+}
+
+fn agx_ra_schedule_edge(edge: i32, start: i32, stop: i32,
+                        stats: *AgxRaStats) -> i32 {
+    var occupied: u64 = agx_ra_edge_occupied(edge);
+    var i: i32 = start;
+    while i < stop {
+        let dst_slot: i32 = g_agx_ra_copies[i].dst_slot;
+        let width: i32 = g_agx_ra_copies[i].width;
+        if width <= 0 || g_agx_ra_copies[i].dst_reg < 0 { return 0; }
+        occupied = occupied | agx_ra_reg_mask(
+            g_agx_ra_copies[i].dst_reg, width);
+        if g_agx_ra_copies[i].src_slot >= 0 {
+            let src_slot: i32 = g_agx_ra_copies[i].src_slot;
+            if g_agx_ra_slot_width[src_slot] != width
+                || g_agx_ra_slot_reg[src_slot] < 0 { return 0; }
+            g_agx_ra_copies[i].src_reg = g_agx_ra_slot_reg[src_slot];
+        } else {
+            if agx_ra_edge_expr_ok(
+                g_agx_ra_copies[i].src_eir, edge, width) == 0 { return 0; }
+            let temp: i32 = agx_ra_find_free_reg(occupied, width);
+            if temp < 0 { return 0; }
+            g_agx_ra_copies[i].src_reg = temp;
+            g_agx_ra_copies[i].temp_reg = temp;
+            occupied = occupied | agx_ra_reg_mask(temp, width);
+            stats.repairs = stats.repairs + 1;
+        }
+        if g_agx_ra_copies[i].src_reg == g_agx_ra_copies[i].dst_reg {
+            g_agx_ra_copies[i].order = 0;
+        }
+        i = i + 1;
+    }
+    var order: i32 = 1;
+    while agx_ra_copy_pending(start, stop) == 1 {
+        var progress: i32 = 0;
+        i = start;
+        while i < stop {
+            if g_agx_ra_copies[i].order < 0
+                && agx_ra_copy_safe(i, start, stop) == 1 {
+                g_agx_ra_copies[i].order = order;
+                order = order + 1;
+                progress = 1;
+            }
+            i = i + 1;
+        }
+        if progress == 0 {
+            var cycle: i32 = start;
+            while cycle < stop && g_agx_ra_copies[cycle].order >= 0 {
+                cycle = cycle + 1;
+            }
+            if cycle >= stop { return 0; }
+            let width: i32 = g_agx_ra_copies[cycle].width;
+            let saved_reg: i32 = g_agx_ra_copies[cycle].dst_reg;
+            let scratch: i32 = agx_ra_find_free_reg(occupied, width);
+            if scratch < 0 { return 0; }
+            occupied = occupied | agx_ra_reg_mask(scratch, width);
+            g_agx_ra_copies[cycle].temp_reg = scratch;
+            g_agx_ra_copies[cycle].save_order = order;
+            stats.repairs = stats.repairs + 1;
+            i = start;
+            while i < stop {
+                if g_agx_ra_copies[i].order < 0
+                    && g_agx_ra_copies[i].src_reg == saved_reg
+                    && g_agx_ra_copies[i].width == width {
+                    g_agx_ra_copies[i].src_reg = scratch;
+                }
+                i = i + 1;
+            }
+        }
+    }
+    return agx_ra_validate_schedule(start, stop);
+}
+
+fn agx_ra_build_copies(stats: *AgxRaStats) -> i32 {
+    var edge: i32 = 0;
+    while edge < g_agx_cfg_nedges {
+        let start: i32 = g_agx_ra_ncopies;
+        let pred: i32 = g_agx_cfg_edges[edge].from;
+        let succ: i32 = g_agx_cfg_edges[edge].to;
+        var pi: i32 = 0;
+        while pi < g_agx_cfg_blocks[succ].nparams {
+            let pidx: i32 = g_agx_cfg_blocks[succ].param_start + pi;
+            let value: i32 = agx_ra_incoming_value(pidx, pred);
+            if value < 0 || value >= g_neir { return 0; }
+            var src_slot: i32 = 0 - 1;
+            if g_eir[value].kind == EIR_LOCAL { src_slot = g_eir[value].a; }
+            let copy: i32 = agx_ra_copy_push(
+                edge, g_agx_cfg_params[pidx].slot, value, src_slot);
+            if g_agx_ra_copies[copy].width <= 0 { return 0; }
+            pi = pi + 1;
+        }
+        let stop: i32 = g_agx_ra_ncopies;
+        if stop > start
+            && agx_ra_schedule_edge(edge, start, stop, stats) == 0 { return 0; }
+        edge = edge + 1;
+    }
+    stats.copies = g_agx_ra_ncopies;
+    return 1;
+}
+
+fn agx_ra_copy_cycle_selftest(stats: *AgxRaStats) -> i32 {
+    var a: i32 = 0 - 1;
+    var b: i32 = 0 - 1;
+    var slot: i32 = 0;
+    while slot < g_lw_nslots {
+        if g_agx_ra_slot_width[slot] == 1
+            && g_agx_ra_slot_reg[slot] >= 2 {
+            if a < 0 { a = slot; }
+            else if b < 0 { b = slot; }
+        }
+        slot = slot + 1;
+    }
+    if a < 0 || b < 0 || g_agx_cfg_nedges == 0 { return 0; }
+    let saved_ncopies: i32 = g_agx_ra_ncopies;
+    let saved_repairs: i32 = stats.repairs;
+    let ea: i32 = agx_ir0_local_value(
+        b, g_agx_cfg_slot_types[b], 0, 0);
+    let eb: i32 = agx_ir0_local_value(
+        a, g_agx_cfg_slot_types[a], 0, 0);
+    let start: i32 = g_agx_ra_ncopies;
+    agx_ra_copy_push(0, a, ea, b);
+    agx_ra_copy_push(0, b, eb, a);
+    let stop: i32 = g_agx_ra_ncopies;
+    let ok: i32 = agx_ra_schedule_edge(0, start, stop, stats);
+    if stats.repairs != saved_repairs + 1 {
+        g_agx_ra_ncopies = saved_ncopies;
+        stats.repairs = saved_repairs;
+        return 0;
+    }
+    g_agx_ra_ncopies = saved_ncopies;
+    stats.repairs = saved_repairs;
+    return ok;
+}
+
+fn agx_ra_phi_selftest() -> i32 {
+    var slots: [i32; 3] = 0;
+    var n: i32 = 0;
+    var slot: i32 = 0;
+    while slot < g_lw_nslots && n < 3 {
+        if g_agx_ra_slot_width[slot] == 1
+            && g_agx_ra_slot_reg[slot] >= 0 {
+            slots[n] = slot;
+            n = n + 1;
+        }
+        slot = slot + 1;
+    }
+    if n != 3 { return 0; }
+    let dst: *i32 = alloc(2);
+    let src: *i32 = alloc(2);
+    let bits: *u64 = alloc(g_agx_ra_words);
+    var w: i32 = 0;
+    while w < g_agx_ra_words { bits[w] = 0; w = w + 1; }
+    dst[0] = slots[0]; dst[1] = slots[1];
+    src[0] = agx_ir0_local_value(
+        slots[1], g_agx_cfg_slot_types[slots[1]], 0, 0);
+    src[1] = agx_ir0_local_value(
+        slots[2], g_agx_cfg_slot_types[slots[2]], 0, 0);
+    agx_ra_bit_set(bits, 0, slots[0]);
+    agx_ra_bit_set(bits, 0, slots[1]);
+    let transferred: i32 = agx_ra_phi_transfer(dst, src, 2, bits);
+    let ok: i32 = transferred
+        & (1 - agx_ra_bit_get(bits, 0, slots[0]))
+        & agx_ra_bit_get(bits, 0, slots[1])
+        & agx_ra_bit_get(bits, 0, slots[2]);
+    free(dst); free(src); free(bits);
+    return ok;
+}
+
+fn agx_ra_vm_update_pressure(owner: *i32, stats: *AgxRaStats) {
+    var n: i32 = 0;
+    var r: i32 = 2;
+    while r <= 31 {
+        if owner[r] != 0 - 1 { n = n + 1; }
+        r = r + 1;
+    }
+    if n > stats.vm_max_regs { stats.vm_max_regs = n; }
+}
+
+fn agx_ra_vm_alloc_reg(owner: *i32, stats: *AgxRaStats) -> i32 {
+    var r: i32 = 2;
+    while r <= 31 {
+        if owner[r] == (0 - 1) {
+            owner[r] = 0 - 2;
+            agx_ra_vm_update_pressure(owner, stats);
+            return r;
+        }
+        r = r + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_ra_vm_alloc_pair(owner: *i32, stats: *AgxRaStats) -> i32 {
+    var r: i32 = 2;
+    while r <= 30 {
+        if owner[r] == (0 - 1) && owner[r + 1] == (0 - 1) {
+            owner[r] = 0 - 2;
+            owner[r + 1] = 0 - 2;
+            stats.vm_pairs = stats.vm_pairs + 1;
+            agx_ra_vm_update_pressure(owner, stats);
+            return r;
+        }
+        r = r + 1;
+    }
+    return 0 - 1;
+}
+
+fn agx_ra_vm_prepare_use(v: i32, uses: *i32, phys: *i32,
+                         owner: *i32, stats: *AgxRaStats) -> AgxUse {
+    if v < 0 || v >= g_agx_vnext || phys[v] < 0 || uses[v] <= 0 {
+        return AgxUse { reg: 0 - 2, virt: 0 - 1 };
+    }
+    let source: i32 = phys[v];
+    if uses[v] > 1 {
+        let copy: i32 = agx_ra_vm_alloc_reg(owner, stats);
+        if copy < 0 { return AgxUse { reg: 0 - 1, virt: 0 - 1 }; }
+        uses[v] = uses[v] - 1;
+        stats.repairs = stats.repairs + 1;
+        return AgxUse { reg: copy, virt: 0 - 1 };
+    }
+    uses[v] = uses[v] - 1;
+    return AgxUse { reg: source, virt: v };
+}
+
+fn agx_ra_vm_release_use(u: AgxUse, phys: *i32, owner: *i32) {
+    if u.reg < 0 { return; }
+    owner[u.reg] = 0 - 1;
+    if u.virt >= 0 { phys[u.virt] = 0 - 1; }
+}
+
+fn agx_ra_vm_release_dead(v: i32, uses: *i32,
+                          phys: *i32, owner: *i32) {
+    if v >= 0 && uses[v] == 0 && phys[v] >= 0 {
+        owner[phys[v]] = 0 - 1;
+        phys[v] = 0 - 1;
+    }
+}
+
+fn agx_ra_vm_use_valid(v: i32, defined: *i32) -> i32 {
+    if v < 0 || v >= g_agx_vnext || defined[v] == 0 { return 0; }
+    return 1;
+}
+
+fn agx_ra_vm_def_valid(v: i32, defined: *i32) -> i32 {
+    if v < 0 || v >= g_agx_vnext || defined[v] != 0 { return 0; }
+    defined[v] = 1;
+    return 1;
+}
+
+fn agx_ra_vm_shadow(stats: *AgxRaStats) -> i32 {
+    if g_agx_vnext <= 0 || g_agx_nops <= 0 { return 0 - 1; }
+    let uses: *i32 = alloc(g_agx_vnext);
+    let defined: *i32 = alloc(g_agx_vnext);
+    let phys: *i32 = alloc(g_agx_vnext);
+    let owner: *i32 = alloc(32);
+    var i: i32 = 0;
+    while i < g_agx_vnext {
+        uses[i] = 0; defined[i] = 0; phys[i] = 0 - 1;
+        i = i + 1;
+    }
+    i = 0;
+    while i < 32 { owner[i] = 0 - 1; i = i + 1; }
+    owner[0] = 0 - 3; owner[1] = 0 - 3;
+    var ok: i32 = 1;
+    i = 0;
+    while i < g_agx_nops && ok == 1 {
+        let op: AgxOp = g_agx_ops[i];
+        if op.kind == AGX_OP_IMM || op.kind == AGX_OP_TID {
+            if agx_ra_vm_def_valid(op.dst, defined) == 0
+                || op.dst2 >= 0 || op.a >= 0 || op.b >= 0 { ok = 0; }
+        } else if op.kind == AGX_OP_LOAD {
+            if op.a >= 0 {
+                if agx_ra_vm_use_valid(op.a, defined) == 0 { ok = 0; }
+                else { uses[op.a] = uses[op.a] + 1; }
+            }
+            if agx_ra_vm_def_valid(op.dst, defined) == 0
+                || op.dst2 >= 0 || op.b >= 0 { ok = 0; }
+        } else if op.kind == AGX_OP_ADD_IMM || op.kind == AGX_OP_SHR
+            || op.kind == AGX_OP_SHL || op.kind == AGX_OP_EXTRACT {
+            if agx_ra_vm_use_valid(op.a, defined) == 0 { ok = 0; }
+            else { uses[op.a] = uses[op.a] + 1; }
+            if agx_ra_vm_def_valid(op.dst, defined) == 0
+                || op.dst2 >= 0 || op.b >= 0 { ok = 0; }
+        } else if op.kind == AGX_OP_ADD || op.kind == AGX_OP_SUB {
+            if agx_ra_vm_use_valid(op.a, defined) == 0
+                || agx_ra_vm_use_valid(op.b, defined) == 0 { ok = 0; }
+            else {
+                uses[op.a] = uses[op.a] + 1;
+                uses[op.b] = uses[op.b] + 1;
+            }
+            if agx_ra_vm_def_valid(op.dst, defined) == 0
+                || op.dst2 >= 0 { ok = 0; }
+        } else if op.kind == AGX_OP_MUL {
+            if agx_ra_vm_use_valid(op.a, defined) == 0
+                || agx_ra_vm_use_valid(op.b, defined) == 0 { ok = 0; }
+            else {
+                uses[op.a] = uses[op.a] + 1;
+                uses[op.b] = uses[op.b] + 1;
+            }
+            if agx_ra_vm_def_valid(op.dst, defined) == 0
+                || op.dst2 != op.dst + 1
+                || agx_ra_vm_def_valid(op.dst2, defined) == 0 { ok = 0; }
+        } else if op.kind == AGX_OP_STORE {
+            if agx_ra_vm_use_valid(op.a, defined) == 0 { ok = 0; }
+            else { uses[op.a] = uses[op.a] + 1; }
+            if op.b >= 0 {
+                if agx_ra_vm_use_valid(op.b, defined) == 0 { ok = 0; }
+                else { uses[op.b] = uses[op.b] + 1; }
+            }
+            if op.dst >= 0 || op.dst2 >= 0 { ok = 0; }
+        } else {
+            ok = 0;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < g_agx_vnext {
+        if defined[i] != 1 { ok = 0; }
+        i = i + 1;
+    }
+    if ok == 0 {
+        free(uses); free(defined); free(phys); free(owner);
+        return 0 - 1;
+    }
+    var nloads: i32 = 0;
+    var return_live: i32 = 0;
+    var broken: i32 = 0;
+    i = 0;
+    while i < g_agx_nops && ok == 1 {
+        let op: AgxOp = g_agx_ops[i];
+        if return_live != 0 { ok = 0; broken = 1; }
+        if op.kind == AGX_OP_IMM || op.kind == AGX_OP_TID {
+            let d: i32 = agx_ra_vm_alloc_reg(owner, stats);
+            if d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_ra_vm_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_LOAD {
+            var ui: AgxUse = AgxUse { reg: 0 - 1, virt: 0 - 1 };
+            if op.a >= 0 {
+                ui = agx_ra_vm_prepare_use(op.a, uses, phys, owner, stats);
+            }
+            let d: i32 = agx_ra_vm_alloc_reg(owner, stats);
+            let slot: i32 = agx_device_return_slot(nloads);
+            if slot < 0 || ui.reg == (0 - 2) { ok = 0; broken = 1; }
+            if d < 0 || (op.a >= 0 && ui.reg == (0 - 1)) { ok = 0; }
+            if ok == 1 {
+                return_live = 1;
+                phys[op.dst] = d; owner[d] = op.dst;
+                // The return slot is extracted before any later instruction.
+                return_live = 0;
+                if op.a >= 0 { agx_ra_vm_release_use(ui, phys, owner); }
+                nloads = nloads + 1;
+                agx_ra_vm_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_ADD_IMM {
+            let src: i32 = phys[op.a];
+            var d: i32 = 0 - 1;
+            if src < 0 || op.imm >= 128 || uses[op.a] <= 0 {
+                ok = 0; broken = 1;
+            } else {
+                d = agx_ra_vm_alloc_reg(owner, stats);
+                if d < 0 { ok = 0; }
+            }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                uses[op.a] = uses[op.a] - 1;
+                agx_ra_vm_release_dead(op.a, uses, phys, owner);
+                agx_ra_vm_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_ADD || op.kind == AGX_OP_SUB {
+            let ua: AgxUse = agx_ra_vm_prepare_use(
+                op.a, uses, phys, owner, stats);
+            let ub: AgxUse = agx_ra_vm_prepare_use(
+                op.b, uses, phys, owner, stats);
+            let d: i32 = agx_ra_vm_alloc_reg(owner, stats);
+            if ua.reg == (0 - 2) || ub.reg == (0 - 2) {
+                ok = 0; broken = 1;
+            }
+            if ua.reg == (0 - 1) || ub.reg == (0 - 1) || d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_ra_vm_release_use(ua, phys, owner);
+                agx_ra_vm_release_use(ub, phys, owner);
+                agx_ra_vm_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_MUL {
+            let ua: AgxUse = agx_ra_vm_prepare_use(
+                op.a, uses, phys, owner, stats);
+            let ub: AgxUse = agx_ra_vm_prepare_use(
+                op.b, uses, phys, owner, stats);
+            let d: i32 = agx_ra_vm_alloc_pair(owner, stats);
+            if ua.reg == (0 - 2) || ub.reg == (0 - 2) {
+                ok = 0; broken = 1;
+            }
+            if ua.reg == (0 - 1) || ub.reg == (0 - 1) || d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; phys[op.dst2] = d + 1;
+                owner[d] = op.dst; owner[d + 1] = op.dst2;
+                agx_ra_vm_release_use(ua, phys, owner);
+                agx_ra_vm_release_use(ub, phys, owner);
+                agx_ra_vm_release_dead(op.dst, uses, phys, owner);
+                agx_ra_vm_release_dead(op.dst2, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_SHR || op.kind == AGX_OP_SHL
+            || op.kind == AGX_OP_EXTRACT {
+            let ua: AgxUse = agx_ra_vm_prepare_use(
+                op.a, uses, phys, owner, stats);
+            let d: i32 = agx_ra_vm_alloc_reg(owner, stats);
+            if ua.reg == (0 - 2) { ok = 0; broken = 1; }
+            if ua.reg == (0 - 1) || d < 0 { ok = 0; }
+            if ok == 1 {
+                phys[op.dst] = d; owner[d] = op.dst;
+                agx_ra_vm_release_use(ua, phys, owner);
+                agx_ra_vm_release_dead(op.dst, uses, phys, owner);
+            }
+        } else if op.kind == AGX_OP_STORE {
+            let ua: AgxUse = agx_ra_vm_prepare_use(
+                op.a, uses, phys, owner, stats);
+            var ui: AgxUse = AgxUse { reg: 0 - 1, virt: 0 - 1 };
+            if op.b >= 0 {
+                ui = agx_ra_vm_prepare_use(op.b, uses, phys, owner, stats);
+            }
+            if ua.reg == (0 - 2) || ui.reg == (0 - 2) {
+                ok = 0; broken = 1;
+            }
+            if ua.reg == (0 - 1)
+                || (op.b >= 0 && ui.reg == (0 - 1)) { ok = 0; }
+            if ok == 1 {
+                agx_ra_vm_release_use(ua, phys, owner);
+                if op.b >= 0 { agx_ra_vm_release_use(ui, phys, owner); }
+            }
+        } else {
+            ok = 0; broken = 1;
+        }
+        i = i + 1;
+    }
+    if return_live != 0 { broken = 1; }
+    if ok == 1 {
+        i = 0;
+        while i < g_agx_vnext {
+            if uses[i] != 0 || phys[i] != (0 - 1) { broken = 1; }
+            i = i + 1;
+        }
+        i = 2;
+        while i < 32 {
+            if owner[i] != (0 - 1) { broken = 1; }
+            i = i + 1;
+        }
+    }
+    stats.loads = nloads;
+    free(uses); free(defined); free(phys); free(owner);
+    if broken == 1 { return 0 - 1; }
+    return ok;
+}
+
+fn agx_ra_loop_update_pressure(used: *i32, stats: *AgxRaStats) {
+    var n: i32 = 0;
+    var r: i32 = 0;
+    while r < 32 { if used[r] != 0 { n = n + 1; } r = r + 1; }
+    if n > stats.vm_max_regs { stats.vm_max_regs = n; }
+}
+
+fn agx_ra_loop_take(used: *i32, ok: *i32,
+                    stats: *AgxRaStats) -> i32 {
+    var reg: i32 = 0;
+    while reg < 32 {
+        if agx_loop_reg_allowed(reg) == 1 && used[reg] == 0 {
+            used[reg] = 1;
+            agx_ra_loop_update_pressure(used, stats);
+            return reg;
+        }
+        reg = reg + 1;
+    }
+    ok[0] = 0;
+    return 0 - 1;
+}
+
+fn agx_ra_loop_take_small(used: *i32, ok: *i32,
+                          stats: *AgxRaStats) -> i32 {
+    var reg: i32 = 0;
+    while reg <= 15 {
+        if agx_loop_reg_allowed(reg) == 1 && used[reg] == 0 {
+            used[reg] = 1;
+            agx_ra_loop_update_pressure(used, stats);
+            return reg;
+        }
+        reg = reg + 1;
+    }
+    ok[0] = 0;
+    return 0 - 1;
+}
+
+fn agx_ra_loop_take_pair(used: *i32, ok: *i32,
+                         stats: *AgxRaStats) -> AgxPair {
+    var reg: i32 = 0;
+    while reg < 31 {
+        if agx_loop_reg_allowed(reg) == 1
+            && agx_loop_reg_allowed(reg + 1) == 1
+            && used[reg] == 0 && used[reg + 1] == 0 {
+            used[reg] = 1; used[reg + 1] = 1;
+            stats.vm_pairs = stats.vm_pairs + 1;
+            agx_ra_loop_update_pressure(used, stats);
+            return AgxPair { lo: reg, hi: reg + 1 };
+        }
+        reg = reg + 1;
+    }
+    ok[0] = 0;
+    return AgxPair { lo: 0 - 1, hi: 0 - 1 };
+}
+
+fn agx_ra_loop_release(reg: i32, used: *i32, ok: *i32) {
+    if reg < 0 || reg >= 32 || agx_loop_reg_allowed(reg) == 0
+        || used[reg] == 0 { ok[0] = 0; return; }
+    used[reg] = 0;
+}
+
+fn agx_ra_loop_copy(src: i32, used: *i32, ok: *i32,
+                    stats: *AgxRaStats) -> i32 {
+    var source_ok: i32 = 0;
+    if src == 5 || src == 7 || src == 8 || src == 9 { source_ok = 1; }
+    if src >= 0 && src < 32 && agx_loop_reg_allowed(src) == 1
+        && used[src] == 1 { source_ok = 1; }
+    if source_ok == 0 { ok[0] = 0; return 0 - 1; }
+    let dst: i32 = agx_ra_loop_take(used, ok, stats);
+    if dst >= 0 { stats.repairs = stats.repairs + 1; }
+    return dst;
+}
+
+fn agx_ra_loop_load(used: *i32, ok: *i32,
+                    stats: *AgxRaStats) -> i32 {
+    let zero: i32 = agx_ra_loop_take_small(used, ok, stats);
+    let dst: i32 = agx_ra_loop_take(used, ok, stats);
+    if zero >= 0 { agx_ra_loop_release(zero, used, ok); }
+    if dst >= 0 { stats.loads = stats.loads + 1; }
+    return dst;
+}
+
+fn agx_ra_loop_binary(a: i32, b: i32, used: *i32, ok: *i32,
+                      stats: *AgxRaStats) -> i32 {
+    let dst: i32 = agx_ra_loop_take(used, ok, stats);
+    agx_ra_loop_release(a, used, ok);
+    agx_ra_loop_release(b, used, ok);
+    return dst;
+}
+
+fn agx_ra_loop_unary(src: i32, used: *i32, ok: *i32,
+                     stats: *AgxRaStats) -> i32 {
+    let dst: i32 = agx_ra_loop_take(used, ok, stats);
+    agx_ra_loop_release(src, used, ok);
+    return dst;
+}
+
+fn agx_ra_loop_mul(a: i32, b: i32, used: *i32, ok: *i32,
+                   stats: *AgxRaStats) -> AgxPair {
+    let product: AgxPair = agx_ra_loop_take_pair(used, ok, stats);
+    agx_ra_loop_release(a, used, ok);
+    agx_ra_loop_release(b, used, ok);
+    return product;
+}
+
+fn agx_ra_loop_redc(hi: i32, lo: i32, used: *i32, ok: *i32,
+                    stats: *AgxRaStats) -> i32 {
+    let lo_m: i32 = agx_ra_loop_copy(lo, used, ok, stats);
+    let lo_half_src: i32 = agx_ra_loop_copy(lo, used, ok, stats);
+    let pinv: i32 = agx_ra_loop_copy(8, used, ok, stats);
+    let m_pair: AgxPair = agx_ra_loop_mul(lo_m, pinv, used, ok, stats);
+    agx_ra_loop_release(m_pair.hi, used, ok);
+    let p0: i32 = agx_ra_loop_copy(7, used, ok, stats);
+    let mp: AgxPair = agx_ra_loop_mul(m_pair.lo, p0, used, ok, stats);
+
+    let mp_half_src: i32 = agx_ra_loop_copy(mp.lo, used, ok, stats);
+    let lo_half: i32 = agx_ra_loop_unary(lo_half_src, used, ok, stats);
+    let mp_half: i32 = agx_ra_loop_unary(mp_half_src, used, ok, stats);
+    let lo_bit: i32 = agx_ra_loop_unary(lo, used, ok, stats);
+    let mp_bit: i32 = agx_ra_loop_unary(mp.lo, used, ok, stats);
+    let halves: i32 = agx_ra_loop_binary(
+        lo_half, mp_half, used, ok, stats);
+    let bottoms: i32 = agx_ra_loop_binary(
+        lo_bit, mp_bit, used, ok, stats);
+    let bottom_carry: i32 = agx_ra_loop_unary(bottoms, used, ok, stats);
+    let carry_sum: i32 = agx_ra_loop_binary(
+        halves, bottom_carry, used, ok, stats);
+    let carry: i32 = agx_ra_loop_unary(carry_sum, used, ok, stats);
+
+    let high_sum: i32 = agx_ra_loop_binary(hi, mp.hi, used, ok, stats);
+    let total: i32 = agx_ra_loop_binary(high_sum, carry, used, ok, stats);
+    let p1: i32 = agx_ra_loop_copy(7, used, ok, stats);
+    let diff: i32 = agx_ra_loop_binary(total, p1, used, ok, stats);
+    let diff_copy: i32 = agx_ra_loop_copy(diff, used, ok, stats);
+    let negative: i32 = agx_ra_loop_unary(diff_copy, used, ok, stats);
+    let p2: i32 = agx_ra_loop_copy(7, used, ok, stats);
+    let correction: AgxPair = agx_ra_loop_mul(
+        negative, p2, used, ok, stats);
+    agx_ra_loop_release(correction.hi, used, ok);
+    return agx_ra_loop_binary(diff, correction.lo, used, ok, stats);
+}
+
+fn agx_ra_loop_montgomery_mul(a: i32, b: i32, used: *i32, ok: *i32,
+                              stats: *AgxRaStats) -> i32 {
+    let product: AgxPair = agx_ra_loop_mul(a, b, used, ok, stats);
+    let first: i32 = agx_ra_loop_redc(
+        product.hi, product.lo, used, ok, stats);
+    let r2: i32 = agx_ra_loop_copy(9, used, ok, stats);
+    let scaled: AgxPair = agx_ra_loop_mul(first, r2, used, ok, stats);
+    return agx_ra_loop_redc(scaled.hi, scaled.lo, used, ok, stats);
+}
+
+fn agx_ra_loop_field_add(a: i32, b: i32, used: *i32, ok: *i32,
+                         stats: *AgxRaStats) -> i32 {
+    let total: i32 = agx_ra_loop_binary(a, b, used, ok, stats);
+    let p0: i32 = agx_ra_loop_copy(7, used, ok, stats);
+    let diff: i32 = agx_ra_loop_binary(total, p0, used, ok, stats);
+    let diff_copy: i32 = agx_ra_loop_copy(diff, used, ok, stats);
+    let negative: i32 = agx_ra_loop_unary(diff_copy, used, ok, stats);
+    let p1: i32 = agx_ra_loop_copy(7, used, ok, stats);
+    let correction: AgxPair = agx_ra_loop_mul(
+        negative, p1, used, ok, stats);
+    agx_ra_loop_release(correction.hi, used, ok);
+    return agx_ra_loop_binary(diff, correction.lo, used, ok, stats);
+}
+
+fn agx_ra_counted_shadow(p: u64, stats: *AgxRaStats) -> i32 {
+    if p != 2013265921 && p != 1811939329 && p != 2130706433 { return 0; }
+    let used: *i32 = alloc(32);
+    let ok: *i32 = alloc(1);
+    ok[0] = 1;
+    var i: i32 = 0;
+    while i < 32 { used[i] = 0; i = i + 1; }
+    let x: i32 = agx_ra_loop_load(used, ok, stats);
+    let w: i32 = agx_ra_loop_load(used, ok, stats);
+    let product: i32 = agx_ra_loop_montgomery_mul(
+        x, w, used, ok, stats);
+    let acc_copy: i32 = agx_ra_loop_copy(5, used, ok, stats);
+    let result: i32 = agx_ra_loop_field_add(
+        acc_copy, product, used, ok, stats);
+    agx_ra_loop_release(result, used, ok);
+    i = 0;
+    while i < 32 {
+        if used[i] != 0 { ok[0] = 0; }
+        i = i + 1;
+    }
+    let outcome: i32 = ok[0];
+    free(used); free(ok);
+    return outcome;
+}
+
+fn agx_ra0_report(shape_kind: i32, stats: *AgxRaStats) {
+    wr(2, "agx-ra0: shape="); wr_int(2, shape_kind as i64);
+    wr(2, " blocks="); wr_int(2, g_agx_cfg_nblocks as i64);
+    wr(2, " iterations="); wr_int(2, stats.iterations as i64);
+    wr(2, " copies="); wr_int(2, stats.copies as i64);
+    wr(2, " repairs="); wr_int(2, stats.repairs as i64);
+    wr(2, " slot-regs="); wr_int(2, stats.slot_regs as i64);
+    wr(2, " live-regs="); wr_int(2, stats.max_live_regs as i64);
+    wr(2, " vm-regs="); wr_int(2, stats.vm_max_regs as i64);
+    wr(2, " pairs="); wr_int(2, stats.vm_pairs as i64);
+    wr(2, " loads="); wr_int(2, stats.loads as i64);
+    wr(2, " outcome="); wr_int(2, stats.outcome as i64);
+    wr(2, "\n");
+}
+
+fn agx_ra0_run(shape: *AgxWorkerShape, loop_name: i32,
+               outer_iter_slot: i32) -> i32 {
+    let stats: *AgxRaStats = alloc(1);
+    stats.iterations = 0;
+    stats.copies = 0;
+    stats.repairs = 0;
+    stats.slot_regs = 0;
+    stats.max_live_regs = 0;
+    stats.vm_max_regs = 0;
+    stats.vm_pairs = 0;
+    stats.loads = 0;
+    stats.outcome = 0;
+    agx_ra_reset();
+    if agx_ra_build_use_def() == 0
+        || agx_ra_liveness(stats) == 0
+        || agx_ra_build_interference() == 0 {
+        free(stats);
+        return 0;
+    }
+    if agx_ra_allocate_slots(outer_iter_slot, stats) == 0
+        || agx_ra_build_copies(stats) == 0 {
+        free(stats);
+        return 0;
+    }
+    if shape.kind == 4 {
+        if agx_ra_copy_cycle_selftest(stats) == 0
+            || agx_ra_phi_selftest() == 0 {
+            free(stats);
+            return 0;
+        }
+    }
+    let p: u64 = g_fields[shape.field_index].prime;
+    var machine_ok: i32 = 0;
+    if shape.kind == 4 {
+        machine_ok = agx_ra_counted_shadow(p, stats);
+    } else {
+        if agx_build_worker_ops(shape, loop_name) == 0 {
+            free(stats);
+            return 0;
+        }
+        machine_ok = agx_ra_vm_shadow(stats);
+        if machine_ok < 0 { free(stats); return 0; }
+    }
+    let legacy_ok: i32 = agx_build_worker_code(shape, loop_name);
+    if machine_ok != legacy_ok {
+        free(stats);
+        return 0;
+    }
+    stats.outcome = legacy_ok;
+    agx_ra0_report(shape.kind, stats);
+    free(stats);
+    return 1;
+}
+
 fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
                          caps_base: i32, iter_width: i32,
-                         shape_kind: i32) -> i32 {
+                         shape: *AgxWorkerShape) -> i32 {
     agx_ir0_ensure_arenas();
 
     let saved_neir: i32 = g_neir;
@@ -24839,7 +26343,7 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     }
     var iter_type: i32 = str_intern("i32");
     if iter_width == 64 { iter_type = str_intern("i64"); }
-    lw_add(loop_name, iter_type);
+    let outer_iter_slot: i32 = lw_add(loop_name, iter_type);
     let root: i32 = lower_stmt(body);
     lw_pop_scope();
 
@@ -24850,7 +26354,10 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
     if last >= 0 { agx_cfg_set_return(last, 0 - 1); }
     if g_agx_cfg_nregions != 0 { agx_ir0_fail(); }
     agx_cfg_finalize();
-    let ok: i32 = agx_cfg_validate(shape_kind);
+    var ok: i32 = agx_cfg_validate(shape.kind);
+    if ok == 1 && g_agx_ra0_shadow == 1 {
+        ok = agx_ra0_run(shape, loop_name, outer_iter_slot);
+    }
 
     g_neir = saved_neir;
     g_nevargs = saved_nevargs;
@@ -24871,6 +26378,15 @@ fn agx_ir0_shadow_worker(body: i32, loop_name: i32, ncaps: i32,
 fn agx_ir0_require(ok: i32, body: i32) {
     if ok == 1 { return; }
     wr(2, "agx-ir0-internal: shadow CFG validation failed at ");
+    wr(2, g_src_name); wr(2, ":");
+    wr_int(2, g_nodes[body].line as i64); wr(2, ":");
+    wr_int(2, g_nodes[body].col as i64); wr(2, "\n");
+    exit(98);
+}
+
+fn agx_ra0_require(ok: i32, body: i32) {
+    if ok == 1 { return; }
+    wr(2, "agx-ra0-internal: shadow allocation validation failed at ");
     wr(2, g_src_name); wr(2, ":");
     wr_int(2, g_nodes[body].line as i64); wr(2, ":");
     wr_int(2, g_nodes[body].col as i64); wr(2, "\n");
@@ -29547,6 +31063,10 @@ fn main(argc: i32, argv: **u8) {
             // Validate classified workers through EIR + private CFG without
             // changing pfor/AGX admission or emitted host/device bytes.
             g_agx_ir0_shadow = 1;
+        } else if str_eq(argv[ai], "--agx-ra0-shadow") == 1 {
+            // Run IR0 plus liveness/copy/allocation validation while legacy
+            // allocators remain authoritative for admission and emitted bytes.
+            g_agx_ra0_shadow = 1;
         } else if str_eq(argv[ai], "--repl") == 1 {
             // --repl: a persistent session over the same evaluator
             // (@internal-note: plan-eval-engine, E3).
@@ -29642,6 +31162,21 @@ fn main(argc: i32, argv: **u8) {
         }
         if output_path == null {
             wr(2, "error: --agx-ir0-shadow requires -o\n");
+            exit(1);
+        }
+    }
+    if g_agx_ra0_shadow == 1 {
+        if g_eval_mode == 1 || g_repl_mode == 1 || g_diag_json == 1
+            || g_pfor_report_mode == 1 || g_ptr_typed == 1 {
+            wr(2, "error: --agx-ra0-shadow composes only with host or AGX codegen\n");
+            exit(1);
+        }
+        if g_emit_gpu_mode == 1 && g_gpu_target != 2 {
+            wr(2, "error: --agx-ra0-shadow requires the AGX GPU target\n");
+            exit(1);
+        }
+        if output_path == null {
+            wr(2, "error: --agx-ra0-shadow requires -o\n");
             exit(1);
         }
     }
