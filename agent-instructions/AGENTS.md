@@ -401,14 +401,20 @@ Key signatures (grep the module file for the full set — every module is plain
 
 GPU codegen is early-stage. AMD GCN (`--emit-gpu`) and NVIDIA
 (`--emit-gpu-nvptx`) emit LLVM device modules gated by `llc`. AGX
-(`--emit-gpu-agx`) directly emits measured G16X instructions for one-input/
-one-output field maps over the proved narrow-prime profiles and canonical
-`2^64-59`; arbitrary 64-bit primes remain refused. `src/lib/gpu/` contains the
+(`--emit-gpu-agx`) directly emits measured G16X instructions for unary field
+maps over the proved narrow-prime profiles and canonical `2^64-59`, plus narrow
+two-input own-cell maps; arbitrary 64-bit primes remain refused. `src/lib/gpu/` contains the
 measured-profile Traveler IOKit runtime: it consumes an exact-build `AGXDISP3`
 profile image, authors the executed dispatch, and links only IOKit + libSystem.
 The hardware gate compiles the same pfor for CPU and AGX and compares raw bytes
 and status over 256 reproducible adversarial/random values for each profile.
-There is not yet a general runtime dispatch seam; unsupported workers skip.
+`--agx-dispatch` is the opt-in host seam: imported runtime + same-source artifact
+in, AGX attempted only after worker ID/field/grid and compiler-emitted FNV-1a
+code pin match, CPU pfor fallback preserved. The pin catches wrong builds; it is
+not artifact authentication. Its RNS consumer forms a three-prime product tensor
+on AGX, then reduces and CRTs on CPU. Nested reductions, private mutables,
+dynamic carriers, and performance claims remain outside the admitted AGX
+boundary; unsupported workers skip.
 
 ---
 

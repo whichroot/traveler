@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Same AGX metadata as agx_dispatch_gate, but deliberately different code.
+
+field AgxDispatchWrongF = Field<2013265921>;
+
+fn main() -> i32 {
+    let left: *AgxDispatchWrongF = alloc(768);
+    let right: *AgxDispatchWrongF = alloc(768);
+    let output: *AgxDispatchWrongF = alloc(768);
+    for j in 0..768 {
+        output[j] = left[j] + right[j];
+    }
+    free(output); free(right); free(left);
+    return 0;
+}

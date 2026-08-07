@@ -83,6 +83,19 @@ AGX_REFUSE="$TMP/agx_refuse.hex"
 AGX_RUNTIME_LL="$TMP/agx_runtime_gate.ll"
 AGX_RUNTIME_OBJ="$TMP/agx_runtime_gate.o"
 AGX_RUNTIME_EXE="$TMP/agx-runtime-gate"
+AGX_BINARY_DEV="$TMP/agx_binary_map.agx.hex"
+AGX_BINARY_LL="$TMP/agx_binary_runtime_gate.ll"
+AGX_BINARY_OBJ="$TMP/agx_binary_runtime_gate.o"
+AGX_BINARY_EXE="$TMP/agx-binary-runtime-gate"
+AGX_DISPATCH_DEV="$TMP/agx_dispatch_gate.agx.hex"
+AGX_DISPATCH_WRONG_DEV="$TMP/agx_dispatch_wrong.agx.hex"
+AGX_DISPATCH_LL="$TMP/agx_dispatch_gate.ll"
+AGX_DISPATCH_OBJ="$TMP/agx_dispatch_gate.o"
+AGX_DISPATCH_EXE="$TMP/agx-dispatch-gate"
+AGX_RNS_DEV="$TMP/agx_rns_matmul.agx.hex"
+AGX_RNS_LL="$TMP/agx_rns_matmul.ll"
+AGX_RNS_OBJ="$TMP/agx_rns_matmul.o"
+AGX_RNS_EXE="$TMP/agx-rns-matmul"
 
 if ! "$STAGE1" --emit-gpu-agx "$EXHIBIT" -o "$AGX_DEV" 2>/dev/null; then
     echo "  FAIL: --emit-gpu-agx did not produce the Mersenne artifact"; fail=1
@@ -142,6 +155,59 @@ else
         echo "  ok   AGX determinism fixtures compile from one pfor for both targets"
     fi
 
+    # AGX-3: two logical inputs remain on the measured two-binding graph by
+    # packing them into binding 1. The opt-in host mode keeps CPU pfor fallback.
+    AGX3_READY=1
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_binary_map.tv" \
+         -o "$AGX_BINARY_DEV" 2>/dev/null \
+       || ! grep -q '^capture right slot 1 word-offset 768$' "$AGX_BINARY_DEV" \
+       || ! "$STAGE1" "$SCRIPT_DIR/agx_binary_runtime_gate.tv" \
+         -o "$AGX_BINARY_LL" 2>/dev/null \
+       || ! "$LLC" -filetype=obj "$AGX_BINARY_LL" -o "$AGX_BINARY_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX packed two-input runtime gate did not compile"; fail=1
+        AGX3_READY=0
+    fi
+    if "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_binary_map.tv" \
+         -o "$TMP/agx_dispatch_missing_runtime.ll" \
+         >"$TMP/agx_dispatch_missing_runtime.out" \
+         2>"$TMP/agx_dispatch_missing_runtime.err"; then
+        echo "  FAIL: --agx-dispatch accepted a source without the runtime import"; fail=1
+        AGX3_READY=0
+    elif ! grep -q 'requires the AGX runtime import' \
+         "$TMP/agx_dispatch_missing_runtime.err"; then
+        echo "  FAIL: --agx-dispatch missing-runtime refusal changed"; fail=1
+        AGX3_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_dispatch_gate.tv" \
+          -o "$AGX_DISPATCH_DEV" 2>/dev/null \
+       || ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_dispatch_wrong.tv" \
+          -o "$AGX_DISPATCH_WRONG_DEV" 2>/dev/null \
+       || ! grep -q '^field 2013265921$' "$AGX_DISPATCH_WRONG_DEV" \
+       || ! grep -q '^grid 768$' "$AGX_DISPATCH_WRONG_DEV" \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_dispatch_gate.tv" \
+         -o "$AGX_DISPATCH_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_DISPATCH_LL" || true)" -ne 1 ] \
+       || ! grep -q 'call void @__parallel_for(ptr @__pfor_worker_0' "$AGX_DISPATCH_LL" \
+       || ! python3 "$SCRIPT_DIR/agx_dispatch_pin.py" "$AGX_DISPATCH_LL" \
+          "$AGX_DISPATCH_DEV" "$AGX_DISPATCH_WRONG_DEV" \
+       || ! "$LLC" -filetype=obj "$AGX_DISPATCH_LL" -o "$AGX_DISPATCH_OBJ" 2>/dev/null; then
+        echo "  FAIL: opt-in AGX/CPU runtime dispatch seam did not compile"; fail=1
+        AGX3_READY=0
+    fi
+    if ! "$STAGE1" --emit-gpu-agx "$SCRIPT_DIR/agx_rns_matmul.tv" \
+         -o "$AGX_RNS_DEV" 2>/dev/null \
+       || [ "$(grep -c '^worker __pfor_gpu_worker_' "$AGX_RNS_DEV" || true)" -ne 3 ] \
+       || ! "$STAGE1" --agx-dispatch "$SCRIPT_DIR/agx_rns_matmul.tv" \
+         -o "$AGX_RNS_LL" 2>/dev/null \
+       || [ "$(grep -c 'call i32 @agx_try_parallel_for' "$AGX_RNS_LL" || true)" -ne 3 ] \
+       || ! "$LLC" -filetype=obj "$AGX_RNS_LL" -o "$AGX_RNS_OBJ" 2>/dev/null; then
+        echo "  FAIL: AGX three-prime RNS matmul consumer did not compile"; fail=1
+        AGX3_READY=0
+    fi
+    if [ "$AGX3_READY" = "1" ]; then
+        echo "  ok   AGX-3 packed binary, runtime dispatch, and RNS artifacts compile"
+    fi
+
     AGX_HARNESS="${AGX_HARNESS:-$REPO_DIR/../qwen35-cli-b1/agx_private}"
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] \
        && [ -x "$AGX_HARNESS/agx-own-queue" ] && command -v python3 >/dev/null; then
@@ -169,6 +235,67 @@ else
             fi
         else
             echo "  FAIL: could not link Traveler AGX runtime against IOKit"; fail=1
+        fi
+        if [ "$AGX3_READY" = "1" ]; then
+            agx3fail=0
+            if ! cc "$AGX_BINARY_OBJ" -framework IOKit -o "$AGX_BINARY_EXE" 2>/dev/null \
+               || [ "$("$AGX_BINARY_EXE" "$AGX_HARNESS/dispatch.img" \
+                    "$AGX_BINARY_DEV")" != "1" ]; then
+                echo "  FAIL: packed two-input AGX execution mismatch"
+                agx3fail=1
+            fi
+            if ! cc "$AGX_DISPATCH_OBJ" -framework IOKit -o "$AGX_DISPATCH_EXE" 2>/dev/null; then
+                echo "  FAIL: AGX runtime-dispatch gate did not link"
+                agx3fail=1
+            else
+                (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+                 TRAVELER_THREADS=4 "$AGX_DISPATCH_EXE" >"$TMP/agx_dispatch.cpu.bin")
+                dispatch_cpu_status=$?
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_DISPATCH_DEV" \
+                    "$AGX_DISPATCH_EXE" >"$TMP/agx_dispatch.gpu.bin"
+                dispatch_gpu_status=$?
+                if [ "$dispatch_cpu_status" -ne 0 ] || [ "$dispatch_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_dispatch.cpu.bin" | tr -d ' ')" -ne 3072 ] \
+                   || ! cmp -s "$TMP/agx_dispatch.cpu.bin" "$TMP/agx_dispatch.gpu.bin"; then
+                    echo "  FAIL: runtime-selected AGX output differs from CPU pfor"
+                    agx3fail=1
+                fi
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_DISPATCH_WRONG_DEV" \
+                TRAVELER_AGX_EXPECT_FALLBACK=1 \
+                    "$AGX_DISPATCH_EXE" >"$TMP/agx_dispatch.wrong.bin"
+                dispatch_wrong_status=$?
+                if [ "$dispatch_wrong_status" -ne 0 ] \
+                   || ! cmp -s "$TMP/agx_dispatch.cpu.bin" \
+                       "$TMP/agx_dispatch.wrong.bin"; then
+                    echo "  FAIL: same-shape wrong AGX artifact did not fall back to CPU"
+                    agx3fail=1
+                fi
+            fi
+            if ! cc "$AGX_RNS_OBJ" -framework IOKit -o "$AGX_RNS_EXE" 2>/dev/null; then
+                echo "  FAIL: AGX RNS matmul consumer did not link"
+                agx3fail=1
+            else
+                (unset TRAVELER_AGX_PROFILE TRAVELER_AGX_ARTIFACT
+                 TRAVELER_THREADS=4 "$AGX_RNS_EXE" >"$TMP/agx_rns.cpu.bin")
+                rns_cpu_status=$?
+                TRAVELER_AGX_PROFILE="$AGX_HARNESS/dispatch.img" \
+                TRAVELER_AGX_ARTIFACT="$AGX_RNS_DEV" \
+                    "$AGX_RNS_EXE" >"$TMP/agx_rns.gpu.bin"
+                rns_gpu_status=$?
+                if [ "$rns_cpu_status" -ne 0 ] || [ "$rns_gpu_status" -ne 0 ] \
+                   || [ "$(wc -c <"$TMP/agx_rns.cpu.bin" | tr -d ' ')" -ne 1024 ] \
+                   || ! cmp -s "$TMP/agx_rns.cpu.bin" "$TMP/agx_rns.gpu.bin"; then
+                    echo "  FAIL: three-prime AGX RNS matmul differs from CPU/exact oracle"
+                    agx3fail=1
+                fi
+            fi
+            if [ "$agx3fail" = "0" ]; then
+                echo "  ok   AGX-3 code pin + runtime dispatch + exact RNS matmul pass"
+            else
+                fail=1
+            fi
         fi
         if [ "$AGX_DET_READY" = "1" ]; then
             agxdetfail=0

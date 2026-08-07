@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: Apache-2.0
+// One binary selects AGX or the unchanged CPU pfor at runtime.
+import "../../src/lib/gpu/agx_runtime.tv";
+
+extern "C" fn write(fd: i32, data: *u8, size: usize) -> i64;
+
+field AgxDispatchF = Field<2013265921>;
+
+fn main() -> i32 {
+    let n: i32 = 768;
+    let prime: u64 = 2013265921;
+    let left: *AgxDispatchF = alloc(n);
+    let right: *AgxDispatchF = alloc(n);
+    let output: *AgxDispatchF = alloc(n);
+    var state: u64 = 0x510e527fade682d1;
+    var i: i32 = 0;
+    while i < n {
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        left[i] = (state % prime) as AgxDispatchF;
+        state = state * (6364136223846793005 as u64)
+            + (1442695040888963407 as u64);
+        right[i] = (state % prime) as AgxDispatchF;
+        i = i + 1;
+    }
+    for j in 0..768 {
+        output[j] = left[j] * right[j];
+    }
+
+    let agx_requested: i32 = (getenv("TRAVELER_AGX_PROFILE") != null) as i32;
+    let expect_fallback: i32 =
+        (getenv("TRAVELER_AGX_EXPECT_FALLBACK") != null) as i32;
+    if agx_requested != 0 && expect_fallback == 0
+        && agx_dispatches() != 1 { return 3; }
+    if (agx_requested == 0 || expect_fallback != 0)
+        && agx_dispatches() != 0 { return 4; }
+    if expect_fallback != 0 && g_agx_error != 33 { return 7; }
+    i = 0;
+    while i < n {
+        let want: u64 = ((left[i] as u64) * (right[i] as u64)) % prime;
+        if output[i] as u64 != want { return 5; }
+        i = i + 1;
+    }
+    let put: i64 = write(1, output as *u8, 3072);
+    free(output); free(right); free(left);
+    if put != 3072 { return 6; }
+    return 0;
+}

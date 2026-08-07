@@ -177,3 +177,102 @@ fn agx_load_artifact(path: *u8, code_out: **u8, code_size_out: *i32,
     prime_out[0] = prime;
     return 1;
 }
+
+// Selects one worker from a multi-worker artifact. Metadata and code must all
+// occur inside that worker's canonical block; duplicate IDs are refused.
+fn agx_load_artifact_worker(path: *u8, wanted_worker: i32, code_out: **u8,
+                            code_size_out: *i32, prime_out: *u64,
+                            grid_out: *i32) -> i32 {
+    if wanted_worker < 0 { return 0; }
+    let data_slot: **u8 = alloc(1);
+    let size_slot: *i64 = alloc(1);
+    if agx_read_file(path, data_slot, size_slot) == 0 {
+        free(size_slot); free(data_slot as *u8); return 0;
+    }
+    let data: *u8 = data_slot[0];
+    let size: i64 = size_slot[0];
+    free(size_slot); free(data_slot as *u8);
+
+    let code: *u8 = alloc(size);
+    var code_size: i32 = 0;
+    var declared: i32 = 0 - 1;
+    var prime: u64 = 0;
+    var grid: i32 = 0;
+    var current_worker: i32 = 0 - 1;
+    var selected: i32 = 0;
+    var matched: i32 = 0;
+    var profile_ok: i32 = 0;
+    var in_code: i32 = 0;
+    var saw_code: i32 = 0;
+    var saw_end: i32 = 0;
+    var at: i64 = 0;
+    while at < size {
+        let start: i64 = at;
+        while at < size && data[at] != 10 && data[at] != 13 { at = at + 1; }
+        let end: i64 = at;
+        while at < size && (data[at] == 10 || data[at] == 13) { at = at + 1; }
+
+        if end - start >= 26
+            && agx_bytes_equal(data, start, "worker __pfor_gpu_worker_") == 1 {
+            if in_code != 0 { free(code); free(data); return 0; }
+            current_worker = agx_parse_decimal(data, start + 25, end) as i32;
+            selected = 0;
+            if current_worker == wanted_worker {
+                if matched != 0 { free(code); free(data); return 0; }
+                matched = 1; selected = 1;
+            }
+        } else if selected != 0 && end - start == 26
+            && agx_bytes_equal(data, start, "profile agx-g16x-macos26.3") == 1 {
+            profile_ok = 1;
+        } else if selected != 0 && end - start >= 7
+            && agx_bytes_equal(data, start, "field ") == 1 {
+            prime = agx_parse_decimal(data, start + 6, end);
+        } else if selected != 0 && end - start >= 6
+            && agx_bytes_equal(data, start, "grid ") == 1 {
+            grid = agx_parse_decimal(data, start + 5, end) as i32;
+        } else if selected != 0 && end - start >= 7
+            && agx_bytes_equal(data, start, "bytes ") == 1 {
+            declared = agx_parse_decimal(data, start + 6, end) as i32;
+        } else if selected != 0 && end - start == 4
+            && agx_bytes_equal(data, start, "code") == 1 {
+            if saw_code != 0 { free(code); free(data); return 0; }
+            in_code = 1; saw_code = 1;
+        } else if selected != 0 && end - start >= 23
+            && agx_bytes_equal(data, start, "end __pfor_gpu_worker_") == 1 {
+            if in_code == 0
+                || agx_parse_decimal(data, start + 22, end) as i32
+                    != wanted_worker {
+                free(code); free(data); return 0;
+            }
+            in_code = 0; saw_end = 1; selected = 0;
+        } else if in_code != 0 {
+            var i: i64 = start;
+            while i < end {
+                let high: i32 = agx_hex_value(data[i]);
+                if high < 0 { i = i + 1; continue; }
+                if i + 1 >= end { free(code); free(data); return 0; }
+                let low: i32 = agx_hex_value(data[i + 1]);
+                if low < 0 { free(code); free(data); return 0; }
+                code[code_size] = ((high << 4) | low) as u8;
+                code_size = code_size + 1;
+                i = i + 2;
+            }
+        }
+    }
+
+    free(data);
+    if matched == 0 || profile_ok == 0 || prime == 0 || grid < 1
+        || saw_code == 0 || saw_end == 0 || in_code != 0
+        || declared != code_size || code_size < 4 {
+        free(code); return 0;
+    }
+    if code[code_size - 4] != 14 || code[code_size - 3] != 0
+        || code[code_size - 2] != 0 || code[code_size - 1] != 0 {
+        free(code); return 0;
+    }
+    code_out[0] = code;
+    code_size_out[0] = code_size;
+    prime_out[0] = prime;
+    grid_out[0] = grid;
+    return 1;
+}

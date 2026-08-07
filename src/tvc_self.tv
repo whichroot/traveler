@@ -1659,6 +1659,10 @@ var g_emit_gpu_mode: i32 = 0;
 // emission; AGX directly encodes measured machine instructions from the same
 // proven elementwise worker record. @internal-note: plan-gpu-agx-target.
 var g_gpu_target: i32 = 0;
+// --agx-dispatch: normal host IR keeps the CPU worker/fallback, but proven AGX
+// workers first call the imported Traveler IOKit adapter at runtime. Flag off
+// leaves ordinary emitted IR byte-identical. @internal-note: plan-gpu-agx-target.
+var g_agx_dispatch_mode: i32 = 0;
 // --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
 // (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
 var g_emit_mode: i32 = 0;
@@ -8196,6 +8200,20 @@ fn find_func(name: i32) -> i32 {
     return 0 - 1;
 }
 
+fn program_has_fn_decl(prog: i32, name: i32) -> i32 {
+    let base: i32 = g_nodes[prog].args_start;
+    var i: i32 = 0;
+    while i < g_nodes[prog].nargs {
+        let decl: i32 = g_args[base + i];
+        if g_nodes[decl].kind == AST_FN_DECL
+            && str_eq(&g_strings[g_nodes[decl].name0], &g_strings[name]) == 1 {
+            return 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 // Generic substitution: a type_off matching an active generic param name
 // returns its concrete type. Also handles *F.
 fn resolve_type_sub(type_off: i32) -> i32 {
@@ -13986,6 +14004,38 @@ fn emit_defers() {
     }
 }
 
+fn emit_pfor_cpu_call(wid: i32, ctx: i32, bw: i32, iter_w: i32,
+                      start_reg: i32, end_reg: i32) {
+    ir_wr("  call void @__parallel_for");
+    if bw == 64 { ir_wr("_i64"); }
+    ir_wr("(ptr @__pfor_worker_"); ir_wr_int(wid as i64);
+    ir_wr(", ptr "); ir_wr_reg(ctx);
+    ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(start_reg);
+    ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(end_reg);
+    ir_wr(")\n");
+}
+
+fn emit_agx_try_call(wid: i32, ctx: i32, output_cap: i32,
+                     input0_cap: i32, input1_cap: i32,
+                     start_reg: i32, end_reg: i32, prime: u64,
+                     code_hash: u64) -> i32 {
+    let result: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(result);
+    ir_wr(" = call i32 @agx_try_parallel_for(i32 ");
+    ir_wr_int(wid as i64); ir_wr(", ptr "); ir_wr_reg(ctx);
+    ir_wr(", i32 "); ir_wr_int(output_cap as i64);
+    ir_wr(", i32 "); ir_wr_int(input0_cap as i64);
+    ir_wr(", i32 "); ir_wr_int(input1_cap as i64);
+    ir_wr(", i32 "); ir_wr_reg(start_reg);
+    ir_wr(", i32 "); ir_wr_reg(end_reg);
+    ir_wr(", i64 "); ir_wr_int(prime as i64);
+    ir_wr(", i64 "); ir_wr_int(code_hash as i64); ir_wr(")\n");
+    let ok: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(ok); ir_wr(" = icmp ne i32 ");
+    ir_wr_reg(result); ir_wr(", 0\n");
+    return ok;
+}
+
 fn codegen_stmt(stmt: i32) {
     let kind: i32 = g_nodes[stmt].kind;
 
@@ -14506,6 +14556,7 @@ fn codegen_stmt(stmt: i32) {
                 g_pfor_woff = g_pfor_woff + 2;
                 gci = gci + 1;
             }
+            let worker_caps_base: i32 = g_pfor_woff;
             // Copy captures into the worker record, resolving types through the
             // active substitution NOW — both sides must agree on the canonical type.
             var ci: i32 = 0;
@@ -14518,6 +14569,20 @@ fn codegen_stmt(stmt: i32) {
                 ci = ci + 1;
             }
             g_npfor_workers = g_npfor_workers + 1;
+
+            var agx_shape: *AgxWorkerShape = null;
+            var agx_dispatch: i32 = 0;
+            var agx_hash: u64 = 0;
+            if g_agx_dispatch_mode == 1 && bw != 64 {
+                agx_shape = alloc(1);
+                agx_dispatch = agx_classify_worker(body_node, iter_name,
+                                                    pf.ncaps, worker_caps_base,
+                                                    agx_shape);
+                if agx_dispatch == 1 {
+                    agx_dispatch = agx_build_worker_code(agx_shape, iter_name);
+                    if agx_dispatch == 1 { agx_hash = agx_code_hash(); }
+                }
+            }
 
             // Emit context struct fill on the stack
             let ctx_size: i32 = pf.ncaps * 8;
@@ -14626,11 +14691,11 @@ fn codegen_stmt(stmt: i32) {
 
             if alias_acc >= 0 {
                 let lbl_ser: i32 = ir_label();
-                let lbl_par: i32 = ir_label();
+                let lbl_dispatch: i32 = ir_label();
                 let lbl_done: i32 = ir_label();
                 ir_wr("  br i1 "); ir_wr_reg(alias_acc);
                 ir_wr(", label %"); ir_wr_label(lbl_ser);
-                ir_wr(", label %"); ir_wr_label(lbl_par); ir_wr("\n");
+                ir_wr(", label %"); ir_wr_label(lbl_dispatch); ir_wr("\n");
                 ir_wr_label_def(lbl_ser);
                 ir_wr("  call void @__pfor_worker_");
                 ir_wr_int(wid as i64);
@@ -14639,28 +14704,48 @@ fn codegen_stmt(stmt: i32) {
                 ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(end_reg);
                 ir_wr(")\n");
                 ir_wr("  br label %"); ir_wr_label(lbl_done); ir_wr("\n");
-                ir_wr_label_def(lbl_par);
-                ir_wr("  call void @__parallel_for");
-                if bw == 64 { ir_wr("_i64"); }
-                ir_wr("(ptr @__pfor_worker_");
-                ir_wr_int(wid as i64);
-                ir_wr(", ptr "); ir_wr_reg(ctx_alloca);
-                ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(start_reg);
-                ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(end_reg);
-                ir_wr(")\n");
+                ir_wr_label_def(lbl_dispatch);
+                if agx_dispatch == 1 {
+                    let lbl_cpu: i32 = ir_label();
+                    let agx_ok: i32 = emit_agx_try_call(wid, ctx_alloca,
+                        agx_shape.output_cap, agx_shape.input0_cap,
+                        agx_shape.input1_cap, start_reg, end_reg,
+                        g_fields[agx_shape.field_index].prime, agx_hash);
+                    ir_wr("  br i1 "); ir_wr_reg(agx_ok);
+                    ir_wr(", label %"); ir_wr_label(lbl_done);
+                    ir_wr(", label %"); ir_wr_label(lbl_cpu); ir_wr("\n");
+                    ir_wr_label_def(lbl_cpu);
+                    emit_pfor_cpu_call(wid, ctx_alloca, bw, iter_w,
+                                       start_reg, end_reg);
+                } else {
+                    emit_pfor_cpu_call(wid, ctx_alloca, bw, iter_w,
+                                       start_reg, end_reg);
+                }
                 ir_wr("  br label %"); ir_wr_label(lbl_done); ir_wr("\n");
                 ir_wr_label_def(lbl_done);
             } else {
                 // No checkable pairs: dispatch directly
-                ir_wr("  call void @__parallel_for");
-                if bw == 64 { ir_wr("_i64"); }
-                ir_wr("(ptr @__pfor_worker_");
-                ir_wr_int(wid as i64);
-                ir_wr(", ptr "); ir_wr_reg(ctx_alloca);
-                ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(start_reg);
-                ir_wr(", "); ir_wr_type(iter_w); ir_wr(" "); ir_wr_reg(end_reg);
-                ir_wr(")\n");
+                if agx_dispatch == 1 {
+                    let lbl_cpu: i32 = ir_label();
+                    let lbl_done: i32 = ir_label();
+                    let agx_ok: i32 = emit_agx_try_call(wid, ctx_alloca,
+                        agx_shape.output_cap, agx_shape.input0_cap,
+                        agx_shape.input1_cap, start_reg, end_reg,
+                        g_fields[agx_shape.field_index].prime, agx_hash);
+                    ir_wr("  br i1 "); ir_wr_reg(agx_ok);
+                    ir_wr(", label %"); ir_wr_label(lbl_done);
+                    ir_wr(", label %"); ir_wr_label(lbl_cpu); ir_wr("\n");
+                    ir_wr_label_def(lbl_cpu);
+                    emit_pfor_cpu_call(wid, ctx_alloca, bw, iter_w,
+                                       start_reg, end_reg);
+                    ir_wr("  br label %"); ir_wr_label(lbl_done); ir_wr("\n");
+                    ir_wr_label_def(lbl_done);
+                } else {
+                    emit_pfor_cpu_call(wid, ctx_alloca, bw, iter_w,
+                                       start_reg, end_reg);
+                }
             }
+            if agx_shape != null { free(agx_shape); }
             return;
         }
 
@@ -16153,6 +16238,19 @@ struct AgxUse {
     virt: i32,       // -1 for an allocator-inserted temporary copy
 }
 
+struct AgxWorkerShape {
+    output_name: i32,
+    input0_name: i32,
+    input1_name: i32,
+    field_alias: i32,
+    field_index: i32,
+    rhs: i32,
+    grid: i32,
+    output_cap: i32,
+    input0_cap: i32,
+    input1_cap: i32,
+}
+
 var g_agx_ops: *AgxOp = null;
 var g_agx_nops: i32 = 0;
 var g_agx_cap_ops: i32 = 0;
@@ -16164,6 +16262,7 @@ var g_agx_marks: *i32 = null;
 var g_agx_nmarks: i32 = 0;
 var g_agx_marks_cap: i32 = 0;
 var g_agx_input_v: i32 = 0 - 1;
+var g_agx_input2_v: i32 = 0 - 1;
 var g_agx_input64_lo: i32 = 0 - 1;
 var g_agx_input64_hi: i32 = 0 - 1;
 var g_agx_index_lo: i32 = 0 - 1;
@@ -16723,47 +16822,75 @@ fn agx_cap_pos(name: i32, caps_base: i32, ncaps: i32) -> i32 {
     return 0 - 1;
 }
 
-fn agx_expr_ok(node: i32, loop_name: i32, input_name: i32,
-               field_alias: i32) -> i32 {
+fn agx_expr_ok(node: i32, loop_name: i32, input0_name: i32,
+               input1_name: i32, field_alias: i32) -> i32 {
     let kind: i32 = g_nodes[node].kind;
     if kind == AST_LIT_INT { return 1; }
     if kind == AST_CAST {
         if resolve_type_sub(g_nodes[node].name0) != field_alias { return 0; }
-        return agx_expr_ok(g_nodes[node].child0, loop_name, input_name, field_alias);
+        return agx_expr_ok(g_nodes[node].child0, loop_name, input0_name,
+                           input1_name, field_alias);
     }
     if kind == AST_INDEX {
         let obj: i32 = g_nodes[node].child0;
         let idx: i32 = g_nodes[node].child1;
-        if g_nodes[obj].kind != AST_IDENT || g_nodes[obj].name0 != input_name { return 0; }
+        if g_nodes[obj].kind != AST_IDENT { return 0; }
+        let object_name: i32 = g_nodes[obj].name0;
+        if object_name != input0_name && object_name != input1_name { return 0; }
         if g_nodes[idx].kind != AST_IDENT || g_nodes[idx].name0 != loop_name { return 0; }
         return 1;
     }
     if kind == AST_BINARY {
         let op: i32 = g_nodes[node].op;
         if op != OP_ADD && op != OP_SUB && op != OP_MUL { return 0; }
-        if agx_expr_ok(g_nodes[node].child0, loop_name, input_name, field_alias) == 0 { return 0; }
-        return agx_expr_ok(g_nodes[node].child1, loop_name, input_name, field_alias);
+        if agx_expr_ok(g_nodes[node].child0, loop_name, input0_name,
+                       input1_name, field_alias) == 0 { return 0; }
+        return agx_expr_ok(g_nodes[node].child1, loop_name, input0_name,
+                           input1_name, field_alias);
     }
     return 0;
 }
 
-fn agx_lower_expr(node: i32, loop_name: i32, input_name: i32,
-                  p: u64) -> i32 {
+fn agx_lower_expr(node: i32, loop_name: i32, input0_name: i32,
+                  input1_name: i32, grid: i32, p: u64) -> i32 {
     let kind: i32 = g_nodes[node].kind;
     if kind == AST_LIT_INT { return agx_vimm(g_nodes[node].int_val % p); }
     if kind == AST_CAST {
-        return agx_lower_expr(g_nodes[node].child0, loop_name, input_name, p);
+        return agx_lower_expr(g_nodes[node].child0, loop_name, input0_name,
+                              input1_name, grid, p);
     }
     if kind == AST_INDEX {
-        // AGX-0 admits one read-only input capture and one statement. Every
-        // admitted index is input[tid], so one load is both sufficient and the
-        // execution-proven shape; the allocator copies it for consuming reuse.
-        if g_agx_input_v < 0 { g_agx_input_v = agx_vload(1); }
-        return g_agx_input_v;
+        let object_name: i32 = g_nodes[g_nodes[node].child0].name0;
+        // Both logical inputs occupy one execution-proven physical binding.
+        // Input 1 begins `grid` words after input 0 in the runtime's packed view.
+        // Derive both indices before either device load: a load consumes its
+        // index source, including the special r1 thread-id form.
+        if input1_name >= 0 && g_agx_input_v < 0 && g_agx_input2_v < 0 {
+            let tid: i32 = agx_vtid();
+            var index2: i32 = 0 - 1;
+            if grid < 128 {
+                index2 = agx_vadd_imm(tid, grid);
+            } else {
+                let offset: i32 = agx_vimm(grid as u64);
+                index2 = agx_vbinary(AGX_OP_ADD, tid, offset);
+            }
+            g_agx_input_v = agx_vload_index(1, tid);
+            g_agx_input2_v = agx_vload_index(1, index2);
+        }
+        if object_name == input0_name {
+            if g_agx_input_v < 0 { g_agx_input_v = agx_vload(1); }
+            return g_agx_input_v;
+        }
+        if object_name == input1_name {
+            return g_agx_input2_v;
+        }
+        return 0 - 1;
     }
     if kind == AST_BINARY {
-        let a: i32 = agx_lower_expr(g_nodes[node].child0, loop_name, input_name, p);
-        let b: i32 = agx_lower_expr(g_nodes[node].child1, loop_name, input_name, p);
+        let a: i32 = agx_lower_expr(g_nodes[node].child0, loop_name,
+                                    input0_name, input1_name, grid, p);
+        let b: i32 = agx_lower_expr(g_nodes[node].child1, loop_name,
+                                    input0_name, input1_name, grid, p);
         if a < 0 || b < 0 { return 0 - 1; }
         if g_nodes[node].op == OP_ADD { return agx_vfield_add(a, b, p); }
         if g_nodes[node].op == OP_SUB { return agx_vfield_sub(a, b, p); }
@@ -17055,20 +17182,23 @@ fn agx_emit_skip(wid: i32) {
     ir_wr(" reason=unsupported-agx0-worker\n");
 }
 
-fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
-                   ncaps: i32, caps_base: i32) -> i32 {
+fn agx_classify_worker(body: i32, loop_name: i32, ncaps: i32,
+                       caps_base: i32, shape: *AgxWorkerShape) -> i32 {
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 { return 0; }
     let stmt: i32 = g_args[g_nodes[body].args_start];
     if g_nodes[stmt].kind != AST_INDEX_ASSIGN { return 0; }
     let out_obj: i32 = g_nodes[stmt].child0;
     let out_idx: i32 = g_nodes[stmt].child1;
     if g_nodes[out_obj].kind != AST_IDENT || g_nodes[out_idx].kind != AST_IDENT { return 0; }
-    if g_nodes[out_idx].name0 != loop_name { return 0; }
+    if g_nodes[out_idx].name0 != loop_name || ncaps < 2 || ncaps > 3 { return 0; }
     let output_name: i32 = g_nodes[out_obj].name0;
     let out_cap: i32 = agx_cap_pos(output_name, caps_base, ncaps);
-    if out_cap < 0 || ncaps != 2 { return 0; }
+    if out_cap < 0 { return 0; }
 
-    var input_name: i32 = 0 - 1;
+    var input0_name: i32 = 0 - 1;
+    var input1_name: i32 = 0 - 1;
+    var input0_cap: i32 = 0 - 1;
+    var input1_cap: i32 = 0 - 1;
     var field_alias: i32 = 0 - 1;
     var fi: i32 = 0 - 1;
     var ci: i32 = 0;
@@ -17082,37 +17212,66 @@ fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
         if fi < 0 { fi = cfi; field_alias = elem; }
         if g_fields[cfi].prime != g_fields[fi].prime { return 0; }
         if cn != output_name {
-            if input_name >= 0 { return 0; }
-            input_name = cn;
+            if input0_name < 0 {
+                input0_name = cn; input0_cap = ci;
+            } else if input1_name < 0 {
+                input1_name = cn; input1_cap = ci;
+            } else {
+                return 0;
+            }
         }
         ci = ci + 1;
     }
-    if input_name < 0 { return 0; }
+    if input0_name < 0 { return 0; }
     let p: u64 = g_fields[fi].prime;
     let p64_pm59: u64 = 18446744073709551557;
+    // The packed two-input extension is narrow-only; the proved two-limb path
+    // remains exactly the unary AGX-0b shape.
+    if input1_name >= 0 && p == p64_pm59 { return 0; }
     if p != 2147483647 && p != p64_pm59 {
-        if p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31) || (p & 1) == 0 { return 0; }
+        if p <= ((1 as u64) << 30) || p >= ((1 as u64) << 31)
+            || (p & 1) == 0 { return 0; }
     }
 
     let loop_node: i32 = agx_find_for_body(body);
     if loop_node < 0 { return 0; }
     let start_node: i32 = g_nodes[loop_node].child0;
     let end_node: i32 = g_nodes[loop_node].child1;
-    if g_nodes[start_node].kind != AST_LIT_INT || g_nodes[start_node].int_val != 0 { return 0; }
+    if g_nodes[start_node].kind != AST_LIT_INT
+        || g_nodes[start_node].int_val != 0 { return 0; }
     if g_nodes[end_node].kind != AST_LIT_INT { return 0; }
-    let grid: u64 = g_nodes[end_node].int_val;
-    if grid == 0 || grid > 2147483647 { return 0; }
+    let grid64: u64 = g_nodes[end_node].int_val;
+    if grid64 == 0 || grid64 > 2147483647 { return 0; }
 
     let rhs: i32 = g_nodes[stmt].child2;
-    if agx_expr_ok(rhs, loop_name, input_name, field_alias) == 0 { return 0; }
+    if agx_expr_ok(rhs, loop_name, input0_name, input1_name,
+                   field_alias) == 0 { return 0; }
+    shape.output_name = output_name;
+    shape.input0_name = input0_name;
+    shape.input1_name = input1_name;
+    shape.field_alias = field_alias;
+    shape.field_index = fi;
+    shape.rhs = rhs;
+    shape.grid = grid64 as i32;
+    shape.output_cap = out_cap;
+    shape.input0_cap = input0_cap;
+    shape.input1_cap = input1_cap;
+    return 1;
+}
+
+fn agx_build_worker_code(shape: *AgxWorkerShape, loop_name: i32) -> i32 {
+    let p: u64 = g_fields[shape.field_index].prime;
+    let p64_pm59: u64 = 18446744073709551557;
     agx_vm_reset();
     g_agx_input_v = 0 - 1;
+    g_agx_input2_v = 0 - 1;
     g_agx_input64_lo = 0 - 1;
     g_agx_input64_hi = 0 - 1;
     g_agx_index_lo = 0 - 1;
     g_agx_index_hi = 0 - 1;
     if p == p64_pm59 {
-        let result64: AgxPair = agx_lower_expr64(rhs, loop_name, input_name, p);
+        let result64: AgxPair = agx_lower_expr64(shape.rhs, loop_name,
+                                                 shape.input0_name, p);
         if result64.lo < 0 { return 0; }
         // Computed address registers do not survive the load phase reliably,
         // even through value-form copies. Re-derive the pair for stores.
@@ -17122,21 +17281,54 @@ fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
         agx_vstore_index(result64.lo, 0, g_agx_index_lo);
         agx_vstore_index(result64.hi, 0, g_agx_index_hi);
     } else {
-        let result: i32 = agx_lower_expr(rhs, loop_name, input_name, p);
+        let result: i32 = agx_lower_expr(shape.rhs, loop_name,
+                                         shape.input0_name, shape.input1_name,
+                                         shape.grid, p);
         if result < 0 { return 0; }
         agx_vstore(result, 0);
     }
-    if agx_allocate_and_encode() == 0 { return 0; }
+    return agx_allocate_and_encode();
+}
+
+fn agx_code_hash() -> u64 {
+    // Build-content pin shared byte-for-byte with agx_fnv1a in the runtime.
+    var hash: u64 = 14695981039346656037;
+    var i: i32 = 0;
+    while i < g_agx_code_len {
+        hash = (hash ^ (g_agx_code[i] as u64)) * (1099511628211 as u64);
+        i = i + 1;
+    }
+    return hash;
+}
+
+fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
+                   ncaps: i32, caps_base: i32) -> i32 {
+    let shape: *AgxWorkerShape = alloc(1);
+    if agx_classify_worker(body, loop_name, ncaps, caps_base, shape) == 0 {
+        free(shape);
+        return 0;
+    }
+    let p: u64 = g_fields[shape.field_index].prime;
+    let p64_pm59: u64 = 18446744073709551557;
+    if agx_build_worker_code(shape, loop_name) == 0 { free(shape); return 0; }
 
     ir_wr("worker __pfor_gpu_worker_"); ir_wr_int(wid as i64); ir_wr("\n");
     ir_wr("profile agx-g16x-macos26.3\n");
     ir_wr("field "); ir_wr_u64(p); ir_wr("\n");
-    ir_wr("grid "); ir_wr_u64(grid); ir_wr("\n");
-    ci = 0;
+    ir_wr("grid "); ir_wr_int(shape.grid as i64); ir_wr("\n");
+    var ci: i32 = 0;
     while ci < ncaps {
         let cn: i32 = g_pfor_workers[caps_base + ci * 4];
         ir_wr("capture "); ir_wr_sym(cn); ir_wr(" slot ");
-        if cn == output_name { ir_wr("0\n"); } else { ir_wr("1\n"); }
+        if cn == shape.output_name {
+            ir_wr("0\n");
+        } else {
+            ir_wr("1");
+            if cn == shape.input1_name {
+                ir_wr(" word-offset "); ir_wr_int(shape.grid as i64);
+            }
+            ir_wr("\n");
+        }
         ci = ci + 1;
     }
     if p == p64_pm59 {
@@ -17155,6 +17347,7 @@ fn agx_emit_worker(wid: i32, body: i32, loop_name: i32,
     ir_wr("code\n");
     agx_write_code();
     ir_wr("end __pfor_gpu_worker_"); ir_wr_int(wid as i64); ir_wr("\n");
+    free(shape);
     return 1;
 }
 
@@ -27380,6 +27573,10 @@ fn main(argc: i32, argv: **u8) {
         } else if str_eq(argv[ai], "--alloc-debug") == 1 {
             // --alloc-debug: emit redzone-guarded alloc/realloc/free helpers.
             g_alloc_debug = 1;
+        } else if str_eq(argv[ai], "--agx-dispatch") == 1 {
+            // Opt-in host runtime selection: AGX first for admitted workers,
+            // unchanged CPU pfor as the fallback.
+            g_agx_dispatch_mode = 1;
         } else if str_eq(argv[ai], "--repl") == 1 {
             // --repl: a persistent session over the same evaluator
             // (@internal-note: plan-eval-engine, E3).
@@ -27450,6 +27647,18 @@ fn main(argc: i32, argv: **u8) {
     if source_path == null && g_repl_mode == 0 {
         wr(2, "error: no source file\n");
         exit(1);
+    }
+
+    if g_agx_dispatch_mode == 1 {
+        if g_eval_mode == 1 || g_emit_gpu_mode == 1 || g_repl_mode == 1
+            || g_diag_json == 1 || g_pfor_report_mode == 1 || g_ptr_typed == 1 {
+            wr(2, "error: --agx-dispatch composes only with normal host codegen\n");
+            exit(1);
+        }
+        if output_path == null {
+            wr(2, "error: --agx-dispatch requires -o\n");
+            exit(1);
+        }
     }
 
     // -target tpc rewrites emitted IR; it composes only with plain codegen.
@@ -27687,6 +27896,12 @@ fn main(argc: i32, argv: **u8) {
         } else {
             wr(2, " errors generated.\n");
         }
+        exit(1);
+    }
+
+    if g_agx_dispatch_mode == 1
+        && program_has_fn_decl(prog, str_intern("agx_try_parallel_for")) == 0 {
+        wr(2, "error: --agx-dispatch requires the AGX runtime import\n");
         exit(1);
     }
 

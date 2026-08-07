@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// AGX-3 packed-input exhibit: two logical arrays share physical binding 1.
+
+field AgxBinaryF = Field<2013265921>;
+
+fn main() -> i32 {
+    let left: *AgxBinaryF = alloc(768);
+    let right: *AgxBinaryF = alloc(768);
+    let output: *AgxBinaryF = alloc(768);
+    var i: i32 = 0;
+    while i < 768 {
+        left[i] = (i + 3) as AgxBinaryF;
+        right[i] = (i * 7 + 11) as AgxBinaryF;
+        i = i + 1;
+    }
+    for j in 0..768 {
+        output[j] = left[j] * right[j];
+    }
+    print(output[767] as i64);
+    free(output); free(right); free(left);
+    return 0;
+}

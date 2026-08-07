@@ -7,9 +7,12 @@
 import "agx_ffi.tv";
 import "agx_data.tv";
 
+extern "C" fn getenv(name: *u8) -> *u8;
+
 // Last fail-closed boundary reached by agx_run_words. Zero means success;
 // callers may report this without exposing private-driver return structures.
 var g_agx_error: i32 = 0;
+var g_agx_dispatch_count: i32 = 0;
 
 struct AgxResourceMap {
     captured_cpu: u64,
@@ -306,8 +309,8 @@ fn agx_author_work_path(runtime: *AgxRuntime) -> i32 {
 }
 
 fn agx_prepare_dispatch(runtime: *AgxRuntime, code: *u8, code_size: i32,
-                        input: *u32, word_count: i32, grid: i32,
-                        prime: u64) -> i32 {
+                         input: *u32, input2: *u32, word_count: i32,
+                         grid: i32, prime: u64) -> i32 {
     if runtime.resource_count != 29 || code_size < 4 || word_count < 1
         || grid < 1 {
         return 0;
@@ -316,13 +319,15 @@ fn agx_prepare_dispatch(runtime: *AgxRuntime, code: *u8, code_size: i32,
     let heap: *AgxResourceMap = agx_resource(runtime, 3);
     let metadata: *AgxResourceMap = agx_resource(runtime, 22);
     let output_bytes: u64 = (word_count as u64) * 4;
+    var input_bytes: u64 = output_bytes;
+    if input2 != null { input_bytes = input_bytes + output_bytes; }
     var input_offset: u64 = (output_bytes + 255) & (0 - (256 as u64));
     if input_offset < 0x100 { input_offset = 0x100; }
     runtime.input_offset = input_offset;
     if code_map.actual_cpu == 0
         || code_map.actual_size < ((0x6c0 + code_size) as u64)
         || heap.actual_cpu == 0
-        || heap.actual_size < input_offset + output_bytes
+        || heap.actual_size < input_offset + input_bytes
         || metadata.actual_cpu == 0 || metadata.actual_size < 0xc0 {
         return 0;
     }
@@ -338,7 +343,12 @@ fn agx_prepare_dispatch(runtime: *AgxRuntime, code: *u8, code_size: i32,
             agx_put_u32(heap_bytes, (i * 4) as i64, (prime >> 32) as u32);
         }
         agx_put_u32(heap_bytes, (input_offset + ((i as u64) * 4)) as i64,
-                    input[i]);
+                     input[i]);
+        if input2 != null {
+            agx_put_u32(heap_bytes,
+                        (input_offset + output_bytes + ((i as u64) * 4)) as i64,
+                        input2[i]);
+        }
         i = i + 1;
     }
     memset(metadata.actual_cpu as *u8, 0, 0xc0);
@@ -516,8 +526,9 @@ fn agx_image_magic(data: *u8, size: i64) -> i32 {
 // Replays only setup calls. All executed dispatch content is authored by the
 // helpers above immediately before the first recorded doorbell.
 fn agx_replay_and_submit(runtime: *AgxRuntime, image_path: *u8,
-                         code: *u8, code_size: i32, input: *u32,
-                         word_count: i32, grid: i32, prime: u64) -> i32 {
+                          code: *u8, code_size: i32, input: *u32,
+                          input2: *u32, word_count: i32, grid: i32,
+                          prime: u64) -> i32 {
     let data_slot: **u8 = alloc(1);
     let size_slot: *i64 = alloc(1);
     g_agx_error = 900;
@@ -573,7 +584,7 @@ fn agx_replay_and_submit(runtime: *AgxRuntime, image_path: *u8,
                 || agx_get_u64(data, at + 16) != 64 || record_size != 64
                 || at + 28 + (record_size as i64) > size
                 || agx_prepare_dispatch(runtime, code, code_size, input,
-                                        word_count, grid, prime) == 0
+                                         input2, word_count, grid, prime) == 0
                 || agx_ring_doorbell(runtime) == 0 {
                 free(input_copy); free(scalar_count); free(scalar_output);
                 free(output_size); free(output); free(data); return 0;
@@ -710,36 +721,33 @@ fn agx_replay_and_submit(runtime: *AgxRuntime, image_path: *u8,
     return 1;
 }
 
-// Executes raw u32 words. Narrow fields use one word per element; the canonical
-// 64-bit profile uses two little-endian words per element.
-fn agx_run_words_mode(image_path: *u8, artifact_path: *u8, input: *u32,
-                      word_count: i32, element_count: i32, output: *u32,
+// Executes already-parsed code. Narrow fields use one word per element; the
+// canonical 64-bit profile uses two little-endian words per element.
+fn agx_run_code_mode(image_path: *u8, code: *u8, code_size: i32, prime: u64,
+                      input: *u32, input2: *u32, word_count: i32,
+                      element_count: i32, output: *u32,
                       recovery_gate: i32) -> i32 {
     g_agx_error = 0;
-    if word_count < 1 || element_count < 1 || element_count > 65535 {
+    if code == null || code_size < 4 || word_count < 1 || element_count < 1
+        || element_count > 65535 {
         g_agx_error = 10;
         return 0;
     }
-    let code_slot: **u8 = alloc(1);
-    let code_size: *i32 = alloc(1);
-    let prime: *u64 = alloc(1);
-    code_slot[0] = null; code_size[0] = 0; prime[0] = 0;
-    if agx_load_artifact(artifact_path, code_slot, code_size, prime) == 0 {
-        g_agx_error = 11;
-        free(prime); free(code_size); free(code_slot as *u8); return 0;
-    }
     var layout_ok: i32 = 0;
-    if prime[0] <= (0xffffffff as u64) && word_count == element_count {
+    if prime <= (0xffffffff as u64) && word_count == element_count {
         layout_ok = 1;
     }
-    if prime[0] == (18446744073709551557 as u64)
+    if prime == (18446744073709551557 as u64)
         && word_count == element_count * 2 {
         layout_ok = 1;
     }
+    if input2 != null && (prime > (0xffffffff as u64)
+        || word_count != element_count) {
+        layout_ok = 0;
+    }
     if layout_ok == 0 {
         g_agx_error = 12;
-        free(code_slot[0]); free(prime); free(code_size);
-        free(code_slot as *u8); return 0;
+        return 0;
     }
 
     let connection: *u32 = alloc(1);
@@ -747,17 +755,16 @@ fn agx_run_words_mode(image_path: *u8, artifact_path: *u8, input: *u32,
     connection[0] = 0; notification[0] = 0;
     if agx_open_profile(connection, notification) == 0 {
         g_agx_error = 13;
-        free(notification); free(connection); free(code_slot[0]);
-        free(prime); free(code_size); free(code_slot as *u8); return 0;
+        free(notification); free(connection); return 0;
     }
     let runtime: *AgxRuntime = agx_runtime_new(connection[0], notification[0]);
     free(notification); free(connection);
-    var ok: i32 = agx_replay_and_submit(runtime, image_path, code_slot[0],
-                                         code_size[0], input, word_count,
-                                         element_count, prime[0]);
+    var ok: i32 = agx_replay_and_submit(runtime, image_path, code, code_size,
+                                         input, input2, word_count,
+                                         element_count, prime);
     if ok == 0 && g_agx_error == 0 { g_agx_error = 14; }
     if ok != 0 {
-        ok = agx_wait_results(runtime, prime[0], word_count, element_count);
+        ok = agx_wait_results(runtime, prime, word_count, element_count);
         if ok == 0 { g_agx_error = 15; }
     }
     if ok != 0 && recovery_gate != 0 {
@@ -780,14 +787,14 @@ fn agx_run_words_mode(image_path: *u8, artifact_path: *u8, input: *u32,
             if ok == 0 { g_agx_error = 21; }
         }
         if ok != 0 {
-            ok = agx_prepare_dispatch(runtime, code_slot[0], code_size[0],
-                                      input, word_count, element_count,
-                                      prime[0]);
+            ok = agx_prepare_dispatch(runtime, code, code_size,
+                                       input, input2, word_count, element_count,
+                                       prime);
             if ok != 0 { ok = agx_ring_doorbell(runtime); }
             if ok == 0 { g_agx_error = 22; }
         }
         if ok != 0 {
-            ok = agx_wait_results(runtime, prime[0], word_count, element_count);
+            ok = agx_wait_results(runtime, prime, word_count, element_count);
             if ok == 0 { g_agx_error = 23; }
         }
     }
@@ -803,20 +810,104 @@ fn agx_run_words_mode(image_path: *u8, artifact_path: *u8, input: *u32,
         ok = 0;
     }
     agx_runtime_free(runtime);
-    free(code_slot[0]); free(prime); free(code_size);
-    free(code_slot as *u8);
     return ok;
 }
 
+fn agx_run_words_mode(image_path: *u8, artifact_path: *u8, input: *u32,
+                       input2: *u32, word_count: i32, element_count: i32,
+                       output: *u32, recovery_gate: i32) -> i32 {
+    let code_slot: **u8 = alloc(1);
+    let code_size: *i32 = alloc(1);
+    let prime: *u64 = alloc(1);
+    code_slot[0] = null; code_size[0] = 0; prime[0] = 0;
+    if agx_load_artifact(artifact_path, code_slot, code_size, prime) == 0 {
+        g_agx_error = 11;
+        free(prime); free(code_size); free(code_slot as *u8); return 0;
+    }
+    let ok: i32 = agx_run_code_mode(image_path, code_slot[0], code_size[0],
+                                     prime[0], input, input2, word_count,
+                                     element_count, output, recovery_gate);
+    free(code_slot[0]); free(prime); free(code_size); free(code_slot as *u8);
+    return ok;
+}
+
+// Opt-in compiler dispatch adapter. The normal pfor context remains the ABI;
+// capture-slot indices are static facts supplied by the proven worker record.
+// Missing environment or any launch refusal returns zero for CPU fallback.
+fn agx_try_parallel_for(worker_id: i32, context: *u8, output_slot: i32,
+                         input0_slot: i32, input1_slot: i32,
+                         lo: i32, hi: i32, expected_prime: u64,
+                         expected_code_hash: u64) -> i32 {
+    let image_path: *u8 = getenv("TRAVELER_AGX_PROFILE");
+    let artifact_path: *u8 = getenv("TRAVELER_AGX_ARTIFACT");
+    if image_path == null || artifact_path == null
+        || image_path[0] == 0 || artifact_path[0] == 0
+        || context == null || output_slot < 0 || input0_slot < 0
+        || lo != 0 || hi < 1 {
+        return 0;
+    }
+
+    let code_slot: **u8 = alloc(1);
+    let code_size: *i32 = alloc(1);
+    let prime: *u64 = alloc(1);
+    let grid: *i32 = alloc(1);
+    code_slot[0] = null; code_size[0] = 0; prime[0] = 0; grid[0] = 0;
+    if agx_load_artifact_worker(artifact_path, worker_id, code_slot,
+                                code_size, prime, grid) == 0 {
+        g_agx_error = 31;
+        free(grid); free(prime); free(code_size);
+        free(code_slot as *u8); return 0;
+    }
+    if prime[0] != expected_prime || grid[0] != hi {
+        g_agx_error = 32;
+        free(code_slot[0]); free(grid); free(prime); free(code_size);
+        free(code_slot as *u8); return 0;
+    }
+    // Deterministic wrong-build guard; artifact authenticity is out of scope.
+    if agx_fnv1a(code_slot[0], code_size[0]) != expected_code_hash {
+        g_agx_error = 33;
+        free(code_slot[0]); free(grid); free(prime); free(code_size);
+        free(code_slot as *u8); return 0;
+    }
+
+    let output: *u32 = agx_get_u64(context, (output_slot * 8) as i64) as *u32;
+    let input0: *u32 = agx_get_u64(context, (input0_slot * 8) as i64) as *u32;
+    var input1: *u32 = null;
+    if input1_slot >= 0 {
+        input1 = agx_get_u64(context, (input1_slot * 8) as i64) as *u32;
+    }
+    var word_count: i32 = hi;
+    if expected_prime == (18446744073709551557 as u64) {
+        word_count = hi * 2;
+    }
+    let ok: i32 = agx_run_code_mode(image_path, code_slot[0], code_size[0],
+                                     prime[0], input0, input1, word_count,
+                                     hi, output, 0);
+    free(code_slot[0]); free(grid); free(prime); free(code_size);
+    free(code_slot as *u8);
+    if ok != 0 { g_agx_dispatch_count = g_agx_dispatch_count + 1; }
+    return ok;
+}
+
+fn agx_dispatches() -> i32 { return g_agx_dispatch_count; }
+
 fn agx_run_words(image_path: *u8, artifact_path: *u8, input: *u32,
-                 word_count: i32, element_count: i32, output: *u32) -> i32 {
-    return agx_run_words_mode(image_path, artifact_path, input, word_count,
-                              element_count, output, 0);
+                  word_count: i32, element_count: i32, output: *u32) -> i32 {
+    return agx_run_words_mode(image_path, artifact_path, input, null, word_count,
+                               element_count, output, 0);
+}
+
+fn agx_run_binary_words(image_path: *u8, artifact_path: *u8,
+                         input: *u32, input2: *u32, element_count: i32,
+                         output: *u32) -> i32 {
+    if input2 == null { return 0; }
+    return agx_run_words_mode(image_path, artifact_path, input, input2,
+                               element_count, element_count, output, 0);
 }
 
 fn agx_run_words_recovery(image_path: *u8, artifact_path: *u8, input: *u32,
-                          word_count: i32, element_count: i32,
-                          output: *u32) -> i32 {
-    return agx_run_words_mode(image_path, artifact_path, input, word_count,
-                              element_count, output, 1);
+                           word_count: i32, element_count: i32,
+                           output: *u32) -> i32 {
+    return agx_run_words_mode(image_path, artifact_path, input, null, word_count,
+                               element_count, output, 1);
 }

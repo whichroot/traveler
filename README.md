@@ -150,13 +150,17 @@ tests/                 test suite (regression, parity, pfor, dynfield, bootstrap
 - **GPU codegen** — proven elementwise loops can emit AMDGCN LLVM IR
   (`--emit-gpu`), NVPTX LLVM IR (`--emit-gpu-nvptx`), or direct Apple AGX G16X
   instruction hex (`--emit-gpu-agx`). The AGX profile is deliberately narrow
-  and unsupported by Apple: one-input/one-output exact field maps over the
-  execution-proven Mersenne and Montgomery ranges, plus the canonical 64-bit
-  prime `2^64-59` through two u32 limbs. On the measured M4 profile,
+  and unsupported by Apple: exact unary field maps over the execution-proven
+  Mersenne and Montgomery ranges plus canonical `2^64-59`, and narrow two-input
+  own-cell maps packed through the same measured two-binding graph. On the M4,
   `src/lib/gpu/` submits those artifacts directly through IOKit; its executable
   links no Metal, private framework, or project C/Objective-C. A same-source
   differential runs 256 adversarial/reproducible-random elements per profile
   through CPU pfor and AGX and requires byte-exact output and equal status.
+  `--agx-dispatch` adds opt-in runtime selection beside the unchanged CPU pfor
+  fallback and content-pins the selected machine code to the host compilation.
+  The gate includes wrong-artifact refusal and a three-prime exact RNS matmul
+  consumer.
 
 ## Tests
 

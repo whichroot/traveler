@@ -212,13 +212,15 @@ $TVC --emit-gpu-agx examples/gpu_field_map.tv -o /tmp/map-agx.hex
 AMDGCN and NVPTX are LLVM device modules; `tests/gpu/run.sh` lowers them with
 `llc` to a gfx1100 object and sm_90 PTX. AGX is different: Traveler directly
 emits measured G16X instruction bytes in canonical hex, with no Metal compiler
-or LLVM device backend. AGX-0/0b currently admit one-input/one-output field maps
+or LLVM device backend. The unary path admits one-input/one-output field maps
 over `Field<2147483647>`, odd primes in `2^30 < p < 2^31`, or the canonical
 64-bit prime `Field<18446744073709551557>` (`2^64-59`) through two u32 limbs;
 other workers emit a skip record. This is not generic 64-bit-prime support. The
 profile targets an M4 Pro G16X private interface and is not an Apple-supported
-ABI. Portable byte goldens run everywhere; owned-device execution runs only
-when the external harness is available.
+ABI. Narrow workers may also have two read-only inputs plus one output; the
+runtime packs both logical inputs into one physical input binding, preserving
+the measured two-binding graph. Portable byte goldens run everywhere;
+owned-device execution runs only when the external harness is available.
 
 The measured G16X profile also has an in-tree Traveler submission runtime. It
 needs a regenerated `AGXDISP3` profile image for the exact OS/GPU build; that
@@ -242,6 +244,31 @@ after the controlled out-of-range kernel. On the measured machine the same gate
 also compiles one pfor source for CPU and AGX, runs 256 reproducible
 adversarial/random elements over each supported field profile, and requires
 equal exit status and byte-exact raw output.
+
+For a source that imports `src/lib/gpu/agx_runtime.tv`, `--agx-dispatch` emits a
+normal host program that tries the matching AGX worker by ID and otherwise runs
+the unchanged CPU pfor. Runtime selection uses the exact-build profile and the
+multi-worker artifact generated from the same source. The host embeds the
+FNV-1a digest produced by the shared AGX lowering path; the runtime verifies
+worker ID, field, grid, and code digest before submission. This is a deterministic
+wrong-build guard, not cryptographic artifact authentication:
+
+```sh
+$TVC --emit-gpu-agx tests/gpu/agx_rns_matmul.tv -o /tmp/rns-agx.hex
+$TVC --agx-dispatch tests/gpu/agx_rns_matmul.tv -o /tmp/rns-host.ll
+$LLC -filetype=obj /tmp/rns-host.ll -o /tmp/rns-host.o
+cc /tmp/rns-host.o -framework IOKit -o /tmp/rns-host
+TRAVELER_AGX_PROFILE="$AGX_PROFILE" \
+TRAVELER_AGX_ARTIFACT=/tmp/rns-agx.hex /tmp/rns-host
+```
+
+With either variable absent, an unsupported worker, alias uncertainty, an
+artifact mismatch, or a launch refusal, execution falls back to the CPU worker.
+The gate supplies a different valid kernel with the same worker ID, field, and
+grid and requires hash-mismatch fallback. The current RNS gate forms all
+per-prime products on AGX, reduces each channel on CPU, and uses the shipped
+Garner CRT; it makes no performance claim and does not claim device-side
+reduction support.
 
 ## 5. Verify self-hosting (Stage 2 / Stage 3)
 
