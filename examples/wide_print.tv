@@ -16,12 +16,20 @@ fn main() {
     print(maxu);                                   // 340282366920938463463374607431768211455
     let big: u128 = 1000000;
     print(big << 80);                              // 1000000 * 2^80
+    let neg128: i128 = 0 - (1 as i128);
+    print(neg128);                                 // -1
+    let min128: i128 = (1 as i128) << 127;
+    print(min128);                                 // -2^127
 
     // ---- 256-bit ----
     let z256: i256 = 0;
     print(z256);                                   // 0
     let bn: i256 = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001;
     print(bn);                                     // BN254 Fr modulus, 76 digits
+    let neg256: i256 = 0 - (1 as i256);
+    print(neg256);                                 // -1
+    let min256: i256 = (1 as i256) << 255;
+    print(min256);                                 // -2^255
     let b256: u256 = 1000000;
     print(b256 << 200);                            // 1000000 * 2^200
     let max256: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;

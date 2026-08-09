@@ -11608,7 +11608,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     if arg_bits == 256 { g_uses_print_i256 = 1; }
                     ir_wr("  call void @__print_i"); ir_wr_int(arg_bits as i64);
                     ir_wr("(i"); ir_wr_int(arg_bits as i64); ir_wr(" ");
-                    ir_wr_reg(arg.reg); ir_wr(")\n");
+                    ir_wr_reg(arg.reg); ir_wr(", i1 ");
+                    if type_is_signed(arg.type_off) == 1 {
+                        ir_wr("true");
+                    } else {
+                        ir_wr("false");
+                    }
+                    ir_wr(")\n");
                     return IRValue { reg: 0, type_off: NULL_STR };
                 }
                 let pr2: i32 = ir_tmp();
@@ -19099,8 +19105,13 @@ fn emit_wide_print_one(nbits: i32, ndigits: i32) {
     let bufsz: i32 = ndigits + 1;
     ir_wr("\ndefine internal void @__print_i");
     ir_wr_int(nbits as i64);
-    ir_wr("(i"); ir_wr_int(nbits as i64); ir_wr(" %val) {\n");
+    ir_wr("(i"); ir_wr_int(nbits as i64); ir_wr(" %val, i1 %is_signed) {\n");
     ir_wr("entry:\n");
+    ir_wr("  %signbit = icmp slt i"); ir_wr_int(nbits as i64); ir_wr(" %val, 0\n");
+    ir_wr("  %neg = and i1 %is_signed, %signbit\n");
+    ir_wr("  %negval = sub i"); ir_wr_int(nbits as i64); ir_wr(" 0, %val\n");
+    ir_wr("  %mag = select i1 %neg, i"); ir_wr_int(nbits as i64);
+    ir_wr(" %negval, i"); ir_wr_int(nbits as i64); ir_wr(" %val\n");
     ir_wr("  %digits = alloca [");
     ir_wr_int(ndigits as i64); ir_wr(" x i8]\n");
     ir_wr("  %buf = alloca [");
@@ -19121,7 +19132,7 @@ fn emit_wide_print_one(nbits: i32, ndigits: i32) {
     ir_wr("bitloop:\n");
     ir_wr("  %bi = phi i32 [0, %zloop], [%bin, %bitdone]\n");
     ir_wr("  %vph = phi i"); ir_wr_int(nbits as i64);
-    ir_wr(" [%val, %zloop], [%vshl, %bitdone]\n");
+    ir_wr(" [%mag, %zloop], [%vshl, %bitdone]\n");
     ir_wr("  %bdone = icmp eq i32 %bi, "); ir_wr_int(nbits as i64); ir_wr("\n");
     ir_wr("  br i1 %bdone, label %scaninit, label %bitbody\n");
     ir_wr("bitbody:\n");
@@ -19206,6 +19217,11 @@ fn emit_wide_print_one(nbits: i32, ndigits: i32) {
     ir_wr("  store i8 0, ptr %wtp\n");
     ir_wr("  br label %doprint\n");
     ir_wr("doprint:\n");
+    ir_wr("  br i1 %neg, label %minus, label %print\n");
+    ir_wr("minus:\n");
+    ir_wr("  call i32 @putchar(i32 45)\n");
+    ir_wr("  br label %print\n");
+    ir_wr("print:\n");
     ir_wr("  %bp = getelementptr ["); ir_wr_int(bufsz as i64);
     ir_wr(" x i8], ptr %buf, i32 0, i32 0\n");
     ir_wr("  call i32 (ptr, ...) @printf(ptr @.fmt_wides, ptr %bp)\n");
@@ -25454,8 +25470,8 @@ let EB_POLY_EVAL: i32 = 36;    // alg=fi, a=deg, b=std->newton flag; args=[poly,
 let EB_POLY_ADD: i32 = 37;     // alg=fi, a=deg, b=conv flags (1=lhs,2=rhs); -> STANDARD
 let EB_NTT_BAKED: i32 = 38;    // alg=fi, op=table (0 roots/1 inv/2 n_inv); arg=[stage]
 // E2i: wide ints (i128/i256) + the field_wide multi-limb surface.
-let EB_PRINT_WIDE: i32 = 39;   // a=nbits; unsigned decimal of the raw pattern
-                               // (the @__print_iN double-dabble mirror)
+let EB_PRINT_WIDE: i32 = 39;   // a=nbits, b=is_signed; decimal via the
+                               // @__print_iN double-dabble mirror
 let EB_FW_INIT: i32 = 40;      // field_wide(...): a=g_ewide idx (string form) or
                                // -1 (4 limb args) -> carrier ptr (@__field_wide_init)
 let EB_WIDE_FILL: i32 = 41;    // wide("0x..", buf): a=g_ewide idx (-1 = no fill,
@@ -27386,6 +27402,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             let arg: LowVal = lower_expr(g_args[abase], print_ctx);
             var eb: i32 = 0;
             var pw_bits: i32 = 0;      // E2i: EB_PRINT_WIDE width (EIR .a)
+            var pw_signed: i32 = 0;    // E2i: EB_PRINT_WIDE signedness (EIR .b)
             // Dyn field print (codegen mirror): i64-backed, %llu path.
             if type_is_dyn(arg.type_off) == 1 {
                 let dpe: i32 = eir_new(EIR_BUILTIN, ln, cl);
@@ -27409,6 +27426,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
                 if arg_bits > 64 {
                     // E2i: wide print — the @__print_iN double-dabble route.
                     pw_bits = arg_bits;
+                    pw_signed = type_is_signed(arg.type_off);
                     eb = EB_PRINT_WIDE;
                 } else if arg_bits == 64 {
                     if type_is_signed(arg.type_off) == 1 {
@@ -27423,6 +27441,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             let e: i32 = eir_new(EIR_BUILTIN, ln, cl);
             g_eir[e].ival = eb as u64;
             g_eir[e].a = pw_bits;
+            if eb == EB_PRINT_WIDE { g_eir[e].b = pw_signed; }
             let start: i32 = g_nevargs;
             evargs_push(arg.e);
             g_eir[e].args_start = start;
@@ -34166,17 +34185,16 @@ fn ev_put_padded9(v: u64) {
     }
 }
 
-// Unsigned decimal + '\n' of the raw pattern — output-identical to the
-// compiled @__print_iN double-dabble helper (plain unsigned decimal).
-fn ev_w_print(x: *u64, nbits: i32) {
-    ev_w_print_raw(x, nbits);
+// Decimal + '\n', output-identical to the compiled @__print_iN helper.
+fn ev_w_print(x: *u64, nbits: i32, is_signed: i32) {
+    ev_w_print_raw(x, nbits, is_signed);
     let nl: i32 = putchar(10);
 }
 
 // The decimal body without the trailing newline (E3's renderer prints a
 // ` : Type` suffix after the digits). Split out verbatim — ev_w_print keeps
 // its exact observable output.
-fn ev_w_print_raw(x: *u64, nbits: i32) {
+fn ev_w_print_raw(x: *u64, nbits: i32, is_signed: i32) {
     var limbs: [u32; 8] = 0;
     let nl32: i32 = nbits / 32;
     var i: i32 = 0;
@@ -34184,6 +34202,19 @@ fn ev_w_print_raw(x: *u64, nbits: i32) {
         limbs[2 * i] = x[i] as u32;
         limbs[2 * i + 1] = (x[i] >> 32) as u32;
         i = i + 1;
+    }
+    let neg: i32 = is_signed & ((limbs[nl32 - 1] >> 31) as i32);
+    if neg != 0 {
+        var carry: u64 = 1;
+        i = 0;
+        while i < nl32 {
+            let inv: u64 = 4294967295 - (limbs[i] as u64);
+            let sum: u64 = inv + carry;
+            limbs[i] = sum as u32;
+            carry = sum >> 32;
+            i = i + 1;
+        }
+        let minus: i32 = putchar(45);
     }
     var chunks: [u64; 12] = 0;
     var nchunks: i32 = 0;
@@ -35380,8 +35411,8 @@ fn ev_builtin(e: i32, fr: *EvFrame) -> EvalVal {
         return EvalVal { tag: EV_VOID, type_off: NULL_STR, bits: 0 };
     }
     if eb == EB_PRINT_WIDE {
-        // E2i: unsigned decimal of the raw pattern (@__print_iN mirror).
-        ev_w_print(a0 as *u64, g_eir[e].a);
+        // E2i: signed or unsigned decimal (@__print_iN mirror).
+        ev_w_print(a0 as *u64, g_eir[e].a, g_eir[e].b);
         return EvalVal { tag: EV_VOID, type_off: NULL_STR, bits: 0 };
     }
     if eb == EB_FW_INIT {
@@ -36340,7 +36371,7 @@ fn repl_render(tag: i32, type_off: i32, bits: u64) {
     if tag == EV_FIELD {
         ev_put_u64(bits);
     } else if tag == EV_WIDE {
-        ev_w_print_raw(bits as *u64, type_bits(type_off));
+        ev_w_print_raw(bits as *u64, type_bits(type_off), type_is_signed(type_off));
     } else if tag == EV_PTR {
         // Addresses are nondeterministic, so a pointer renders structurally.
         // Aggregates print as their type until the recursive renderer lands.
