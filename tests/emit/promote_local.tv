@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// A source local whose stack traffic must disappear under mem2reg.
+fn main() -> i32 {
+    var value: i32 = 40;
+    value = value + 2;
+    print(value);
+    return 0;
+}

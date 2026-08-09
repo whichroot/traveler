@@ -1422,9 +1422,9 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
 fi
 
 # --- --emit driver gate (the one-shot compile: source -> native in one call) ---
-# `tvc x.tv -o x --emit exe` drives llc (+ cc) itself. The default --emit ir path
-# is byte-unchanged (g_emit_mode==0 never touches the driver), so the fixed point
-# is untouched; this gate just proves the obj/exe modes produce a running binary.
+# `tvc x.tv -o x --emit exe` drives optional opt, llc, and cc itself. The default
+# none profile publishes raw IR byte-unchanged; optimized output never enters the
+# bootstrap fixed-point artifact. The focused gate also pins atomic failure paths.
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== emit driver (tests/emit/run.sh) ==="

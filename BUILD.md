@@ -12,7 +12,8 @@ trust chain.** The canonical pipeline:
 src/bootstrap/tvc_self.boot.ll  (Traveler-produced IR, committed)
    --llc-->  .o  --link-->  stage0   (the booted compiler)
 stage0  --compiles-->  src/tvc_self.tv  -->  stage1   (canonical compiler)
-*.tv    --compiles-->  LLVM IR (.ll)  --llc-->  .o  --link-->  native binary
+*.tv --compiles--> raw LLVM IR --optional closed opt profile--> LLVM IR
+    --llc -O2--> .o --link--> native binary
 ```
 
 One command:
@@ -35,11 +36,13 @@ still works if you prefer it.
 | Tool | Version | Purpose |
 |---|---|---|
 | C compiler | clang or gcc | builds the `tvc` seed from `tvc.c` |
-| LLVM | **15+** (required) | `llc` (IR → object), `opt` (optional, IR validation + SIMD) |
+| LLVM | **15+** (required) | `llc` (IR → object); `opt` is optional for raw IR |
 | make | any | drives `src-legacy/Makefile` |
 | bash + coreutils | any | running the test suites |
 
-LLVM 15+ is required to run the build.
+LLVM 15+ is required to run the build. The `promote` and `o1` CPU middle-end
+profiles described below initially require LLVM 21; profile `none` retains the
+LLVM 15+ contract.
 
 ### macOS (Homebrew)
 
@@ -140,21 +143,49 @@ $TVC examples/field_basics.tv -o /tmp/fb --emit exe -llc "$LLC"
 /tmp/fb        # prints: 49 100 171 2 123 1
 ```
 
-`--emit obj` stops at the object file; `--emit ir` (the default) is the plain
-IR-only behaviour above. `llc` reads the target triple from the module preamble.
-Toolchain paths default to `PATH`; pass `-llc <path>` / `-cc <path>` when `llc`
-or `cc` are not on it (e.g. macOS homebrew LLVM). Intermediates are cleaned up.
+`--emit obj` stops at the object file; `--emit ir` (the default) writes LLVM IR.
+The driver passes `-O2` explicitly to `llc`; it reads the target triple from the
+module preamble. Toolchain paths default to `PATH`; pass `-llc <path>` / `-cc
+<path>` when tools are not on it (for example, Homebrew LLVM). Tools are launched
+with argument vectors, not through a shell, so paths containing spaces are safe.
+IR, object, and executable outputs use exclusive sibling stages and are
+atomically published only after every requested tool succeeds. Failures preserve
+an existing destination and remove intermediates.
 
-### Optimized build (SIMD auto-vectorization)
+### CPU middle-end profiles
 
-Insert an `opt -O2` pass to let LLVM auto-vectorize field-arithmetic loops:
+Traveler exposes three closed profiles through the same IR/object/executable
+flow:
+
+| Profile | LLVM middle-end pipeline | Requires `opt` |
+|---|---|---|
+| `none` | none; raw compiler IR | no |
+| `promote` | `-passes=mem2reg -verify-each` | LLVM 21 |
+| `o1` | `-passes=default<O1> -verify-each` | LLVM 21 |
+
+The default is `none`. Omitting `--opt-level` and selecting `none` produce
+byte-identical raw IR. `promote` and `o1` are explicit, reproducible LLVM-21
+toolchain transformations; their output is verified LLVM but is not a bootstrap
+fixed-point artifact. Native host retargeting is applied consistently to both
+`opt` and `llc`.
 
 ```sh
-$TVC examples/field_basics.tv -o /tmp/fb.ll
-opt -O2 -S /tmp/fb.ll -o /tmp/fb_opt.ll
-$LLC -O2 -filetype=obj /tmp/fb_opt.ll -o /tmp/fb.o
-cc /tmp/fb.o -o /tmp/fb
+OPT=/opt/homebrew/opt/llvm@21/bin/opt
+
+# Observe optimized LLVM.
+$TVC examples/field_basics.tv -o /tmp/fb.o1.ll \
+    --opt-level o1 -opt "$OPT"
+
+# Or publish a native executable in one call.
+$TVC examples/field_basics.tv -o /tmp/fb --emit exe \
+    --opt-level o1 -opt "$OPT" -llc "$LLC"
 ```
+
+`-opt <path>` overrides `PATH`, matching `-llc` and `-cc`. Arbitrary LLVM pass
+strings are deliberately not accepted. Standalone AMDGCN, NVPTX, and AGX device
+emission and the `-target tpc` typed-pointer compatibility mode accept only
+profile `none`; `--agx-dispatch` emits a normal host module and may use either
+CPU profile for its unchanged fallback path.
 
 ### Shared library (`#[export]` functions, callable from Python/ctypes)
 
@@ -310,10 +341,11 @@ tests/dynfield/run.sh  # dynamic-field + traits + closures suite
 ```
 
 The test scripts auto-detect `llc`/`opt` across common locations; override
-with the `LLC` env var if detection fails:
+with the `LLC` and `OPT` environment variables if detection fails:
 
 ```sh
 LLC=/usr/lib/llvm-21/bin/llc tests/run.sh
+LLC=/usr/lib/llvm-21/bin/llc OPT=/usr/lib/llvm-21/bin/opt tests/run.sh
 ```
 
 ## Troubleshooting
@@ -326,6 +358,6 @@ LLC=/usr/lib/llvm-21/bin/llc tests/run.sh
   multi-file program; compile and link every required `.tv` (see §4).
 - **Invalid IR / verifier errors after `opt`** — confirm `opt`, `llc`, and
   the IR all come from the same LLVM 21 toolchain (don't mix versions).
-- **`opt` warning during tests** — `opt` is optional (IR validation only);
-  the suite continues without it, but installing LLVM 21's `opt` is
-  recommended.
+- **`error: opt failed`** — a requested `promote`/`o1` profile could not run
+  LLVM 21 `opt`, or verification failed. Set `-opt <path>` to the matching tool.
+  `opt` remains unnecessary when the profile is `none`.

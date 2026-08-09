@@ -10,12 +10,16 @@ extern "C" fn close(fd: i32) -> i32;
 extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
 extern "C" fn strlen(s: *u8) -> usize;
 extern "C" fn exit(code: i32);
-// --emit obj|exe driver: shell out to llc (+ cc) so one call yields a binary.
-// system runs the toolchain (paths from -llc/-cc, default PATH); unlink removes
-// the intermediates. No getenv: the toolchain path is a flag, not an env read —
-// so the driver adds no libc coupling the preamble already owns. design: @internal-design: tools.
-extern "C" fn system(cmd: *u8) -> i32;
+// Native-emission toolchain: argv-based spawn avoids shell interpretation;
+// rename publishes a completed sibling temporary atomically.
+// @internal-design: CPU_MIDDLE_END_DESIGN
+extern "C" fn posix_spawnp(pid: *i32, file: *u8, file_actions: *u8,
+    attrp: *u8, argv: **u8, envp: **u8) -> i32;
+extern "C" fn mkstemp(template: *u8) -> i32;
+extern "C" fn umask(mask: i32) -> i32;
+extern "C" fn chmod(path: *u8, mode: i32) -> i32;
 extern "C" fn unlink(path: *u8) -> i32;
+extern "C" fn rename(oldp: *u8, newp: *u8) -> i32;
 // --emit host-retarget probe (#58): the internal llc/cc leg must lower to the
 // RUNNING host, not the canonical (darwin) triple the module preamble pins.
 extern "C" fn uname(buf: *u8) -> i32;
@@ -28,6 +32,8 @@ extern "C" fn fclose(f: *u8) -> i32;
 extern "C" fn fseek(f: *u8, off: i64, whence: i32) -> i32;
 extern "C" fn ftell(f: *u8) -> i64;
 extern "C" fn ferror(f: *u8) -> i32;
+extern "C" fn tmpfile() -> *u8;
+extern "C" fn fileno(f: *u8) -> i32;
 // Host stdio externs for the evaluator's print path: routed through libc
 // putchar/puts to inherit exact stdio buffering. Non-variadic on purpose (varargs ABI).
 extern "C" fn putchar(c: i32) -> i32;
@@ -179,6 +185,16 @@ struct Token {
 }
 
 // ===== WRITE HELPERS =====
+
+fn write_all(fd: i32, buf: *u8, n: i32) -> i32 {
+    var off: i32 = 0;
+    while off < n {
+        let put: i64 = write(fd, &buf[off], (n - off) as usize);
+        if put <= 0 { return 0; }
+        off = off + (put as i32);
+    }
+    return 1;
+}
 
 fn wr(fd: i32, s: *u8) {
     let len: usize = strlen(s);
@@ -1808,8 +1824,8 @@ var g_agx_ir0_shadow: i32 = 0;
 // --agx-ra0-shadow: extend IR0 with CFG liveness, edge copies, and a constrained
 // allocation shadow. The legacy allocators remain the byte-producing authority.
 var g_agx_ra0_shadow: i32 = 0;
-// --emit target: 0 = ir (default, straight to -o), 1 = obj (llc), 2 = exe
-// (llc + cc). Non-zero routes IR to a temp .ll the driver then lowers.
+// --emit target: 0 = ir (default), 1 = obj (llc), 2 = exe (llc + cc).
+// Every file output is staged beside -o and atomically published.
 var g_emit_mode: i32 = 0;
 var g_emit_requested: i32 = 0;
 // -target tpc (TP-1): emit opaque IR as always, then rewrite it in place to
@@ -1820,9 +1836,18 @@ var g_ptr_typed: i32 = 0;
 // verify and abort loudly naming the operation. Flag OFF -> byte-identical
 // emission (the raw malloc path), proven by the codegen-diff gate.
 var g_alloc_debug: i32 = 0;
-// Toolchain paths for the --emit driver (-llc / -cc flags); null => PATH default.
+// Closed CPU middle-end profiles: 0 = none, 1 = mem2reg, 2 = default<O1>.
+var g_opt_level: i32 = 0;
+var g_opt_requested: i32 = 0;
+// Toolchain paths for the native driver (-opt / -llc / -cc); null => PATH.
+var g_opt_path: *u8 = null;
 var g_llc_path: *u8 = null;
 var g_cc_path: *u8 = null;
+// The Darwin/Linux third main argument is passed unchanged
+// to every spawned LLVM/linker tool.
+var g_driver_envp: **u8 = null;
+// Non-null only while the typed-pointer post-pass owns a staged raw module.
+var g_driver_stage_path: *u8 = null;
 
 // Record a refusal reason (first one wins) unless we are inside a
 // non-rejecting read-index classification.
@@ -5484,6 +5509,7 @@ fn nav_register_decls(prog: i32) {
 
 // Output file descriptor for LLVM IR (set by main when -o is given)
 var g_ir_fd: i32 = 0;
+var g_ir_write_failed: i32 = 0;
 
 // SSA register counter — reset to 0 at start of each function.
 // Temporaries are named %t0, %t1, %t2, ...
@@ -5564,11 +5590,17 @@ fn fmt_i64(buf: *u8, n: i64) -> i32 {
 }
 
 // Write a raw string to the IR output (three-way routing).
+fn ir_write_bytes(buf: *u8, n: i32) {
+    if g_ir_write_failed == 0 && write_all(g_ir_fd, buf, n) == 0 {
+        g_ir_write_failed = 1;
+    }
+}
+
 fn ir_wr(s: *u8) {
     if g_body_mode == 1 {
         ir_buf_append(s);
     } else {
-        wr(g_ir_fd, s);
+        ir_write_bytes(s, str_len(s));
     }
 }
 
@@ -5580,7 +5612,9 @@ fn ir_wr_int(n: i64) {
         buf[len] = 0;
         ir_buf_append(&buf[0]);
     } else {
-        wr_int(g_ir_fd, n);
+        var buf2: [u8; 24] = 0;
+        let len2: i32 = fmt_i64(&buf2[0], n);
+        ir_write_bytes(&buf2[0], len2);
     }
 }
 
@@ -5593,7 +5627,9 @@ fn ir_wr_u64(n: u64) {
         buf[len] = 0;
         ir_buf_append(&buf[0]);
     } else {
-        wr_u64(g_ir_fd, n);
+        var buf2: [u8; 24] = 0;
+        let len2: i32 = fmt_u64(&buf2[0], n);
+        ir_write_bytes(&buf2[0], len2);
     }
 }
 
@@ -19046,10 +19082,10 @@ fn codegen_fn(decl: i32) {
     // Disable body mode and flush: prelude (allocas) then body to fd
     g_body_mode = 0;
     if g_prelude_len > 0 {
-        write(g_ir_fd, g_prelude, g_prelude_len as usize);
+        ir_write_bytes(g_prelude, g_prelude_len);
     }
     if g_body_len > 0 {
-        write(g_ir_fd, g_body_buf, g_body_len as usize);
+        ir_write_bytes(g_body_buf, g_body_len);
     }
     ir_wr("}\n\n");
 }
@@ -19254,7 +19290,7 @@ fn emit_extern_decl(fi: i32) {
     } else {
         ir_wr_type(ret_type);
     }
-    ir_wr(" @"); wr(g_ir_fd, &g_strings[name]); ir_wr("(");
+    ir_wr(" @"); ir_wr(&g_strings[name]); ir_wr("(");
     let np: i32 = g_nodes[node].nargs;
     let pbase: i32 = g_nodes[node].args_start;
     var i: i32 = 0;
@@ -20038,10 +20074,10 @@ fn emit_pfor_workers() {
 
         // Flush prelude then body
         if g_prelude_len > 0 {
-            write(g_ir_fd, g_prelude, g_prelude_len as usize);
+            ir_write_bytes(g_prelude, g_prelude_len);
         }
         if g_body_len > 0 {
-            write(g_ir_fd, g_body_buf, g_body_len as usize);
+            ir_write_bytes(g_body_buf, g_body_len);
         }
 
         // Increment
@@ -22883,8 +22919,8 @@ fn emit_closures() {
         }
 
         g_body_mode = 0;
-        if g_prelude_len > 0 { write(g_ir_fd, g_prelude, g_prelude_len as usize); }
-        if g_body_len > 0 { write(g_ir_fd, g_body_buf, g_body_len as usize); }
+        if g_prelude_len > 0 { ir_write_bytes(g_prelude, g_prelude_len); }
+        if g_body_len > 0 { ir_write_bytes(g_body_buf, g_body_len); }
         sym_pop_scope();
         ir_wr("}\n");
 
@@ -25042,7 +25078,7 @@ fn codegen_program(prog: i32) {
         if g_structs[sti].ngen > 0 {
             sti = sti + 1;
         } else {
-            ir_wr("%"); wr(g_ir_fd, &g_strings[g_structs[sti].name]);
+            ir_wr("%"); ir_wr(&g_strings[g_structs[sti].name]);
             ir_wr(" = type { ");
             let snf: i32 = g_structs[sti].nfields;
             var sfi: i32 = 0;
@@ -25062,7 +25098,7 @@ fn codegen_program(prog: i32) {
         if g_enums[eni].ngen > 0 {
             eni = eni + 1;
         } else {
-            ir_wr("%"); wr(g_ir_fd, &g_strings[g_enums[eni].name]);
+            ir_wr("%"); ir_wr(&g_strings[g_enums[eni].name]);
             ir_wr(" = type { i8, [");
             ir_wr_int((g_enums[eni].total_size - 1) as i64);
             ir_wr(" x i8] }\n");
@@ -25155,7 +25191,7 @@ fn codegen_program(prog: i32) {
             let gtype: i32 = g_nodes[gd].name1;
             let ginit: i32 = g_nodes[gd].child0;
             let g_arr: i32 = type_is_array(gtype);
-            ir_wr("@"); wr(g_ir_fd, &g_strings[gname]);
+            ir_wr("@"); ir_wr(&g_strings[gname]);
             ir_wr(" = global "); ir_wr_type(gtype); ir_wr(" ");
             if g_nodes[ginit].kind == AST_NULL {
                 // #57(1): an aggregate takes no scalar constant — the zeroed
@@ -36798,12 +36834,10 @@ fn repl_main() {
     }
 }
 
-// ===== NATIVE-EMISSION DRIVER (--emit obj|exe) =====
-// So `tvc x.tv -o x --emit exe` yields a runnable binary in one call instead of
-// the stage1 -> llc -> cc dance. IR streams to a temp .ll; llc reads the target
-// triple from the module preamble (no -mtriple needed); cc links natively. The
-// mechanism is system(3) — a dev-driver simplicity call, not a sandboxed spawn;
-// posix_spawn hardening is a tracked follow-up. design: @internal-design: tools.
+// ===== CPU LLVM / NATIVE-EMISSION DRIVER (--emit ir|obj|exe) =====
+// Raw IR remains the compiler artifact. A requested closed LLVM profile writes
+// a separate verified module; llc and cc consume argv arrays without a shell.
+// Only rename publishes a completed IR/object/executable over the destination.
 
 // Append NUL-terminated s into dst at pos; return the new position (no NUL yet).
 fn drv_cat(dst: *u8, pos: i32, s: *u8) -> i32 {
@@ -36842,6 +36876,7 @@ var g_tp_castn: i32 = 0;
 var g_tp_ln: *u8 = null;
 
 fn tp_die(line: *u8) {
+    if g_driver_stage_path != null { unlink(g_driver_stage_path); }
     wr(2, "error: -target tpc: unhandled ptr pattern:\n");
     wr(2, line);
     wr(2, "\n");
@@ -37721,15 +37756,31 @@ fn tp_b_line(line: *u8) {
 fn tp_slurp(path: *u8) {
     let f: *u8 = fopen(path, "rb");
     if f == null {
+        if g_driver_stage_path != null { unlink(g_driver_stage_path); }
         wr(2, "error: -target tpc: cannot read staged IR\n");
         exit(1);
     }
-    fseek(f, 0, 2);
+    if fseek(f, 0, 2) != 0 {
+        fclose(f);
+        if g_driver_stage_path != null { unlink(g_driver_stage_path); }
+        wr(2, "error: -target tpc: cannot read staged IR\n");
+        exit(1);
+    }
     let n: i64 = ftell(f);
-    fseek(f, 0, 0);
+    if n < 0 || fseek(f, 0, 0) != 0 {
+        fclose(f);
+        if g_driver_stage_path != null { unlink(g_driver_stage_path); }
+        wr(2, "error: -target tpc: cannot read staged IR\n");
+        exit(1);
+    }
     g_tp_src = alloc(n as i32 + 1);
-    fread(g_tp_src, 1, n, f);
-    fclose(f);
+    let got: i64 = fread(g_tp_src, 1, n, f);
+    let closed: i32 = fclose(f);
+    if got != n || closed != 0 {
+        if g_driver_stage_path != null { unlink(g_driver_stage_path); }
+        wr(2, "error: -target tpc: cannot read staged IR\n");
+        exit(1);
+    }
     g_tp_src[n as i32] = 0;
     g_tp_srclen = n as i32;
 }
@@ -37786,11 +37837,17 @@ fn tp_rewrite(in_path: *u8, out_path: *u8) {
     }
     let fd: i32 = creat(out_path, 438);
     if fd < 0 {
+        if g_driver_stage_path != null { unlink(g_driver_stage_path); }
         wr(2, "error: -target tpc: cannot write output\n");
         exit(1);
     }
-    write(fd, g_tp_out, g_tp_olen as i64);
-    close(fd);
+    let put_ok: i32 = write_all(fd, g_tp_out, g_tp_olen);
+    let close_ok: i32 = close(fd);
+    if put_ok == 0 || close_ok != 0 {
+        if g_driver_stage_path != null { unlink(g_driver_stage_path); }
+        wr(2, "error: -target tpc: cannot write output\n");
+        exit(1);
+    }
     free(g_tp_src);
     free(g_tp_out);
     free(g_tp_arena);
@@ -37801,12 +37858,159 @@ fn tp_rewrite(in_path: *u8, out_path: *u8) {
     free(g_tp_vv as *u8);
 }
 
-fn drv_tmp(base: *u8, suffix: *u8) -> *u8 {
+fn drv_join(base: *u8, suffix: *u8) -> *u8 {
     let buf: *u8 = alloc(str_len(base) + str_len(suffix) + 1);
     var p: i32 = drv_cat(buf, 0, base);
     p = drv_cat(buf, p, suffix);
     buf[p] = 0;
     return buf;
+}
+
+// Create an exclusive sibling stage and return its open descriptor through
+// fd_out. mkstemp replaces the six trailing X bytes in place.
+fn drv_stage(base: *u8, suffix: *u8, fd_out: *i32) -> *u8 {
+    let tail: *u8 = ".XXXXXX";
+    let buf: *u8 = alloc(str_len(base) + str_len(suffix) + str_len(tail) + 1);
+    var p: i32 = drv_cat(buf, 0, base);
+    p = drv_cat(buf, p, suffix);
+    p = drv_cat(buf, p, tail);
+    buf[p] = 0;
+    let fd: i32 = mkstemp(buf);
+    fd_out[0] = fd;
+    if fd < 0 { free(buf); return null; }
+    return buf;
+}
+
+// Codegen streams to an anonymous FILE so a direct exit cannot leave a named
+// partial. After success, copy it into the exclusive sibling raw-IR stage.
+fn drv_materialize_raw(stream: *u8, out_path: *u8) -> *u8 {
+    if fflush(stream) != 0 || fseek(stream, 0, 2) != 0 {
+        fclose(stream);
+        return null;
+    }
+    let n: i64 = ftell(stream);
+    if n < 0 || fseek(stream, 0, 0) != 0 {
+        fclose(stream);
+        return null;
+    }
+    var fd_box: [i32; 1] = 0;
+    let path: *u8 = drv_stage(out_path, ".tvctmp.raw.ll", &fd_box[0]);
+    if path == null {
+        fclose(stream);
+        return null;
+    }
+    let buf: *u8 = alloc(65536);
+    var left: i64 = n;
+    var ok: i32 = 1;
+    while left > 0 && ok == 1 {
+        var want: i64 = 65536;
+        if left < want { want = left; }
+        let got: i64 = fread(buf, 1, want, stream);
+        if got != want || write_all(fd_box[0], buf, got as i32) == 0 {
+            ok = 0;
+        }
+        left = left - got;
+    }
+    free(buf);
+    if close(fd_box[0]) != 0 { ok = 0; }
+    if fclose(stream) != 0 { ok = 0; }
+    if ok == 0 {
+        unlink(path);
+        free(path);
+        return null;
+    }
+    return path;
+}
+
+// Spawn one tool with the compiler's inherited environment and wait for a
+// normal zero exit. The caller owns the stable stage-specific diagnostic.
+fn drv_run(tool: *u8, args: **u8) -> i32 {
+    var pid: [i32; 1] = 0;
+    if posix_spawnp(&pid[0], tool, null, null, args, g_driver_envp) != 0 {
+        return 1;
+    }
+    var st: [i32; 1] = 0;
+    var waited: i32 = 0 - 1;
+    var attempts: i32 = 0;
+    while waited < 0 && attempts < 128 {
+        waited = waitpid(pid[0], &st[0], 0);
+        attempts = attempts + 1;
+    }
+    if waited != pid[0] { return 1; }
+    let raw: i32 = st[0];
+    if (raw & 127) != 0 { return 1; }
+    if ((raw >> 8) & 255) != 0 { return 1; }
+    return 0;
+}
+
+fn drv_cleanup(a: *u8, b: *u8, c: *u8, d: *u8) {
+    if a != null { unlink(a); }
+    if b != null { unlink(b); }
+    if c != null { unlink(c); }
+    if d != null { unlink(d); }
+}
+
+// LLVM derives these two headers from its random input path. Replace them with
+// stable policy text so repeated optimized IR emission is reproducible.
+fn drv_canonicalize_opt(path: *u8) -> i32 {
+    let inp: *u8 = fopen(path, "rb");
+    if inp == null { return 1; }
+    if fseek(inp, 0, 2) != 0 { fclose(inp); return 1; }
+    let n: i64 = ftell(inp);
+    if n < 0 { fclose(inp); return 1; }
+    if fseek(inp, 0, 0) != 0 { fclose(inp); return 1; }
+    let data: *u8 = alloc(n as i32 + 1);
+    let got: i64 = fread(data, 1, n, inp);
+    fclose(inp);
+    if got != n { free(data); return 1; }
+    data[n as i32] = 0;
+
+    var first: i32 = 0;
+    while first < n as i32 && data[first] != 10 { first = first + 1; }
+    var second: i32 = first + 1;
+    while second < n as i32 && data[second] != 10 { second = second + 1; }
+    let module_prefix: *u8 = "; ModuleID = ";
+    let source_prefix: *u8 = "source_filename = ";
+    if first >= n as i32 || second >= n as i32
+        || first < str_len(module_prefix)
+        || second - first - 1 < str_len(source_prefix)
+        || bytes_eq(data, module_prefix, str_len(module_prefix)) == 0
+        || bytes_eq(&data[first + 1], source_prefix, str_len(source_prefix)) == 0 {
+        free(data);
+        return 1;
+    }
+
+    let h1: *u8 = "; ModuleID = 'Traveler optimized output'\n";
+    let h2: *u8 = "source_filename = \"Traveler optimized output\"\n";
+    let out: *u8 = fopen(path, "wb");
+    if out == null { free(data); return 1; }
+    var ok: i32 = 1;
+    if fwrite(h1, 1, str_len(h1) as i64, out) != str_len(h1) as i64 { ok = 0; }
+    if fwrite(h2, 1, str_len(h2) as i64, out) != str_len(h2) as i64 { ok = 0; }
+    let rest: i32 = second + 1;
+    let rest_n: i64 = n - (rest as i64);
+    if fwrite(&data[rest], 1, rest_n, out) != rest_n { ok = 0; }
+    if fclose(out) != 0 { ok = 0; }
+    free(data);
+    if ok == 0 { return 1; }
+    return 0;
+}
+
+fn drv_publish(staged: *u8, out_path: *u8, executable: i32) -> i32 {
+    var requested: i32 = 438;  // 0o666 for IR/object
+    if executable == 1 { requested = 511; }  // 0o777 for a linked image
+    let mask: i32 = umask(0);
+    umask(mask);
+    let mode: i32 = requested & (511 ^ (mask & 511));
+    if chmod(staged, mode) != 0 {
+        wr(2, "error: chmod failed\n");
+        return 1;
+    }
+    if rename(staged, out_path) != 0 {
+        wr(2, "error: rename failed\n");
+        return 1;
+    }
+    return 0;
 }
 
 // Host probe for the --emit driver (#58): the temp .ll pins the canonical
@@ -37827,75 +38031,167 @@ fn drv_host() -> i32 {
     return r;
 }
 
-// Lower the emitted IR to a native artifact. mode 1 = obj (llc -> out), mode 2 =
-// exe (llc -> temp .o, cc -> out). Intermediates are unlinked. Returns 0 on ok.
-fn drv_emit(ll_path: *u8, out_path: *u8, mode: i32) -> i32 {
+// Apply the requested profile, lower when needed, and publish atomically.
+// mode 0 = IR, 1 = object, 2 = executable. Returns 0 on success.
+fn drv_emit(raw_path: *u8, out_path: *u8, mode: i32) -> i32 {
+    var ll_path: *u8 = raw_path;
+    var opt_path: *u8 = null;
+
+    // Native implicit-host emission must present the same effective target to
+    // the middle end and backend. IR-only output retains the module triple.
+    var mtriple: *u8 = null;
+    var no_pie: i32 = 0;
+    if mode != 0 {
+        if g_target_explicit == 1 {
+            if str_contains(g_target_triple, "linux") == 1 { no_pie = 1; }
+        } else {
+            let h: i32 = drv_host();
+            if h == 1 { mtriple = "x86_64-linux-gnu"; no_pie = 1; }
+            if h == 2 { mtriple = "aarch64-linux-gnu"; no_pie = 1; }
+        }
+    }
+    var mtriple_arg: *u8 = null;
+    if mtriple != null { mtriple_arg = drv_join("-mtriple=", mtriple); }
+
+    if g_opt_level != 0 {
+        var opt: *u8 = g_opt_path;
+        if opt == null { opt = "opt"; }
+        var opt_fd: [i32; 1] = 0;
+        opt_path = drv_stage(out_path, ".tvctmp.opt.ll", &opt_fd[0]);
+        if opt_path == null {
+            if mtriple_arg != null { free(mtriple_arg); }
+            drv_cleanup(raw_path, null, null, null);
+            wr(2, "error: cannot create temporary file\n");
+            return 1;
+        }
+        close(opt_fd[0]);
+        let opt_argv: **u8 = alloc(9);
+        var oargc: i32 = 0;
+        opt_argv[oargc] = opt; oargc = oargc + 1;
+        if g_opt_level == 1 {
+            opt_argv[oargc] = "-passes=mem2reg";
+        } else {
+            opt_argv[oargc] = "-passes=default<O1>";
+        }
+        oargc = oargc + 1;
+        opt_argv[oargc] = "-verify-each"; oargc = oargc + 1;
+        opt_argv[oargc] = "-S"; oargc = oargc + 1;
+        if mtriple_arg != null {
+            opt_argv[oargc] = mtriple_arg; oargc = oargc + 1;
+        }
+        opt_argv[oargc] = raw_path; oargc = oargc + 1;
+        opt_argv[oargc] = "-o"; oargc = oargc + 1;
+        opt_argv[oargc] = opt_path; oargc = oargc + 1;
+        opt_argv[oargc] = null;
+        var opt_failed: i32 = drv_run(opt, opt_argv);
+        free(opt_argv as *u8);
+        if opt_failed == 0 { opt_failed = drv_canonicalize_opt(opt_path); }
+        if opt_failed != 0 {
+            if mtriple_arg != null { free(mtriple_arg); }
+            drv_cleanup(raw_path, opt_path, null, null);
+            wr(2, "error: opt failed\n");
+            return 1;
+        }
+        ll_path = opt_path;
+    }
+
+    if mode == 0 {
+        if drv_publish(ll_path, out_path, 0) != 0 {
+            drv_cleanup(raw_path, opt_path, null, null);
+            return 1;
+        }
+        if opt_path != null { unlink(raw_path); }
+        return 0;
+    }
+
     var llc: *u8 = g_llc_path;
     if llc == null { llc = "llc"; }
 
-    // Host/target retarget (#58). Default-canonical (macOS): mtriple stays null
-    // and no_pie stays 0, so the darwin path is byte-for-byte unchanged. An
-    // explicit -target is honored as-is (the module triple already matches, so
-    // no -mtriple override — only the link flag follows the target OS). With no
-    // -target we auto-detect the host: Linux needs -mtriple (the preamble pins
-    // darwin) AND -no-pie (Traveler codegen is non-PIC; distro cc defaults to
-    // PIE). NOTE the SINGLE dash: gcc silently ACCEPTS and IGNORES --no-pie.
-    var mtriple: *u8 = null;
-    var no_pie: i32 = 0;
-    if g_target_explicit == 1 {
-        if str_contains(g_target_triple, "linux") == 1 { no_pie = 1; }
-    } else {
-        let h: i32 = drv_host();
-        if h == 1 { mtriple = "x86_64-linux-gnu"; no_pie = 1; }
-        if h == 2 { mtriple = "aarch64-linux-gnu"; no_pie = 1; }
+    // Default-canonical Darwin needs no override. Implicit Linux passes the
+    // same mtriple to opt and llc; explicit targets are already in the module.
+    // Linux linking uses SINGLE-dash -no-pie (gcc ignores --no-pie).
+    var obj_fd: [i32; 1] = 0;
+    let obj_path: *u8 = drv_stage(out_path, ".tvctmp.o", &obj_fd[0]);
+    if obj_path == null {
+        if mtriple_arg != null { free(mtriple_arg); }
+        drv_cleanup(raw_path, opt_path, null, null);
+        wr(2, "error: cannot create temporary file\n");
+        return 1;
     }
+    close(obj_fd[0]);
 
-    // Paths are filesystem-bounded; 8 KiB holds tool + flags + two paths.
-    let cmd: *u8 = alloc(8192);
-    var obj_path: *u8 = out_path;              // --emit obj: out IS the object
-    if mode == 2 { obj_path = drv_tmp(out_path, ".tvctmp.o"); }
-
-    // <llc> [-mtriple=<host>] -filetype=obj <ll_path> -o <obj_path>
-    var p: i32 = drv_cat(cmd, 0, llc);
-    if mtriple != null {
-        p = drv_cat(cmd, p, " -mtriple=");
-        p = drv_cat(cmd, p, mtriple);
+    // llc [-mtriple=<host>] -O2 -filetype=obj <IR> -o <staged-object>
+    let llc_argv: **u8 = alloc(9);
+    var largc: i32 = 0;
+    llc_argv[largc] = llc; largc = largc + 1;
+    if mtriple_arg != null {
+        llc_argv[largc] = mtriple_arg; largc = largc + 1;
     }
-    p = drv_cat(cmd, p, " -filetype=obj ");
-    p = drv_cat(cmd, p, ll_path);
-    p = drv_cat(cmd, p, " -o ");
-    p = drv_cat(cmd, p, obj_path);
-    cmd[p] = 0;
-    if system(cmd) != 0 {
+    llc_argv[largc] = "-O2"; largc = largc + 1;
+    llc_argv[largc] = "-filetype=obj"; largc = largc + 1;
+    llc_argv[largc] = ll_path; largc = largc + 1;
+    llc_argv[largc] = "-o"; largc = largc + 1;
+    llc_argv[largc] = obj_path; largc = largc + 1;
+    llc_argv[largc] = null;
+    let llc_failed: i32 = drv_run(llc, llc_argv);
+    free(llc_argv as *u8);
+    if mtriple_arg != null { free(mtriple_arg); }
+    if llc_failed != 0 {
+        drv_cleanup(raw_path, opt_path, obj_path, null);
         wr(2, "error: llc failed\n");
         return 1;
     }
 
-    if mode == 2 {
-        // <cc> [-no-pie] <obj_path> -o <out_path>
-        var cc: *u8 = g_cc_path;
-        if cc == null { cc = "cc"; }
-        p = drv_cat(cmd, 0, cc);
-        if no_pie == 1 { p = drv_cat(cmd, p, " -no-pie"); }
-        p = drv_cat(cmd, p, " ");
-        p = drv_cat(cmd, p, obj_path);
-        p = drv_cat(cmd, p, " -o ");
-        p = drv_cat(cmd, p, out_path);
-        cmd[p] = 0;
-        if system(cmd) != 0 {
-            wr(2, "error: cc failed\n");
+    if mode == 1 {
+        if drv_publish(obj_path, out_path, 0) != 0 {
+            drv_cleanup(raw_path, opt_path, obj_path, null);
             return 1;
         }
-        unlink(obj_path);
+        drv_cleanup(raw_path, opt_path, null, null);
+        return 0;
     }
 
-    unlink(ll_path);
+    var exe_fd: [i32; 1] = 0;
+    let exe_path: *u8 = drv_stage(out_path, ".tvctmp.exe", &exe_fd[0]);
+    if exe_path == null {
+        drv_cleanup(raw_path, opt_path, obj_path, null);
+        wr(2, "error: cannot create temporary file\n");
+        return 1;
+    }
+    close(exe_fd[0]);
+    var cc: *u8 = g_cc_path;
+    if cc == null { cc = "cc"; }
+    // cc [-no-pie] <staged-object> -o <staged-executable>
+    let cc_argv: **u8 = alloc(7);
+    var cargc: i32 = 0;
+    cc_argv[cargc] = cc; cargc = cargc + 1;
+    if no_pie == 1 {
+        cc_argv[cargc] = "-no-pie"; cargc = cargc + 1;
+    }
+    cc_argv[cargc] = obj_path; cargc = cargc + 1;
+    cc_argv[cargc] = "-o"; cargc = cargc + 1;
+    cc_argv[cargc] = exe_path; cargc = cargc + 1;
+    cc_argv[cargc] = null;
+    let cc_failed: i32 = drv_run(cc, cc_argv);
+    free(cc_argv as *u8);
+    if cc_failed != 0 {
+        drv_cleanup(raw_path, opt_path, obj_path, exe_path);
+        wr(2, "error: cc failed\n");
+        return 1;
+    }
+
+    if drv_publish(exe_path, out_path, 1) != 0 {
+        drv_cleanup(raw_path, opt_path, obj_path, exe_path);
+        return 1;
+    }
+    drv_cleanup(raw_path, opt_path, obj_path, null);
     return 0;
 }
 
 // ===== MAIN =====
 
-fn main(argc: i32, argv: **u8) {
+fn main(argc: i32, argv: **u8, envp: **u8) {
+    g_driver_envp = envp;
     if argc < 2 {
         wr(2, "usage: tvc_self <source.tv> [-o output.ll]\n");
         wr(2, "       tvc_self --repl            (interactive session)\n");
@@ -37992,6 +38288,29 @@ fn main(argc: i32, argv: **u8) {
                 wr(2, "error: --emit expects ir|obj|exe\n");
                 exit(1);
             }
+        } else if str_eq(argv[ai], "--opt-level") == 1 && ai + 1 < argc {
+            g_opt_requested = 1;
+            ai = ai + 1;
+            if str_eq(argv[ai], "none") == 1 {
+                g_opt_level = 0;
+            } else if str_eq(argv[ai], "promote") == 1 {
+                g_opt_level = 1;
+            } else if str_eq(argv[ai], "o1") == 1 {
+                g_opt_level = 2;
+            } else {
+                wr(2, "error: --opt-level expects none|promote|o1\n");
+                exit(1);
+            }
+        } else if str_eq(argv[ai], "--opt-level") == 1 {
+            wr(2, "error: --opt-level expects none|promote|o1\n");
+            exit(1);
+        } else if str_eq(argv[ai], "-opt") == 1 && ai + 1 < argc {
+            // LLVM middle-end tool (default: PATH lookup).
+            ai = ai + 1;
+            g_opt_path = argv[ai];
+        } else if str_eq(argv[ai], "-opt") == 1 {
+            wr(2, "error: -opt requires a path\n");
+            exit(1);
         } else if str_eq(argv[ai], "-llc") == 1 && ai + 1 < argc {
             // --emit obj|exe toolchain: path to llc (default: PATH lookup).
             ai = ai + 1;
@@ -38030,6 +38349,26 @@ fn main(argc: i32, argv: **u8) {
         exit(1);
     }
 
+    if g_opt_level != 0 {
+        if g_emit_gpu_mode == 1 {
+            wr(2, "error: CPU optimization profiles do not apply to GPU-only emission\n");
+            exit(1);
+        }
+        if g_ptr_typed == 1 {
+            wr(2, "error: -target tpc accepts only --opt-level none\n");
+            exit(1);
+        }
+        if g_eval_mode == 1 || g_repl_mode == 1 || g_diag_json == 1
+            || g_pfor_report_mode == 1 {
+            wr(2, "error: --opt-level composes only with normal host codegen\n");
+            exit(1);
+        }
+        if output_path == null {
+            wr(2, "error: --opt-level requires -o\n");
+            exit(1);
+        }
+    }
+
     if g_pfor_proof0_mode == 1 {
         if g_pfor_legacy_requested == 1 || g_eval_mode == 1
             || g_emit_gpu_mode == 1 || g_repl_mode == 1
@@ -38038,7 +38377,8 @@ fn main(argc: i32, argv: **u8) {
             || g_ptr_typed == 1 || g_emit_requested == 1
             || g_alloc_debug == 1 || output_path != null
             || g_target_explicit == 1 || g_llc_path != null
-            || g_cc_path != null || g_eval_nargs != 0 {
+            || g_cc_path != null || g_opt_path != null
+            || g_opt_requested == 1 || g_eval_nargs != 0 {
             wr(2, "error: --pfor-proof0-report is a standalone query mode\n");
             exit(1);
         }
@@ -38397,21 +38737,30 @@ fn main(argc: i32, argv: **u8) {
     }
 
     if output_path != null {
-        // Codegen mode: emit LLVM IR. For --emit ir (default) it goes straight
-        // to -o; for --emit obj|exe it streams to a temp .ll the driver then
-        // lowers with llc (+ cc). creat() non-variadic; mode 0o666 = 438.
-        var ll_path: *u8 = output_path;
-        if g_emit_mode != 0 { ll_path = drv_tmp(output_path, ".tvctmp.ll"); }
-        g_ir_fd = creat(ll_path, 438);
-        if g_ir_fd < 0 {
+        // Emit to an anonymous file first: direct codegen exits cannot leave a
+        // named partial. Successful codegen is materialized into a sibling
+        // stage for optional optimization/lowering and atomic publication.
+        let raw_stream: *u8 = tmpfile();
+        if raw_stream == null {
             wr(2, "error: cannot open output file\n");
             exit(1);
         }
+        g_ir_fd = fileno(raw_stream);
+        if g_ir_fd < 0 {
+            fclose(raw_stream);
+            wr(2, "error: cannot open output file\n");
+            exit(1);
+        }
+        g_ir_write_failed = 0;
         codegen_program(prog);
-        close(g_ir_fd);
+        if g_ir_write_failed != 0 {
+            fclose(raw_stream);
+            wr(2, "error: cannot write output file\n");
+            exit(1);
+        }
         // Codegen-stage diagnostics don't abort mid-emission; if any fired the
-        // IR is unreliable — remove the partial artifact and exit non-zero
-        // rather than claim success (#64: a stale .ll must not be lowerable).
+        // anonymous IR is unreliable — close it and exit non-zero rather than
+        // claim success (#64: a stale .ll must not be lowerable).
         if g_diag_count > 0 {
             wr(2, "error: ");
             wr_int(2, g_diag_count as i64);
@@ -38420,20 +38769,24 @@ fn main(argc: i32, argv: **u8) {
             } else {
                 wr(2, " errors generated.\n");
             }
-            unlink(ll_path);
+            fclose(raw_stream);
             exit(1);
         }
+        let ll_path: *u8 = drv_materialize_raw(raw_stream, output_path);
+        if ll_path == null {
+            wr(2, "error: cannot create temporary file\n");
+            exit(1);
+        }
+        g_driver_stage_path = ll_path;
         // -target tpc: rewrite the finished opaque module to typed-pointer IR.
         // In-place is safe — tp_rewrite slurps the whole file before writing.
         if g_ptr_typed == 1 {
             tp_rewrite(ll_path, ll_path);
         }
-        // --emit obj|exe: hand the temp .ll to llc (+ cc) for the native artifact.
-        if g_emit_mode != 0 {
-            if drv_emit(ll_path, output_path, g_emit_mode) != 0 {
-                exit(1);
-            }
+        if drv_emit(ll_path, output_path, g_emit_mode) != 0 {
+            exit(1);
         }
+        g_driver_stage_path = null;
         wr(2, "wrote ");
         wr(2, output_path);
         wr(2, "\n");
