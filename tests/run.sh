@@ -1186,6 +1186,14 @@ compile_obj_self wide_print
 link_objs wide_print wide_print
 run_test wide_print "$TIMEOUT_SINGLE"
 
+# DOT1 examples: local, explicit integer reductions before any library/API
+# promotion. The narrow specimen is seed-compatible; the wide accumulator
+# boundary requires the self-hosted i128/i256 surface.
+test_single dot_product_narrow
+compile_obj_self dot_product_wide
+link_objs dot_product_wide dot_product_wide
+run_test dot_product_wide "$TIMEOUT_SINGLE"
+
 # Wide-accumulator consumer: a 2x
 # nested 4x4 matmul over NARROW (<2^62) i64 inputs whose column sums reach ~2^130
 # (PAST i128), requantized by a constant right-shift (round half up — division-

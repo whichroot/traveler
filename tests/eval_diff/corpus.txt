@@ -101,6 +101,8 @@ examples/wide_i128_add.tv       # i128/u128: add/sub/mul/shift-across-64/cmp/bit
 examples/wide_i256_add.tv       # i256/u256: the 256-bit lane (shift past 128)
 examples/wide_literal.tv        # >2^64 literals: hex==dec, 2^64, max-u128, BN254 Fr words
 examples/wide_print.tv          # full-width decimal print (the double-dabble mirror)
+examples/dot_product_narrow.tv  # DOT1: signed/unsigned narrow dots + i64 wrap boundary
+examples/dot_product_wide.tv    # DOT1/#85: i128 wrap boundary and i256-only exact sum
 examples/wide_field_test.tv     # field_wide ABI: BN254 Fr add/sub/mul/inv/div round-trips
 examples/wide_ntt_test.tv       # NTT over the wide carrier
 examples/wide_merkle_test.tv    # Merkle over the wide carrier

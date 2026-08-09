@@ -21,6 +21,8 @@ e8147d6a786e43c46b0805550e229904  examples/closure_prove_through.tv
 8857ae78f9ebe32c484474170f9d4135  examples/const_generic.tv
 fe16f887894b648fc58967687677be0d  examples/convergence_test.tv
 35bce9b9dbfa1ba1d018781e0d1c8a6f  examples/defer_cleanup.tv
+45ede746aadf266a08d390ec5ee9b863  examples/dot_product_narrow.tv
+5f91fb68b010ee7b2ece8e8bc079d9c0  examples/dot_product_wide.tv
 f44e5c613e56fbd58f0a3fcf6e61af18  examples/dp_test.tv
 2a1dd7829920a80646bfdf8a9e2da2d2  examples/dyn_fri_test.tv
 659a27189e6ba4dd6172d64e3de5be06  examples/dyn_kernel_test.tv

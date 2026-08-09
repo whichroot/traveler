@@ -50,6 +50,8 @@ examples/compare_let.tv
 examples/const_generic.tv
 examples/convergence_test.tv
 examples/dp_test.tv
+examples/dot_product_narrow.tv
+examples/dot_product_wide.tv
 examples/dyn_fri_test.tv
 examples/dyn_kernel_test.tv
 examples/dyn_merkle_test.tv

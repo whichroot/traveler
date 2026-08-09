@@ -336,6 +336,9 @@ parity_single dyn_nested_test
 parity_single global_const_init
 # #55: exact-2^63 literal + INT64_MIN print (tvc_self writer fix; seed was clean)
 parity_single i64min_print
+# DOT1 narrow exact-dot example is intentionally seed-compatible. The i128/i256
+# companion remains self-hosted-only.
+parity_single dot_product_narrow
 # #72: cast-wrapped alloc/realloc element sizing (seed was always correct here;
 # tvc_self now agrees — parity pins the agreement)
 parity_single alloc_cast_sizes

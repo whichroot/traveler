@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dot_product_wide.tv - one integer dot across the i128/i256 width boundary.
+// This is an example, not a frozen library API.
+// @internal-note: plan-dot-product-support
+
+fn dot_i64_i128(x: *i64, w: *i64, n: i32) -> i128 {
+    var acc: i128 = 0 as i128;
+    var i: i32 = 0;
+    while i < n {
+        acc = acc + (x[i] as i128) * (w[i] as i128);
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn dot_i64_i256(x: *i64, w: *i64, n: i32) -> i256 {
+    var acc: i256 = 0 as i256;
+    var i: i32 = 0;
+    while i < n {
+        acc = acc + (x[i] as i256) * (w[i] as i256);
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn main() -> i32 {
+    var x: [i64; 64] = 0;
+    var w: [i64; 64] = 0;
+    var i: i32 = 0;
+    while i < 64 {
+        x[i] = 1 << 62;
+        w[i] = 1 << 62;
+        i = i + 1;
+    }
+
+    // Two products sum to 2^125: above i64, exact in both wide types.
+    print(dot_i64_i128(&x[0], &w[0], 2));
+    print(dot_i64_i256(&x[0], &w[0], 2));
+
+    // Eight products sum to 2^127: i128 reaches its signed wrap boundary,
+    // while i256 still carries the positive mathematical value.
+    print(dot_i64_i128(&x[0], &w[0], 8));
+    print(dot_i64_i256(&x[0], &w[0], 8));
+
+    // Sixty-four products sum to 2^130: the i128 residue is zero; i256 is exact.
+    print(dot_i64_i128(&x[0], &w[0], 64));
+    print(dot_i64_i256(&x[0], &w[0], 64));
+    return 0;
+}
