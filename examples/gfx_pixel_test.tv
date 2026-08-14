@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// gfx_pixel_test.tv — pack, unpack, clip, fill, blit. tvc_self ONLY.
+// @internal-design: gfx
+//
+// Expected output:
+//   10    unpack r
+//   20    unpack g
+//   30    unpack b
+//   255   unpack a (XRGB)
+//   1     packed XRGB high byte is 0xFF
+//   5     put/get
+//   7     clear then put
+//   0     clipped put did not write (0,0)
+//   9     fill_rect interior
+//   0     fill_rect outside stays 0
+//   3     blit payload
+//   0     blit clip outside
+
+import "../src/lib/gfx/pixel.tv";
+import "../src/lib/gfx/framebuffer.tv";
+
+fn main() -> i32 {
+    let c: Color = color_rgb(10, 20, 30);
+    let px: u32 = color_pack(c, PixelFormat::Xrgb8888);
+    let u: Color = color_unpack(px, PixelFormat::Xrgb8888);
+    print(u.r as i32);
+    print(u.g as i32);
+    print(u.b as i32);
+    print(u.a as i32);
+    if ((px >> 24) & 255) == 255 { print(1); }
+
+    var fb: Framebuffer = fb_new(4, 4);
+    fb_put(&fb, 1, 1, 5);
+    print(fb_get(&fb, 1, 1) as i32);
+    fb_clear(&fb, 0);
+    fb_put(&fb, 2, 2, 7);
+    print(fb_get(&fb, 2, 2) as i32);
+    fb_put(&fb, 0 - 1, 0, 99);
+    fb_put(&fb, 4, 0, 99);
+    print(fb_get(&fb, 0, 0) as i32);
+
+    fb_clear(&fb, 0);
+    fb_fill_rect(&fb, 1, 1, 2, 2, 9);
+    print(fb_get(&fb, 1, 1) as i32);
+    print(fb_get(&fb, 0, 0) as i32);
+
+    var src: Framebuffer = fb_new(2, 2);
+    fb_clear(&src, 3);
+    fb_clear(&fb, 0);
+    fb_blit(&fb, 2, 2, &src);
+    print(fb_get(&fb, 2, 2) as i32);
+    print(fb_get(&fb, 0, 0) as i32);
+
+    fb_free(&fb);
+    fb_free(&src);
+    return 0;
+}

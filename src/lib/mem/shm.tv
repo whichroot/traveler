@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// shm.tv — shared-memory region over shm_open + mmap MAP_SHARED.
+// Caller may close fd with unix_close_fd. tvc_self ONLY.
+// @internal-design: memory
+
+import "../core/result.tv";
+import "../net/unix.tv";
+
+extern "C" fn ftruncate(fd: i32, length: i64) -> i32;
+extern "C" fn mmap(addr: *u8, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *u8;
+extern "C" fn munmap(addr: *u8, length: usize) -> i32;
+extern "C" fn shm_open(name: *u8, oflag: i32, mode: i32) -> i32;
+extern "C" fn shm_unlink(name: *u8) -> i32;
+extern "C" fn getpid() -> i32;
+
+enum ShmError {
+    OsDetect,
+    BadSize,
+    CreateFailed,
+    TruncateFailed,
+    MapFailed,
+}
+
+struct ShmRegion {
+    fd: i32,
+    ptr: *u8,
+    size: i64,
+}
+
+fn shm_put_dec(buf: *u8, off: i32, n: i32) -> i32 {
+    var tmp: [u8; 16] = 0;
+    var x: i32 = n;
+    if x < 0 { x = 0; }
+    var k: i32 = 0;
+    if x == 0 {
+        tmp[0] = 48;
+        k = 1;
+    }
+    while x > 0 {
+        tmp[k] = ((x % 10) + 48) as u8;
+        k = k + 1;
+        x = x / 10;
+    }
+    var i: i32 = 0;
+    while i < k {
+        buf[off + i] = tmp[k - 1 - i];
+        i = i + 1;
+    }
+    return k;
+}
+
+fn shm_create(size: i64) -> Result<ShmRegion, ShmError> {
+    if size < 1 { return Result::Err(ShmError::BadSize); }
+    let os: i32 = unix_os();
+    if os == 0 { return Result::Err(ShmError::OsDetect); }
+    var oflag: i32 = 194;
+    if os == 1 { oflag = 2562; }
+    let name: *u8 = alloc(48);
+    var i: i32 = 0;
+    while i < 48 { name[i] = 0; i = i + 1; }
+    name[0] = 47;
+    name[1] = 116;
+    name[2] = 118;
+    name[3] = 115;
+    name[4] = 104;
+    name[5] = 109;
+    name[6] = 45;
+    var pos: i32 = 7 + shm_put_dec(name, 7, getpid());
+    name[pos] = 45;
+    pos = pos + 1;
+    var fd: i32 = 0 - 1;
+    var n: i32 = 0;
+    while n < 16 {
+        var p2: i32 = pos + shm_put_dec(name, pos, n);
+        name[p2] = 0;
+        fd = shm_open(name, oflag, 384);
+        if fd >= 0 {
+            shm_unlink(name);
+            n = 16;
+        } else {
+            n = n + 1;
+        }
+    }
+    free(name);
+    if fd < 0 { return Result::Err(ShmError::CreateFailed); }
+    if ftruncate(fd, size) != 0 {
+        unix_close_fd(fd);
+        return Result::Err(ShmError::TruncateFailed);
+    }
+    let p: *u8 = mmap(null, size as usize, 3, 1, fd, 0);
+    if (p as i64) == (0 - 1) {
+        unix_close_fd(fd);
+        return Result::Err(ShmError::MapFailed);
+    }
+    return Result::Ok(ShmRegion { fd: fd, ptr: p, size: size });
+}
+
+fn shm_unmap(r: *ShmRegion) {
+    if r.ptr != null {
+        if (r.ptr as i64) != (0 - 1) {
+            munmap(r.ptr, r.size as usize);
+        }
+        r.ptr = null;
+    }
+}

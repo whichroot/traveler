@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// gfx_headless.tv — draw into a headless window and write P6. tvc_self ONLY.
+// @internal-design: gfx
+//
+// Expected output:
+//   8     width
+//   8     height
+//   1     P6 magic
+//   200   red channel of (0,0)
+//   10    blue channel of (2,2)
+//   700   the ? pipeline completed
+
+import "../src/lib/gfx/backend_headless.tv";
+
+fn run() -> Result<i64, GfxError> {
+    var win: Window = gfx_open(8, 8, "headless")?;
+    let fb: *Framebuffer = gfx_frame(&win);
+    print(fb.width);
+    print(fb.height);
+    let red: u32 = color_pack(color_rgb(200, 0, 0), PixelFormat::Xrgb8888);
+    let blu: u32 = color_pack(color_rgb(0, 0, 10), PixelFormat::Xrgb8888);
+    fb_clear(fb, red);
+    fb_fill_rect(fb, 2, 2, 4, 4, blu);
+    gfx_write_ppm(fb, "/tmp/traveler_gfx_headless.ppm")?;
+    gfx_present(&win)?;
+    match fs_read_to_string("/tmp/traveler_gfx_headless.ppm") {
+        Result::Ok(raw) => {
+            if raw.data[0] == 80 && raw.data[1] == 54 { print(1); }
+            var p: i32 = 0;
+            while p < raw.len && raw.data[p] != 10 { p = p + 1; }
+            p = p + 1;
+            while p < raw.len && raw.data[p] != 10 { p = p + 1; }
+            p = p + 1;
+            while p < raw.len && raw.data[p] != 10 { p = p + 1; }
+            p = p + 1;
+            print(raw.data[p] as i32);
+            let row: i32 = 8 * 3;
+            print(raw.data[p + 2 * row + 2 * 3 + 2] as i32);
+            str_free(&raw);
+        }
+        Result::Err(e) => {
+            gfx_close(&win);
+            return Result::Err(GfxError::WriteFailed);
+        }
+    }
+    gfx_close(&win);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

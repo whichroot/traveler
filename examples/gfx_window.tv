@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// gfx_window.tv — Wayland software window. Manual demo. Not a CI gate.
+// tvc_self ONLY.
+// @internal-design: gfx
+//
+// Prints 1 on open, then 0 on close. Prints 404 if no compositor.
+
+import "../src/lib/gfx/wayland/backend_wayland.tv";
+
+extern "C" fn nanosleep(req: *i64, rem: *i64) -> i32;
+
+fn sleep_16ms() {
+    var req: [i64; 2] = 0;
+    req[0] = 0;
+    req[1] = 16000000;
+    nanosleep(&req[0], null);
+}
+
+fn draw_frame(fb: *Framebuffer, t: i32) {
+    var y: i32 = 0;
+    while y < fb.height {
+        var x: i32 = 0;
+        while x < fb.width {
+            let r: u32 = ((x * 255) / fb.width) as u32;
+            let g: u32 = ((y * 255) / fb.height) as u32;
+            let b: u32 = (t & 255) as u32;
+            fb.data[y * fb.stride_px + x] = (255 as u32 << 24) | (r << 16) | (g << 8) | b;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn main() -> i32 {
+    var win: Window = Window { p: null };
+    match gfx_open(640, 480, "traveler") {
+        Result::Ok(w) => { win = w; }
+        Result::Err(e) => { print(404); return 1; }
+    }
+    print(1);
+    var t: i32 = 0;
+    var run: i32 = 1;
+    while run == 1 {
+        match gfx_poll_event(&win) {
+            Event::None => { }
+            Event::Close => { run = 0; }
+            Event::Resize(nw, nh) => { }
+            Event::PointerMove(x, y) => { }
+            Event::PointerButton(b, s) => { }
+            Event::Key(k, s) => { }
+        }
+        if run == 0 { }
+        else {
+            let fb: *Framebuffer = gfx_frame(&win);
+            draw_frame(fb, t);
+            match gfx_present(&win) {
+                Result::Ok(v) => { }
+                Result::Err(e) => { run = 0; }
+            }
+            t = t + 3;
+            sleep_16ms();
+        }
+    }
+    gfx_close(&win);
+    print(0);
+    return 0;
+}

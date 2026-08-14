@@ -1,0 +1,425 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// client.tv — Wayland socket, object ids, send/recv, inbound buffer.
+// tvc_self ONLY.
+// @internal-design: gfx
+
+import "../../core/result.tv";
+import "../../net/unix.tv";
+import "../event.tv";
+import "wire.tv";
+
+extern "C" fn getenv(name: *u8) -> *u8;
+
+struct WlClient {
+    sock: i32,
+    next_id: u32,
+    in_buf: *u8,
+    in_cap: i32,
+    in_r: i32,
+    in_w: i32,
+    in_fds: *i32,
+    in_fd_n: i32,
+    in_fd_cap: i32,
+}
+
+struct WlConn {
+    c: *WlClient,
+}
+
+fn wl_map_unix(e: UnixError) -> GfxError {
+    match e {
+        UnixError::OsDetect => { return GfxError::OsFailed; }
+        UnixError::SocketFailed => { return GfxError::ConnectFailed; }
+        UnixError::ConnectFailed => { return GfxError::ConnectFailed; }
+        UnixError::SendFailed => { return GfxError::PresentFailed; }
+        UnixError::RecvFailed => { return GfxError::PresentFailed; }
+        UnixError::PollFailed => { return GfxError::OsFailed; }
+        UnixError::PairFailed => { return GfxError::OsFailed; }
+    }
+    return GfxError::OsFailed;
+}
+
+fn wl_copy_cstr(dst: *u8, src: *u8) -> i32 {
+    var i: i32 = 0;
+    while src[i] != 0 {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+    dst[i] = 0;
+    return i;
+}
+
+fn wl_socket_path() -> *u8 {
+    let runtime: *u8 = getenv("XDG_RUNTIME_DIR");
+    if runtime == null { return null; }
+    var display: *u8 = getenv("WAYLAND_DISPLAY");
+    if display == null { display = "wayland-0"; }
+    if display[0] == 47 {
+        let n: i32 = wl_cstr_len(display);
+        let p: *u8 = alloc(n + 1);
+        wl_copy_cstr(p, display);
+        return p;
+    }
+    let n1: i32 = wl_cstr_len(runtime);
+    let n2: i32 = wl_cstr_len(display);
+    let p: *u8 = alloc(n1 + n2 + 2);
+    var i: i32 = 0;
+    while i < n1 { p[i] = runtime[i]; i = i + 1; }
+    p[i] = 47;
+    i = i + 1;
+    var j: i32 = 0;
+    while j <= n2 { p[i + j] = display[j]; j = j + 1; }
+    return p;
+}
+
+fn wl_client_new() -> *WlClient {
+    let c: *WlClient = alloc(1);
+    c.sock = 0 - 1;
+    c.next_id = 2;
+    c.in_cap = 4096;
+    c.in_buf = alloc(c.in_cap);
+    c.in_r = 0;
+    c.in_w = 0;
+    c.in_fd_cap = 16;
+    c.in_fds = alloc(c.in_fd_cap);
+    c.in_fd_n = 0;
+    return c;
+}
+
+fn wl_client_connect() -> Result<WlConn, GfxError> {
+    let path: *u8 = wl_socket_path();
+    if path == null { return Result::Err(GfxError::ConnectFailed); }
+    var sock: i32 = 0 - 1;
+    match unix_connect(path) {
+        Result::Ok(s) => { sock = s.fd; }
+        Result::Err(e) => {
+            free(path);
+            return Result::Err(wl_map_unix(e));
+        }
+    }
+    free(path);
+    let c: *WlClient = wl_client_new();
+    c.sock = sock;
+    return Result::Ok(WlConn { c: c });
+}
+
+fn wl_alloc_id(c: *WlClient) -> u32 {
+    let id: u32 = c.next_id;
+    c.next_id = c.next_id + 1;
+    return id;
+}
+
+fn wl_client_close(c: *WlClient) {
+    if c == null { return; }
+    if c.sock >= 0 { unix_close_fd(c.sock); c.sock = 0 - 1; }
+    var i: i32 = 0;
+    while i < c.in_fd_n {
+        unix_close_fd(c.in_fds[i]);
+        i = i + 1;
+    }
+    c.in_fd_n = 0;
+    if c.in_buf != null { free(c.in_buf); c.in_buf = null; }
+    if c.in_fds != null { free(c.in_fds); c.in_fds = null; }
+    free(c);
+}
+
+fn wl_compact(c: *WlClient) {
+    if c.in_r == 0 { return; }
+    let n: i32 = c.in_w - c.in_r;
+    var i: i32 = 0;
+    while i < n {
+        c.in_buf[i] = c.in_buf[c.in_r + i];
+        i = i + 1;
+    }
+    c.in_w = n;
+    c.in_r = 0;
+}
+
+fn wl_in_grow(c: *WlClient, need: i32) {
+    if c.in_w + need <= c.in_cap { return; }
+    var cap: i32 = c.in_cap * 2;
+    while cap < c.in_w + need { cap = cap * 2; }
+    let nb: *u8 = alloc(cap);
+    var i: i32 = 0;
+    while i < c.in_w {
+        nb[i] = c.in_buf[i];
+        i = i + 1;
+    }
+    free(c.in_buf);
+    c.in_buf = nb;
+    c.in_cap = cap;
+}
+
+fn wl_send_raw(c: *WlClient, buf: *u8, n: i32, fd: i32) -> Result<i64, GfxError> {
+    let s: UnixStream = UnixStream { fd: c.sock };
+    match unix_send(s, buf, n as i64, fd) {
+        Result::Ok(v) => { return Result::Ok(v); }
+        Result::Err(e) => { return Result::Err(wl_map_unix(e)); }
+    }
+    return Result::Err(GfxError::PresentFailed);
+}
+
+fn wl_pump(c: *WlClient, timeout_ms: i32) -> Result<i32, GfxError> {
+    match unix_poll_in(c.sock, timeout_ms) {
+        Result::Ok(rdy) => {
+            if rdy == 0 { return Result::Ok(0); }
+        }
+        Result::Err(e) => { return Result::Err(wl_map_unix(e)); }
+    }
+    if c.in_r > 2048 { wl_compact(c); }
+    let chunk: *u8 = alloc(4096);
+    let fds: *i32 = alloc(8);
+    let nfd: *i32 = alloc(1);
+    nfd[0] = 0;
+    let s: UnixStream = UnixStream { fd: c.sock };
+    var got: i64 = 0;
+    match unix_recv(s, chunk, 4096, fds, 8, nfd) {
+        Result::Ok(v) => { got = v; }
+        Result::Err(e) => {
+            free(chunk); free(fds); free(nfd);
+            return Result::Err(wl_map_unix(e));
+        }
+    }
+    if got == 0 {
+        free(chunk); free(fds); free(nfd);
+        return Result::Err(GfxError::ConnectFailed);
+    }
+    wl_in_grow(c, got as i32);
+    var i: i32 = 0;
+    while i < (got as i32) {
+        c.in_buf[c.in_w + i] = chunk[i];
+        i = i + 1;
+    }
+    c.in_w = c.in_w + (got as i32);
+    i = 0;
+    while i < nfd[0] {
+        if c.in_fd_n >= c.in_fd_cap {
+            c.in_fd_cap = c.in_fd_cap * 2;
+            c.in_fds = realloc(c.in_fds, c.in_fd_cap);
+        }
+        c.in_fds[c.in_fd_n] = fds[i];
+        c.in_fd_n = c.in_fd_n + 1;
+        i = i + 1;
+    }
+    free(chunk); free(fds); free(nfd);
+    return Result::Ok(1);
+}
+
+fn wl_msg_ready(c: *WlClient) -> i32 {
+    let avail: i32 = c.in_w - c.in_r;
+    if avail < 8 { return 0; }
+    let sz: i32 = wl_hdr_size(&c.in_buf[c.in_r]);
+    if sz < 8 { return 0; }
+    if avail < sz { return 0; }
+    return 1;
+}
+
+fn wl_msg_id(c: *WlClient) -> u32 {
+    return wl_hdr_id(&c.in_buf[c.in_r]);
+}
+
+fn wl_msg_op(c: *WlClient) -> u32 {
+    return wl_hdr_opcode(&c.in_buf[c.in_r]);
+}
+
+fn wl_msg_size(c: *WlClient) -> i32 {
+    return wl_hdr_size(&c.in_buf[c.in_r]);
+}
+
+fn wl_msg_body(c: *WlClient) -> *u8 {
+    return &c.in_buf[c.in_r + 8];
+}
+
+fn wl_msg_consume(c: *WlClient) {
+    let sz: i32 = wl_hdr_size(&c.in_buf[c.in_r]);
+    c.in_r = c.in_r + sz;
+    if c.in_r == c.in_w {
+        c.in_r = 0;
+        c.in_w = 0;
+    }
+}
+
+fn wl_take_fd(c: *WlClient) -> i32 {
+    if c.in_fd_n < 1 { return 0 - 1; }
+    let f: i32 = c.in_fds[0];
+    var i: i32 = 0;
+    while i + 1 < c.in_fd_n {
+        c.in_fds[i] = c.in_fds[i + 1];
+        i = i + 1;
+    }
+    c.in_fd_n = c.in_fd_n - 1;
+    return f;
+}
+
+fn wl_req_sync(c: *WlClient, cb: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 12] = 0;
+    wl_header(&buf[0], 1, 0, 12);
+    wl_put_u32(&buf[0], 8, cb);
+    return wl_send_raw(c, &buf[0], 12, 0 - 1);
+}
+
+fn wl_req_get_registry(c: *WlClient, reg: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 12] = 0;
+    wl_header(&buf[0], 1, 1, 12);
+    wl_put_u32(&buf[0], 8, reg);
+    return wl_send_raw(c, &buf[0], 12, 0 - 1);
+}
+
+fn wl_req_bind(c: *WlClient, reg: u32, name: u32, iface: *u8, ver: u32, id: u32) -> Result<i64, GfxError> {
+    let slen: i32 = wl_str_size(iface);
+    let size: i32 = 8 + 4 + slen + 4 + 4;
+    let buf: *u8 = alloc(size);
+    var i: i32 = 0;
+    while i < size { buf[i] = 0; i = i + 1; }
+    wl_header(buf, reg, 0, size as u32);
+    wl_put_u32(buf, 8, name);
+    let so: i32 = 12 + wl_put_str(buf, 12, iface);
+    wl_put_u32(buf, so, ver);
+    wl_put_u32(buf, so + 4, id);
+    let r: Result<i64, GfxError> = wl_send_raw(c, buf, size, 0 - 1);
+    free(buf);
+    return r;
+}
+
+fn wl_req_create_surface(c: *WlClient, comp: u32, id: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 12] = 0;
+    wl_header(&buf[0], comp, 0, 12);
+    wl_put_u32(&buf[0], 8, id);
+    return wl_send_raw(c, &buf[0], 12, 0 - 1);
+}
+
+fn wl_req_create_pool(c: *WlClient, shm: u32, id: u32, fd: i32, size: i32) -> Result<i64, GfxError> {
+    var buf: [u8; 16] = 0;
+    wl_header(&buf[0], shm, 0, 16);
+    wl_put_u32(&buf[0], 8, id);
+    wl_put_i32(&buf[0], 12, size);
+    return wl_send_raw(c, &buf[0], 16, fd);
+}
+
+fn wl_req_pool_buffer(c: *WlClient, pool: u32, id: u32, off: i32, w: i32, h: i32, stride: i32, fmt: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 32] = 0;
+    wl_header(&buf[0], pool, 0, 32);
+    wl_put_u32(&buf[0], 8, id);
+    wl_put_i32(&buf[0], 12, off);
+    wl_put_i32(&buf[0], 16, w);
+    wl_put_i32(&buf[0], 20, h);
+    wl_put_i32(&buf[0], 24, stride);
+    wl_put_u32(&buf[0], 28, fmt);
+    return wl_send_raw(c, &buf[0], 32, 0 - 1);
+}
+
+fn wl_req_pool_destroy(c: *WlClient, pool: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 8] = 0;
+    wl_header(&buf[0], pool, 1, 8);
+    return wl_send_raw(c, &buf[0], 8, 0 - 1);
+}
+
+fn wl_req_buffer_destroy(c: *WlClient, buf_id: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 8] = 0;
+    wl_header(&buf[0], buf_id, 0, 8);
+    return wl_send_raw(c, &buf[0], 8, 0 - 1);
+}
+
+fn wl_req_attach(c: *WlClient, surface: u32, buffer: u32, x: i32, y: i32) -> Result<i64, GfxError> {
+    var buf: [u8; 20] = 0;
+    wl_header(&buf[0], surface, 1, 20);
+    wl_put_u32(&buf[0], 8, buffer);
+    wl_put_i32(&buf[0], 12, x);
+    wl_put_i32(&buf[0], 16, y);
+    return wl_send_raw(c, &buf[0], 20, 0 - 1);
+}
+
+fn wl_req_damage(c: *WlClient, surface: u32, x: i32, y: i32, w: i32, h: i32) -> Result<i64, GfxError> {
+    var buf: [u8; 24] = 0;
+    wl_header(&buf[0], surface, 2, 24);
+    wl_put_i32(&buf[0], 8, x);
+    wl_put_i32(&buf[0], 12, y);
+    wl_put_i32(&buf[0], 16, w);
+    wl_put_i32(&buf[0], 20, h);
+    return wl_send_raw(c, &buf[0], 24, 0 - 1);
+}
+
+fn wl_req_commit(c: *WlClient, surface: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 8] = 0;
+    wl_header(&buf[0], surface, 6, 8);
+    return wl_send_raw(c, &buf[0], 8, 0 - 1);
+}
+
+fn wl_req_get_xdg_surface(c: *WlClient, wm: u32, id: u32, surface: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 16] = 0;
+    wl_header(&buf[0], wm, 2, 16);
+    wl_put_u32(&buf[0], 8, id);
+    wl_put_u32(&buf[0], 12, surface);
+    return wl_send_raw(c, &buf[0], 16, 0 - 1);
+}
+
+fn wl_req_pong(c: *WlClient, wm: u32, serial: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 12] = 0;
+    wl_header(&buf[0], wm, 3, 12);
+    wl_put_u32(&buf[0], 8, serial);
+    return wl_send_raw(c, &buf[0], 12, 0 - 1);
+}
+
+fn wl_req_get_toplevel(c: *WlClient, xdg: u32, id: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 12] = 0;
+    wl_header(&buf[0], xdg, 1, 12);
+    wl_put_u32(&buf[0], 8, id);
+    return wl_send_raw(c, &buf[0], 12, 0 - 1);
+}
+
+fn wl_req_ack_configure(c: *WlClient, xdg: u32, serial: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 12] = 0;
+    wl_header(&buf[0], xdg, 4, 12);
+    wl_put_u32(&buf[0], 8, serial);
+    return wl_send_raw(c, &buf[0], 12, 0 - 1);
+}
+
+fn wl_req_set_title(c: *WlClient, top: u32, title: *u8) -> Result<i64, GfxError> {
+    let slen: i32 = wl_str_size(title);
+    let size: i32 = 8 + slen;
+    let buf: *u8 = alloc(size);
+    var i: i32 = 0;
+    while i < size { buf[i] = 0; i = i + 1; }
+    wl_header(buf, top, 2, size as u32);
+    wl_put_str(buf, 8, title);
+    let r: Result<i64, GfxError> = wl_send_raw(c, buf, size, 0 - 1);
+    free(buf);
+    return r;
+}
+
+fn wl_req_set_app_id(c: *WlClient, top: u32, app: *u8) -> Result<i64, GfxError> {
+    let slen: i32 = wl_str_size(app);
+    let size: i32 = 8 + slen;
+    let buf: *u8 = alloc(size);
+    var i: i32 = 0;
+    while i < size { buf[i] = 0; i = i + 1; }
+    wl_header(buf, top, 3, size as u32);
+    wl_put_str(buf, 8, app);
+    let r: Result<i64, GfxError> = wl_send_raw(c, buf, size, 0 - 1);
+    free(buf);
+    return r;
+}
+
+fn wl_req_surface_destroy(c: *WlClient, surface: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 8] = 0;
+    wl_header(&buf[0], surface, 0, 8);
+    return wl_send_raw(c, &buf[0], 8, 0 - 1);
+}
+
+fn wl_req_xdg_destroy(c: *WlClient, xdg: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 8] = 0;
+    wl_header(&buf[0], xdg, 0, 8);
+    return wl_send_raw(c, &buf[0], 8, 0 - 1);
+}
+
+fn wl_req_toplevel_destroy(c: *WlClient, top: u32) -> Result<i64, GfxError> {
+    var buf: [u8; 8] = 0;
+    wl_header(&buf[0], top, 0, 8);
+    return wl_send_raw(c, &buf[0], 8, 0 - 1);
+}
+
+fn wl_min_u32(a: u32, b: u32) -> u32 {
+    if a < b { return a; }
+    return b;
+}

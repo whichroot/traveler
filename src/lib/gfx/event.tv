@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// event.tv — window events and GfxError. tvc_self ONLY.
+// @internal-design: gfx
+
+import "../core/result.tv";
+
+enum Event {
+    None,
+    Close,
+    Resize(i32, i32),
+    PointerMove(i32, i32),
+    PointerButton(i32, i32),
+    Key(i32, i32),
+}
+
+enum GfxError {
+    BadSize,
+    AllocFailed,
+    OsFailed,
+    ConnectFailed,
+    ProtocolFailed,
+    PresentFailed,
+    WriteFailed,
+}

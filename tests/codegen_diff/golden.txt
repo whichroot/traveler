@@ -1,6 +1,6 @@
 4ae88f90f02eb8266031cc02217c6515  examples/adc_pipeline.tv
-5ad1482d7ff85adfdea11ee46666d601  examples/addr_scalar.tv
 1311535a9d6dc17f100c5d2651000511  examples/address_of.tv
+5ad1482d7ff85adfdea11ee46666d601  examples/addr_scalar.tv
 a6bb3d479ca6dcec20c84562b71c62a5  examples/aes_sbox.tv
 91a347b502bc6834703c1106fb58b632  examples/algebraic_loops.tv
 6457b016adb9e7e108d04924fd2b576f  examples/alloc_cast_sizes.tv
@@ -24,6 +24,8 @@ fe16f887894b648fc58967687677be0d  examples/convergence_test.tv
 45ede746aadf266a08d390ec5ee9b863  examples/dot_product_narrow.tv
 5f91fb68b010ee7b2ece8e8bc079d9c0  examples/dot_product_wide.tv
 f44e5c613e56fbd58f0a3fcf6e61af18  examples/dp_test.tv
+9b7aaffaf3c12e0339cbcfdae7679e25  examples/dynfield_eval.tv
+a351ad359968e8af978d6fdc72935c52  examples/dynfield_spike.tv
 2a1dd7829920a80646bfdf8a9e2da2d2  examples/dyn_fri_test.tv
 659a27189e6ba4dd6172d64e3de5be06  examples/dyn_kernel_test.tv
 96383d838c5ba26addb477eaf3e2df22  examples/dyn_merkle_test.tv
@@ -33,8 +35,6 @@ de6cbe7be4fde8ae5a20686c1c0da818  examples/dyn_ntt_test.tv
 4c677267a6ae1081d5a3ebe7e78d0491  examples/dyn_poseidon2_test.tv
 7f5a473d949ada547cf1d46f5db340c6  examples/dyn_regime_proof_test.tv
 3d289079d1fb09a4f76a0847604d04a4  examples/dyn_register_test.tv
-9b7aaffaf3c12e0339cbcfdae7679e25  examples/dynfield_eval.tv
-a351ad359968e8af978d6fdc72935c52  examples/dynfield_spike.tv
 04abfd6b862cc901963145a8f4226f9e  examples/edge_cases.tv
 94ac1bccf2fe0ed701aa2c11387e1f96  examples/embed_roundtrip_test.tv
 e6931718741f6cda77202163ce0d48db  examples/enum_basics.tv
@@ -74,6 +74,10 @@ ec94bec4a2422246e7bcc1f3a00de493  examples/genus_probe_test.tv
 b14ddf37e512e22a52f9d928ad60910f  examples/genus_profile_certify.tv
 b2437a4fa37c0b51f7c17126e5a85959  examples/genus_soft_test.tv
 283adc40b28c897a59451b2093d55573  examples/genus_wav.tv
+049249c79b48bb52552b715fd0d76b3c  examples/gfx_headless.tv
+403e8cbdf13032d5c764e05534fecea2  examples/gfx_pixel_test.tv
+ff3305bb78c0f9a2c7936b19335f37d7  examples/gfx_window.tv
+9c825773b8c08be1821944bc459b1f2a  examples/gfx_wire_test.tv
 26a615063a291f77e8ddd5e31c389462  examples/global_array_init.tv
 5812370e31ba746ad201d5bea0a2ba52  examples/glyph_convergence_test.tv
 4f2d08e8f81ef8b2c5cf3699d0610d04  examples/gpu_field_map.tv
@@ -84,8 +88,8 @@ bbe879e9ad5c0a83cca889f67b5c1ff3  examples/grain_poseidon2_test.tv
 8db2326fd92c017b7bd63bfd6972d60c  examples/ieee_decode_test.tv
 8d0c67490249f3170166f4054fdd1e17  examples/import_test.tv
 bac2d7d849b9f3f0cf78b1309cfa3ccf  examples/import_vec_test.tv
-33b5bf1fefd5b0871170c43d82d59e96  examples/int_match.tv
 2b87e4c1e2464abdab4cc4b61043e6cf  examples/intern_stress.tv
+33b5bf1fefd5b0871170c43d82d59e96  examples/int_match.tv
 fd883f494bdfbb594f6194b8873c9390  examples/ir_emitter.tv
 866902ffd1eabaaa4e62ec9a0b3ef90b  examples/lab_emit.tv
 52b07eaf3829c15d37191449f075e1b0  examples/lab_experiment.tv
@@ -174,8 +178,8 @@ fdfbbd0ac052911304505f17ec271df4  examples/repr_tracking_65521.tv
 70a2293ed7152026e07813e9f735d595  examples/repr_tracking.tv
 ca624268e24ea6e5d9596b7115bb0cfe  examples/result_basics.tv
 35ea53a0e76e807cd85a2e44951ade93  examples/rns_dyn_matmul.tv
-addfa6099d556278f399f7706f45830c  examples/rs_error_decode_test.tv
 211893537375afaf92d934c6a42d86ee  examples/rs16_errdec_test.tv
+addfa6099d556278f399f7706f45830c  examples/rs_error_decode_test.tv
 86db2f4a0b657322478965e12090eae9  examples/runtime_circuit_test.tv
 9b74999b123a4382e6c3b34e49bb958c  examples/satotate_cm_eisenstein.tv
 57bff84c021438d1dd77bf5de0ac3e0e  examples/satotate_cm_gauss.tv
@@ -183,6 +187,7 @@ addfa6099d556278f399f7706f45830c  examples/rs_error_decode_test.tv
 bec53d7b4f91cb6c11217e0fa220d31d  examples/satotate_vertical.tv
 d83940814142d0aefdf65ce0e8d5d4f1  examples/segment_test.tv
 d1972aef7f2de51afae9db56c5cbe050  examples/self_host_test.tv
+643465992dec5171261993a11756acc2  examples/shm_map.tv
 3ec22fac95108e1c75de36c7b9707137  examples/short_circuit.tv
 fe569c107b5fcc5408569f77466817cb  examples/simd_bench.tv
 a12d2233666ad9130bfb6f03758a6e5c  examples/str_compare.tv
@@ -203,6 +208,7 @@ a457bfc4d267d32e9e74a1d0578e99a7  examples/time_deltas.tv
 813fbc557d5455c514914da460e1d8fa  examples/turning_test.tv
 6941c31ba20c5cd8de9d05e867800ef6  examples/tvc_lexer.tv
 80c1d4e44b0c3a695aa97b37088a812c  examples/two_fields.tv
+435d3fbc57fcd38a8080a82e0e234004  examples/unix_pair.tv
 212a936821cff9e958836586a4623763  examples/vec_export_test.tv
 b85b4eecda5062656f717c1690a6bc57  examples/vec_test.tv
 407615a20df3180dfbb2fefbbf35d76f  examples/verify_basics.tv
@@ -219,6 +225,7 @@ b9115d48da08b3faaaba0f0cd9c2a3ed  examples/weil_zeta_g2.tv
 6da7f3964da1c3217d1640e152ad3160  examples/wide_fri_test.tv
 0c78ecb9de4306038c7e29b948ffbda0  examples/wide_i128_add.tv
 91cb507879bf36c58898203dcfb0f766  examples/wide_i256_add.tv
+7a9ab393b498d55f4b4f3535d214cf8d  examples/wideint_selftest.tv
 ae941c23f5a1c379266fc121a27ac09f  examples/wide_literal_casts.tv
 2eb7b476412435ff554fdf14535b937d  examples/wide_literal.tv
 0b2afa2e57b70ef0ac7dfca38d5de02d  examples/wide_merkle_test.tv
@@ -226,7 +233,6 @@ ae941c23f5a1c379266fc121a27ac09f  examples/wide_literal_casts.tv
 91df527c9798c099b60ae6ee70a2562c  examples/wide_plonk_test.tv
 a3d56b91801d7463f5e7bb2ae7626bde  examples/wide_poseidon2_test.tv
 8ff4151c8f1ce89f9f9e449fbdc929a9  examples/wide_print.tv
-7a9ab393b498d55f4b4f3535d214cf8d  examples/wideint_selftest.tv
 bd3c7ad653a184ab52b6979535117384  examples/zeta_classical_edge.tv
 b1c4aa11a68ef54157036d9fbc8b9d03  examples/zk_cubic_dyn_test.tv
 9b6a5d558383ce288f575072961f78c3  examples/zk_cubic_test.tv

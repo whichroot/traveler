@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// framebuffer.tv — CPU pixel buffer. Owned alloc or borrowed wrap.
+// All draws clip. tvc_self ONLY.
+// @internal-design: gfx
+
+struct Framebuffer {
+    data: *u32,
+    width: i32,
+    height: i32,
+    stride_px: i32,
+    owns: i32,
+}
+
+fn fb_new(w: i32, h: i32) -> Framebuffer {
+    var ww: i32 = w;
+    var hh: i32 = h;
+    if ww < 1 { ww = 1; }
+    if hh < 1 { hh = 1; }
+    let n: i32 = ww * hh;
+    let p: *u32 = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        p[i] = 0;
+        i = i + 1;
+    }
+    return Framebuffer { data: p, width: ww, height: hh, stride_px: ww, owns: 1 };
+}
+
+fn fb_wrap(data: *u32, w: i32, h: i32, stride_px: i32) -> Framebuffer {
+    return Framebuffer { data: data, width: w, height: h, stride_px: stride_px, owns: 0 };
+}
+
+fn fb_free(fb: *Framebuffer) {
+    if fb.owns == 1 {
+        if fb.data != null { free(fb.data); }
+        fb.data = null;
+        fb.owns = 0;
+    }
+}
+
+fn fb_in(fb: *Framebuffer, x: i32, y: i32) -> i32 {
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x >= fb.width { return 0; }
+    if y >= fb.height { return 0; }
+    return 1;
+}
+
+fn fb_put(fb: *Framebuffer, x: i32, y: i32, px: u32) {
+    if fb_in(fb, x, y) == 0 { return; }
+    fb.data[y * fb.stride_px + x] = px;
+}
+
+fn fb_get(fb: *Framebuffer, x: i32, y: i32) -> u32 {
+    if fb_in(fb, x, y) == 0 { return 0; }
+    return fb.data[y * fb.stride_px + x];
+}
+
+fn fb_clear(fb: *Framebuffer, px: u32) {
+    var y: i32 = 0;
+    while y < fb.height {
+        var x: i32 = 0;
+        while x < fb.width {
+            fb.data[y * fb.stride_px + x] = px;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn fb_fill_rect(fb: *Framebuffer, x: i32, y: i32, w: i32, h: i32, px: u32) {
+    var x0: i32 = x;
+    var y0: i32 = y;
+    var x1: i32 = x + w;
+    var y1: i32 = y + h;
+    if x0 < 0 { x0 = 0; }
+    if y0 < 0 { y0 = 0; }
+    if x1 > fb.width { x1 = fb.width; }
+    if y1 > fb.height { y1 = fb.height; }
+    var yy: i32 = y0;
+    while yy < y1 {
+        var xx: i32 = x0;
+        while xx < x1 {
+            fb.data[yy * fb.stride_px + xx] = px;
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+fn fb_blit(dst: *Framebuffer, dx: i32, dy: i32, src: *Framebuffer) {
+    var y: i32 = 0;
+    while y < src.height {
+        var x: i32 = 0;
+        while x < src.width {
+            let sx: i32 = dx + x;
+            let sy: i32 = dy + y;
+            if fb_in(dst, sx, sy) == 1 {
+                dst.data[sy * dst.stride_px + sx] = src.data[y * src.stride_px + x];
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}

@@ -1066,6 +1066,31 @@ compile_obj_self net_loopback
 link_objs net_loopback net_loopback
 run_test net_loopback "$TIMEOUT_SINGLE"
 
+# net/ Unix wrap (tvc_self-only): socketpair, poll(2), SCM_RIGHTS fd passing.
+compile_obj_self unix_pair
+link_objs unix_pair unix_pair
+run_test unix_pair "$TIMEOUT_SINGLE"
+
+# mem/ shm wrap (tvc_self-only): shm_open + mmap, store/load, unmap.
+compile_obj_self shm_map
+link_objs shm_map shm_map
+run_test shm_map "$TIMEOUT_SINGLE"
+
+# gfx/ pixel + framebuffer (tvc_self-only): pack/unpack, clip, fill, blit.
+compile_obj_self gfx_pixel_test
+link_objs gfx_pixel_test gfx_pixel_test
+run_test gfx_pixel_test "$TIMEOUT_SINGLE"
+
+# gfx/ Wayland wire (tvc_self-only): header, u32, string, pad-to-4. No socket.
+compile_obj_self gfx_wire_test
+link_objs gfx_wire_test gfx_wire_test
+run_test gfx_wire_test "$TIMEOUT_SINGLE"
+
+# gfx/ headless backend (tvc_self-only): draw + P6 write + read-back witness.
+compile_obj_self gfx_headless
+link_objs gfx_headless gfx_headless
+run_test gfx_headless "$TIMEOUT_SINGLE"
+
 # time/ wrap layer (tvc_self-only): clock_gettime/nanosleep underneath,
 # Result at the membrane, `?` end-to-end. Verdict-only output (monotonicity,
 # wall sanity, the ns multiply, the sleep lower-bound, the BadDuration Err

@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// unix_pair.tv — AF_UNIX socketpair, poll, and SCM_RIGHTS. tvc_self ONLY.
+// @internal-design: net
+//
+// Expected output:
+//   2     bytes written
+//   104   'h'
+//   105   'i'
+//   0     poll on empty socket times out
+//   1     poll after a write is ready
+//   1     SCM_RIGHTS delivered one fd
+//   66    byte read through the passed fd
+//   700   the ? pipeline completed
+
+import "../src/lib/net/unix.tv";
+
+fn run() -> Result<i64, UnixError> {
+    let a: *i32 = alloc(1);
+    let b: *i32 = alloc(1);
+    unix_socketpair_both(a, b)?;
+    let sa: UnixStream = UnixStream { fd: a[0] };
+    let sb: UnixStream = UnixStream { fd: b[0] };
+    let msg: *u8 = alloc(8);
+    msg[0] = 104;
+    msg[1] = 105;
+    unix_write(sa, msg, 2)?;
+    print(2);
+    let buf: *u8 = alloc(8);
+    let got: i64 = unix_read(sb, buf, 8)?;
+    print(buf[0] as i32);
+    print(buf[1] as i32);
+    print(unix_poll_in(sb.fd, 0)?);
+    unix_write(sa, msg, 1)?;
+    print(unix_poll_in(sb.fd, 0)?);
+    let dummy: *u8 = alloc(8);
+    unix_read(sb, dummy, 8)?;
+
+    let c: *i32 = alloc(1);
+    let d: *i32 = alloc(1);
+    unix_socketpair_both(c, d)?;
+    let payload: *u8 = alloc(4);
+    payload[0] = 1;
+    payload[1] = 0;
+    payload[2] = 0;
+    payload[3] = 0;
+    unix_send(sa, payload, 4, c[0])?;
+    let rfds: *i32 = alloc(4);
+    let nfd: *i32 = alloc(1);
+    nfd[0] = 0;
+    let rbuf: *u8 = alloc(16);
+    unix_recv(sb, rbuf, 16, rfds, 4, nfd)?;
+    print(nfd[0]);
+    let one: *u8 = alloc(1);
+    one[0] = 66;
+    let passed: UnixStream = UnixStream { fd: rfds[0] };
+    unix_write(passed, one, 1)?;
+    let back: *u8 = alloc(1);
+    unix_read(UnixStream { fd: d[0] }, back, 1)?;
+    print(back[0] as i32);
+
+    unix_close(sa);
+    unix_close(sb);
+    unix_close_fd(c[0]);
+    unix_close_fd(d[0]);
+    unix_close_fd(rfds[0]);
+    free(a); free(b); free(c); free(d);
+    free(msg); free(buf); free(dummy); free(payload);
+    free(rfds); free(nfd); free(rbuf); free(one); free(back);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

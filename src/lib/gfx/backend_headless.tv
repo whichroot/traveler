@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// backend_headless.tv — gfx_* over an owned framebuffer. No window.
+// gfx_write_ppm emits binary P6. tvc_self ONLY.
+// @internal-design: gfx
+
+import "../core/result.tv";
+import "../fs/fs.tv";
+import "../fmt/fmt.tv";
+import "pixel.tv";
+import "framebuffer.tv";
+import "event.tv";
+
+struct Window {
+    fb: *Framebuffer,
+    closed: i32,
+}
+
+fn gfx_fb_store(dst: *Framebuffer, src: Framebuffer) {
+    dst.data = src.data;
+    dst.width = src.width;
+    dst.height = src.height;
+    dst.stride_px = src.stride_px;
+    dst.owns = src.owns;
+}
+
+fn gfx_open(w: i32, h: i32, title: *u8) -> Result<Window, GfxError> {
+    if w < 1 { return Result::Err(GfxError::BadSize); }
+    if h < 1 { return Result::Err(GfxError::BadSize); }
+    if w > 8192 { return Result::Err(GfxError::BadSize); }
+    if h > 8192 { return Result::Err(GfxError::BadSize); }
+    let tmp: Framebuffer = fb_new(w, h);
+    let fb: *Framebuffer = alloc(1);
+    gfx_fb_store(fb, tmp);
+    return Result::Ok(Window { fb: fb, closed: 0 });
+}
+
+fn gfx_frame(win: *Window) -> *Framebuffer {
+    return win.fb;
+}
+
+fn gfx_present(win: *Window) -> Result<i64, GfxError> {
+    return Result::Ok(0);
+}
+
+fn gfx_poll_event(win: *Window) -> Event {
+    if win.closed == 1 { return Event::Close; }
+    return Event::None;
+}
+
+fn gfx_close(win: *Window) {
+    win.closed = 1;
+    if win.fb != null {
+        fb_free(win.fb);
+        free(win.fb);
+        win.fb = null;
+    }
+}
+
+fn gfx_write_ppm(fb: *Framebuffer, path: *u8) -> Result<i64, GfxError> {
+    var hdr: Str = str_new();
+    str_push(&hdr, 80);
+    str_push(&hdr, 54);
+    str_push(&hdr, 10);
+    fmt_push_i64(&hdr, fb.width as i64);
+    str_push(&hdr, 32);
+    fmt_push_i64(&hdr, fb.height as i64);
+    str_push(&hdr, 10);
+    str_push(&hdr, 50);
+    str_push(&hdr, 53);
+    str_push(&hdr, 53);
+    str_push(&hdr, 10);
+    let npx: i32 = fb.width * fb.height;
+    let nbytes: i32 = npx * 3;
+    let pix: *u8 = alloc(nbytes);
+    var y: i32 = 0;
+    var o: i32 = 0;
+    while y < fb.height {
+        var x: i32 = 0;
+        while x < fb.width {
+            let px: u32 = fb.data[y * fb.stride_px + x];
+            pix[o] = ((px >> 16) & 255) as u8;
+            pix[o + 1] = ((px >> 8) & 255) as u8;
+            pix[o + 2] = (px & 255) as u8;
+            o = o + 3;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    match fs_open(path, "wb") {
+        Result::Ok(f) => {
+            match file_write(f, hdr.data, hdr.len as i64) {
+                Result::Ok(v) => { }
+                Result::Err(e) => {
+                    fclose(f.handle);
+                    str_free(&hdr);
+                    free(pix);
+                    return Result::Err(GfxError::WriteFailed);
+                }
+            }
+            match file_write(f, pix, nbytes as i64) {
+                Result::Ok(v) => { }
+                Result::Err(e) => {
+                    fclose(f.handle);
+                    str_free(&hdr);
+                    free(pix);
+                    return Result::Err(GfxError::WriteFailed);
+                }
+            }
+            match file_close(f) {
+                Result::Ok(v) => { }
+                Result::Err(e) => {
+                    str_free(&hdr);
+                    free(pix);
+                    return Result::Err(GfxError::WriteFailed);
+                }
+            }
+        }
+        Result::Err(e) => {
+            str_free(&hdr);
+            free(pix);
+            return Result::Err(GfxError::WriteFailed);
+        }
+    }
+    str_free(&hdr);
+    free(pix);
+    return Result::Ok(nbytes as i64);
+}

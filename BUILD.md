@@ -312,6 +312,28 @@ reduction for each of three primes on AGX, and uses the shipped Garner CRT on
 CPU. `K=8` remains the measured device-loop contract. No performance claim is
 made.
 
+### Software graphics (`src/lib/gfx/`)
+
+A CPU framebuffer plus two backends. An application imports one backend.
+Both export `gfx_open` / `gfx_frame` / `gfx_present` / `gfx_poll_event` /
+`gfx_close`.
+
+```sh
+TVC=src/bootstrap/out/stage1
+# Headless: draw and write a P6 PPM. No compositor.
+$TVC examples/gfx_headless.tv -o /tmp/gh.ll
+$LLC -filetype=obj /tmp/gh.ll -o /tmp/gh.o
+cc -no-pie /tmp/gh.o -o /tmp/gh && /tmp/gh
+
+# Wayland window (Linux, raw protocol, no libwayland).
+$TVC examples/gfx_window.tv -o /tmp/gw.ll
+$LLC -filetype=obj /tmp/gw.ll -o /tmp/gw.o
+cc -no-pie /tmp/gw.o -o /tmp/gw && /tmp/gw
+```
+
+`net/unix.tv` and `mem/shm.tv` are the OS floor. Do not import `net/tcp.tv`
+and `net/unix.tv` in the same unit.
+
 ## 5. Verify self-hosting (Stage 2 / Stage 3)
 
 The compiler can reproduce itself: the compiler compiling itself (Stage 2) must

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// shm_map.tv — create a shared-memory region, store, load. tvc_self ONLY.
+// @internal-design: memory
+//
+// Expected output:
+//   1     region created
+//   42    byte written at offset 0
+//   99    byte written at offset 100
+//   700   the ? pipeline completed
+
+import "../src/lib/mem/shm.tv";
+
+fn run() -> Result<i64, ShmError> {
+    let r: ShmRegion = shm_create(4096)?;
+    print(1);
+    r.ptr[0] = 42;
+    r.ptr[100] = 99;
+    print(r.ptr[0] as i32);
+    print(r.ptr[100] as i32);
+    let fd: i32 = r.fd;
+    var rr: ShmRegion = r;
+    shm_unmap(&rr);
+    unix_close_fd(fd);
+    return Result::Ok(0);
+}
+
+fn main() -> i32 {
+    match run() {
+        Result::Ok(v) => { print(700); }
+        Result::Err(e) => { print(0 - 1); }
+    }
+    return 0;
+}

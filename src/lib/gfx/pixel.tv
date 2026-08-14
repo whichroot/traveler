@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// pixel.tv — integer color and packed u32 pixel formats. tvc_self ONLY.
+// @internal-design: gfx
+
+enum PixelFormat {
+    Xrgb8888,
+    Argb8888,
+}
+
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+fn color_rgb(r: u8, g: u8, b: u8) -> Color {
+    return Color { r: r, g: g, b: b, a: 255 };
+}
+
+fn color_rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+    return Color { r: r, g: g, b: b, a: a };
+}
+
+fn color_pack(c: Color, fmt: PixelFormat) -> u32 {
+    let r: u32 = c.r as u32;
+    let g: u32 = c.g as u32;
+    let b: u32 = c.b as u32;
+    var a: u32 = c.a as u32;
+    match fmt {
+        PixelFormat::Xrgb8888 => { a = 255; }
+        PixelFormat::Argb8888 => { }
+    }
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+fn color_unpack(px: u32, fmt: PixelFormat) -> Color {
+    let r: u8 = ((px >> 16) & 255) as u8;
+    let g: u8 = ((px >> 8) & 255) as u8;
+    let b: u8 = (px & 255) as u8;
+    var a: u8 = ((px >> 24) & 255) as u8;
+    match fmt {
+        PixelFormat::Xrgb8888 => { a = 255; }
+        PixelFormat::Argb8888 => { }
+    }
+    return Color { r: r, g: g, b: b, a: a };
+}
+
+fn color_eq(a: Color, b: Color) -> i32 {
+    if a.r != b.r { return 0; }
+    if a.g != b.g { return 0; }
+    if a.b != b.b { return 0; }
+    if a.a != b.a { return 0; }
+    return 1;
+}

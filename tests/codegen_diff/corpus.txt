@@ -97,6 +97,10 @@ examples/genus_probe_test.tv
 examples/genus_profile_certify.tv
 examples/genus_soft_test.tv
 examples/genus_wav.tv
+examples/gfx_headless.tv
+examples/gfx_pixel_test.tv
+examples/gfx_window.tv
+examples/gfx_wire_test.tv
 examples/glyph_convergence_test.tv
 examples/grain_lfsr_test.tv
 examples/grain_poseidon2_test.tv
@@ -190,6 +194,7 @@ examples/satotate_vertical.tv
 examples/segment_test.tv
 examples/self_host_test.tv
 examples/short_circuit.tv
+examples/shm_map.tv
 examples/simd_bench.tv
 examples/str_compare.tv
 examples/string_basics.tv
@@ -200,6 +205,7 @@ examples/trait_impl.tv
 examples/turning_test.tv
 examples/tvc_lexer.tv
 examples/two_fields.tv
+examples/unix_pair.tv
 examples/vec_export_test.tv
 examples/vec_test.tv
 examples/verify_basics.tv

@@ -1,0 +1,302 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// unix.tv — AF_UNIX stream sockets, poll(2), and SCM_RIGHTS fd passing.
+// Result at the membrane. msghdr packed per OS. tvc_self ONLY.
+// @internal-design: net
+//
+// Do not import this file with tcp.tv. Both declare socket/connect/close/write.
+
+import "../core/result.tv";
+
+extern "C" fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+extern "C" fn connect(fd: i32, addr: *u8, len: u32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn sendmsg(fd: i32, msg: *u8, flags: i32) -> i64;
+extern "C" fn recvmsg(fd: i32, msg: *u8, flags: i32) -> i64;
+extern "C" fn poll(fds: *u8, nfds: u64, timeout: i32) -> i32;
+extern "C" fn socketpair(domain: i32, ty: i32, protocol: i32, sv: *i32) -> i32;
+extern "C" fn uname(buf: *u8) -> i32;
+
+enum UnixError {
+    OsDetect,
+    SocketFailed,
+    ConnectFailed,
+    SendFailed,
+    RecvFailed,
+    PollFailed,
+    PairFailed,
+}
+
+struct UnixStream {
+    fd: i32,
+}
+
+// 0 = undetected, 1 = darwin, 2 = linux.
+var g_unix_os: i32 = 0;
+
+fn unix_os() -> i32 {
+    if g_unix_os != 0 { return g_unix_os; }
+    let buf: *u8 = alloc(2048);
+    if uname(buf) != 0 {
+        free(buf);
+        return 0;
+    }
+    if buf[0] == 68 { g_unix_os = 1; }
+    if buf[0] == 76 { g_unix_os = 2; }
+    free(buf);
+    return g_unix_os;
+}
+
+fn unix_cstr_len(s: *u8) -> i32 {
+    var i: i32 = 0;
+    while s[i] != 0 { i = i + 1; }
+    return i;
+}
+
+fn unix_put_u32(buf: *u8, off: i32, v: u32) {
+    buf[off] = (v & 255) as u8;
+    buf[off + 1] = ((v >> 8) & 255) as u8;
+    buf[off + 2] = ((v >> 16) & 255) as u8;
+    buf[off + 3] = ((v >> 24) & 255) as u8;
+}
+
+fn unix_put_u64(buf: *u8, off: i32, v: u64) {
+    var i: i32 = 0;
+    var x: u64 = v;
+    while i < 8 {
+        buf[off + i] = (x & 255) as u8;
+        x = x >> 8;
+        i = i + 1;
+    }
+}
+
+fn unix_get_u32(buf: *u8, off: i32) -> u32 {
+    let b0: u32 = buf[off] as u32;
+    let b1: u32 = buf[off + 1] as u32;
+    let b2: u32 = buf[off + 2] as u32;
+    let b3: u32 = buf[off + 3] as u32;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn unix_get_u64(buf: *u8, off: i32) -> u64 {
+    var v: u64 = 0;
+    var i: i32 = 0;
+    while i < 8 {
+        v = v | ((buf[off + i] as u64) << (i * 8));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn unix_zero(buf: *u8, n: i32) {
+    var i: i32 = 0;
+    while i < n {
+        buf[i] = 0;
+        i = i + 1;
+    }
+}
+
+// Connect to an AF_UNIX path. Path is a NUL-terminated C string.
+fn unix_connect(path: *u8) -> Result<UnixStream, UnixError> {
+    let os: i32 = unix_os();
+    if os == 0 { return Result::Err(UnixError::OsDetect); }
+    let fd: i32 = socket(1, 1, 0);
+    if fd < 0 { return Result::Err(UnixError::SocketFailed); }
+    let n: i32 = unix_cstr_len(path);
+    if n < 1 || n > 107 {
+        close(fd);
+        return Result::Err(UnixError::ConnectFailed);
+    }
+    let sa: *u8 = alloc(110);
+    unix_zero(sa, 110);
+    if os == 1 {
+        sa[0] = (2 + n + 1) as u8;
+        sa[1] = 1;
+    } else {
+        sa[0] = 1;
+        sa[1] = 0;
+    }
+    var i: i32 = 0;
+    while i <= n {
+        sa[2 + i] = path[i];
+        i = i + 1;
+    }
+    let alen: u32 = (2 + n + 1) as u32;
+    if connect(fd, sa, alen) != 0 {
+        free(sa);
+        close(fd);
+        return Result::Err(UnixError::ConnectFailed);
+    }
+    free(sa);
+    return Result::Ok(UnixStream { fd: fd });
+}
+
+fn unix_socketpair_both(a: *i32, b: *i32) -> Result<i64, UnixError> {
+    var sv: [i32; 2] = 0;
+    if socketpair(1, 1, 0, &sv[0]) != 0 {
+        return Result::Err(UnixError::PairFailed);
+    }
+    a[0] = sv[0];
+    b[0] = sv[1];
+    return Result::Ok(0);
+}
+
+fn unix_read(s: UnixStream, buf: *u8, n: i64) -> Result<i64, UnixError> {
+    let got: i64 = read_bytes(s.fd, buf, n);
+    if got < 0 { return Result::Err(UnixError::RecvFailed); }
+    return Result::Ok(got);
+}
+
+fn unix_write(s: UnixStream, buf: *u8, n: i64) -> Result<i64, UnixError> {
+    var done: i64 = 0;
+    while done < n {
+        let put: i64 = write(s.fd, &buf[done], (n - done) as usize);
+        if put <= 0 { return Result::Err(UnixError::SendFailed); }
+        done = done + put;
+    }
+    return Result::Ok(done);
+}
+
+fn unix_close(s: UnixStream) -> i32 {
+    return close(s.fd);
+}
+
+fn unix_close_fd(fd: i32) -> i32 {
+    return close(fd);
+}
+
+// poll(2) for POLLIN. Ok(1) = ready. Ok(0) = timeout. timeout_ms < 0 waits.
+fn unix_poll_in(fd: i32, timeout_ms: i32) -> Result<i32, UnixError> {
+    var pfd: [u8; 8] = 0;
+    unix_put_u32(&pfd[0], 0, fd as u32);
+    pfd[4] = 1;
+    pfd[5] = 0;
+    pfd[6] = 0;
+    pfd[7] = 0;
+    let rc: i32 = poll(&pfd[0], 1, timeout_ms);
+    if rc < 0 { return Result::Err(UnixError::PollFailed); }
+    if rc == 0 { return Result::Ok(0); }
+    return Result::Ok(1);
+}
+
+// Send n bytes. If pass_fd >= 0, attach that fd with SCM_RIGHTS.
+fn unix_send(s: UnixStream, buf: *u8, n: i64, pass_fd: i32) -> Result<i64, UnixError> {
+    let os: i32 = unix_os();
+    if os == 0 { return Result::Err(UnixError::OsDetect); }
+    let iov: *u8 = alloc(16);
+    unix_zero(iov, 16);
+    unix_put_u64(iov, 0, buf as i64 as u64);
+    unix_put_u64(iov, 8, n as u64);
+    let msg: *u8 = alloc(56);
+    unix_zero(msg, 56);
+    unix_put_u64(msg, 16, iov as i64 as u64);
+    if os == 1 {
+        unix_put_u32(msg, 24, 1);
+    } else {
+        unix_put_u64(msg, 24, 1);
+    }
+    var cmsg: *u8 = null;
+    if pass_fd >= 0 {
+        cmsg = alloc(24);
+        unix_zero(cmsg, 24);
+        if os == 1 {
+            unix_put_u32(cmsg, 0, 20);
+            unix_put_u32(cmsg, 4, 65535);
+            unix_put_u32(cmsg, 8, 1);
+            unix_put_u32(cmsg, 16, pass_fd as u32);
+            unix_put_u32(msg, 40, 24);
+        } else {
+            unix_put_u64(cmsg, 0, 20);
+            unix_put_u32(cmsg, 8, 1);
+            unix_put_u32(cmsg, 12, 1);
+            unix_put_u32(cmsg, 16, pass_fd as u32);
+            unix_put_u64(msg, 40, 24);
+        }
+        unix_put_u64(msg, 32, cmsg as i64 as u64);
+    }
+    let put: i64 = sendmsg(s.fd, msg, 0);
+    if cmsg != null { free(cmsg); }
+    free(msg);
+    free(iov);
+    if put < 0 { return Result::Err(UnixError::SendFailed); }
+    return Result::Ok(put);
+}
+
+// Receive up to n bytes. Writes received SCM_RIGHTS fds into fds[0..].
+// Sets n_fds[0] to the count. Extra fds are closed.
+fn unix_recv(s: UnixStream, buf: *u8, n: i64, fds: *i32, fds_cap: i32, n_fds: *i32) -> Result<i64, UnixError> {
+    let os: i32 = unix_os();
+    if os == 0 { return Result::Err(UnixError::OsDetect); }
+    let iov: *u8 = alloc(16);
+    unix_zero(iov, 16);
+    unix_put_u64(iov, 0, buf as i64 as u64);
+    unix_put_u64(iov, 8, n as u64);
+    let cmsg: *u8 = alloc(256);
+    unix_zero(cmsg, 256);
+    let msg: *u8 = alloc(56);
+    unix_zero(msg, 56);
+    unix_put_u64(msg, 16, iov as i64 as u64);
+    if os == 1 {
+        unix_put_u32(msg, 24, 1);
+        unix_put_u32(msg, 40, 256);
+    } else {
+        unix_put_u64(msg, 24, 1);
+        unix_put_u64(msg, 40, 256);
+    }
+    unix_put_u64(msg, 32, cmsg as i64 as u64);
+    let got: i64 = recvmsg(s.fd, msg, 0);
+    var got_ctrl: u64 = 0;
+    if os == 1 {
+        got_ctrl = unix_get_u32(msg, 40) as u64;
+    } else {
+        got_ctrl = unix_get_u64(msg, 40);
+    }
+    var out_n: i32 = 0;
+    if got >= 0 && got_ctrl >= 16 {
+        var off: i32 = 0;
+        while (off as u64) + 16 <= got_ctrl {
+            var clen: i32 = 0;
+            var level: u32 = 0;
+            var ty: u32 = 0;
+            var data_off: i32 = 0;
+            if os == 1 {
+                clen = unix_get_u32(cmsg, off) as i32;
+                level = unix_get_u32(cmsg, off + 4);
+                ty = unix_get_u32(cmsg, off + 8);
+                data_off = off + 16;
+            } else {
+                clen = unix_get_u64(cmsg, off) as i32;
+                level = unix_get_u32(cmsg, off + 8);
+                ty = unix_get_u32(cmsg, off + 12);
+                data_off = off + 16;
+            }
+            if clen < 16 { break; }
+            var want_level: u32 = 1;
+            if os == 1 { want_level = 65535; }
+            if level == want_level && ty == 1 {
+                var foff: i32 = data_off;
+                while foff + 4 <= off + clen {
+                    let f: i32 = unix_get_u32(cmsg, foff) as i32;
+                    if out_n < fds_cap {
+                        fds[out_n] = f;
+                        out_n = out_n + 1;
+                    } else {
+                        close(f);
+                    }
+                    foff = foff + 4;
+                }
+            }
+            var step: i32 = clen + 7;
+            step = step & (0 - 8);
+            if step < 16 { break; }
+            off = off + step;
+        }
+    }
+    n_fds[0] = out_n;
+    free(msg);
+    free(cmsg);
+    free(iov);
+    if got < 0 { return Result::Err(UnixError::RecvFailed); }
+    return Result::Ok(got);
+}

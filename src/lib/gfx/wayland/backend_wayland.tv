@@ -1,0 +1,480 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// backend_wayland.tv — gfx_* over a raw Wayland client and wl_shm.
+// Linux compositor required. tvc_self ONLY.
+// @internal-design: gfx
+
+import "../../core/result.tv";
+import "../../mem/shm.tv";
+import "../pixel.tv";
+import "../framebuffer.tv";
+import "../event.tv";
+import "client.tv";
+
+struct WlWin {
+    c: *WlClient,
+    registry: u32,
+    compositor: u32,
+    shm: u32,
+    wm_base: u32,
+    surface: u32,
+    xdg_surface: u32,
+    toplevel: u32,
+    comp_name: u32,
+    comp_ver: u32,
+    shm_name: u32,
+    shm_ver: u32,
+    wm_name: u32,
+    wm_ver: u32,
+    pool_fd: i32,
+    pool_ptr: *u8,
+    pool_size: i64,
+    pool_id: u32,
+    buf0: u32,
+    buf1: u32,
+    busy0: i32,
+    busy1: i32,
+    draw: i32,
+    width: i32,
+    height: i32,
+    configured: i32,
+    ack_needed: i32,
+    last_serial: u32,
+    closed: i32,
+    proto_err: i32,
+    sync_id: u32,
+    sync_done: i32,
+    fb: *Framebuffer,
+    ev_k: *i32,
+    ev_a: *i32,
+    ev_b: *i32,
+    ev_n: i32,
+    ev_cap: i32,
+}
+
+struct Window {
+    p: *WlWin,
+}
+
+fn wl_win_new(w: i32, h: i32) -> *WlWin {
+    let p: *WlWin = alloc(1);
+    p.c = null;
+    p.registry = 0;
+    p.compositor = 0;
+    p.shm = 0;
+    p.wm_base = 0;
+    p.surface = 0;
+    p.xdg_surface = 0;
+    p.toplevel = 0;
+    p.comp_name = 0;
+    p.comp_ver = 0;
+    p.shm_name = 0;
+    p.shm_ver = 0;
+    p.wm_name = 0;
+    p.wm_ver = 0;
+    p.pool_fd = 0 - 1;
+    p.pool_ptr = null;
+    p.pool_size = 0;
+    p.pool_id = 0;
+    p.buf0 = 0;
+    p.buf1 = 0;
+    p.busy0 = 0;
+    p.busy1 = 0;
+    p.draw = 0;
+    p.width = w;
+    p.height = h;
+    p.configured = 0;
+    p.ack_needed = 0;
+    p.last_serial = 0;
+    p.closed = 0;
+    p.proto_err = 0;
+    p.sync_id = 0;
+    p.sync_done = 0;
+    let fb: *Framebuffer = alloc(1);
+    fb.data = null;
+    fb.width = w;
+    fb.height = h;
+    fb.stride_px = w;
+    fb.owns = 0;
+    p.fb = fb;
+    p.ev_cap = 8;
+    p.ev_k = alloc(8);
+    p.ev_a = alloc(8);
+    p.ev_b = alloc(8);
+    p.ev_n = 0;
+    return p;
+}
+
+fn wl_ev_push(w: *WlWin, k: i32, a: i32, b: i32) {
+    if w.ev_n >= w.ev_cap {
+        w.ev_cap = w.ev_cap * 2;
+        w.ev_k = realloc(w.ev_k, w.ev_cap);
+        w.ev_a = realloc(w.ev_a, w.ev_cap);
+        w.ev_b = realloc(w.ev_b, w.ev_cap);
+    }
+    w.ev_k[w.ev_n] = k;
+    w.ev_a[w.ev_n] = a;
+    w.ev_b[w.ev_n] = b;
+    w.ev_n = w.ev_n + 1;
+}
+
+fn wl_ev_pop(w: *WlWin) -> Event {
+    if w.ev_n < 1 { return Event::None; }
+    let k: i32 = w.ev_k[0];
+    let a: i32 = w.ev_a[0];
+    let b: i32 = w.ev_b[0];
+    var i: i32 = 0;
+    while i + 1 < w.ev_n {
+        w.ev_k[i] = w.ev_k[i + 1];
+        w.ev_a[i] = w.ev_a[i + 1];
+        w.ev_b[i] = w.ev_b[i + 1];
+        i = i + 1;
+    }
+    w.ev_n = w.ev_n - 1;
+    if k == 1 { return Event::Close; }
+    if k == 2 { return Event::Resize(a, b); }
+    if k == 3 { return Event::PointerMove(a, b); }
+    if k == 4 { return Event::PointerButton(a, b); }
+    if k == 5 { return Event::Key(a, b); }
+    return Event::None;
+}
+
+fn wl_note_global(w: *WlWin, name: u32, iface: *u8, ver: u32) {
+    if wl_cstr_eq(iface, "wl_compositor") == 1 {
+        w.comp_name = name;
+        w.comp_ver = ver;
+    }
+    if wl_cstr_eq(iface, "wl_shm") == 1 {
+        w.shm_name = name;
+        w.shm_ver = ver;
+    }
+    if wl_cstr_eq(iface, "xdg_wm_base") == 1 {
+        w.wm_name = name;
+        w.wm_ver = ver;
+    }
+}
+
+fn wl_point_fb(w: *WlWin) {
+    if w.pool_ptr == null { return; }
+    let bytes: i64 = (w.height as i64) * (w.width as i64) * 4;
+    let off: i64 = (w.draw as i64) * bytes;
+    let p: *u32 = ((w.pool_ptr as i64) + off) as *u32;
+    w.fb.data = p;
+    w.fb.width = w.width;
+    w.fb.height = w.height;
+    w.fb.stride_px = w.width;
+    w.fb.owns = 0;
+}
+
+fn wl_dispatch(w: *WlWin) -> i32 {
+    if wl_msg_ready(w.c) == 0 { return 0; }
+    let id: u32 = wl_msg_id(w.c);
+    let op: u32 = wl_msg_op(w.c);
+    let body: *u8 = wl_msg_body(w.c);
+    if id == 1 {
+        if op == 0 { w.proto_err = 1; }
+    } else if id == w.registry {
+        if op == 0 {
+            let name: u32 = wl_get_u32(body, 0);
+            let iface: *u8 = wl_str_bytes(body, 4);
+            let span: i32 = wl_str_span(body, 4);
+            let ver: u32 = wl_get_u32(body, 4 + span);
+            wl_note_global(w, name, iface, ver);
+        }
+    } else if id == w.sync_id {
+        if op == 0 { w.sync_done = 1; }
+    } else if id == w.wm_base {
+        if op == 0 {
+            let serial: u32 = wl_get_u32(body, 0);
+            match wl_req_pong(w.c, w.wm_base, serial) {
+                Result::Ok(v) => { }
+                Result::Err(e) => { w.proto_err = 1; }
+            }
+        }
+    } else if id == w.xdg_surface {
+        if op == 0 {
+            w.last_serial = wl_get_u32(body, 0);
+            w.ack_needed = 1;
+            w.configured = 1;
+        }
+    } else if id == w.toplevel {
+        if op == 0 {
+            var nw: i32 = wl_get_i32(body, 0);
+            var nh: i32 = wl_get_i32(body, 4);
+            if nw > 8192 { nw = 8192; }
+            if nh > 8192 { nh = 8192; }
+            if nw > 0 && nh > 0 {
+                if nw != w.width || nh != w.height {
+                    w.width = nw;
+                    w.height = nh;
+                    wl_ev_push(w, 2, nw, nh);
+                }
+            }
+        } else if op == 1 {
+            w.closed = 1;
+            wl_ev_push(w, 1, 0, 0);
+        }
+    } else if id == w.buf0 {
+        if op == 0 { w.busy0 = 0; }
+    } else if id == w.buf1 {
+        if op == 0 { w.busy1 = 0; }
+    }
+    wl_msg_consume(w.c);
+    return 1;
+}
+
+fn wl_drain(w: *WlWin) {
+    while wl_dispatch(w) == 1 { }
+}
+
+fn wl_roundtrip(w: *WlWin) -> Result<i64, GfxError> {
+    w.sync_id = wl_alloc_id(w.c);
+    w.sync_done = 0;
+    wl_req_sync(w.c, w.sync_id)?;
+    var n: i32 = 0;
+    while w.sync_done == 0 {
+        wl_pump(w.c, 1000)?;
+        wl_drain(w);
+        if w.proto_err == 1 { return Result::Err(GfxError::ProtocolFailed); }
+        n = n + 1;
+        if n > 30 { return Result::Err(GfxError::ProtocolFailed); }
+    }
+    return Result::Ok(0);
+}
+
+fn wl_pool_destroy(w: *WlWin) {
+    if w.buf0 != 0 {
+        match wl_req_buffer_destroy(w.c, w.buf0) {
+            Result::Ok(v) => { }
+            Result::Err(e) => { }
+        }
+        w.buf0 = 0;
+    }
+    if w.buf1 != 0 {
+        match wl_req_buffer_destroy(w.c, w.buf1) {
+            Result::Ok(v) => { }
+            Result::Err(e) => { }
+        }
+        w.buf1 = 0;
+    }
+    if w.pool_id != 0 {
+        match wl_req_pool_destroy(w.c, w.pool_id) {
+            Result::Ok(v) => { }
+            Result::Err(e) => { }
+        }
+        w.pool_id = 0;
+    }
+    if w.pool_ptr != null {
+        var reg: ShmRegion = ShmRegion { fd: w.pool_fd, ptr: w.pool_ptr, size: w.pool_size };
+        shm_unmap(&reg);
+        w.pool_ptr = null;
+    }
+    if w.pool_fd >= 0 {
+        unix_close_fd(w.pool_fd);
+        w.pool_fd = 0 - 1;
+    }
+    w.busy0 = 0;
+    w.busy1 = 0;
+}
+
+fn wl_ensure_pool(w: *WlWin) -> Result<i64, GfxError> {
+    if w.pool_ptr != null {
+        if w.fb != null {
+            if w.fb.width == w.width && w.fb.height == w.height {
+                wl_point_fb(w);
+                return Result::Ok(0);
+            }
+        }
+    }
+    wl_pool_destroy(w);
+    return wl_pool_create(w);
+}
+
+fn wl_pool_create(w: *WlWin) -> Result<i64, GfxError> {
+    if w.width < 1 { return Result::Err(GfxError::BadSize); }
+    if w.height < 1 { return Result::Err(GfxError::BadSize); }
+    let stride: i32 = w.width * 4;
+    let one: i64 = (w.height as i64) * (stride as i64);
+    let total: i64 = one * 2;
+    var fd: i32 = 0 - 1;
+    var ptr: *u8 = null;
+    var sz: i64 = 0;
+    match shm_create(total) {
+        Result::Ok(r) => {
+            fd = r.fd;
+            ptr = r.ptr;
+            sz = r.size;
+        }
+        Result::Err(e) => { return Result::Err(GfxError::AllocFailed); }
+    }
+    w.pool_id = wl_alloc_id(w.c);
+    wl_req_create_pool(w.c, w.shm, w.pool_id, fd, total as i32)?;
+    w.buf0 = wl_alloc_id(w.c);
+    w.buf1 = wl_alloc_id(w.c);
+    wl_req_pool_buffer(w.c, w.pool_id, w.buf0, 0, w.width, w.height, stride, 1)?;
+    wl_req_pool_buffer(w.c, w.pool_id, w.buf1, one as i32, w.width, w.height, stride, 1)?;
+    w.pool_fd = fd;
+    w.pool_ptr = ptr;
+    w.pool_size = sz;
+    w.draw = 0;
+    w.busy0 = 0;
+    w.busy1 = 0;
+    wl_point_fb(w);
+    return Result::Ok(0);
+}
+
+fn wl_win_teardown(w: *WlWin) {
+    if w == null { return; }
+    if w.c != null {
+        if w.toplevel != 0 {
+            match wl_req_toplevel_destroy(w.c, w.toplevel) {
+                Result::Ok(v) => { }
+                Result::Err(e) => { }
+            }
+        }
+        if w.xdg_surface != 0 {
+            match wl_req_xdg_destroy(w.c, w.xdg_surface) {
+                Result::Ok(v) => { }
+                Result::Err(e) => { }
+            }
+        }
+        if w.surface != 0 {
+            match wl_req_surface_destroy(w.c, w.surface) {
+                Result::Ok(v) => { }
+                Result::Err(e) => { }
+            }
+        }
+        wl_pool_destroy(w);
+        wl_client_close(w.c);
+        w.c = null;
+    }
+    if w.fb != null { free(w.fb); w.fb = null; }
+    if w.ev_k != null { free(w.ev_k); w.ev_k = null; }
+    if w.ev_a != null { free(w.ev_a); w.ev_a = null; }
+    if w.ev_b != null { free(w.ev_b); w.ev_b = null; }
+    free(w);
+}
+
+fn wl_setup(w: *WlWin, title: *u8) -> Result<i64, GfxError> {
+    match wl_client_connect() {
+        Result::Ok(conn) => { w.c = conn.c; }
+        Result::Err(e) => { return Result::Err(e); }
+    }
+    w.registry = wl_alloc_id(w.c);
+    wl_req_get_registry(w.c, w.registry)?;
+    wl_roundtrip(w)?;
+    if w.comp_name == 0 { return Result::Err(GfxError::ProtocolFailed); }
+    if w.shm_name == 0 { return Result::Err(GfxError::ProtocolFailed); }
+    if w.wm_name == 0 { return Result::Err(GfxError::ProtocolFailed); }
+    w.compositor = wl_alloc_id(w.c);
+    w.shm = wl_alloc_id(w.c);
+    w.wm_base = wl_alloc_id(w.c);
+    wl_req_bind(w.c, w.registry, w.comp_name, "wl_compositor", wl_min_u32(w.comp_ver, 4), w.compositor)?;
+    wl_req_bind(w.c, w.registry, w.shm_name, "wl_shm", 1, w.shm)?;
+    wl_req_bind(w.c, w.registry, w.wm_name, "xdg_wm_base", wl_min_u32(w.wm_ver, 2), w.wm_base)?;
+    w.surface = wl_alloc_id(w.c);
+    w.xdg_surface = wl_alloc_id(w.c);
+    w.toplevel = wl_alloc_id(w.c);
+    wl_req_create_surface(w.c, w.compositor, w.surface)?;
+    wl_req_get_xdg_surface(w.c, w.wm_base, w.xdg_surface, w.surface)?;
+    wl_req_get_toplevel(w.c, w.xdg_surface, w.toplevel)?;
+    wl_req_set_title(w.c, w.toplevel, title)?;
+    wl_req_set_app_id(w.c, w.toplevel, "traveler")?;
+    wl_req_commit(w.c, w.surface)?;
+    var n: i32 = 0;
+    while w.configured == 0 {
+        wl_pump(w.c, 1000)?;
+        wl_drain(w);
+        if w.proto_err == 1 { return Result::Err(GfxError::ProtocolFailed); }
+        n = n + 1;
+        if n > 30 { return Result::Err(GfxError::ProtocolFailed); }
+    }
+    wl_pool_create(w)?;
+    if w.ack_needed == 1 {
+        wl_req_ack_configure(w.c, w.xdg_surface, w.last_serial)?;
+        w.ack_needed = 0;
+    }
+    fb_clear(w.fb, color_pack(color_rgb(0, 0, 0), PixelFormat::Xrgb8888));
+    wl_req_attach(w.c, w.surface, w.buf0, 0, 0)?;
+    wl_req_damage(w.c, w.surface, 0, 0, w.width, w.height)?;
+    wl_req_commit(w.c, w.surface)?;
+    w.busy0 = 1;
+    w.draw = 1;
+    wl_point_fb(w);
+    return Result::Ok(0);
+}
+
+fn gfx_open(w: i32, h: i32, title: *u8) -> Result<Window, GfxError> {
+    if w < 1 { return Result::Err(GfxError::BadSize); }
+    if h < 1 { return Result::Err(GfxError::BadSize); }
+    if w > 8192 { return Result::Err(GfxError::BadSize); }
+    if h > 8192 { return Result::Err(GfxError::BadSize); }
+    var tw: *u8 = title;
+    if tw == null { tw = "traveler"; }
+    let win: *WlWin = wl_win_new(w, h);
+    match wl_setup(win, tw) {
+        Result::Ok(v) => { return Result::Ok(Window { p: win }); }
+        Result::Err(e) => {
+            wl_win_teardown(win);
+            return Result::Err(e);
+        }
+    }
+    return Result::Err(GfxError::OsFailed);
+}
+
+fn gfx_frame(win: *Window) -> *Framebuffer {
+    match wl_ensure_pool(win.p) {
+        Result::Ok(v) => { }
+        Result::Err(e) => { }
+    }
+    return win.p.fb;
+}
+
+fn gfx_present(win: *Window) -> Result<i64, GfxError> {
+    let w: *WlWin = win.p;
+    if w.closed == 1 { return Result::Err(GfxError::PresentFailed); }
+    if w.proto_err == 1 { return Result::Err(GfxError::ProtocolFailed); }
+    wl_ensure_pool(w)?;
+    var spins: i32 = 0;
+    while 1 == 1 {
+        if w.draw == 0 && w.busy0 == 0 { break; }
+        if w.draw == 1 && w.busy1 == 0 { break; }
+        wl_pump(w.c, 16)?;
+        wl_drain(w);
+        if w.proto_err == 1 { return Result::Err(GfxError::ProtocolFailed); }
+        spins = spins + 1;
+        if spins > 120 { return Result::Err(GfxError::PresentFailed); }
+    }
+    if w.ack_needed == 1 {
+        wl_req_ack_configure(w.c, w.xdg_surface, w.last_serial)?;
+        w.ack_needed = 0;
+    }
+    var bid: u32 = w.buf0;
+    if w.draw == 1 { bid = w.buf1; }
+    wl_req_attach(w.c, w.surface, bid, 0, 0)?;
+    wl_req_damage(w.c, w.surface, 0, 0, w.width, w.height)?;
+    wl_req_commit(w.c, w.surface)?;
+    if w.draw == 0 { w.busy0 = 1; } else { w.busy1 = 1; }
+    w.draw = 1 - w.draw;
+    wl_point_fb(w);
+    return Result::Ok(0);
+}
+
+fn gfx_poll_event(win: *Window) -> Event {
+    let w: *WlWin = win.p;
+    match wl_pump(w.c, 0) {
+        Result::Ok(v) => { }
+        Result::Err(e) => { w.proto_err = 1; }
+    }
+    wl_drain(w);
+    if w.ev_n > 0 { return wl_ev_pop(w); }
+    if w.closed == 1 { return Event::Close; }
+    return Event::None;
+}
+
+fn gfx_close(win: *Window) {
+    if win.p != null {
+        wl_win_teardown(win.p);
+        win.p = null;
+    }
+}

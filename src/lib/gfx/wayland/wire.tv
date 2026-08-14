@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// wire.tv — Wayland message pack and unpack. No socket. tvc_self ONLY.
+// @internal-design: gfx
+
+fn wl_align4(n: i32) -> i32 {
+    return (n + 3) & (0 - 4);
+}
+
+fn wl_put_u32(buf: *u8, off: i32, v: u32) {
+    buf[off] = (v & 255) as u8;
+    buf[off + 1] = ((v >> 8) & 255) as u8;
+    buf[off + 2] = ((v >> 16) & 255) as u8;
+    buf[off + 3] = ((v >> 24) & 255) as u8;
+}
+
+fn wl_get_u32(buf: *u8, off: i32) -> u32 {
+    let b0: u32 = buf[off] as u32;
+    let b1: u32 = buf[off + 1] as u32;
+    let b2: u32 = buf[off + 2] as u32;
+    let b3: u32 = buf[off + 3] as u32;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn wl_put_i32(buf: *u8, off: i32, v: i32) {
+    wl_put_u32(buf, off, v as u32);
+}
+
+fn wl_get_i32(buf: *u8, off: i32) -> i32 {
+    return wl_get_u32(buf, off) as i32;
+}
+
+fn wl_cstr_len(s: *u8) -> i32 {
+    var i: i32 = 0;
+    while s[i] != 0 { i = i + 1; }
+    return i;
+}
+
+// Bytes for a string arg: 4 + pad4(strlen+1).
+fn wl_str_size(s: *u8) -> i32 {
+    return 4 + wl_align4(wl_cstr_len(s) + 1);
+}
+
+// Write a Wayland string at off. Return bytes written.
+fn wl_put_str(buf: *u8, off: i32, s: *u8) -> i32 {
+    let n: i32 = wl_cstr_len(s) + 1;
+    wl_put_u32(buf, off, n as u32);
+    var i: i32 = 0;
+    while i < n {
+        buf[off + 4 + i] = s[i];
+        i = i + 1;
+    }
+    let padded: i32 = wl_align4(n);
+    while i < padded {
+        buf[off + 4 + i] = 0;
+        i = i + 1;
+    }
+    return 4 + padded;
+}
+
+fn wl_header(buf: *u8, id: u32, opcode: u32, size: u32) {
+    wl_put_u32(buf, 0, id);
+    wl_put_u32(buf, 4, (size << 16) | (opcode & 65535));
+}
+
+fn wl_hdr_id(buf: *u8) -> u32 {
+    return wl_get_u32(buf, 0);
+}
+
+fn wl_hdr_opcode(buf: *u8) -> u32 {
+    return wl_get_u32(buf, 4) & 65535;
+}
+
+fn wl_hdr_size(buf: *u8) -> i32 {
+    return ((wl_get_u32(buf, 4) >> 16) & 65535) as i32;
+}
+
+fn wl_cstr_eq(a: *u8, b: *u8) -> i32 {
+    var i: i32 = 0;
+    while a[i] != 0 && b[i] != 0 {
+        if a[i] != b[i] { return 0; }
+        i = i + 1;
+    }
+    if a[i] != b[i] { return 0; }
+    return 1;
+}
+
+fn wl_str_bytes(buf: *u8, off: i32) -> *u8 {
+    return &buf[off + 4];
+}
+
+fn wl_str_span(buf: *u8, off: i32) -> i32 {
+    let n: i32 = wl_get_u32(buf, off) as i32;
+    if n < 1 { return 4; }
+    return 4 + wl_align4(n);
+}

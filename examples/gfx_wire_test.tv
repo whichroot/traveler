@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// gfx_wire_test.tv — Wayland pack/unpack with no socket. tvc_self ONLY.
+// @internal-design: gfx
+//
+// Expected output:
+//   1     u32 round-trip
+//   8     string "ab" wire size (4 + pad4(3))
+//   97    first string byte 'a'
+//   12    header size field
+//   7     header object id
+//   2     header opcode
+//   4     align4(1)
+
+import "../src/lib/gfx/wayland/wire.tv";
+
+fn main() -> i32 {
+    let buf: *u8 = alloc(64);
+    var i: i32 = 0;
+    while i < 64 { buf[i] = 0; i = i + 1; }
+    wl_put_u32(buf, 0, 16909060);
+    if wl_get_u32(buf, 0) == 16909060 { print(1); }
+    let n: i32 = wl_put_str(buf, 8, "ab");
+    print(n);
+    print(buf[12] as i32);
+    wl_header(buf, 7, 2, 12);
+    print(wl_hdr_size(buf));
+    print(wl_hdr_id(buf) as i32);
+    print(wl_hdr_opcode(buf) as i32);
+    print(wl_align4(1));
+    free(buf);
+    return 0;
+}
