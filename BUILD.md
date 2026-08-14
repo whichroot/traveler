@@ -253,6 +253,12 @@ runtime packs both logical inputs into one physical input binding, preserving
 the measured two-binding graph. Portable byte goldens run everywhere;
 owned-device execution runs only when the external harness is available.
 
+AMDGCN/NVPTX device emission also admits the proof system's closed private K=8
+dot shape: one mutable scalar accumulator, one literal `0..8` inner loop, and
+one own-cell output. The device lowerer fully unrolls that loop into SSA, so the
+module remains alloca-free and registers-only. General private mutables,
+dynamic inner loops, and multi-statement reductions remain outside Stage 0.
+
 The measured G16X profile also has an in-tree Traveler submission runtime. It
 needs a regenerated `AGXDISP3` profile image for the exact OS/GPU build; that
 machine-specific image is deliberately not shipped as a portable ABI. On the

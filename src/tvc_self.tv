@@ -22625,6 +22625,83 @@ fn pfor_body_all_index_assign(body: i32) -> i32 {
     return 1;
 }
 
+// The first registers-only private reduction class is the K=8 dot already
+// admitted by pfor_admit_inner_dot. Device lowering unrolls the serial inner
+// loop into SSA, so no private alloca or shared mutable state is introduced.
+fn pfor_body_k8_private_dot(body: i32) -> i32 {
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 3 { return 0; }
+    let base: i32 = g_nodes[body].args_start;
+    let init: i32 = g_args[base];
+    let loop: i32 = g_args[base + 1];
+    let output: i32 = g_args[base + 2];
+    if g_nodes[init].kind != AST_LET || (g_nodes[init].flags & 1) == 0
+        || g_nodes[loop].kind != AST_FOR
+        || g_nodes[output].kind != AST_INDEX_ASSIGN { return 0; }
+    if g_nodes[g_nodes[loop].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[loop].child0].int_val != 0
+        || g_nodes[g_nodes[loop].child1].kind != AST_LIT_INT
+        || g_nodes[g_nodes[loop].child1].int_val != 8 { return 0; }
+    let inner_body: i32 = g_nodes[loop].child2;
+    if g_nodes[inner_body].kind != AST_BLOCK
+        || g_nodes[inner_body].nargs != 1 { return 0; }
+    let assign: i32 = g_args[g_nodes[inner_body].args_start];
+    if g_nodes[assign].kind != AST_ASSIGN
+        || g_nodes[assign].name0 != g_nodes[init].name0 { return 0; }
+    let rhs: i32 = g_nodes[assign].child0;
+    if g_nodes[rhs].kind != AST_BINARY || g_nodes[rhs].op != OP_ADD
+        || g_nodes[g_nodes[rhs].child0].kind != AST_IDENT
+        || g_nodes[g_nodes[rhs].child0].name0 != g_nodes[init].name0 { return 0; }
+    let product: i32 = g_nodes[rhs].child1;
+    if g_nodes[product].kind != AST_BINARY || g_nodes[product].op != OP_MUL
+        || g_nodes[g_nodes[product].child0].kind != AST_INDEX
+        || g_nodes[g_nodes[product].child1].kind != AST_INDEX { return 0; }
+    let out_value: i32 = g_nodes[output].child2;
+    if g_nodes[out_value].kind != AST_IDENT
+        || g_nodes[out_value].name0 != g_nodes[init].name0 { return 0; }
+    return 1;
+}
+
+fn codegen_gpu_k8_private_dot(body: i32) {
+    let base: i32 = g_nodes[body].args_start;
+    let init: i32 = g_args[base];
+    let loop: i32 = g_args[base + 1];
+    let output: i32 = g_args[base + 2];
+    let acc_name: i32 = g_nodes[init].name0;
+    let acc_type: i32 = resolve_type_sub(g_nodes[init].name1);
+    let inner_var: i32 = g_nodes[loop].name0;
+    let inner_body: i32 = g_nodes[loop].child2;
+    let assign: i32 = g_args[g_nodes[inner_body].args_start];
+
+    sym_push_scope();
+    let initial: IRValue = codegen_expr(g_nodes[init].child0, acc_type);
+    var acc_reg: i32 = initial.reg;
+    if initial.type_off != NULL_STR && initial.type_off != acc_type {
+        acc_reg = emit_implicit_convert(initial.reg, initial.type_off, acc_type);
+    }
+    sym_add(acc_name, acc_type, acc_reg, 0);
+    g_syms[g_sym_count - 1].is_mut = 1;
+    let acc_si: i32 = g_sym_count - 1;
+
+    var k: i32 = 0;
+    while k < 8 {
+        sym_push_scope();
+        let kreg: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(kreg); ir_wr(" = add i32 0, ");
+        ir_wr_int(k as i64); ir_wr("\n");
+        sym_add(inner_var, str_intern("i32"), kreg, 0);
+        let next: IRValue = codegen_expr(g_nodes[assign].child0, acc_type);
+        var next_reg: i32 = next.reg;
+        if next.type_off != NULL_STR && next.type_off != acc_type {
+            next_reg = emit_implicit_convert(next.reg, next.type_off, acc_type);
+        }
+        g_syms[acc_si].reg = next_reg;
+        sym_pop_scope();
+        k = k + 1;
+    }
+    codegen_stmt(output);
+    sym_pop_scope();
+}
+
 fn emit_gpu_module() {
     if g_gpu_target == 2 {
         emit_agx_module();
@@ -22681,7 +22758,9 @@ fn emit_gpu_module() {
         // Eligibility: elementwise body AND no dyn (__field) carrier capture
         // (the dyn carrier needs the %__Field kernarg — Stage 3). i64-wide
         // iterators (#54) are Stage-3-deferred: the SIMT identity is i32.
+        let k8_private_dot: i32 = pfor_body_k8_private_dot(body_node);
         var eligible: i32 = pfor_body_all_index_assign(body_node);
+        if k8_private_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
         var ci: i32 = 0;
         while ci < ncaps {
@@ -22780,8 +22859,13 @@ fn emit_gpu_module() {
             // Bind the loop variable to the SIMT index register (is_alloca 0).
             sym_add(loop_var_name, str_intern("i32"), idxr, 0);
 
-            // Reuse the real body codegen (field arithmetic + index/store).
-            codegen_stmt(body_node);
+            // Flat bodies reuse ordinary codegen. The proved K=8 reduction is
+            // lowered separately so its private accumulator remains SSA-only.
+            if k8_private_dot == 1 {
+                codegen_gpu_k8_private_dot(body_node);
+            } else {
+                codegen_stmt(body_node);
+            }
 
             if g_block_terminated == 0 {
                 ir_wr("  br label %"); ir_wr_label(lbl_done); ir_wr("\n");
@@ -22798,7 +22882,7 @@ fn emit_gpu_module() {
         } else {
             ir_wr("; skipped __pfor_gpu_worker_");
             ir_wr_int(wid as i64);
-            ir_wr(" (not the Stage-0 elementwise prime-field class)\n");
+            ir_wr(" (not the Stage-0 elementwise/private-K8 class)\n");
         }
 
         roff = roff + ncaps * 4;

@@ -1717,6 +1717,8 @@ else
 fi
 
 # ============================== AMDGCN leg (--emit-gpu) ======================
+K8_SRC="$REPO_DIR/tests/gpu/gpu_k8_private_dot.tv"
+PRIVATE_REFUSE_SRC="$REPO_DIR/tests/gpu/gpu_private_refuse.tv"
 if [ "$HAVE_AMD" = "1" ]; then
 echo "  -- AMDGCN (--emit-gpu)"
 
@@ -1753,6 +1755,43 @@ if [ "$fail" = "0" ] && [ -x "$OBJDUMP" ]; then
     echo "$dis" | grep -q "s_endpgm" || { echo "  FAIL: no s_endpgm (not a real kernel)"; fail=1; }
     echo "$dis" | grep -qiE "flat_(load|store)|global_(load|store)" || { echo "  FAIL: no memory op in the kernel"; fail=1; }
     [ "$fail" = "0" ] && echo "  ok   GCN disasm: s_endpgm + flat memory ops (sane kernel)"
+fi
+
+# A5. The proved private K=8 dot lowers as unrolled SSA: no alloca and a
+# production-valid gfx1100 object.
+K8_DEV="$TMP/gpu_k8_private_dot_amd.ll"
+K8_OBJ="$TMP/gpu_k8_private_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$K8_SRC" -o "$K8_DEV" 2>/dev/null; then
+    echo "  FAIL: AMD private K=8 dot did not produce a module"; fail=1
+else
+    grep -q "define amdgpu_kernel" "$K8_DEV" \
+        || { echo "  FAIL: AMD private K=8 dot emitted no kernel"; fail=1; }
+    if grep -q "alloca" "$K8_DEV"; then
+        echo "  FAIL: AMD private K=8 dot spilled through alloca"; fail=1
+    fi
+    k8mul=$(grep -c " = mul i64 " "$K8_DEV" || true)
+    [ "$k8mul" -ge 8 ] \
+        || { echo "  FAIL: AMD private K=8 dot was not fully lowered"; fail=1; }
+    if ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+            "$K8_DEV" -o "$K8_OBJ" 2>"$TMP/k8-llc.err"; then
+        echo "  FAIL: AMD private K=8 dot did not lower for gfx1100"; fail=1
+    else
+        echo "  ok   AMD private K=8 dot: proved, alloca-free, gfx1100-lowered"
+    fi
+fi
+
+# A6. Other proved private-mutable bodies stay outside the closed device class.
+PRIVATE_REFUSE_AMD="$TMP/gpu_private_refuse_amd.ll"
+if ! "$STAGE1" --emit-gpu "$PRIVATE_REFUSE_SRC" \
+        -o "$PRIVATE_REFUSE_AMD" 2>/dev/null; then
+    echo "  FAIL: AMD private-mutable refusal did not produce a module"; fail=1
+elif grep -q "define amdgpu_kernel" "$PRIVATE_REFUSE_AMD"; then
+    echo "  FAIL: AMD admitted a general private-mutable body"; fail=1
+elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
+        "$PRIVATE_REFUSE_AMD"; then
+    echo "  FAIL: AMD private-mutable refusal record absent"; fail=1
+else
+    echo "  ok   AMD general private-mutable body remains device-refused"
 fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
@@ -1810,6 +1849,33 @@ if [ -s "$PTX" ]; then
     grep -q "\.param \.u64 \.ptr \.global" "$PTX" || { echo "  FAIL: kernargs not in global param space"; ptxfail=1; }
     [ "$ptxfail" = "0" ] && echo "  ok   PTX: .visible .entry + .maxntid 256 + %tid.x/%ctaid.x + .global ops"
     [ "$ptxfail" = "0" ] || fail=1
+fi
+
+# N5. The same private reduction class stays target-neutral.
+K8_NVDEV="$TMP/gpu_k8_private_dot_nv.ll"
+K8_PTX="$TMP/gpu_k8_private_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$K8_SRC" -o "$K8_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX private K=8 dot did not produce a module"; fail=1
+elif grep -q "alloca" "$K8_NVDEV"; then
+    echo "  FAIL: NVPTX private K=8 dot spilled through alloca"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$K8_NVDEV" -o "$K8_PTX" 2>"$TMP/k8-llcnv.err"; then
+    echo "  FAIL: NVPTX private K=8 dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX private K=8 dot: proved, alloca-free, sm_90-lowered"
+fi
+
+PRIVATE_REFUSE_NV="$TMP/gpu_private_refuse_nv.ll"
+if ! "$STAGE1" --emit-gpu-nvptx "$PRIVATE_REFUSE_SRC" \
+        -o "$PRIVATE_REFUSE_NV" 2>/dev/null; then
+    echo "  FAIL: NVPTX private-mutable refusal did not produce a module"; fail=1
+elif grep -q "define ptx_kernel" "$PRIVATE_REFUSE_NV"; then
+    echo "  FAIL: NVPTX admitted a general private-mutable body"; fail=1
+elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
+        "$PRIVATE_REFUSE_NV"; then
+    echo "  FAIL: NVPTX private-mutable refusal record absent"; fail=1
+else
+    echo "  ok   NVPTX general private-mutable body remains device-refused"
 fi
 
 fi

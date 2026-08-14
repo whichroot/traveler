@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # bootstrap/build.sh — build the Traveler compiler with NO C compiler in the
 # trust chain (B4: drop the C seed).
 #

@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// A proved workitem-private body outside the closed device K=8 dot class.
+
+fn main() -> i32 {
+    let input: *i64 = alloc(2048);
+    let output: *i64 = alloc(2048);
+    for channel in 0..2048 {
+        var acc: i64 = input[channel];
+        acc = acc * 5;
+        acc = acc + channel as i64;
+        output[channel] = acc;
+    }
+    free(output); free(input);
+    return 0;
+}

@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
+// Registers-only private K=8 reduction for AMDGCN/NVPTX device emission.
+
+fn main() -> i32 {
+    let weights: *i64 = alloc(8);
+    let rows: *i64 = alloc(8 * 2048);
+    let output: *i64 = alloc(2048);
+    for channel in 0..2048 {
+        var acc: i64 = 0;
+        for slot in 0..8 {
+            acc = acc + weights[(channel / 2048) * 8 + slot]
+                * rows[slot * 2048 + (channel % 2048)];
+        }
+        output[channel] = acc;
+    }
+    free(output); free(rows); free(weights);
+    return 0;
+}
