@@ -201,11 +201,15 @@ fn unix_send(s: UnixStream, buf: *u8, n: i64, pass_fd: i32) -> Result<i64, UnixE
         cmsg = alloc(24);
         unix_zero(cmsg, 24);
         if os == 1 {
-            unix_put_u32(cmsg, 0, 20);
+            // Darwin: cmsghdr is 12 bytes (u32 len/level/type), CMSG data
+            // follows at offset 12 (4-byte alignment; CMSG_LEN(4) = 16,
+            // CMSG_SPACE(4) = 16). Linux differs (8-byte len, 8-byte
+            // alignment) — see the os == 2 branch.
+            unix_put_u32(cmsg, 0, 16);
             unix_put_u32(cmsg, 4, 65535);
             unix_put_u32(cmsg, 8, 1);
-            unix_put_u32(cmsg, 16, pass_fd as u32);
-            unix_put_u32(msg, 40, 24);
+            unix_put_u32(cmsg, 12, pass_fd as u32);
+            unix_put_u32(msg, 40, 16);
         } else {
             unix_put_u64(cmsg, 0, 20);
             unix_put_u32(cmsg, 8, 1);
@@ -264,7 +268,7 @@ fn unix_recv(s: UnixStream, buf: *u8, n: i64, fds: *i32, fds_cap: i32, n_fds: *i
                 clen = unix_get_u32(cmsg, off) as i32;
                 level = unix_get_u32(cmsg, off + 4);
                 ty = unix_get_u32(cmsg, off + 8);
-                data_off = off + 16;
+                data_off = off + 12;
             } else {
                 clen = unix_get_u64(cmsg, off) as i32;
                 level = unix_get_u32(cmsg, off + 8);
@@ -287,9 +291,15 @@ fn unix_recv(s: UnixStream, buf: *u8, n: i64, fds: *i32, fds_cap: i32, n_fds: *i
                     foff = foff + 4;
                 }
             }
-            var step: i32 = clen + 7;
-            step = step & (0 - 8);
-            if step < 16 { break; }
+            var step: i32 = 0;
+            if os == 1 {
+                // Darwin advances cmsgs at 4-byte alignment (ALIGN32).
+                step = (clen + 3) & (0 - 4);
+                if step < 12 { break; }
+            } else {
+                step = (clen + 7) & (0 - 8);
+                if step < 16 { break; }
+            }
             off = off + step;
         }
     }
