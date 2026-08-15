@@ -76,7 +76,7 @@ b2437a4fa37c0b51f7c17126e5a85959  examples/genus_soft_test.tv
 283adc40b28c897a59451b2093d55573  examples/genus_wav.tv
 049249c79b48bb52552b715fd0d76b3c  examples/gfx_headless.tv
 403e8cbdf13032d5c764e05534fecea2  examples/gfx_pixel_test.tv
-ff3305bb78c0f9a2c7936b19335f37d7  examples/gfx_window.tv
+4e459ef9847bac7012efa1fcffae9195  examples/gfx_window.tv
 9c825773b8c08be1821944bc459b1f2a  examples/gfx_wire_test.tv
 26a615063a291f77e8ddd5e31c389462  examples/global_array_init.tv
 5812370e31ba746ad201d5bea0a2ba52  examples/glyph_convergence_test.tv
@@ -187,7 +187,7 @@ addfa6099d556278f399f7706f45830c  examples/rs_error_decode_test.tv
 bec53d7b4f91cb6c11217e0fa220d31d  examples/satotate_vertical.tv
 d83940814142d0aefdf65ce0e8d5d4f1  examples/segment_test.tv
 d1972aef7f2de51afae9db56c5cbe050  examples/self_host_test.tv
-643465992dec5171261993a11756acc2  examples/shm_map.tv
+6c83adc378305efd6b96f92d02a2a244  examples/shm_map.tv
 3ec22fac95108e1c75de36c7b9707137  examples/short_circuit.tv
 fe569c107b5fcc5408569f77466817cb  examples/simd_bench.tv
 a12d2233666ad9130bfb6f03758a6e5c  examples/str_compare.tv
@@ -208,7 +208,7 @@ a457bfc4d267d32e9e74a1d0578e99a7  examples/time_deltas.tv
 813fbc557d5455c514914da460e1d8fa  examples/turning_test.tv
 6941c31ba20c5cd8de9d05e867800ef6  examples/tvc_lexer.tv
 80c1d4e44b0c3a695aa97b37088a812c  examples/two_fields.tv
-435d3fbc57fcd38a8080a82e0e234004  examples/unix_pair.tv
+15b83587b25f27847326153a82352503  examples/unix_pair.tv
 212a936821cff9e958836586a4623763  examples/vec_export_test.tv
 b85b4eecda5062656f717c1690a6bc57  examples/vec_test.tv
 407615a20df3180dfbb2fefbbf35d76f  examples/verify_basics.tv

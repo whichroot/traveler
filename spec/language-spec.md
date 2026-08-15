@@ -3085,7 +3085,7 @@ src/lib/net/          tcp.tv, unix.tv        (sockets via extern "C"; do not co-
 src/lib/mem/          arena.tv, pool.tv, shm.tv             (§12.3 patterns + shm)
 src/lib/gpu/          agx_data.tv, agx_ffi.tv, agx_runtime.tv (AGX dispatch runtime, §18.4)
 src/lib/gfx/          framebuffer.tv, pixel.tv, event.tv, backend_headless.tv,
-                      wayland/  (client.tv, wire.tv, backend_wayland.tv)   (§19)
+                      wayland/  (client.tv, wl_wire.tv, backend_wayland.tv)   (§19)
 ```
 
 Most library modules are `tvc_self`-only (they use `import`
@@ -5640,7 +5640,7 @@ A CPU framebuffer plus two backends:
   drawing primitives, and the event type.
 - **`backend_headless.tv`** — draws into the framebuffer and writes a P6 PPM
   (`gfx_write_ppm`); no compositor.
-- **`wayland/backend_wayland.tv`** (with `wayland/wire.tv`,
+- **`wayland/backend_wayland.tv`** (with `wayland/wl_wire.tv`,
   `wayland/client.tv`) — a real window on Linux over the **raw Wayland
   protocol**, no libwayland. The OS floor is `net/unix.tv` + `mem/shm.tv`.
 

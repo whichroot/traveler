@@ -7,7 +7,7 @@
 import "../../core/result.tv";
 import "../../net/unix.tv";
 import "../event.tv";
-import "wire.tv";
+import "wl_wire.tv";
 
 extern "C" fn getenv(name: *u8) -> *u8;
 

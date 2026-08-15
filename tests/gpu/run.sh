@@ -709,7 +709,7 @@ else
     LANG1_STRUCT_HOST_READY=0
     if [ "$LANG1_STRUCT_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! "LINKER" "$AGX_LANG1_STRUCT_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG1_STRUCT_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_STRUCT_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_STRUCT_EXE" \
                 >"$TMP/agx_lang1_struct.t1.bin" \
@@ -782,7 +782,7 @@ else
     LANG1_MATCH_HOST_READY=0
     if [ "$LANG1_MATCH_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! "LINKER" "$AGX_LANG1_MATCH_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG1_MATCH_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_MATCH_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_MATCH_EXE" \
                 >"$TMP/agx_lang1_match.t1.bin" \
@@ -858,7 +858,7 @@ else
     LANG1_ARRAY_HOST_READY=0
     if [ "$LANG1_ARRAY_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! "LINKER" "$AGX_LANG1_ARRAY_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG1_ARRAY_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_ARRAY_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_ARRAY_EXE" \
                 >"$TMP/agx_lang1_array.t1.bin" \
@@ -927,7 +927,7 @@ else
     LANG1_CALL_HOST_READY=0
     if [ "$LANG1_CALL_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! "LINKER" "$AGX_LANG1_CALL_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG1_CALL_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_CALL_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_CALL_EXE" \
                 >"$TMP/agx_lang1_call.t1.bin" \
@@ -997,7 +997,7 @@ else
     LANG1_OPERATOR_HOST_READY=0
     if [ "$LANG1_OPERATOR_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! "LINKER" "$AGX_LANG1_OPERATOR_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG1_OPERATOR_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_OPERATOR_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_OPERATOR_EXE" \
                 >"$TMP/agx_lang1_operator.t1.bin" \
@@ -1067,7 +1067,7 @@ else
     LANG1_CLOSURE_HOST_READY=0
     if [ "$LANG1_CLOSURE_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! "LINKER" "$AGX_LANG1_CLOSURE_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG1_CLOSURE_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_CLOSURE_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_CLOSURE_EXE" \
                 >"$TMP/agx_lang1_closure.t1.bin" \
@@ -1144,7 +1144,7 @@ else
             fail=1; LANG1_C1_READY=0; LANG1_C1_HOST_READY=0; return
         fi
         if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-            if ! "LINKER" "$dispatch_obj" -framework IOKit -o "$dispatch_exe" 2>/dev/null \
+            if ! "$LINKER" "$dispatch_obj" -framework IOKit -o "$dispatch_exe" 2>/dev/null \
                || ! env TRAVELER_THREADS=1 "$dispatch_exe" \
                     >"$TMP/agx_lang1_${label}.t1.bin" \
                || ! env TRAVELER_THREADS=4 "$dispatch_exe" \
@@ -1256,7 +1256,7 @@ else
             echo "  FAIL: owned G16X execution mismatch"; fail=1
         fi
         if [ -f "$AGX_RUNTIME_OBJ" ] \
-           && "LINKER" "$AGX_RUNTIME_OBJ" -framework IOKit -o "$AGX_RUNTIME_EXE" 2>/dev/null; then
+           && "$LINKER" "$AGX_RUNTIME_OBJ" -framework IOKit -o "$AGX_RUNTIME_EXE" 2>/dev/null; then
             deps="$(otool -L "$AGX_RUNTIME_EXE" 2>/dev/null)"
             if echo "$deps" | grep -qE 'Metal|Foundation|IOGPU'; then
                 echo "  FAIL: closed/private framework leaked into Traveler AGX runtime"; fail=1
@@ -1561,13 +1561,13 @@ else
         fi
         if [ "$AGX3_READY" = "1" ]; then
             agx3fail=0
-            if ! "LINKER" "$AGX_BINARY_OBJ" -framework IOKit -o "$AGX_BINARY_EXE" 2>/dev/null \
+            if ! "$LINKER" "$AGX_BINARY_OBJ" -framework IOKit -o "$AGX_BINARY_EXE" 2>/dev/null \
                || [ "$("$AGX_BINARY_EXE" "$AGX_HARNESS/dispatch.img" \
                     "$AGX_BINARY_DEV")" != "1" ]; then
                 echo "  FAIL: packed two-input AGX execution mismatch"
                 agx3fail=1
             fi
-            if ! "LINKER" "$AGX_DISPATCH_OBJ" -framework IOKit -o "$AGX_DISPATCH_EXE" 2>/dev/null; then
+            if ! "$LINKER" "$AGX_DISPATCH_OBJ" -framework IOKit -o "$AGX_DISPATCH_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX runtime-dispatch gate did not link"
                 agx3fail=1
             else
@@ -1596,7 +1596,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! "LINKER" "$AGX_RNS_OBJ" -framework IOKit -o "$AGX_RNS_EXE" 2>/dev/null; then
+            if ! "$LINKER" "$AGX_RNS_OBJ" -framework IOKit -o "$AGX_RNS_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX RNS matmul consumer did not link"
                 agx3fail=1
             else
@@ -1614,7 +1614,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! "LINKER" "$AGX_REDUCE_OBJ" -framework IOKit -o "$AGX_REDUCE_EXE" 2>/dev/null; then
+            if ! "$LINKER" "$AGX_REDUCE_OBJ" -framework IOKit -o "$AGX_REDUCE_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX reduce-8 bridge did not link"
                 agx3fail=1
             else
@@ -1632,7 +1632,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! "LINKER" "$AGX_DOT_OBJ" -framework IOKit -o "$AGX_DOT_EXE" 2>/dev/null; then
+            if ! "$LINKER" "$AGX_DOT_OBJ" -framework IOKit -o "$AGX_DOT_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX direct RNS dot did not link"
                 agx3fail=1
             else
@@ -1651,7 +1651,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! "LINKER" "$AGX_DOT_LOOP_OBJ" -framework IOKit -o "$AGX_DOT_LOOP_EXE" 2>/dev/null; then
+            if ! "$LINKER" "$AGX_DOT_LOOP_OBJ" -framework IOKit -o "$AGX_DOT_LOOP_EXE" 2>/dev/null; then
                 echo "  FAIL: canonical nested K=8 RNS dot did not link"
                 agx3fail=1
             else
@@ -1670,7 +1670,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! "LINKER" "$AGX_DOT_GENERAL_OBJ" -framework IOKit \
+            if ! "$LINKER" "$AGX_DOT_GENERAL_OBJ" -framework IOKit \
                     -o "$AGX_DOT_GENERAL_EXE" 2>/dev/null; then
                 echo "  FAIL: generalized 1x8x1024 counted dot did not link"
                 agx3fail=1
@@ -1705,7 +1705,7 @@ else
                     agx_determinism_64) det_bytes=2048 ;;
                     *) det_bytes=1024 ;;
                 esac
-                if ! "LINKER" "$TMP/$det.o" -framework IOKit -o "$TMP/$det" 2>/dev/null; then
+                if ! "$LINKER" "$TMP/$det.o" -framework IOKit -o "$TMP/$det" 2>/dev/null; then
                     echo "  FAIL: $det did not link against IOKit"
                     agxdetfail=1
                     continue

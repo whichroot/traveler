@@ -12,7 +12,7 @@
 //   2     header opcode
 //   4     align4(1)
 
-import "../src/lib/gfx/wayland/wire.tv";
+import "../src/lib/gfx/wayland/wl_wire.tv";
 
 fn main() -> i32 {
     let buf: *u8 = alloc(64);

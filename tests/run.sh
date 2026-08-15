@@ -120,14 +120,31 @@ else
 fi
 
 # --- Test helpers ---
+# fd 3 keeps the script's original stderr so diagnostics survive the 2>/dev/null
+# on compile invocations.
+exec 3>&2
+
+# A bare helper call that fails aborts the suite under set -e; name the line.
+trap 'echo "run.sh: aborted at line $LINENO (a bare compile/link helper failed)" >&3' ERR
+
 # Resolve a .tv by basename across the demo + library + tool trees. Demos live
 # in examples/, reusable kernels in src/lib/<subsys>/, tools in src/tools/.
+# Basename collisions across the library/tool trees are refused loudly: the
+# pick would otherwise depend on filesystem traversal order (CI-vs-local
+# divergence — see the observe/wire.tv vs gfx/wayland collision).
 resolve_tv() {
     local name="$1"
     if [ -f "$EXAMPLES/${name}.tv" ]; then echo "$EXAMPLES/${name}.tv"; return 0; fi
-    local f
-    f=$(find "$REPO_DIR/src/lib" "$REPO_DIR/src/tools" -name "${name}.tv" 2>/dev/null | head -1)
-    if [ -n "$f" ]; then echo "$f"; return 0; fi
+    local matches count
+    matches=$(find "$REPO_DIR/src/lib" "$REPO_DIR/src/tools" -name "${name}.tv" 2>/dev/null | sort)
+    count=$(printf '%s\n' "$matches" | grep -c . || true)
+    if [ "$count" -gt 1 ]; then
+        echo "resolve_tv: '${name}.tv' is ambiguous across src/lib + src/tools:" >&3
+        printf '%s\n' "$matches" | sed 's/^/    /' >&3
+        echo "resolve_tv: refusing to guess — rename one to a unique basename" >&3
+        exit 1
+    fi
+    if [ "$count" -eq 1 ]; then echo "$matches"; return 0; fi
     echo "$EXAMPLES/${name}.tv"   # fall back (will fail visibly)
     return 0
 }
@@ -235,6 +252,8 @@ run_test() {
         printf "  [%2d] %-35s FAIL (output mismatch)\n" "$TOTAL" "$name"
         FAIL=$((FAIL + 1))
         FAILURES="$FAILURES $name"
+        diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") 2>/dev/null \
+            | head -20 | sed 's/^/        /' >&3 || true
     fi
 }
 
@@ -279,6 +298,8 @@ test_single() {
         printf "  [%2d] %-35s FAIL (output mismatch)\n" "$TOTAL" "$name"
         FAIL=$((FAIL + 1))
         FAILURES="$FAILURES $name"
+        diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") 2>/dev/null \
+            | head -20 | sed 's/^/        /' >&3 || true
     fi
 }
 
