@@ -43,7 +43,9 @@ honest, features are tagged inline:
 15. LLVM Code Generation
 16. Edge Cases and Corner Behaviors
 17. Sequential Polynomial Computation
-18. Reserved for Future Extension
+18. Backends and Targets
+19. Graphics (`src/lib/gfx/`)
+20. Reserved for Future Extension
 
 ---
 
@@ -107,6 +109,7 @@ impl        import      instantiate extern      pub
 if          else        for         in          while
 return      break       continue    match       as
 true        false       null        unsafe      print
+defer
 ```
 
 Reserved type-name keywords (built-in type constructors):
@@ -306,6 +309,7 @@ convention): `a ** b ** c` parses as `a ** (b ** c)`. Thus `2 ** 3 ** 2` is
 ->      function return type
 =>      match arm
 ::      path separator (Type::method, Type::CONST)
+?       early-return propagation (Result-shaped operand, §5.10)
 ```
 
 `..=` is reserved punctuation but inclusive ranges are not yet parsed (§5.8).
@@ -705,7 +709,7 @@ wildcard degree and the `Literal([F])` slice variant use surface that is itself
 instantiation**, exactly like generic structs (§3.8). `Option<T>` and
 `Result<T, E>` are ordinary generic enums (not compiler builtins); a user may
 declare their own. `match` (§6.7) discriminates the variants and binds their
-payloads. There is no runtime type erasure — `Option<i32>` and `Option<Field<p>>`
+payloads, and the `?` operator (§5.10) propagates `Err` early. There is no runtime type erasure — `Option<i32>` and `Option<Field<p>>`
 are distinct laid-out types.
 
 ### 3.10 Function Types
@@ -754,7 +758,7 @@ thesis-preserving subset:
   line `dyn` (Section 17.10) draws: a closure defers a *value* (its
   environment), never the *structure* (its call target), just as `dyn` field
   defers the modulus, never the field axioms. `dyn Fn` / closure trait objects
-  remain unspecified and unplanned (§18.1).
+  remain unspecified and unplanned (§20.1).
 
 The set of rejected constructs (the negative catalogue) is the precise
 definition of the line; see `@internal-note: plan-b2-closures-rubicon` and
@@ -854,9 +858,9 @@ side: allocation sizing is destination-typed and refusal-backed (§12.3),
 pointer arithmetic does not exist, and `alloc` zero-fills. Temporal safety
 is structural: stack discipline, wholesale-freed arenas, and index handles
 over held pointers for anything that grows (a `realloc` invalidates every
-derived pointer; handles survive it). **[planned; not implemented in
-v0.1.0]:** a `defer` statement (scope-exit cleanup that runs on every exit
-path, including `?` early returns) and library arena/pool types.
+derived pointer; handles survive it). Structured lifetime surface: a `defer`
+statement (§6.8) runs scope-exit cleanup on every exit path, including `?`
+early returns, and the library ships arena/pool types (§12.3, §13.4).
 
 **LLVM IR**: `*T` maps to `ptr` (LLVM's opaque pointer type).
 
@@ -1292,6 +1296,47 @@ The `as` operator is the implemented cast mechanism. It covers:
 > preservation is the programmer's responsibility; no semantic-change warning is
 > emitted.
 
+### 5.10 The `?` Operator (Early-Return Propagation)
+
+```
+expr?
+```
+
+Postfix early-return propagation for fallible calls. The operand must be
+**Result-shaped**: an enum with exactly two single-payload variants `Ok(T)`
+and `Err(E)`. `Result<T, E>` from `src/lib/core/result.tv` is the canonical
+one (§3.9), but the check is structural — any user enum of that shape
+qualifies.
+
+- **`Ok(t)`** yields the payload `t` in place; evaluation continues. An
+  aggregate `T` binds by pointer (the enum/struct convention) and reads like
+  any struct value.
+- **`Err(e)`** early-returns from the enclosing function: the payload is
+  rebuilt as the function's own `Err` variant and returned inline. This is an
+  exit path — the `defer` chain runs before propagation (§6.8), so resources
+  live at the `?` are cleaned up.
+
+Constraints, all compile-time errors with source positions:
+
+- The operand must be Result-shaped (exactly `Ok(T)` / `Err(E)`).
+- The enclosing function must itself return a Result-shaped type.
+- The two `E` payload types must match **exactly** (after generic
+  substitution) — there is no `From`/`Into`-style conversion; declare the
+  same `E` on both Results.
+
+`?` works in statement position (`let x = f()?;`) and chained inside a larger
+expression (`f()? + g()?`):
+
+```
+fn total(a: i32, b: i32) -> Result<i64, FsError> {
+    let x: i64 = get(a)?;       // unwrap, or early-return Err
+    let y: i64 = get(b)?;
+    return Result::Ok(x + y);
+}
+```
+
+See `examples/qmark_basics.tv`.
+
 ---
 
 ## 6. Statements
@@ -1504,6 +1549,36 @@ values**. It is a statement (§5.7).
 > A value matching no arm simply falls through (no arm executes); supply a `_`
 > wildcard arm to handle the default case yourself.
 
+### 6.8 Defer
+
+```
+defer stmt;
+defer { stmts }
+```
+
+`defer` registers an exit-cleanup action on the enclosing **function** frame.
+The body runs on **every exit path** — a `return expr`, a bare `return`,
+falling off the end of the body, and each `?` early-return propagation —
+**after the return value is computed**, so a deferred `free` never invalidates
+the value being returned. Multiple defers in one function run
+**last-in, first-out** (LIFO). The evaluator runs the defer chain at frame
+teardown, so the `?` unwind behaves identically in evaluated and compiled
+code.
+
+Two placement constraints, both enforced at compile time:
+
+- **Function spine only.** A `defer` must be a top-level statement of its
+  function; a `defer` inside `if`/`for`/`while`/`match` is a compile-time
+  error. (A conditional or looping defer would need runtime "did it execute"
+  tracking — hidden state the memory model refuses, §12.3.)
+- **No control flow out.** A defer body cannot `return`; it is cleanup, not
+  control flow.
+
+The motivating case is the `?` error path: an allocation live at a `?`
+propagation would otherwise leak, because the operator rebuilds-and-returns
+inline, bypassing hand-written cleanup. `defer` keeps cleanup adjacent to
+acquisition without hidden destructors (§12.3, §14.3).
+
 ---
 
 ## 7. Algebraic Structure System
@@ -1605,7 +1680,7 @@ Semantics:
 - **Static dispatch only.** Trait methods are **monomorphized**, never boxed.
   A method is mangled per implementing type (`Trait__Type__method`) and resolved
   at   compile time. There is **no `dyn Trait`, no vtable** — the design line
-  Traveler holds (§18.1). Runtime code-selection is expressed with function
+  Traveler holds (§20.1). Runtime code-selection is expressed with function
   pointers (§3.10), not trait objects.
 - **Receiver.** A method's `self` parameter is passed as `&Type` (a pointer to
   the receiver); `x.method()` resolves type-directed through the receiver
@@ -2868,9 +2943,24 @@ flow). The programmer matches every `alloc` with exactly one `free` (or
 `realloc`, which invalidates the old pointer AND every pointer derived from
 it — code that holds element pointers across growth is wrong; hold indices
 instead). Structured patterns over the primitives: `Vec<T>`/`Str` (owned,
-freed by their free functions), and **[planned; not implemented in
-v0.1.0]** library arena (wholesale free) and handle-based pool types, plus
-a `defer` statement for exit-path cleanup.
+freed by their free functions), library arena (wholesale free) and
+handle-based pool types (`src/lib/mem/arena.tv`, `src/lib/mem/pool.tv` —
+§13.4), plus a `defer` statement for exit-path cleanup (§6.8).
+
+**Opt-in checked allocations (`--alloc-debug`).** Off by default; default
+output is unchanged. With the flag, every `alloc`/`realloc` result carries a
+16-byte header (magic + payload size) and a 16-byte trailer canary, and
+`free`/`realloc` verify both before touching the allocator: a smeared canary
+aborts with a named message (`alloc-debug: trailer canary smeared`), and
+freeing a pointer that carries no redzone header aborts likewise
+(`alloc-debug: free of non-redzone pointer`). This catches a heap overflow on
+the first run, at the cost of per-allocation overhead — a debugging net, not
+a model change (§14.2 keeps the C discipline).
+
+**Evaluator checks.** The evaluator keeps a registry of live heap buffers: a
+double free and a `realloc` of an already-freed buffer are refused loudly
+(compile-time-style diagnostic, not UB), and an optional report counts
+buffers still live at exit.
 
 **LLVM codegen**: `alloc<T>(n)` compiles to a call to a runtime allocator
 function (e.g., `malloc(n * sizeof(T))` or a custom arena). `free` compiles
@@ -2967,19 +3057,38 @@ The standard library is a **tree of `.tv` files under `src/lib/`**, consumed
 with `import "path"` (§13.2) — there is no `std::` namespace. By subsystem:
 
 ```
-src/lib/core/         poly_core.tv, poly_core_generic.tv   (the four-op kernel)
+src/lib/core/         poly_core.tv, poly_core_generic.tv, result.tv  (the four-op kernel)
 src/lib/collections/  vec.tv, string.tv, hashmap.tv         (Vec<T>, Str, HashMap)
-src/lib/crypto/       ntt.tv, poseidon2.tv, merkle.tv, fri.tv, plonk.tv, ...
+src/lib/crypto/       ntt.tv, poseidon2.tv, poseidon2_wide.tv, merkle.tv, fri.tv,
+                      plonk.tv, plonk_dyn.tv, mds_check.tv, grain_lfsr.tv
 src/lib/zk/           #[zk] circuit libraries
 src/lib/codec/        piecewise_*.tv                        (the piecewise codec)
-src/lib/float/        ieee.tv, embed.tv                     (float -> field)
-src/lib/rns/          rns3/rns4/rns_dyn.tv                  (RNS matmul)
-src/lib/nt/           curve.tv, linrec.tv, polyfield.tv, linalg.tv  (number theory)
+src/lib/float/        ieee.tv, embed.tv, quant.tv           (float -> field)
+src/lib/rns/          rns3.tv, rns4.tv, rns_dyn.tv          (RNS matmul)
+src/lib/nt/           curve.tv, linrec.tv, polyfield.tv, linalg.tv, crtsolve.tv,
+                      sqrt.tv                               (number theory)
 src/lib/util/         wideint.tv, lnbounds.tv, stream_protocol.tv, ...
+src/lib/regime/       regime_fri.tv, regime_zk.tv, runtime_circuit.tv
+src/lib/genus/        genus_probe.tv, genus_classifier.tv, genus_profile.tv, ...
+                      (degree-persistence / genus signature, §17.11)
+src/lib/observe/      trace.tv, learn.tv, wire.tv           (signal observation/codec)
+src/lib/ecc/          reed_solomon.tv, rs_core.tv, rs_errdec.tv, rs_errdec_core.tv
+src/lib/dsp/          optical_compressor.tv
+src/lib/features/     turning.tv, relational.tv
+src/lib/fmt/          fmt.tv                                (integer/string formatting)
+src/lib/fs/           fs.tv                                 (filesystem via extern "C")
+src/lib/json/         json.tv, json_parse.tv
+src/lib/nn/           fixed.tv, linear.tv                   (fixed-point NN kernels)
+src/lib/time/         time.tv                               (clocks and deltas)
+src/lib/net/          tcp.tv, unix.tv        (sockets via extern "C"; do not co-import
+                                               both in one unit — duplicate definitions)
+src/lib/mem/          arena.tv, pool.tv, shm.tv             (§12.3 patterns + shm)
+src/lib/gpu/          agx_data.tv, agx_ffi.tv, agx_runtime.tv (AGX dispatch runtime, §18.4)
+src/lib/gfx/          framebuffer.tv, pixel.tv, event.tv, backend_headless.tv,
+                      wayland/  (client.tv, wire.tv, backend_wayland.tv)   (§19)
 ```
 
-(and `regime/`, `genus/`, `observe/`, `ecc/`, `dsp/`, `features/` — see the
-repository tree.) Most library modules are `tvc_self`-only (they use `import`
+Most library modules are `tvc_self`-only (they use `import`
 and/or generics the frozen C seed lacks).
 
 > **NOT YET IMPLEMENTED (planned).** The `std::field` / `std::poly` / `std::io` /
@@ -3140,6 +3249,9 @@ compile-time errors include:
 | Degree mismatch in static poly | `expected Poly<F,2>, found Poly<F,3>` |
 | Call-argument arity mismatch | under- or over-arity at every call site |
 | Duplicate top-level definition | across the merged import unit (§13.2) |
+| Returning the address of a local | dangling by construction; refused with source position (a pointer into caller-owned or heap pointees stays legal) |
+| `free` of a non-pointer | refused with source position |
+| `defer` off the function spine | `defer` inside `if`/`for`/`while`/`match` is refused (§6.8) |
 
 > **Corrected — these are NOT diagnosed in v0.1.0** (an earlier revision listed
 > them): a native `while` loop (it is supported, §6.5); a non-exhaustive `match`
@@ -3166,6 +3278,10 @@ compile-time errors include:
 > trap (no `DynPoly`, §3.3.2), and "fuel exhaustion" (no fuel construct, §6.5)
 > are **not** implemented. Traveler currently follows the C discipline: these are
 > the programmer's responsibility. Guarding traps are a planned hardening item.
+
+Two **opt-in** nets ship today and leave the default table above unchanged:
+`--alloc-debug` redzones in compiled output, and the evaluator's heap-buffer
+registry (double free / realloc-of-freed refused loudly) — both in §12.3.
 
 ### 14.3 The Unsafe Surface (no `unsafe` construct)
 
@@ -3213,7 +3329,9 @@ The programmer's obligations at these doors:
 > per-feature status markers in §5, §9–§11, and §13 govern what is builtin. The
 > major implemented codegen features not covered by their own subsection below —
 > monomorphization, closures, dynamic/wide fields, the `#[zk]`/PLONK backend,
-> and `extern "C"` — are summarized in §15.19.
+> and `extern "C"` — are summarized in §15.19. Middle-end optimization
+> profiles, target-selection modes (including `-target tpc`), and GPU/AGX
+> device emission are specified in §18; the graphics library surface in §19.
 
 Traveler is **self-hosting**. The canonical compiler is `tvc_self.tv` —
 the Traveler compiler written in Traveler. It compiles `.tv` source to
@@ -3993,6 +4111,10 @@ final scaling pass multiplying every element by `n^(-1) mod p`.
 
 ### 15.17 Optimization Hints
 
+> Whole-module middle-end pipelines are a separate, closed surface: the
+> `--opt-level` profiles in §18.1. The hints below are what the compiler emits
+> itself, before any profile runs.
+
 These are not required for correctness but the compiler SHOULD implement them
 when targeting release builds:
 
@@ -4131,6 +4253,32 @@ parallelized when the called function is proven pure. A function is pure if:
 Compiler-emitted field arithmetic functions (field_add, field_mul, etc.) are
 trivially pure. Purity is computed via two-pass fixed-point iteration over
 the function registry at compile time.
+
+**Recursive proofs (authoritative for CPU dispatch).** Admission is decided by
+a recursive analysis over the loop body, not a flat scan:
+
+- **Effect summaries through calls.** Function and closure effects are
+  summarized through recursive calls before admission — hidden reads, member
+  calls, aggregate alias writes, and unknown effects are tracked, and an
+  incomplete summary fails closed (the loop stays sequential).
+- **Static call targets are carried through.** Statically known closure,
+  direct, generic, trait, operator, and builtin call targets are followed into
+  the callee; callee reads are mapped back onto caller captures. Unknown or
+  erased targets (function pointers, §3.10) stay sequential, per the fence
+  rule above.
+- **Declaration-aware affine analysis.** Affine names resolve through lexical
+  declarations, so shadowed variables are kept distinct; geometry checks use
+  exact `i32` literals and modular arithmetic, and duplicate parameters are
+  rejected on every declaration surface.
+- **Fresh allocations do not overlap.** Storage allocated inside an iteration
+  is proven fresh per iteration, so per-iteration temporaries cannot alias
+  across workers.
+- **Worker records.** The dispatch record preserves ordered captures, write
+  bases, iterator width, generic substitutions, lexical owners, and the
+  dynamic field context — what the proof saw is what the worker runs.
+
+Device admission (AMDGCN/NVPTX/AGX) uses the separate, stricter device proof
+described in §18.3–§18.4.
 
 **Runtime dispatch.** When the compiler proves a loop is parallelizable, it
 emits a call to `__parallel_for(worker_fn, ctx, lo, hi)` instead of a
@@ -5353,9 +5501,179 @@ runs over the `dyn` field of Section 17.10.
 
 ---
 
-## 18. Reserved for Future Extension
+## 18. Backends and Targets
 
-### 18.1 Deliberately not planned
+Beyond the default host flow (§15.0), the compiler exposes a small set of
+**closed** backend surfaces. "Closed" means the accepted configurations are an
+enumerated set: arbitrary LLVM pass strings, arbitrary device shapes, and
+arbitrary GPU source patterns are deliberately not accepted — an unsupported
+shape is a refusal or a CPU fallback, never a silent best effort. Operational
+detail (tool paths, environment variables, the machine-specific AGX profile
+image) lives in `BUILD.md`; this section specifies the language-visible
+contracts.
+
+### 18.1 CPU Middle-End Profiles (`--opt-level`)
+
+Three closed profiles run through the same IR/object/executable flow:
+
+| Profile | LLVM middle-end pipeline | Requires `opt` |
+|---|---|---|
+| `none` | none; raw compiler IR | no |
+| `promote` | `-passes=mem2reg -verify-each` | LLVM 21 |
+| `o1` | `-passes=default<O1> -verify-each` | LLVM 21 |
+
+- `none` is the default; omitting `--opt-level` and selecting `none` produce
+  byte-identical raw IR.
+- `promote`/`o1` are explicit, reproducible LLVM-21 toolchain transformations.
+  Their output is verified LLVM but is **not** a bootstrap fixed-point
+  artifact (§15.0). Arbitrary pass strings are refused — the set above is the
+  whole surface. `-opt <path>` overrides `PATH`, matching `-llc` and `-cc`.
+- Standalone AMDGCN/NVPTX/AGX device emission (§18.3, §18.4) and the `-target
+  tpc` compatibility mode (§18.2) accept only profile `none`.
+  `--agx-dispatch` (§18.4) emits a normal host module and may use either CPU
+  profile for its unchanged fallback path.
+- External tools run with argument vectors, not through a shell. IR, object,
+  and executable outputs use exclusive sibling stages and are atomically
+  published only after every requested tool succeeds; a failure preserves any
+  existing destination and removes intermediates.
+
+### 18.2 The TPC Target (`-target tpc`)
+
+`-target tpc` selects a **typed-pointer compatibility mode**: a post-pass
+converts the finished opaque-pointer IR to LLVM-12-style typed-pointer IR.
+Default output is unchanged, and mode combinations that cannot be converted
+faithfully (e.g. a non-`none` middle-end profile) are refused. Typed-pointer
+output is covered by parser and runtime parity gates, so `tpc` IR behaves
+identically to the default output on the programs it accepts.
+
+### 18.3 GPU Device Emission (AMDGCN / NVPTX)
+
+`--emit-gpu` and `--emit-gpu-nvptx` emit **LLVM device modules** (triples
+`amdgcn-amd-amdhsa` and `nvptx64-nvidia-cuda`) for loops the parallel proof
+(§15.18) has already admitted; an external `llc` lowers them (e.g. a gfx1100
+object, sm_90 PTX). This is **Stage 0** device support — a closed source
+shape, not general GPU compilation:
+
+- **Own-cell elementwise field maps** — the proven parallel-loop shape with
+  field or `dyn`-field carriers.
+- **The private K=8 dot shape** — one mutable scalar accumulator, one literal
+  `0..8` inner loop, one own-cell output. The device lowerer fully unrolls the
+  inner loop into SSA, so the module stays alloca-free and registers-only.
+
+General private mutables, dynamic inner loops, and multi-statement reductions
+remain outside Stage 0: unsupported workers are not emitted.
+
+### 18.4 The AGX (G16X) Backend
+
+`--emit-gpu-agx` is different in kind: Traveler **directly emits measured
+G16X instruction bytes** in canonical hex — no Metal compiler, no LLVM device
+backend. The target is an M4 Pro G16X private interface and is **not** an
+Apple-supported ABI; no performance claim is made.
+
+**Source admission.** A loop must pass the recursive parallel proof (§15.18)
+*and* the device proof, and the recursive and legacy classifications must
+agree on captures, writes, geometry, worker identity, and machine bytes
+before any device emission. Within that gate, the backend admits a closed
+scalar kernel language:
+
+- **Structured scalar kernels** — scalar locals, comparisons, short-circuit
+  control, bounded private loops, and local exits.
+- **Aggregates** — flat structs, scalar enums, `match`, and constant-index
+  fixed arrays, scalarized into registers.
+- **Static and bounded calls** — expression-bodied direct, generic, trait,
+  operator, and local-closure calls inlined when identity and effects are
+  statically complete; scalar callees expanded with explicit depth and
+  capacity limits (no machine call ABI). Bounded dynamic reads/writes on
+  local fixed arrays lower to ordered scalar-slot selections.
+- **Counted reductions** — fixed-shape field dot products for the three RNS
+  primes emit counted G16X loops (not unrolled code) with exact K=8 row and
+  column geometry and explicit input extents; CRT reconstruction is validated
+  against independent CPU results.
+
+Unsupported conversions, storage shapes, control shapes, register pressure,
+recursion, and erased targets stay on the CPU.
+
+**Field profiles.** The unary map path admits one-input/one-output field maps
+over `Field<2147483647>`, odd primes in `2^30 < p < 2^31`, or the canonical
+64-bit prime `Field<18446744073709551557>` (`2^64 - 59`) carried as two u32
+limbs (narrow Montgomery, Mersenne, and two-limb profiles), plus binary field
+maps. Other workers emit a skip record — this is **not** generic 64-bit-prime
+support.
+
+**Limits and refusals.** Compiler and runtime share a **65,535-element
+maximum grid**. Alias checking uses overflow-checked byte intervals (not
+base-pointer-only), and pointer provenance is preserved only through trusted
+typed paths: an i32 index wrap, provenance erased through an integer, an
+uncertain control-flow assignment, or an exposed pointer-binding address all
+refuse.
+
+**Runtime dispatch (`--agx-dispatch`).** For a source that imports
+`src/lib/gpu/agx_runtime.tv`, this mode emits a normal **host** program that
+tries the matching AGX worker by ID and otherwise runs the unchanged CPU
+pfor. The host embeds the FNV-1a digest produced by the shared AGX lowering
+path; the runtime verifies worker ID, field, grid, and code digest before
+submission. This is a deterministic wrong-build guard, not cryptographic
+artifact authentication. Absence, an unsupported worker, alias uncertainty,
+an artifact mismatch, or a launch refusal all fall back to the CPU worker.
+
+**Submission runtime.** The in-tree Traveler runtime links only IOKit and
+libSystem — no Metal, Foundation, IOGPU, Objective-C, or project C object —
+and requires a regenerated machine-specific `AGXDISP3` profile image for the
+exact OS/GPU build (deliberately not shipped as a portable ABI). It refuses
+any service build, initialization fingerprint, profile call shape, or
+GPU-address allocation order outside the measured profile. Build/run
+instructions and the hardware parity gates are in `BUILD.md`.
+
+---
+
+## 19. Graphics (`src/lib/gfx/`)
+
+> **Provided by the standard library** (`src/lib/gfx/`), not a language
+> builtin — the same seam as `fs/`, `net/`, and `time/`: `extern "C"`
+> against the OS, `Result` at the membrane, C structs hand-packed to the
+> target ABI, no new dependencies.
+
+A CPU framebuffer plus two backends:
+
+- **`framebuffer.tv` / `pixel.tv` / `event.tv`** — a pure integer pixel
+  buffer (`u8` channels packed into `u32`; buffers are `*T` plus a length),
+  drawing primitives, and the event type.
+- **`backend_headless.tv`** — draws into the framebuffer and writes a P6 PPM
+  (`gfx_write_ppm`); no compositor.
+- **`wayland/backend_wayland.tv`** (with `wayland/wire.tv`,
+  `wayland/client.tv`) — a real window on Linux over the **raw Wayland
+  protocol**, no libwayland. The OS floor is `net/unix.tv` + `mem/shm.tv`.
+
+**The backend API** is five functions over the library `Window` /
+`Framebuffer` / `Event` types, exported identically by each backend:
+
+```
+fn gfx_open(w: i32, h: i32, title: *u8) -> Result<Window, GfxError>
+fn gfx_frame(win: *Window) -> *Framebuffer
+fn gfx_present(win: *Window) -> Result<i64, GfxError>
+fn gfx_poll_event(win: *Window) -> Event
+fn gfx_close(win: *Window)
+```
+
+**Backend selection is by import, not by value.** There is no `dyn Trait`
+(§20.1), so there is no runtime vtable of backends: an application picks its
+backend by which file it `import`s. Importing both backends in one unit is a
+duplicate-definition error (§13.2) — that is the intended failure mode.
+
+Two coexistence rules fall out of the hand-packed-POSIX floor: do not import
+`net/tcp.tv` and `net/unix.tv` in the same unit (overlapping `extern "C"`
+sets), and note `mem/shm.tv` deliberately declares no `close` so it can
+coexist with `net/unix.tv`.
+
+Examples: `examples/gfx_headless.tv`, `examples/gfx_window.tv`,
+`examples/gfx_pixel_test.tv`, `examples/gfx_wire_test.tv`. Build commands are
+in `BUILD.md`.
+
+---
+
+## 20. Reserved for Future Extension
+
+### 20.1 Deliberately not planned
 
 These are design lines Traveler holds, not backlog:
 
@@ -5367,7 +5685,7 @@ These are design lines Traveler holds, not backlog:
    *data* (the modulus), never *code* — user traits always monomorphize (§7.4).
    Runtime code-selection is expressed via function pointers (§3.10), not vtables.
 
-### 18.2 Designed but not yet built (backlog)
+### 20.2 Designed but not yet built (backlog)
 
 Larger items with no in-body section of their own:
 
@@ -5386,7 +5704,7 @@ Larger items with no in-body section of their own:
     are already supported as a runtime carrier (`field_wide`, §16.16, §17.10.1);
     only a static wide `Field<p>` type parameter remains future.
 
-### 18.3 Smaller planned surface (marked in the body)
+### 20.3 Smaller planned surface (marked in the body)
 
 Per the mark-in-place convention (see the front-matter legend), the following
 designed-but-unbuilt features are flagged `NOT YET IMPLEMENTED` at their point
@@ -5406,7 +5724,7 @@ of definition. This is the index:
   (§9.1.3); namespaced `module::item` imports and `std::*` / `mem::*` / `io::*`
   modules (§13.2, §13.4–13.6).
 
-### 18.4 Implemented since the earliest revision
+### 20.4 Implemented since the earliest revision
 
 Previously listed here as deferred, now implemented and specified in the body:
 
@@ -5425,3 +5743,21 @@ Previously listed here as deferred, now implemented and specified in the body:
 - **Sequential computation** — `Register<F, d>` (§17.2) and the four operations;
   the `Regime`/`Segment`/`Stream` *types* remain library-level (§17.3–17.5).
 - **Degree-persistence / genus signature** (§17.11).
+- **`defer`** (§6.8) — function-spine exit cleanup on every return path,
+  LIFO, including the `?` early-return unwind.
+- **The `?` operator** (§5.10) — structural Result-shaped early-return
+  propagation with exact `E` matching.
+- **Library arena/pool** (§12.3, §13.4) — wholesale-free arenas and
+  handle-based pools (`src/lib/mem/`).
+- **Memory hardening** — compile-time refusal of returning a local address and
+  of freeing a non-pointer (§14.1); opt-in `--alloc-debug` redzones and the
+  evaluator heap-buffer registry (§12.3, §14.2).
+- **Recursive parallel proofs** (§15.18) — recursive effect summaries,
+  static-call targets, declaration-aware affine analysis, and
+  fresh-allocation non-overlap; authoritative for CPU dispatch.
+- **CPU middle-end profiles** (`--opt-level none|promote|o1`, §18.1) and the
+  **TPC typed-pointer target** (`-target tpc`, §18.2).
+- **GPU device emission** — AMDGCN/NVPTX Stage 0 (§18.3) and the direct
+  AGX/G16X backend with content-checked dispatch and CPU fallback (§18.4).
+- **Software graphics** — the CPU framebuffer plus headless and raw-Wayland
+  backends (§19).
