@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # --emit driver gate: raw/optimized IR and one-command native publication.
 # @internal-design: CPU_MIDDLE_END_DESIGN
 #
@@ -62,7 +62,11 @@ fi
 # host-native and links. Linux links still need -no-pie for the manual link in
 # step 3 (the driver adds it itself for --emit exe).
 LINK_PIE=""
-if [ "$(uname -s)" = "Linux" ]; then LINK_PIE="-no-pie"; fi
+if [ "100 1 26 57 100 303uname -s)" = "Linux" ]; then LINK_PIE="-no-pie"; fi
+
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/../lib/env.sh"
 
 STAGE1="$REPO_DIR/src/bootstrap/out/stage1"
 if [ ! -x "$STAGE1" ]; then
@@ -85,7 +89,7 @@ file_mode() {
 }
 
 # 1. --emit exe: one call, source -> runnable binary, correct output.
-if "$STAGE1" "$SRC" -o "$TMP/fb" --emit exe -llc "$LLC" 2>"$TMP/exe.err"; then
+if "$STAGE1" "$SRC" -o "$TMP/fb" --emit exe -llc "$LLC" -cc "$LINKER" 2>"$TMP/exe.err"; then
     got="$("$TMP/fb" 2>/dev/null)"
     got_status=$?
     if [ "$got_status" = "0" ] && [ "$got" = "$WANT" ]; then
@@ -106,7 +110,7 @@ fi
 
 # 3. --emit obj: stops at a nonempty object that links + runs.
 if "$STAGE1" "$SRC" -o "$TMP/fb.o" --emit obj -llc "$LLC" 2>"$TMP/obj.err"; then
-    if [ -s "$TMP/fb.o" ] && cc $LINK_PIE "$TMP/fb.o" -o "$TMP/fb_obj" 2>/dev/null && \
+    if [ -s "$TMP/fb.o" ] && "$LINKER" $LINK_PIE "$TMP/fb.o" -o "$TMP/fb_obj" 2>/dev/null && \
        "$TMP/fb_obj" >"$TMP/fb_obj.out" 2>/dev/null && \
        [ "$(cat "$TMP/fb_obj.out")" = "$WANT" ]; then
         echo "  ok   --emit obj: object links and runs"
@@ -258,11 +262,11 @@ if [ "$OPT_OK" = "1" ]; then
         if ! "$STAGE1" "$SRC" -o "$TMP/$profile.o" --emit obj \
             --opt-level "$profile" -opt "$OPT" -llc "$LLC" \
             2>"$TMP/$profile-obj.err" || \
-           ! cc $LINK_PIE "$TMP/$profile.o" -o "$TMP/$profile-obj" 2>/dev/null || \
+           ! "$LINKER" $LINK_PIE "$TMP/$profile.o" -o "$TMP/$profile-obj" 2>/dev/null || \
            ! "$TMP/$profile-obj" >"$TMP/$profile-obj.out" 2>/dev/null || \
            [ "$(cat "$TMP/$profile-obj.out")" != "$WANT" ] || \
            ! "$STAGE1" "$SRC" -o "$TMP/$profile-exe" --emit exe \
-            --opt-level "$profile" -opt "$OPT" -llc "$LLC" \
+            --opt-level "$profile" -opt "$OPT" -llc "$LLC" -cc "$LINKER" \
             2>"$TMP/$profile-exe.err" || \
            ! "$TMP/$profile-exe" >"$TMP/$profile-exe.out" 2>/dev/null || \
            [ "$(cat "$TMP/$profile-exe.out")" != "$WANT" ]; then
@@ -281,7 +285,7 @@ if [ "$OPT_OK" = "1" ]; then
     for profile in promote o1; do
         for case in address_of struct_basics defer_cleanup wide_i256_add; do
             if ! "$STAGE1" "$REPO_DIR/examples/$case.tv" -o "$TMP/$case-$profile" \
-                --emit exe --opt-level "$profile" -opt "$OPT" -llc "$LLC" \
+                --emit exe --opt-level "$profile" -opt "$OPT" -llc "$LLC" -cc "$LINKER" \
                 2>"$TMP/$case-$profile.err" || \
                ! "$TMP/$case-$profile" >"$TMP/$case-$profile.out" 2>/dev/null || \
                [ "$(cat "$TMP/$case-$profile.out")" != \
@@ -303,7 +307,7 @@ if [ "$OPT_OK" = "1" ]; then
     for profile in none promote o1; do
         if ! "$STAGE1" "$REPO_DIR/tests/pfor/pfor_u1_trap_parity.tv" \
             -o "$TMP/pfor-$profile" --emit exe --opt-level "$profile" \
-            -opt "$OPT" -llc "$LLC" 2>"$TMP/pfor-$profile.err"; then
+            -opt "$OPT" -llc "$LLC" -cc "$LINKER" 2>"$TMP/pfor-$profile.err"; then
             pfor_ok=0
             continue
         fi
@@ -453,7 +457,7 @@ EOF
         if ! "$STAGE1" "$REPO_DIR/tests/gpu/agx_dispatch_gate.tv" \
             -o "$TMP/agx-host.o" --emit obj --agx-dispatch \
             --opt-level o1 -opt "$OPT" -llc "$LLC" 2>"$TMP/agx-host-obj.err" || \
-           ! cc "$TMP/agx-host.o" -framework IOKit -o "$TMP/agx-host" 2>/dev/null; then
+           ! "$LINKER" "$TMP/agx-host.o" -framework IOKit -o "$TMP/agx-host" 2>/dev/null; then
             agx_host_ok=0
         else
             TRAVELER_THREADS=1 "$TMP/agx-host" >"$TMP/agx-host-t1.out" 2>/dev/null

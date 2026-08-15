@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Module size gate.
 #
 # Discipline (the tinygrad-mirror inversion): src/tvc_self.tv is the ONE file

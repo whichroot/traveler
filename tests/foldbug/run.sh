@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Standing probe for issue #15 (RESOLVED 2026-07-04).
 #
 # Originally filed as a multi-object -O2 "ICF fold hazard": two objects each emit
@@ -45,6 +45,10 @@ case "$(uname -s)-$(uname -m)" in
     Linux-aarch64) LLC_TARGET="-mtriple=aarch64-linux-gnu"; LINK_PIE="-no-pie" ;;
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
+
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/../lib/env.sh"
 TVC_SELF="$REPO_DIR/src/bootstrap/out/stage1"
 if [ ! -x "$TVC_SELF" ]; then
   echo "FATAL: need src/bootstrap/out/stage1 (run src/bootstrap/build.sh)"; exit 1
@@ -66,13 +70,13 @@ echo "precondition: internal @field_dyn_sub in a=$ca b=$cb (both must be 1)"
 # SAFE reference: llvm-link IR first.
 "$LLVM_LINK" "$T/a.ll" "$T/b.ll" -o "$T/m.bc" >/dev/null 2>&1
 "$LLC" $LLC_TARGET -filetype=obj -O2 "$T/m.bc" -o "$T/m.o" >/dev/null 2>&1
-cc $LINK_PIE "$T/m.o" -o "$T/safe" >/dev/null 2>&1
+"$LINKER" $LINK_PIE "$T/m.o" -o "$T/safe" >/dev/null 2>&1
 safe_out="$("$T/safe" 2>/dev/null | tr '\n' ' ')"
 
 # BUGGY candidate: separate -O2 objects + cc -O2 link.
 "$LLC" $LLC_TARGET -filetype=obj -O2 "$T/a.ll" -o "$T/a.o" >/dev/null 2>&1
 "$LLC" $LLC_TARGET -filetype=obj -O2 "$T/b.ll" -o "$T/b.o" >/dev/null 2>&1
-cc -O2 $LINK_PIE "$T/a.o" "$T/b.o" -o "$T/cand" >/dev/null 2>&1
+"$LINKER" -O2 $LINK_PIE "$T/a.o" "$T/b.o" -o "$T/cand" >/dev/null 2>&1
 cand_out="$("$T/cand" 2>/dev/null | tr '\n' ' ')"
 
 echo "safe (llvm-link first): $safe_out"
@@ -137,11 +141,11 @@ fi
 
 "$LLVM_LINK" "$T/wa.ll" "$T/wb.ll" -o "$T/wm.bc" >/dev/null 2>&1
 "$LLC" $LLC_TARGET -filetype=obj -O2 "$T/wm.bc" -o "$T/wm.o" >/dev/null 2>&1
-cc $LINK_PIE "$T/wm.o" -o "$T/wsafe" >/dev/null 2>&1
+"$LINKER" $LINK_PIE "$T/wm.o" -o "$T/wsafe" >/dev/null 2>&1
 wsafe_out="$("$T/wsafe" 2>/dev/null | tr '\n' ' ')"
 "$LLC" $LLC_TARGET -filetype=obj -O2 "$T/wa.ll" -o "$T/wa.o" >/dev/null 2>&1
 "$LLC" $LLC_TARGET -filetype=obj -O2 "$T/wb.ll" -o "$T/wb.o" >/dev/null 2>&1
-cc -O2 $LINK_PIE "$T/wa.o" "$T/wb.o" -o "$T/wcand" >/dev/null 2>&1
+"$LINKER" -O2 $LINK_PIE "$T/wa.o" "$T/wb.o" -o "$T/wcand" >/dev/null 2>&1
 wcand_out="$("$T/wcand" 2>/dev/null | tr '\n' ' ')"
 echo "safe (llvm-link first): $wsafe_out"
 echo "cand (-O2 separate):    $wcand_out"

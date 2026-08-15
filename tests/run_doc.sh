@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Doc-generator gate (roadmap B3b) — tvdoc.tv.
 #
 # tvdoc is a conservative, line-oriented Markdown API doc generator written in
@@ -43,18 +43,22 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/lib/env.sh"
+
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # --- Build the canonical compiler (Stage 1) ---
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || {
-    (cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
+    (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
 }
 "$SRC_DIR/tvc" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self.ll" 2>/dev/null || {
     echo "FATAL: Stage 1 compile failed" >&2; exit 1
 }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self.ll" -o "$TMPDIR/tvc_self.o" 2>/dev/null
-clang $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null
+"$LINKER" $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null
 TVC_SELF="$TMPDIR/tvc_self"
 
 # --- Build tvdoc ---
@@ -62,7 +66,7 @@ TVC_SELF="$TMPDIR/tvc_self"
     echo "FATAL: tvdoc compile failed" >&2; exit 1
 }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvdoc.ll" -o "$TMPDIR/tvdoc.o" 2>/dev/null
-clang $LINK_PIE "$TMPDIR/tvdoc.o" -o "$TMPDIR/tvdoc" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/tvdoc.o" -o "$TMPDIR/tvdoc" 2>/dev/null || {
     echo "FATAL: tvdoc link failed" >&2; exit 1
 }
 TVDOC="$TMPDIR/tvdoc"

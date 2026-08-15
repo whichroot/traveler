@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # LSP engine gate (roadmap B3b) — machine-readable diagnostics mode.
 #
 # `tvc_self --diagnostics FILE` emits one JSON-Lines record per diagnostic to
@@ -51,12 +51,16 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/lib/env.sh"
+
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # --- Build the canonical compiler (Stage 1: bootstrap -> tvc_self) ---
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || {
-    (cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
+    (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
 }
 "$SRC_DIR/tvc" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self.ll" 2>/dev/null || {
     echo "FATAL: Stage 1 compile failed" >&2; exit 1
@@ -64,7 +68,7 @@ trap "rm -rf $TMPDIR" EXIT
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self.ll" -o "$TMPDIR/tvc_self.o" 2>/dev/null || {
     echo "FATAL: Stage 1 llc failed" >&2; exit 1
 }
-clang $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null || {
     echo "FATAL: Stage 1 link failed" >&2; exit 1
 }
 TVC_SELF="$TMPDIR/tvc_self"

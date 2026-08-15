@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Dynamic-field test (Phases 1+2+3).
 #
 # Phase 2 landed the .tv surface: field(p) builtin, instantiate <dyn>,
@@ -50,6 +50,10 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/../lib/env.sh"
+
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || exit 1
 TVC="$SRC_DIR/tvc"
 
@@ -84,7 +88,7 @@ if [ -z "$FAILURES" ]; then
     echo "dynfield-kernel: FAIL (llc)"; FAILURES="$FAILURES kernel"; }
 fi
 if [ -z "$FAILURES" ]; then
-clang $LINK_PIE "$TMP/dkt.o" -o "$TMP/dkt" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dkt.o" -o "$TMP/dkt" 2>/dev/null || {
     echo "dynfield-kernel: FAIL (link)"; FAILURES="$FAILURES kernel"; }
 fi
 if [ -z "$FAILURES" ]; then
@@ -128,7 +132,7 @@ if echo "$FAILURES" | grep -qv register 2>/dev/null; then
     echo "dynfield-register: FAIL (llc)"; FAILURES="$FAILURES register"; }
 fi
 if echo "$FAILURES" | grep -qv register 2>/dev/null; then
-clang $LINK_PIE "$TMP/drt.o" -o "$TMP/drt" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/drt.o" -o "$TMP/drt" 2>/dev/null || {
     echo "dynfield-register: FAIL (link)"; FAILURES="$FAILURES register"; }
 fi
 if echo "$FAILURES" | grep -qv register 2>/dev/null; then
@@ -165,7 +169,7 @@ if echo "$FAILURES" | grep -qv nested 2>/dev/null; then
     echo "dynfield-nested: FAIL (llc)"; FAILURES="$FAILURES nested"; }
 fi
 if echo "$FAILURES" | grep -qv nested 2>/dev/null; then
-clang $LINK_PIE "$TMP/dnt.o" -o "$TMP/dnt" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dnt.o" -o "$TMP/dnt" 2>/dev/null || {
     echo "dynfield-nested: FAIL (link)"; FAILURES="$FAILURES nested"; }
 fi
 if echo "$FAILURES" | grep -qv nested 2>/dev/null; then
@@ -196,7 +200,7 @@ NTT_OK=1
 # Build Stage 1 tvc_self (seed compiles the canonical compiler).
 "$TVC" "$REPO_DIR/src/tvc_self.tv" -o "$TMP/tvc_self.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/tvc_self.ll" -o "$TMP/tvc_self.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/tvc_self.o" -o "$TMP/tvc_self" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/tvc_self.o" -o "$TMP/tvc_self" 2>/dev/null || {
     echo "dynfield-ntt: FAIL (Stage 1 tvc_self build)"; NTT_OK=0; }
 
 if [ "$NTT_OK" = "1" ]; then
@@ -208,7 +212,7 @@ if [ "$NTT_OK" = "1" ]; then
     echo "dynfield-ntt: FAIL (llc)"; NTT_OK=0; }
 fi
 if [ "$NTT_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/dntt.o" -o "$TMP/dntt" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dntt.o" -o "$TMP/dntt" 2>/dev/null || {
     echo "dynfield-ntt: FAIL (link)"; NTT_OK=0; }
 fi
 if [ "$NTT_OK" = "1" ]; then
@@ -251,7 +255,7 @@ if [ "$MB_OK" = "1" ]; then
     echo "dynfield-mul-boundary: FAIL (llc)"; MB_OK=0; }
 fi
 if [ "$MB_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/dmb.o" -o "$TMP/dmb" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dmb.o" -o "$TMP/dmb" 2>/dev/null || {
     echo "dynfield-mul-boundary: FAIL (link)"; MB_OK=0; }
 fi
 if [ "$MB_OK" = "1" ]; then
@@ -288,7 +292,7 @@ if [ "$P2_OK" = "1" ]; then
     echo "dynfield-poseidon2: FAIL (llc)"; P2_OK=0; }
 fi
 if [ "$P2_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/dp2.o" -o "$TMP/dp2" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dp2.o" -o "$TMP/dp2" 2>/dev/null || {
     echo "dynfield-poseidon2: FAIL (link)"; P2_OK=0; }
 fi
 if [ "$P2_OK" = "1" ]; then
@@ -335,7 +339,7 @@ if [ "$GR_OK" = "1" ]; then
     echo "dynfield-grain: FAIL (llc)"; GR_OK=0; }
 fi
 if [ "$GR_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gl.o" "$TMP/glt.o" -o "$TMP/glt" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/gl.o" "$TMP/glt.o" -o "$TMP/glt" 2>/dev/null || {
     echo "dynfield-grain: FAIL (link)"; GR_OK=0; }
 fi
 if [ "$GR_OK" = "1" ]; then
@@ -372,7 +376,7 @@ if [ "$GP2_OK" = "1" ]; then
     echo "dynfield-grain-poseidon2: FAIL (llc)"; GP2_OK=0; }
 fi
 if [ "$GP2_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gpl.o" "$TMP/gp2.o" -o "$TMP/gp2" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/gpl.o" "$TMP/gp2.o" -o "$TMP/gp2" 2>/dev/null || {
     echo "dynfield-grain-poseidon2: FAIL (link)"; GP2_OK=0; }
 fi
 if [ "$GP2_OK" = "1" ]; then
@@ -423,7 +427,7 @@ if [ "$MDS_OK" = "1" ]; then
     echo "dynfield-mds: FAIL (llc)"; MDS_OK=0; }
 fi
 if [ "$MDS_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/mds.o" "$TMP/mgl.o" "$TMP/mct.o" -o "$TMP/mct" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/mds.o" "$TMP/mgl.o" "$TMP/mct.o" -o "$TMP/mct" 2>/dev/null || {
     echo "dynfield-mds: FAIL (link)"; MDS_OK=0; }
 fi
 if [ "$MDS_OK" = "1" ]; then
@@ -478,7 +482,7 @@ fi
 if [ "$MDSL_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/mds_live_test.tv" -o "$TMP/mlt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/mlt.ll" -o "$TMP/mlt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/mds.o" "$TMP/mgl.o" "$TMP/mlt.o" -o "$TMP/mlt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/mds.o" "$TMP/mgl.o" "$TMP/mlt.o" -o "$TMP/mlt" 2>/dev/null || {
     echo "dynfield-mds-live: FAIL (build)"; MDSL_OK=0; }
 fi
 if [ "$MDSL_OK" = "1" ]; then
@@ -528,7 +532,7 @@ if [ "$PW_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/pw.ll" -o "$TMP/pw.o" 2>/dev/null \
   && "$TMP/tvc_self" "$REPO_DIR/examples/poseidon2_wide_test.tv" -o "$TMP/pwt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/pwt.ll" -o "$TMP/pwt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/pw.o" "$TMP/mds.o" "$TMP/mgl.o" "$TMP/pwt.o" -o "$TMP/pwt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/pw.o" "$TMP/mds.o" "$TMP/mgl.o" "$TMP/pwt.o" -o "$TMP/pwt" 2>/dev/null || {
     echo "dynfield-poseidon2-wide: FAIL (build)"; PW_OK=0; }
 fi
 if [ "$PW_OK" = "1" ]; then
@@ -580,7 +584,7 @@ fi
 if [ "$PBB_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/poseidon2_babybear_test.tv" -o "$TMP/pbt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/pbt.ll" -o "$TMP/pbt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/pw.o" "$TMP/mds.o" "$TMP/mgl.o" "$TMP/pbt.o" -o "$TMP/pbt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/pw.o" "$TMP/mds.o" "$TMP/mgl.o" "$TMP/pbt.o" -o "$TMP/pbt" 2>/dev/null || {
     echo "dynfield-poseidon2-babybear: FAIL (build)"; PBB_OK=0; }
 fi
 if [ "$PBB_OK" = "1" ]; then
@@ -630,7 +634,7 @@ if [ "$ZR_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/zkr.ll" -o "$TMP/zkr.o" 2>/dev/null \
   && "$TMP/tvc_self" "$REPO_DIR/examples/zk_range_test.tv" -o "$TMP/zkrt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/zkrt.ll" -o "$TMP/zkrt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/zkr.o" "$TMP/zkrt.o" -o "$TMP/zkrt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/zkr.o" "$TMP/zkrt.o" -o "$TMP/zkrt" 2>/dev/null || {
     echo "dynfield-zk-range: FAIL (build)"; ZR_OK=0; }
 fi
 if [ "$ZR_OK" = "1" ]; then
@@ -700,7 +704,7 @@ if [ "$GG_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gad.ll" -o "$TMP/gad.o" 2>/dev/null \
   && "$TMP/tvc_self" "$REPO_DIR/examples/genus_global_certify.tv" -o "$TMP/ggc.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/ggc.ll" -o "$TMP/ggc.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/rfri.o" "$TMP/gad.o" "$TMP/zkr.o" "$TMP/ggc.o" -o "$TMP/ggc" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/rfri.o" "$TMP/gad.o" "$TMP/zkr.o" "$TMP/ggc.o" -o "$TMP/ggc" 2>/dev/null || {
     echo "dynfield-genus-global: FAIL (build)"; GG_OK=0; }
 fi
 if [ "$GG_OK" = "1" ]; then
@@ -750,7 +754,7 @@ if [ "$ZD_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/zcd.ll" -o "$TMP/zcd.o" 2>/dev/null \
   && "$TMP/tvc_self" "$REPO_DIR/examples/zk_describe_test.tv" -o "$TMP/zdt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/zdt.ll" -o "$TMP/zdt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/zcd.o" "$TMP/zdt.o" -o "$TMP/zdt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/zcd.o" "$TMP/zdt.o" -o "$TMP/zdt" 2>/dev/null || {
     echo "dynfield-zk-describe: FAIL (build)"; ZD_OK=0; }
 fi
 if [ "$ZD_OK" = "1" ]; then
@@ -790,7 +794,7 @@ if [ ! -x "$TMP/tvc_self" ]; then WF_OK=0; fi
 if [ "$WF_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/wide_field_test.tv" -o "$TMP/wft.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/wft.ll" -o "$TMP/wft.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/wft.o" -o "$TMP/wft" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/wft.o" -o "$TMP/wft" 2>/dev/null || {
     echo "dynfield-wide-field: FAIL (build)"; WF_OK=0; }
 fi
 if [ "$WF_OK" = "1" ]; then
@@ -825,7 +829,7 @@ if [ ! -x "$TMP/tvc_self" ]; then WP_OK=0; fi
 if [ "$WP_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/wide_poseidon2_test.tv" -o "$TMP/wp.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/wp.ll" -o "$TMP/wp.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/wp.o" -o "$TMP/wp" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/wp.o" -o "$TMP/wp" 2>/dev/null || {
     echo "dynfield-wide-poseidon2: FAIL (build)"; WP_OK=0; }
 fi
 if [ "$WP_OK" = "1" ]; then
@@ -858,7 +862,7 @@ if [ ! -x "$TMP/tvc_self" ]; then WM_OK=0; fi
 if [ "$WM_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/wide_merkle_test.tv" -o "$TMP/wm.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/wm.ll" -o "$TMP/wm.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/wm.o" -o "$TMP/wm" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/wm.o" -o "$TMP/wm" 2>/dev/null || {
     echo "dynfield-wide-merkle: FAIL (build)"; WM_OK=0; }
 fi
 if [ "$WM_OK" = "1" ]; then
@@ -892,7 +896,7 @@ if [ ! -x "$TMP/tvc_self" ]; then WN_OK=0; fi
 if [ "$WN_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/wide_ntt_test.tv" -o "$TMP/wn.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/wn.ll" -o "$TMP/wn.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/wn.o" -o "$TMP/wn" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/wn.o" -o "$TMP/wn" 2>/dev/null || {
     echo "dynfield-wide-ntt: FAIL (build)"; WN_OK=0; }
 fi
 if [ "$WN_OK" = "1" ]; then
@@ -928,7 +932,7 @@ if [ ! -x "$TMP/tvc_self" ]; then WFRI_OK=0; fi
 if [ "$WFRI_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/wide_fri_test.tv" -o "$TMP/wfri.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/wfri.ll" -o "$TMP/wfri.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/wfri.o" -o "$TMP/wfri" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/wfri.o" -o "$TMP/wfri" 2>/dev/null || {
     echo "dynfield-wide-fri: FAIL (build)"; WFRI_OK=0; }
 fi
 if [ "$WFRI_OK" = "1" ]; then
@@ -964,7 +968,7 @@ if [ ! -x "$TMP/tvc_self" ]; then WPLONK_OK=0; fi
 if [ "$WPLONK_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/wide_plonk_test.tv" -o "$TMP/wp.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/wp.ll" -o "$TMP/wp.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/wp.o" -o "$TMP/wp" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/wp.o" -o "$TMP/wp" 2>/dev/null || {
     echo "dynfield-wide-plonk: FAIL (build)"; WPLONK_OK=0; }
 fi
 if [ "$WPLONK_OK" = "1" ]; then
@@ -999,7 +1003,7 @@ if [ "$MK_OK" = "1" ]; then
     echo "dynfield-merkle: FAIL (llc)"; MK_OK=0; }
 fi
 if [ "$MK_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/dm.o" -o "$TMP/dm" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dm.o" -o "$TMP/dm" 2>/dev/null || {
     echo "dynfield-merkle: FAIL (link)"; MK_OK=0; }
 fi
 if [ "$MK_OK" = "1" ]; then
@@ -1035,7 +1039,7 @@ if [ "$FRI_OK" = "1" ]; then
     echo "dynfield-fri: FAIL (llc)"; FRI_OK=0; }
 fi
 if [ "$FRI_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/dfri.o" -o "$TMP/dfri" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/dfri.o" -o "$TMP/dfri" 2>/dev/null || {
     echo "dynfield-fri: FAIL (link)"; FRI_OK=0; }
 fi
 if [ "$FRI_OK" = "1" ]; then
@@ -1075,7 +1079,7 @@ if [ "$RP_OK" = "1" ]; then
     echo "dynfield-regime-proof: FAIL (llc)"; RP_OK=0; }
 fi
 if [ "$RP_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/drp.o" -o "$TMP/drp" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/drp.o" -o "$TMP/drp" 2>/dev/null || {
     echo "dynfield-regime-proof: FAIL (link)"; RP_OK=0; }
 fi
 if [ "$RP_OK" = "1" ]; then
@@ -1118,7 +1122,7 @@ if [ "$GEN_OK" = "1" ]; then
     echo "dynfield-regime-fri: FAIL (llc)"; GEN_OK=0; }
 fi
 if [ "$GEN_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/rf.o" "$TMP/rft.o" -o "$TMP/rft" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/rf.o" "$TMP/rft.o" -o "$TMP/rft" 2>/dev/null || {
     echo "dynfield-regime-fri: FAIL (link)"; GEN_OK=0; }
 fi
 if [ "$GEN_OK" = "1" ]; then
@@ -1171,7 +1175,7 @@ run_zk_domain_gate() {
         echo "$name: FAIL (llc)"; ok=0; }
     fi
     if [ "$ok" = "1" ]; then
-    clang $LINK_PIE "$TMP/rzk.o" "$TMP/$drv.o" -o "$TMP/$drv" 2>/dev/null || {
+    "$LINKER" $LINK_PIE "$TMP/rzk.o" "$TMP/$drv.o" -o "$TMP/$drv" 2>/dev/null || {
         echo "$name: FAIL (link)"; ok=0; }
     fi
     if [ "$ok" = "1" ]; then
@@ -1234,7 +1238,7 @@ if [ "$PD_OK" = "1" ]; then
     echo "dynfield-plonk-dyn: FAIL (llc)"; PD_OK=0; }
 fi
 if [ "$PD_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/pd.o" "$TMP/pdt.o" -o "$TMP/pdt" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/pd.o" "$TMP/pdt.o" -o "$TMP/pdt" 2>/dev/null || {
     echo "dynfield-plonk-dyn: FAIL (link)"; PD_OK=0; }
 fi
 if [ "$PD_OK" = "1" ]; then
@@ -1274,7 +1278,7 @@ run_zk_dyn_gate() {
         echo "$name: FAIL (llc)"; ok=0; }
     fi
     if [ "$ok" = "1" ]; then
-    clang $LINK_PIE "$TMP/zpd.o" "$TMP/$circ.o" "$TMP/$drv.o" -o "$TMP/$drv.bin" 2>/dev/null || {
+    "$LINKER" $LINK_PIE "$TMP/zpd.o" "$TMP/$circ.o" "$TMP/$drv.o" -o "$TMP/$drv.bin" 2>/dev/null || {
         echo "$name: FAIL (link)"; ok=0; }
     fi
     if [ "$ok" = "1" ]; then
@@ -1353,7 +1357,7 @@ if [ "$RC_OK" = "1" ]; then
     echo "dynfield-runtime-circuit: FAIL (llc)"; RC_OK=0; }
 fi
 if [ "$RC_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/rcpd.o" "$TMP/rcrf.o" "$TMP/rc.o" "$TMP/rct.o" -o "$TMP/rc" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/rcpd.o" "$TMP/rcrf.o" "$TMP/rc.o" "$TMP/rct.o" -o "$TMP/rc" 2>/dev/null || {
     echo "dynfield-runtime-circuit: FAIL (link)"; RC_OK=0; }
 fi
 if [ "$RC_OK" = "1" ]; then
@@ -1392,7 +1396,7 @@ run_genus_gate() {
         echo "$name: FAIL (llc)"; ok=0; }
     fi
     if [ "$ok" = "1" ]; then
-    clang $LINK_PIE "$TMP/grf.o" "$TMP/gp.o" "$TMP/$drv.o" -o "$TMP/$drv.bin" 2>/dev/null || {
+    "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/gp.o" "$TMP/$drv.o" -o "$TMP/$drv.bin" 2>/dev/null || {
         echo "$name: FAIL (link)"; ok=0; }
     fi
     if [ "$ok" = "1" ]; then
@@ -1452,7 +1456,7 @@ if [ "$GBLEND_OK" = "1" ]; then
   && "$TMP/tvc_self" "$REPO_DIR/examples/genus_blend_test.tv" -o "$TMP/gbt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gbt.ll" -o "$TMP/gbt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/gbt.o" -o "$TMP/gbt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/gbt.o" -o "$TMP/gbt" 2>/dev/null || {
     echo "dynfield-genus-blend: FAIL (build)"; GBLEND_OK=0; }
 fi
 if [ "$GBLEND_OK" = "1" ]; then
@@ -1496,7 +1500,7 @@ if [ "$CONV_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/pc.ll" -o "$TMP/pc.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/cvt.ll" -o "$TMP/cvt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/pc.o" "$TMP/cvt.o" -o "$TMP/cvt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/pc.o" "$TMP/cvt.o" -o "$TMP/cvt" 2>/dev/null || {
     echo "dynfield-convergence: FAIL (build)"; CONV_OK=0; }
 fi
 if [ "$CONV_OK" = "1" ]; then
@@ -1538,7 +1542,7 @@ if [ "$GLYPH_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/pc.ll" -o "$TMP/pc.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gct.ll" -o "$TMP/gct.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/pc.o" "$TMP/gct.o" -o "$TMP/gct" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/pc.o" "$TMP/gct.o" -o "$TMP/gct" 2>/dev/null || {
     echo "dynfield-glyph-convergence: FAIL (build)"; GLYPH_OK=0; }
 fi
 if [ "$GLYPH_OK" = "1" ]; then
@@ -1579,7 +1583,7 @@ if [ "$MV_OK" = "1" ]; then
   && "$TMP/tvc_self" "$REPO_DIR/examples/multiview_test.tv" -o "$TMP/mvt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/mvt.ll" -o "$TMP/mvt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/mvt.o" -o "$TMP/mvt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/mvt.o" -o "$TMP/mvt" 2>/dev/null || {
     echo "dynfield-multiview: FAIL (build)"; MV_OK=0; }
 fi
 if [ "$MV_OK" = "1" ]; then
@@ -1624,7 +1628,7 @@ if [ "$REL_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/rel.ll" -o "$TMP/rel.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/rlt.ll" -o "$TMP/rlt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/rel.o" "$TMP/rlt.o" -o "$TMP/rlt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/rel.o" "$TMP/rlt.o" -o "$TMP/rlt" 2>/dev/null || {
     echo "dynfield-relational: FAIL (build)"; REL_OK=0; }
 fi
 if [ "$REL_OK" = "1" ]; then
@@ -1673,7 +1677,7 @@ if [ "$HOL_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/hol.ll" -o "$TMP/hol.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/hlt.ll" -o "$TMP/hlt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/hol.o" "$TMP/hlt.o" -o "$TMP/hlt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/hol.o" "$TMP/hlt.o" -o "$TMP/hlt" 2>/dev/null || {
     echo "dynfield-turning: FAIL (build)"; HOL_OK=0; }
 fi
 if [ "$HOL_OK" = "1" ]; then
@@ -1731,7 +1735,7 @@ if [ "$GCL_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gcl.ll" -o "$TMP/gcl.o" 2>/dev/null \
   && "$TMP/tvc_self" "$REPO_DIR/examples/genus_classify_test.tv" -o "$TMP/gclt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gclt.ll" -o "$TMP/gclt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/grf.o" "$TMP/zkr.o" "$TMP/gcl.o" "$TMP/gclt.o" -o "$TMP/gclt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/plonk_dyn.o" "$TMP/grf.o" "$TMP/zkr.o" "$TMP/gcl.o" "$TMP/gclt.o" -o "$TMP/gclt" 2>/dev/null || {
     echo "dynfield-classifier: FAIL (build)"; GCL_OK=0; }
 fi
 if [ "$GCL_OK" = "1" ]; then
@@ -1775,7 +1779,7 @@ if [ "$NR_OK" = "1" ]; then
   && "$TMP/tvc_self" "$REPO_DIR/examples/neuron_read_test.tv" -o "$TMP/nrt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/grf.ll" -o "$TMP/grf.o" 2>/dev/null \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/nrt.ll" -o "$TMP/nrt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/grf.o" "$TMP/nrt.o" -o "$TMP/nrt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/grf.o" "$TMP/nrt.o" -o "$TMP/nrt" 2>/dev/null || {
     echo "dynfield-neuron-read: FAIL (build)"; NR_OK=0; }
 fi
 if [ "$NR_OK" = "1" ]; then
@@ -1819,7 +1823,7 @@ if [ "$GC_OK" = "1" ]; then
     echo "dynfield-genus-certify: FAIL (llc)"; GC_OK=0; }
 fi
 if [ "$GC_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gcpd.o" "$TMP/gcrf.o" "$TMP/gcgp.o" "$TMP/gcrc.o" "$TMP/gc.o" -o "$TMP/gc" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/gcpd.o" "$TMP/gcrf.o" "$TMP/gcgp.o" "$TMP/gcrc.o" "$TMP/gc.o" -o "$TMP/gc" 2>/dev/null || {
     echo "dynfield-genus-certify: FAIL (link)"; GC_OK=0; }
 fi
 EXPECTED_GC="1
@@ -1893,7 +1897,7 @@ if [ "$GA_OK" = "1" ]; then
     echo "dynfield-genus-alias: FAIL (llc)"; GA_OK=0; }
 fi
 if [ "$GA_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/garf.o" "$TMP/gagp.o" "$TMP/ga.o" "$TMP/gat.o" -o "$TMP/gat" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/garf.o" "$TMP/gagp.o" "$TMP/ga.o" "$TMP/gat.o" -o "$TMP/gat" 2>/dev/null || {
     echo "dynfield-genus-alias: FAIL (link)"; GA_OK=0; }
 fi
 EXPECTED_GA="1
@@ -1938,7 +1942,7 @@ if [ "$GS_OK" = "1" ]; then
     echo "dynfield-genus-soft: FAIL (llc)"; GS_OK=0; }
 fi
 if [ "$GS_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gsrf.o" "$TMP/gspr.o" "$TMP/gst.o" -o "$TMP/gst" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/gsrf.o" "$TMP/gspr.o" "$TMP/gst.o" -o "$TMP/gst" 2>/dev/null || {
     echo "dynfield-genus-soft: FAIL (link)"; GS_OK=0; }
 fi
 EXPECTED_GS="12
@@ -1998,7 +2002,7 @@ if [ "$GAC_OK" = "1" ]; then
     echo "dynfield-genus-adaptive: FAIL (llc)"; GAC_OK=0; }
 fi
 if [ "$GAC_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gacpd.o" "$TMP/gacrf.o" "$TMP/gacgp.o" "$TMP/gacga.o" "$TMP/gacgad.o" \
+"$LINKER" $LINK_PIE "$TMP/gacpd.o" "$TMP/gacrf.o" "$TMP/gacgp.o" "$TMP/gacga.o" "$TMP/gacgad.o" \
       "$TMP/gacrc.o" "$TMP/gac.o" -o "$TMP/gac" 2>/dev/null || {
     echo "dynfield-genus-adaptive: FAIL (link)"; GAC_OK=0; }
 fi
@@ -2073,7 +2077,7 @@ if [ "$GPC_OK" = "1" ]; then
     echo "dynfield-genus-profile-cert: FAIL (llc)"; GPC_OK=0; }
 fi
 if [ "$GPC_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gpcpd.o" "$TMP/gpcrf.o" "$TMP/gpcgp.o" "$TMP/gpcrc.o" "$TMP/gpc.o" -o "$TMP/gpc" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/gpcpd.o" "$TMP/gpcrf.o" "$TMP/gpcgp.o" "$TMP/gpcrc.o" "$TMP/gpc.o" -o "$TMP/gpc" 2>/dev/null || {
     echo "dynfield-genus-profile-cert: FAIL (link)"; GPC_OK=0; }
 fi
 EXPECTED_GPC="8
@@ -2126,7 +2130,7 @@ if [ -f "$PIGSTEP" ] && [ -x "$TMP/tvc_self" ]; then
       && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gwrf.ll" -o "$TMP/gwrf.o" 2>/dev/null \
       && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gwgp.ll" -o "$TMP/gwgp.o" 2>/dev/null \
       && "$LLC" $LLC_TARGET -filetype=obj "$TMP/gw.ll" -o "$TMP/gw.o" 2>/dev/null \
-      && clang $LINK_PIE "$TMP/gwrf.o" "$TMP/gwgp.o" "$TMP/gw.o" -o "$TMP/gw" 2>/dev/null || GW_OK=0
+      && "$LINKER" $LINK_PIE "$TMP/gwrf.o" "$TMP/gwgp.o" "$TMP/gw.o" -o "$TMP/gw" 2>/dev/null || GW_OK=0
     if [ "$GW_OK" = "1" ]; then
         GOT=$("$TMP/gw" "$PIGSTEP")
         EXP="44100
@@ -2162,7 +2166,7 @@ if [ "$GS_OK" = "1" ]; then
     echo "dynfield-generic-struct: FAIL (llc)"; GS_OK=0; }
 fi
 if [ "$GS_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/gstruct.o" -o "$TMP/gstruct" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/gstruct.o" -o "$TMP/gstruct" 2>/dev/null || {
     echo "dynfield-generic-struct: FAIL (link)"; GS_OK=0; }
 fi
 if [ "$GS_OK" = "1" ]; then
@@ -2203,7 +2207,7 @@ if [ "$CG_OK" = "1" ]; then
     echo "dynfield-const-generic: FAIL (llc)"; CG_OK=0; }
 fi
 if [ "$CG_OK" = "1" ]; then
-clang $LINK_PIE "$TMP/cgen.o" -o "$TMP/cgen" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMP/cgen.o" -o "$TMP/cgen" 2>/dev/null || {
     echo "dynfield-const-generic: FAIL (link)"; CG_OK=0; }
 fi
 if [ "$CG_OK" = "1" ]; then
@@ -2246,7 +2250,7 @@ if [ ! -x "$TMP/tvc_self" ]; then VEC_OK=0; fi
 if [ "$VEC_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/vec_test.tv" -o "$TMP/vec_test.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/vec_test.ll" -o "$TMP/vec_test.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/vec_test.o" -o "$TMP/vec_test" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/vec_test.o" -o "$TMP/vec_test" 2>/dev/null || {
     echo "dynfield-vec: FAIL (build)"; VEC_OK=0; }
 fi
 if [ "$VEC_OK" = "1" ]; then
@@ -2280,7 +2284,7 @@ if [ "$VEXP_OK" = "1" ]; then
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/vec.ll" -o "$TMP/vec.o" 2>/dev/null \
   && "$TMP/tvc_self" "$REPO_DIR/examples/vec_export_test.tv" -o "$TMP/vet.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/vet.ll" -o "$TMP/vet.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/vec.o" "$TMP/vet.o" -o "$TMP/vet" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/vec.o" "$TMP/vet.o" -o "$TMP/vet" 2>/dev/null || {
     echo "dynfield-vec-export: FAIL (build)"; VEXP_OK=0; }
 fi
 if [ "$VEXP_OK" = "1" ]; then
@@ -2309,7 +2313,7 @@ if [ ! -x "$TMP/tvc_self" ]; then STR_OK=0; fi
 if [ "$STR_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/string_test.tv" -o "$TMP/string_test.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/string_test.ll" -o "$TMP/string_test.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/string_test.o" -o "$TMP/string_test" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/string_test.o" -o "$TMP/string_test" 2>/dev/null || {
     echo "dynfield-string: FAIL (build)"; STR_OK=0; }
 fi
 if [ "$STR_OK" = "1" ]; then
@@ -2346,7 +2350,7 @@ if [ ! -x "$TMP/tvc_self" ]; then HM_OK=0; fi
 if [ "$HM_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/hashmap_test.tv" -o "$TMP/hashmap_test.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/hashmap_test.ll" -o "$TMP/hashmap_test.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/hashmap_test.o" -o "$TMP/hashmap_test" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/hashmap_test.o" -o "$TMP/hashmap_test" 2>/dev/null || {
     echo "dynfield-hashmap: FAIL (build)"; HM_OK=0; }
 fi
 if [ "$HM_OK" = "1" ]; then
@@ -2376,7 +2380,7 @@ if [ ! -x "$TMP/tvc_self" ]; then IMP_OK=0; fi
 if [ "$IMP_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/import_test.tv" -o "$TMP/import_test.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/import_test.ll" -o "$TMP/import_test.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/import_test.o" -o "$TMP/import_test" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/import_test.o" -o "$TMP/import_test" 2>/dev/null || {
     echo "dynfield-import: FAIL (build)"; IMP_OK=0; }
 fi
 if [ "$IMP_OK" = "1" ]; then
@@ -2427,7 +2431,7 @@ if [ ! -x "$TMP/tvc_self" ]; then IVEC_OK=0; fi
 if [ "$IVEC_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/import_vec_test.tv" -o "$TMP/ivt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/ivt.ll" -o "$TMP/ivt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/ivt.o" -o "$TMP/ivt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/ivt.o" -o "$TMP/ivt" 2>/dev/null || {
     echo "dynfield-import-vec: FAIL (build)"; IVEC_OK=0; }
 fi
 if [ "$IVEC_OK" = "1" ]; then
@@ -2462,7 +2466,7 @@ if [ ! -x "$TMP/tvc_self" ]; then GE_OK=0; fi
 if [ "$GE_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/generic_enum.tv" -o "$TMP/ge.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/ge.ll" -o "$TMP/ge.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/ge.o" -o "$TMP/ge" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/ge.o" -o "$TMP/ge" 2>/dev/null || {
     echo "dynfield-generic-enum: FAIL (build)"; GE_OK=0; }
 fi
 if [ "$GE_OK" = "1" ]; then
@@ -2496,7 +2500,7 @@ if [ ! -x "$TMP/tvc_self" ]; then EMN_OK=0; fi
 if [ "$EMN_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/enum_match_nested.tv" -o "$TMP/emn.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/emn.ll" -o "$TMP/emn.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/emn.o" -o "$TMP/emn" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/emn.o" -o "$TMP/emn" 2>/dev/null || {
     echo "dynfield-enum-match-nested: FAIL (build)"; EMN_OK=0; }
 fi
 if [ "$EMN_OK" = "1" ]; then
@@ -2527,7 +2531,7 @@ if [ ! -x "$TMP/tvc_self" ]; then FNP_OK=0; fi
 if [ "$FNP_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/fn_pointer.tv" -o "$TMP/fnp.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/fnp.ll" -o "$TMP/fnp.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/fnp.o" -o "$TMP/fnp" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/fnp.o" -o "$TMP/fnp" 2>/dev/null || {
     echo "dynfield-fn-pointer: FAIL (build)"; FNP_OK=0; }
 fi
 if [ "$FNP_OK" = "1" ]; then
@@ -2581,7 +2585,7 @@ if [ ! -x "$TMP/tvc_self" ]; then TI_OK=0; fi
 if [ "$TI_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/trait_impl.tv" -o "$TMP/ti.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/ti.ll" -o "$TMP/ti.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/ti.o" -o "$TMP/ti" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/ti.o" -o "$TMP/ti" 2>/dev/null || {
     echo "dynfield-trait-impl: FAIL (build)"; TI_OK=0; }
 fi
 if [ "$TI_OK" = "1" ]; then
@@ -2611,7 +2615,7 @@ if [ ! -x "$TMP/tvc_self" ]; then TD_OK=0; fi
 if [ "$TD_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/trait_dispatch.tv" -o "$TMP/td.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/td.ll" -o "$TMP/td.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/td.o" -o "$TMP/td" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/td.o" -o "$TMP/td" 2>/dev/null || {
     echo "dynfield-trait-dispatch: FAIL (build)"; TD_OK=0; }
 fi
 if [ "$TD_OK" = "1" ]; then
@@ -2662,7 +2666,7 @@ if [ ! -x "$TMP/tvc_self" ]; then OO_OK=0; fi
 if [ "$OO_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/operator_overload.tv" -o "$TMP/oo.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/oo.ll" -o "$TMP/oo.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/oo.o" -o "$TMP/oo" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/oo.o" -o "$TMP/oo" 2>/dev/null || {
     echo "dynfield-operator-overload: FAIL (build)"; OO_OK=0; }
 fi
 if [ "$OO_OK" = "1" ]; then
@@ -2697,7 +2701,7 @@ if [ ! -x "$TMP/tvc_self" ]; then PD_OK=0; fi
 if [ "$PD_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/predict_decide.tv" -o "$TMP/pd.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/pd.ll" -o "$TMP/pd.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/pd.o" -o "$TMP/pd" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/pd.o" -o "$TMP/pd" 2>/dev/null || {
     echo "dynfield-predict-decide: FAIL (build)"; PD_OK=0; }
 fi
 if [ "$PD_OK" = "1" ]; then
@@ -2730,7 +2734,7 @@ if [ ! -x "$TMP/tvc_self" ]; then CLO_OK=0; fi
 if [ "$CLO_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/closure_basics.tv" -o "$TMP/clo.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/clo.ll" -o "$TMP/clo.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/clo.o" -o "$TMP/clo" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/clo.o" -o "$TMP/clo" 2>/dev/null || {
     echo "dynfield-closure-basics: FAIL (build)"; CLO_OK=0; }
 fi
 if [ "$CLO_OK" = "1" ]; then
@@ -2761,7 +2765,7 @@ if [ ! -x "$TMP/tvc_self" ]; then CPT_OK=0; fi
 if [ "$CPT_OK" = "1" ]; then
 "$TMP/tvc_self" "$REPO_DIR/examples/closure_prove_through.tv" -o "$TMP/cpt.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/cpt.ll" -o "$TMP/cpt.o" 2>/dev/null \
-  && clang $LINK_PIE "$TMP/cpt.o" -o "$TMP/cpt" 2>/dev/null || {
+  && "$LINKER" $LINK_PIE "$TMP/cpt.o" -o "$TMP/cpt" 2>/dev/null || {
     echo "dynfield-closure-prove-through: FAIL (build)"; CPT_OK=0; }
 fi
 if [ "$CPT_OK" = "1" ]; then

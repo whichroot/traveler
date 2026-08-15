@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # REPL session gate (eval-engine E3): scripted-transcript goldens.
 #
 # Each cases/<name>.in is fed to `tvc_self --repl` on stdin and the COMBINED

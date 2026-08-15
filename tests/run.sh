@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Traveler regression test suite
 # Usage: ./run.sh [--tier1] [--negative-only]
 set -euo pipefail
@@ -15,14 +15,10 @@ EXPECTED_ERRORS="$SCRIPT_DIR/expected_errors"
 TIMEOUT_SINGLE=5
 TIMEOUT_MULTI=10
 
-# Portable timeout: use gtimeout (macOS brew), timeout (Linux), or no timeout
-if command -v gtimeout &>/dev/null; then
-    TIMEOUT_CMD="gtimeout"
-elif command -v timeout &>/dev/null; then
-    TIMEOUT_CMD="timeout"
-else
-    TIMEOUT_CMD=""
-fi
+# Shared environment probe (tests/lib/env.sh): tool discovery (llc/opt/link
+# drivers), platform triple, link flags, timeout, display/hardware flags.
+# Missing tools degrade to per-test SKIP below — they are never fatal here.
+. "$SCRIPT_DIR/lib/env.sh"
 
 run_with_timeout() {
     local secs="$1"; shift
@@ -50,59 +46,45 @@ for arg in "$@"; do
     esac
 done
 
-# --- Platform detection ---
-find_llc() {
-    if [ -n "${LLC:-}" ] && command -v "$LLC" &>/dev/null; then return; fi
-    for p in \
-        /opt/homebrew/opt/llvm@21/bin/llc \
-        /usr/local/opt/llvm@21/bin/llc \
-        /usr/lib/llvm-21/bin/llc \
-        llc-21 \
-        llc; do
-        if command -v "$p" &>/dev/null; then LLC="$p"; return; fi
-    done
-    echo "FATAL: llc not found. Set LLC env var." >&2; exit 1
-}
-
-find_opt() {
-    OPT="${LLC%llc}opt"
-    if ! command -v "$OPT" &>/dev/null; then
-        # Try common alternatives
-        for p in \
-            /opt/homebrew/opt/llvm@21/bin/opt \
-            /usr/local/opt/llvm@21/bin/opt \
-            /usr/lib/llvm-21/bin/opt \
-            opt-21 \
-            opt; do
-            if command -v "$p" &>/dev/null; then OPT="$p"; return; fi
-        done
-        echo "WARNING: opt not found, skipping IR validation" >&2
-        OPT=""
-    fi
-}
-
-find_llc
-find_opt
-
-# --- host target: retarget IR objects + non-PIE link off-macOS ---
+# --- Toolchain (via tests/lib/env.sh) ---
+# llc/opt/LINKER/LINK_PIE/TIMEOUT_CMD and the HAVE_* flags come from env.sh.
 # Traveler-emitted IR text carries the canonical triple on every host (the
 # byte-identity gates depend on that); execution overrides it at llc
-# (-mtriple) and links with -no-pie where Linux defaults to PIE.
-case "$(uname -s)-$(uname -m)" in
-    Linux-x86_64)  LLC_TARGET="-mtriple=x86_64-linux-gnu";  LINK_PIE="-no-pie" ;;
-    Linux-aarch64) LLC_TARGET="-mtriple=aarch64-linux-gnu"; LINK_PIE="-no-pie" ;;
-    *)             LLC_TARGET="";                           LINK_PIE="" ;;
-esac
+# (-mtriple) and links with LINK_PIE where Linux defaults to PIE.
+LLC_TARGET=""
+if [ -n "$TV_HOST_TRIPLE" ] && [ "$TV_UNAME_S" != "Darwin" ]; then
+    LLC_TARGET="-mtriple=$TV_HOST_TRIPLE"
+fi
 
-# --- Build bootstrap compiler ---
-echo "Building bootstrap compiler..."
-(cd "$SRC_DIR" && make tvc 2>&1) || {
-    # Force rebuild if make thinks it's up to date but binary missing
-    (cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c 2>&1)
-}
+# Degradation notices (the suite still runs; affected tests report SKIP).
+if [ "$HAVE_LLC" = "0" ]; then
+    echo "NOTE: llc not found — object/link/run stages degrade to SKIP (set LLC to override)" >&2
+fi
+if [ "$HAVE_LINKER" = "0" ]; then
+    echo "NOTE: no link driver (cc/clang/gcc) found — link/run stages degrade to SKIP" >&2
+fi
+if [ -z "$OPT" ]; then
+    echo "WARNING: opt not found, skipping IR validation" >&2
+fi
+
+# --- Build bootstrap compiler (optional) ---
+# The frozen C seed is dual-parity material. Without a C compiler it cannot
+# be built; seed-driven output tests then fall back to stage1 (sound — the
+# seed/self semantic parity invariant is what run_dual.sh proves), while
+# diagnostics negative tests skip (their messages are seed-shaped).
 TVC="$SRC_DIR/tvc"
-if [ ! -x "$TVC" ]; then
-    echo "FATAL: bootstrap compiler not found at $TVC" >&2; exit 1
+if [ ! -x "$TVC" ] && [ "$HAVE_LINKER" = "1" ]; then
+    echo "Building bootstrap compiler..."
+    (cd "$SRC_DIR" && make tvc 2>&1) || {
+        # Force rebuild if make thinks it's up to date but binary missing
+        (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c 2>&1)
+    }
+fi
+if [ -x "$TVC" ]; then
+    HAVE_SEED=1
+else
+    HAVE_SEED=0
+    echo "NOTE: C seed unavailable — seed output tests run through stage1, negative diagnostics tests skip" >&2
 fi
 
 # --- Build the self-hosting compiler (for import-based modules the C seed
@@ -114,10 +96,28 @@ if [ ! -x "$TVC_SELF" ]; then
         echo "FATAL: could not build self-hosting compiler" >&2; exit 1
     }
 fi
+if [ "$HAVE_SEED" = "0" ]; then
+    TVC="$TVC_SELF"
+fi
 
 # --- Temp directory ---
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
+
+# --- Toolchain-skip markers (set -e-safe degradation) ---
+# A helper that cannot finish a stage because a TOOL is missing records
+# $TMPDIR/<name>.skip=<stage> and returns 0; run_test/test_single turn the
+# marker into a SKIP. Real compile/link failures still return nonzero.
+mark_skip()  { echo "$2" > "$TMPDIR/$1.skip"; }
+clear_skip() { rm -f "$TMPDIR/$1.skip"; }
+skip_reason() { cat "$TMPDIR/$1.skip" 2>/dev/null || true; }
+
+# Millisecond clock for the summary; python3 is not assumed to exist.
+if command -v python3 >/dev/null 2>&1; then
+    now_ms() { python3 -c "import time; print(int(time.time()*1000))"; }
+else
+    now_ms() { echo "$(( $(date +%s) * 1000 ))"; }
+fi
 
 # --- Test helpers ---
 # Resolve a .tv by basename across the demo + library + tool trees. Demos live
@@ -135,6 +135,7 @@ resolve_tv() {
 compile_single() {
     local name="$1"
     local timeout="${2:-$TIMEOUT_SINGLE}"
+    clear_skip "$name"
     "$TVC" "$(resolve_tv "$name")" -o "$TMPDIR/${name}.ll" 2>/dev/null || return 1
     # IR validation
     if [ -n "$OPT" ]; then
@@ -142,19 +143,23 @@ compile_single() {
             echo "  IR INVALID: ${name}" >&2; return 1
         }
     fi
+    if [ "$HAVE_LLC" = "0" ]; then mark_skip "$name" "llc"; return 0; fi
     "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null || return 1
-    clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || return 1
+    if [ "$HAVE_LINKER" = "0" ]; then mark_skip "$name" "linker"; return 0; fi
+    "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || return 1
     return 0
 }
 
 compile_obj() {
     local name="$1"
+    clear_skip "$name"
     "$TVC" "$(resolve_tv "$name")" -o "$TMPDIR/${name}.ll" 2>/dev/null || return 1
     if [ -n "$OPT" ]; then
         "$OPT" -passes=verify -S "$TMPDIR/${name}.ll" -o /dev/null 2>/dev/null || {
             echo "  IR INVALID: ${name}" >&2; return 1
         }
     fi
+    if [ "$HAVE_LLC" = "0" ]; then mark_skip "$name" "llc"; return 0; fi
     "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null || return 1
     return 0
 }
@@ -165,21 +170,33 @@ compile_obj() {
 # its own directory.
 compile_obj_self() {
     local name="$1"
+    clear_skip "$name"
     "$TVC_SELF" "$(resolve_tv "$name")" -o "$TMPDIR/${name}.ll" 2>/dev/null || return 1
     if [ -n "$OPT" ]; then
         "$OPT" -passes=verify -S "$TMPDIR/${name}.ll" -o /dev/null 2>/dev/null || {
             echo "  IR INVALID: ${name}" >&2; return 1
         }
     fi
+    if [ "$HAVE_LLC" = "0" ]; then mark_skip "$name" "llc"; return 0; fi
     "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null || return 1
     return 0
 }
 
 link_objs() {
     local outname="$1"; shift
+    clear_skip "$outname"
     local objs=""
-    for o in "$@"; do objs="$objs $TMPDIR/${o}.o"; done
-    clang $LINK_PIE $objs -o "$TMPDIR/${outname}" 2>/dev/null || return 1
+    local o
+    for o in "$@"; do
+        if [ ! -f "$TMPDIR/${o}.o" ] && [ -f "$TMPDIR/${o}.skip" ]; then
+            # Input object was toolchain-skipped: propagate, don't fail.
+            mark_skip "$outname" "$(skip_reason "$o")"
+            return 0
+        fi
+        objs="$objs $TMPDIR/${o}.o"
+    done
+    if [ "$HAVE_LINKER" = "0" ]; then mark_skip "$outname" "linker"; return 0; fi
+    "$LINKER" $LINK_PIE $objs -o "$TMPDIR/${outname}" 2>/dev/null || return 1
     return 0
 }
 
@@ -187,6 +204,12 @@ run_test() {
     local name="$1"
     local timeout="${2:-$TIMEOUT_SINGLE}"
     TOTAL=$((TOTAL + 1))
+
+    if [ -f "$TMPDIR/${name}.skip" ]; then
+        printf "  [%2d] %-35s SKIP (no %s)\n" "$TOTAL" "$name" "$(skip_reason "$name")"
+        SKIP=$((SKIP + 1))
+        return
+    fi
 
     if [ ! -f "$EXPECTED/${name}.txt" ]; then
         printf "  [%2d] %-35s SKIP (no baseline)\n" "$TOTAL" "$name"
@@ -224,6 +247,12 @@ test_single() {
         printf "  [%2d] %-35s FAIL (compile)\n" "$TOTAL" "$name"
         FAIL=$((FAIL + 1))
         FAILURES="$FAILURES $name"
+        return
+    fi
+
+    if [ -f "$TMPDIR/${name}.skip" ]; then
+        printf "  [%2d] %-35s SKIP (no %s)\n" "$TOTAL" "$name" "$(skip_reason "$name")"
+        SKIP=$((SKIP + 1))
         return
     fi
 
@@ -267,6 +296,13 @@ test_negative() {
         return
     fi
 
+    # Diagnostics are seed-shaped; without the C seed the messages differ.
+    if [ "$HAVE_SEED" = "0" ]; then
+        printf "  [%2d] %-35s SKIP (no seed)\n" "$TOTAL" "neg:$name"
+        SKIP=$((SKIP + 1))
+        return
+    fi
+
     local stderr_out
     stderr_out=$("$TVC" "$tv_file" -o "$TMPDIR/${name}_neg.ll" 2>&1) || true
 
@@ -275,8 +311,13 @@ test_negative() {
     if [ -f "$EXPECTED/${name}.txt" ]; then
         # This is a "should work correctly" test, not an error test
         if [ -f "$TMPDIR/${name}_neg.ll" ]; then
+            if [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ]; then
+                printf "  [%2d] %-35s SKIP (no llc/linker)\n" "$TOTAL" "neg:$name"
+                SKIP=$((SKIP + 1))
+                return
+            fi
             "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}_neg.ll" -o "$TMPDIR/${name}_neg.o" 2>/dev/null && \
-            clang $LINK_PIE "$TMPDIR/${name}_neg.o" -o "$TMPDIR/${name}_neg" 2>/dev/null || {
+            "$LINKER" $LINK_PIE "$TMPDIR/${name}_neg.o" -o "$TMPDIR/${name}_neg" 2>/dev/null || {
                 printf "  [%2d] %-35s FAIL (link)\n" "$TOTAL" "neg:$name"
                 FAIL=$((FAIL + 1))
                 FAILURES="$FAILURES neg:$name"
@@ -374,7 +415,7 @@ test_no_alloc_fns() {
 #  TEST EXECUTION
 # ============================================================
 
-START_TIME=$(python3 -c "import time; print(int(time.time()*1000))")
+START_TIME=$(now_ms)
 
 if [ "$NEGATIVE_ONLY" -eq 1 ]; then
     echo ""
@@ -582,6 +623,10 @@ test_single barrett_test
 # Zero-float pipeline (requires stdin input)
 TOTAL=$((TOTAL + 1))
 if compile_single adc_pipeline; then
+    if [ -f "$TMPDIR/adc_pipeline.skip" ]; then
+        printf "  [%2d] %-35s SKIP (no %s)\n" "$TOTAL" "adc_pipeline" "$(skip_reason adc_pipeline)"
+        SKIP=$((SKIP + 1))
+    else
     actual=$(printf '\x0A\x0E\x14\x1C\x26\x32' | run_with_timeout "$TIMEOUT_SINGLE" "$TMPDIR/adc_pipeline" 2>/dev/null) || actual=""
     expected=$(cat "$EXPECTED/adc_pipeline.txt")
     if [ "$actual" = "$expected" ]; then
@@ -591,6 +636,7 @@ if compile_single adc_pipeline; then
         printf "  [%2d] %-35s FAIL (output mismatch)\n" "$TOTAL" "adc_pipeline"
         FAIL=$((FAIL + 1))
         FAILURES="$FAILURES adc_pipeline"
+    fi
     fi
 else
     printf "  [%2d] %-35s FAIL (compile)\n" "$TOTAL" "adc_pipeline"
@@ -1091,6 +1137,40 @@ compile_obj_self gfx_headless
 link_objs gfx_headless gfx_headless
 run_test gfx_headless "$TIMEOUT_SINGLE"
 
+# gfx/ Wayland window (live compositor only): open, draw, present, then the
+# event loop runs until closed — nobody closes it in CI, so the timeout kill
+# is the expected end. PASS = the window opened (first line "1"); "404" = the
+# compositor vanished between probe and run (SKIP). Pops a real window for
+# ~5s on machines with a live socket.
+TOTAL=$((TOTAL + 1))
+compile_obj_self gfx_window
+link_objs gfx_window gfx_window
+if [ "$HAVE_WAYLAND" != "1" ]; then
+    printf "  [%2d] %-35s SKIP (no wayland)\n" "$TOTAL" "gfx_window"
+    SKIP=$((SKIP + 1))
+elif [ -f "$TMPDIR/gfx_window.skip" ]; then
+    printf "  [%2d] %-35s SKIP (no %s)\n" "$TOTAL" "gfx_window" "$(skip_reason gfx_window)"
+    SKIP=$((SKIP + 1))
+else
+    _gw_out=""
+    _gw_rc=0
+    _gw_out=$(run_with_timeout 5 "$TMPDIR/gfx_window" 2>/dev/null) || _gw_rc=$?
+    _gw_first="$(printf '%s\n' "$_gw_out" | head -1)"
+    if [ "$_gw_first" = "404" ]; then
+        printf "  [%2d] %-35s SKIP (compositor gone)\n" "$TOTAL" "gfx_window"
+        SKIP=$((SKIP + 1))
+    elif [ "$_gw_first" = "1" ]; then
+        # Window opened. Timeout-kill (124) or a clean close (0) both pass.
+        printf "  [%2d] %-35s PASS\n" "$TOTAL" "gfx_window"
+        PASS=$((PASS + 1))
+    else
+        printf "  [%2d] %-35s FAIL (window did not open, exit %d)\n" "$TOTAL" "gfx_window" "$_gw_rc"
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES gfx_window"
+    fi
+    unset _gw_out _gw_rc _gw_first
+fi
+
 # time/ wrap layer (tvc_self-only): clock_gettime/nanosleep underneath,
 # Result at the membrane, `?` end-to-end. Verdict-only output (monotonicity,
 # wall sanity, the ns multiply, the sleep lower-bound, the BadDuration Err
@@ -1286,11 +1366,16 @@ fi  # NEGATIVE_ONLY
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Parallel Soundness (tests/pfor) ==="
-    PFOR_RC=0
-    "$SCRIPT_DIR/run_pfor.sh" || PFOR_RC=$?
-    if [ "$PFOR_RC" -ne 0 ]; then
-        FAIL=$((FAIL + PFOR_RC))
-        FAILURES="$FAILURES pfor_suite"
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    else
+        PFOR_RC=0
+        "$SCRIPT_DIR/run_pfor.sh" || PFOR_RC=$?
+        if [ "$PFOR_RC" -ne 0 ]; then
+            FAIL=$((FAIL + PFOR_RC))
+            FAILURES="$FAILURES pfor_suite"
+        fi
     fi
 fi
 
@@ -1298,7 +1383,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Dynamic Field Primitives (tests/dynfield) ==="
-    if "$SCRIPT_DIR/dynfield/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/dynfield/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1310,7 +1398,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Diagnostics Catalog (tests/diag) ==="
-    if "$SCRIPT_DIR/run_diag.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/run_diag.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1322,7 +1413,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Formatter (tests/run_fmt.sh) ==="
-    if "$SCRIPT_DIR/run_fmt.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/run_fmt.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1334,7 +1428,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== LSP engine (tests/run_lsp.sh) ==="
-    if "$SCRIPT_DIR/run_lsp.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/run_lsp.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1346,7 +1443,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Doc generator (tests/run_doc.sh) ==="
-    if "$SCRIPT_DIR/run_doc.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/run_doc.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1358,7 +1458,9 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Module size gate (tests/run_sizegate.sh) ==="
-    if "$SCRIPT_DIR/run_sizegate.sh"; then
+    if [ "${TRAVELER_SKIP_TOOL_NEUTRAL:-0}" = "1" ]; then
+        echo "  (tool-neutral; ran in an earlier pass)"
+    elif "$SCRIPT_DIR/run_sizegate.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1373,7 +1475,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Field-runtime fold probe (tests/foldbug/run.sh) ==="
-    if LLC="$LLC" "$SCRIPT_DIR/foldbug/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif LLC="$LLC" "$SCRIPT_DIR/foldbug/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1385,7 +1490,9 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Pow associativity (tests/pow_assoc/run.sh) ==="
-    if "$SCRIPT_DIR/pow_assoc/run.sh"; then
+    if [ "${TRAVELER_SKIP_TOOL_NEUTRAL:-0}" = "1" ]; then
+        echo "  (tool-neutral; ran in an earlier pass)"
+    elif "$SCRIPT_DIR/pow_assoc/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1400,7 +1507,9 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Codegen-diff (tests/codegen_diff/run.sh) ==="
-    if "$SCRIPT_DIR/codegen_diff/run.sh"; then
+    if [ "${TRAVELER_SKIP_TOOL_NEUTRAL:-0}" = "1" ]; then
+        echo "  (tool-neutral; ran in an earlier pass)"
+    elif "$SCRIPT_DIR/codegen_diff/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1416,7 +1525,12 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== pfor-report (tests/pfor_report/run.sh) ==="
-    if "$SCRIPT_DIR/pfor_report/run.sh"; then
+    if [ "${TRAVELER_SKIP_TOOL_NEUTRAL:-0}" = "1" ]; then
+        echo "  (tool-neutral; ran in an earlier pass)"
+    elif [ "$HAVE_PYTHON3" != "1" ]; then
+        echo "  SKIP (needs python3)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/pfor_report/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1430,7 +1544,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== gpu Stage-0 (tests/gpu/run.sh) ==="
-    if "$SCRIPT_DIR/gpu/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ]; then
+        echo "  SKIP (needs llc; byte goldens: tests/gpu/run.sh --goldens-only)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/gpu/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1446,7 +1563,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== typed-pointer dialect (tests/typedptr/run.sh) ==="
-    if "$SCRIPT_DIR/typedptr/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/typedptr/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1461,7 +1581,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== emit driver (tests/emit/run.sh) ==="
-    if "$SCRIPT_DIR/emit/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/emit/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1478,7 +1601,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== eval-diff (tests/eval_diff/run.sh) ==="
-    if "$SCRIPT_DIR/eval_diff/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/eval_diff/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1490,7 +1616,9 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== REPL session (tests/repl/run.sh) ==="
-    if "$SCRIPT_DIR/repl/run.sh"; then
+    if [ "${TRAVELER_SKIP_TOOL_NEUTRAL:-0}" = "1" ]; then
+        echo "  (tool-neutral; ran in an earlier pass)"
+    elif "$SCRIPT_DIR/repl/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1502,7 +1630,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== alloc-debug redzones (tests/alloc_debug/run.sh) ==="
-    if "$SCRIPT_DIR/alloc_debug/run.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/alloc_debug/run.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1514,7 +1645,10 @@ fi
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== Bootstrap (tests/run_bootstrap.sh) ==="
-    if "$SCRIPT_DIR/run_bootstrap.sh"; then
+    if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
+        echo "  SKIP (needs llc + link driver)"
+        SKIP=$((SKIP + 1))
+    elif "$SCRIPT_DIR/run_bootstrap.sh"; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -1523,13 +1657,17 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
 fi
 
 # --- Summary ---
-END_TIME=$(python3 -c "import time; print(int(time.time()*1000))")
+END_TIME=$(now_ms)
 ELAPSED=$(( (END_TIME - START_TIME) ))
 
 echo ""
 echo "============================================"
 printf "  RESULTS: %d PASS, %d FAIL, %d SKIP  (%d.%03ds)\n" \
     "$PASS" "$FAIL" "$SKIP" "$((ELAPSED / 1000))" "$((ELAPSED % 1000))"
+if [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ] || [ "$HAVE_SEED" != "1" ]; then
+    echo "  (degraded toolchain — SKIP entries above name the missing piece;"
+    echo "   link driver in use: ${LINKER:-none})"
+fi
 if [ -n "$FAILURES" ]; then
     echo "  FAILED:$FAILURES"
 fi

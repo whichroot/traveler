@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # --pfor-report gate (exact-arithmetic arc, Stage C).
 #
 # Two things in one runner:
@@ -35,6 +35,14 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 if [ ! -x "$SELF" ]; then
     echo "FATAL: tvc_self not built at $SELF (run src/bootstrap/build.sh)"; exit 1
+fi
+
+# JSONL validation and the proof probes are python3; without it the gate
+# skips cleanly rather than failing on a missing interpreter.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "=== --pfor-report gate (tests/pfor_report) ==="
+    echo "  SKIP: python3 not found (JSONL validation and proof probes need it)"
+    exit 0
 fi
 
 MODE="check"

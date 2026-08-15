@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # GPU device-codegen and measured-profile runtime gate.
 # @internal-note: plan-gpu-purity-runtime.
 #
@@ -25,6 +25,37 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$REPO_DIR" || exit 1
 
+# --- --goldens-only: the llc-free floor ------------------------------------
+# The canonical AGX byte goldens run everywhere (stage1 + cmp, no LLVM, no
+# hardware). This mode is what environments without an LLVM toolchain can
+# still prove; the full gate below needs llc (and, for owned-device legs,
+# the measured M4 profile).
+if [ "${1:-}" = "--goldens-only" ]; then
+    STAGE1_G="${TVC_SELF:-$REPO_DIR/src/bootstrap/out/stage1}"
+    if [ ! -x "$STAGE1_G" ]; then
+        echo "FATAL: tvc_self not built at $STAGE1_G (run src/bootstrap/build.sh)" >&2
+        exit 1
+    fi
+    echo "=== AGX byte goldens (tests/gpu --goldens-only) ==="
+    gfail=0
+    TMPG="$(mktemp -d)"; trap 'rm -rf "$TMPG"' EXIT
+    for m in gpu_field_map gpu_field_map_64 gpu_field_map_mont; do
+        if ! "$STAGE1_G" --emit-gpu-agx "$REPO_DIR/examples/$m.tv" -o "$TMPG/$m.hex" 2>/dev/null; then
+            echo "  FAIL: $m did not emit AGX bytes"; gfail=1
+        elif ! cmp -s "$TMPG/$m.hex" "$SCRIPT_DIR/golden/$m.agx.hex"; then
+            echo "  FAIL: $m AGX bytes differ from golden"; gfail=1
+        else
+            echo "  ok   $m AGX bytes match golden"
+        fi
+    done
+    if [ "$gfail" = "0" ]; then echo "  GOLDENS: PASS"; else echo "  GOLDENS: FAIL"; fi
+    exit "$gfail"
+fi
+
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver) plus
+# capability flags.
+. "$SCRIPT_DIR/../lib/env.sh"
+
 # --- Locate llc (same discovery as run.sh; honors $LLC) ---
 find_llc() {
     if [ -n "${LLC:-}" ] && command -v "$LLC" &>/dev/null; then return; fi
@@ -36,7 +67,7 @@ find_llc() {
         llc; do
         if command -v "$p" &>/dev/null; then LLC="$p"; return; fi
     done
-    echo "FATAL: llc not found. Set LLC env var." >&2; exit 1
+    echo "FATAL: llc not found. Set LLC env var (or run: $0 --goldens-only)." >&2; exit 1
 }
 find_llc
 # The objdump that ships beside llc (for the disasm sanity check).
@@ -546,7 +577,7 @@ else
                     "$AGX_LANG0_EVAL_LL" || true)" -ne 4 ] \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG0_EVAL_LL" \
              -o "$AGX_LANG0_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG0_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG0_EVAL_OBJ" \
              -o "$AGX_LANG0_EVAL_EXE" 2>/dev/null \
        || ! env TRAVELER_THREADS=1 "$AGX_LANG0_EVAL_EXE" \
              >"$TMP/agx_lang0.t1.bin" \
@@ -604,7 +635,7 @@ else
     LANG0_HOST_READY=0
     if [ "$LANG0_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG0_OBJ" -framework IOKit \
+        if ! "$LINKER" "$AGX_LANG0_OBJ" -framework IOKit \
                 -o "$AGX_LANG0_EXE" 2>/dev/null; then
             echo "  FAIL: AGX LANG0 CPU-fallback differential did not link"; fail=1
             LANG0_READY=0
@@ -650,7 +681,7 @@ else
        || grep -q 'call void @__parallel_for(' "$AGX_LANG1_STRUCT_EVAL_LL" \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_STRUCT_EVAL_LL" \
             -o "$AGX_LANG1_STRUCT_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG1_STRUCT_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG1_STRUCT_EVAL_OBJ" \
             -o "$AGX_LANG1_STRUCT_EVAL_EXE" 2>/dev/null \
        || ! "$AGX_LANG1_STRUCT_EVAL_EXE" \
             >"$TMP/agx_lang1_struct.serial.bin" \
@@ -678,7 +709,7 @@ else
     LANG1_STRUCT_HOST_READY=0
     if [ "$LANG1_STRUCT_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG1_STRUCT_OBJ" -framework IOKit \
+        if ! "LINKER" "$AGX_LANG1_STRUCT_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_STRUCT_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_STRUCT_EXE" \
                 >"$TMP/agx_lang1_struct.t1.bin" \
@@ -723,7 +754,7 @@ else
        || grep -q 'call void @__parallel_for(' "$AGX_LANG1_MATCH_EVAL_LL" \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_MATCH_EVAL_LL" \
             -o "$AGX_LANG1_MATCH_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG1_MATCH_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG1_MATCH_EVAL_OBJ" \
             -o "$AGX_LANG1_MATCH_EVAL_EXE" 2>/dev/null \
        || ! "$AGX_LANG1_MATCH_EVAL_EXE" \
             >"$TMP/agx_lang1_match.serial.bin" \
@@ -751,7 +782,7 @@ else
     LANG1_MATCH_HOST_READY=0
     if [ "$LANG1_MATCH_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG1_MATCH_OBJ" -framework IOKit \
+        if ! "LINKER" "$AGX_LANG1_MATCH_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_MATCH_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_MATCH_EXE" \
                 >"$TMP/agx_lang1_match.t1.bin" \
@@ -799,7 +830,7 @@ else
        || grep -q 'call void @__parallel_for(' "$AGX_LANG1_ARRAY_EVAL_LL" \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_ARRAY_EVAL_LL" \
             -o "$AGX_LANG1_ARRAY_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG1_ARRAY_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG1_ARRAY_EVAL_OBJ" \
             -o "$AGX_LANG1_ARRAY_EVAL_EXE" 2>/dev/null \
        || ! "$AGX_LANG1_ARRAY_EVAL_EXE" \
             >"$TMP/agx_lang1_array.serial.bin" \
@@ -827,7 +858,7 @@ else
     LANG1_ARRAY_HOST_READY=0
     if [ "$LANG1_ARRAY_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG1_ARRAY_OBJ" -framework IOKit \
+        if ! "LINKER" "$AGX_LANG1_ARRAY_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_ARRAY_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_ARRAY_EXE" \
                 >"$TMP/agx_lang1_array.t1.bin" \
@@ -871,7 +902,7 @@ else
                     "$AGX_LANG1_CALL_EVAL_LL" || true)" -ne 1 ] \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_CALL_EVAL_LL" \
             -o "$AGX_LANG1_CALL_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG1_CALL_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG1_CALL_EVAL_OBJ" \
             -o "$AGX_LANG1_CALL_EVAL_EXE" 2>/dev/null \
        || ! env TRAVELER_THREADS=4 "$AGX_LANG1_CALL_EVAL_EXE" \
             >"$TMP/agx_lang1_call.cpu.bin" \
@@ -896,7 +927,7 @@ else
     LANG1_CALL_HOST_READY=0
     if [ "$LANG1_CALL_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG1_CALL_OBJ" -framework IOKit \
+        if ! "LINKER" "$AGX_LANG1_CALL_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_CALL_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_CALL_EXE" \
                 >"$TMP/agx_lang1_call.t1.bin" \
@@ -941,7 +972,7 @@ else
                     "$AGX_LANG1_OPERATOR_EVAL_LL" || true)" -ne 1 ] \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_OPERATOR_EVAL_LL" \
             -o "$AGX_LANG1_OPERATOR_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG1_OPERATOR_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG1_OPERATOR_EVAL_OBJ" \
             -o "$AGX_LANG1_OPERATOR_EVAL_EXE" 2>/dev/null \
        || ! env TRAVELER_THREADS=4 "$AGX_LANG1_OPERATOR_EVAL_EXE" \
             >"$TMP/agx_lang1_operator.cpu.bin" \
@@ -966,7 +997,7 @@ else
     LANG1_OPERATOR_HOST_READY=0
     if [ "$LANG1_OPERATOR_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG1_OPERATOR_OBJ" -framework IOKit \
+        if ! "LINKER" "$AGX_LANG1_OPERATOR_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_OPERATOR_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_OPERATOR_EXE" \
                 >"$TMP/agx_lang1_operator.t1.bin" \
@@ -1011,7 +1042,7 @@ else
                     "$AGX_LANG1_CLOSURE_EVAL_LL" || true)" -ne 1 ] \
        || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$AGX_LANG1_CLOSURE_EVAL_LL" \
             -o "$AGX_LANG1_CLOSURE_EVAL_OBJ" 2>/dev/null \
-       || ! cc $HOST_LINK_PIE "$AGX_LANG1_CLOSURE_EVAL_OBJ" \
+       || ! "$LINKER" $HOST_LINK_PIE "$AGX_LANG1_CLOSURE_EVAL_OBJ" \
             -o "$AGX_LANG1_CLOSURE_EVAL_EXE" 2>/dev/null \
        || ! env TRAVELER_THREADS=4 "$AGX_LANG1_CLOSURE_EVAL_EXE" \
             >"$TMP/agx_lang1_closure.cpu.bin" \
@@ -1036,7 +1067,7 @@ else
     LANG1_CLOSURE_HOST_READY=0
     if [ "$LANG1_CLOSURE_READY" = "1" ] && [ "$(uname -s)" = "Darwin" ] \
        && [ "$(uname -m)" = "arm64" ]; then
-        if ! cc "$AGX_LANG1_CLOSURE_OBJ" -framework IOKit \
+        if ! "LINKER" "$AGX_LANG1_CLOSURE_OBJ" -framework IOKit \
                 -o "$AGX_LANG1_CLOSURE_EXE" 2>/dev/null \
            || ! env TRAVELER_THREADS=1 "$AGX_LANG1_CLOSURE_EXE" \
                 >"$TMP/agx_lang1_closure.t1.bin" \
@@ -1092,7 +1123,7 @@ else
                 -ne "$normal_pfor" ] \
            || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$eval_ll" \
                 -o "$eval_obj" 2>/dev/null \
-           || ! cc $HOST_LINK_PIE "$eval_obj" -o "$eval_exe" 2>/dev/null \
+           || ! "$LINKER" $HOST_LINK_PIE "$eval_obj" -o "$eval_exe" 2>/dev/null \
            || ! env TRAVELER_THREADS=4 "$eval_exe" \
                 >"$TMP/agx_lang1_${label}.cpu.bin" \
            || ! cmp -s "$eval_bin" "$TMP/agx_lang1_${label}.cpu.bin" \
@@ -1113,7 +1144,7 @@ else
             fail=1; LANG1_C1_READY=0; LANG1_C1_HOST_READY=0; return
         fi
         if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-            if ! cc "$dispatch_obj" -framework IOKit -o "$dispatch_exe" 2>/dev/null \
+            if ! "LINKER" "$dispatch_obj" -framework IOKit -o "$dispatch_exe" 2>/dev/null \
                || ! env TRAVELER_THREADS=1 "$dispatch_exe" \
                     >"$TMP/agx_lang1_${label}.t1.bin" \
                || ! env TRAVELER_THREADS=4 "$dispatch_exe" \
@@ -1225,7 +1256,7 @@ else
             echo "  FAIL: owned G16X execution mismatch"; fail=1
         fi
         if [ -f "$AGX_RUNTIME_OBJ" ] \
-           && cc "$AGX_RUNTIME_OBJ" -framework IOKit -o "$AGX_RUNTIME_EXE" 2>/dev/null; then
+           && "LINKER" "$AGX_RUNTIME_OBJ" -framework IOKit -o "$AGX_RUNTIME_EXE" 2>/dev/null; then
             deps="$(otool -L "$AGX_RUNTIME_EXE" 2>/dev/null)"
             if echo "$deps" | grep -qE 'Metal|Foundation|IOGPU'; then
                 echo "  FAIL: closed/private framework leaked into Traveler AGX runtime"; fail=1
@@ -1530,13 +1561,13 @@ else
         fi
         if [ "$AGX3_READY" = "1" ]; then
             agx3fail=0
-            if ! cc "$AGX_BINARY_OBJ" -framework IOKit -o "$AGX_BINARY_EXE" 2>/dev/null \
+            if ! "LINKER" "$AGX_BINARY_OBJ" -framework IOKit -o "$AGX_BINARY_EXE" 2>/dev/null \
                || [ "$("$AGX_BINARY_EXE" "$AGX_HARNESS/dispatch.img" \
                     "$AGX_BINARY_DEV")" != "1" ]; then
                 echo "  FAIL: packed two-input AGX execution mismatch"
                 agx3fail=1
             fi
-            if ! cc "$AGX_DISPATCH_OBJ" -framework IOKit -o "$AGX_DISPATCH_EXE" 2>/dev/null; then
+            if ! "LINKER" "$AGX_DISPATCH_OBJ" -framework IOKit -o "$AGX_DISPATCH_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX runtime-dispatch gate did not link"
                 agx3fail=1
             else
@@ -1565,7 +1596,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! cc "$AGX_RNS_OBJ" -framework IOKit -o "$AGX_RNS_EXE" 2>/dev/null; then
+            if ! "LINKER" "$AGX_RNS_OBJ" -framework IOKit -o "$AGX_RNS_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX RNS matmul consumer did not link"
                 agx3fail=1
             else
@@ -1583,7 +1614,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! cc "$AGX_REDUCE_OBJ" -framework IOKit -o "$AGX_REDUCE_EXE" 2>/dev/null; then
+            if ! "LINKER" "$AGX_REDUCE_OBJ" -framework IOKit -o "$AGX_REDUCE_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX reduce-8 bridge did not link"
                 agx3fail=1
             else
@@ -1601,7 +1632,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! cc "$AGX_DOT_OBJ" -framework IOKit -o "$AGX_DOT_EXE" 2>/dev/null; then
+            if ! "LINKER" "$AGX_DOT_OBJ" -framework IOKit -o "$AGX_DOT_EXE" 2>/dev/null; then
                 echo "  FAIL: AGX direct RNS dot did not link"
                 agx3fail=1
             else
@@ -1620,7 +1651,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! cc "$AGX_DOT_LOOP_OBJ" -framework IOKit -o "$AGX_DOT_LOOP_EXE" 2>/dev/null; then
+            if ! "LINKER" "$AGX_DOT_LOOP_OBJ" -framework IOKit -o "$AGX_DOT_LOOP_EXE" 2>/dev/null; then
                 echo "  FAIL: canonical nested K=8 RNS dot did not link"
                 agx3fail=1
             else
@@ -1639,7 +1670,7 @@ else
                     agx3fail=1
                 fi
             fi
-            if ! cc "$AGX_DOT_GENERAL_OBJ" -framework IOKit \
+            if ! "LINKER" "$AGX_DOT_GENERAL_OBJ" -framework IOKit \
                     -o "$AGX_DOT_GENERAL_EXE" 2>/dev/null; then
                 echo "  FAIL: generalized 1x8x1024 counted dot did not link"
                 agx3fail=1
@@ -1674,7 +1705,7 @@ else
                     agx_determinism_64) det_bytes=2048 ;;
                     *) det_bytes=1024 ;;
                 esac
-                if ! cc "$TMP/$det.o" -framework IOKit -o "$TMP/$det" 2>/dev/null; then
+                if ! "LINKER" "$TMP/$det.o" -framework IOKit -o "$TMP/$det" 2>/dev/null; then
                     echo "  FAIL: $det did not link against IOKit"
                     agxdetfail=1
                     continue

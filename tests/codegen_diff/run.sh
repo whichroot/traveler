@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Codegen-diff gate (IR-graph Stage 0): hash the emitted LLVM IR of a curated
 # corpus under tvc_self and compare against a committed golden manifest. Catches
 # UNINTENDED codegen drift on real programs — the gap the fixed point does NOT

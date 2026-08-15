@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Eval-diff gate (eval-engine E1): the differential semantic oracle.
 # For every corpus program:   eval(prog) == run(compile(prog))
 # byte-exact on stdout AND equal on exit status. This is the fixed-point
@@ -46,6 +46,10 @@ case "$(uname -s)-$(uname -m)" in
     Linux-aarch64) LLC_TARGET="-mtriple=aarch64-linux-gnu"; LINK_PIE="-no-pie" ;;
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
+
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/../lib/env.sh"
 if [ -z "$LLC_BIN" ]; then
     echo "FATAL: llc not found (set LLC=<path>)"; exit 1
 fi
@@ -74,7 +78,7 @@ while IFS= read -r line; do
     if ! "$LLC_BIN" $LLC_TARGET -filetype=obj "$TMP/out.ll" -o "$TMP/out.o" 2>/dev/null; then
         echo "  LLC FAILED: $line"; fail=$((fail+1)); continue
     fi
-    if ! cc $LINK_PIE "$TMP/out.o" -o "$TMP/out.bin" 2>/dev/null; then
+    if ! "$LINKER" $LINK_PIE "$TMP/out.o" -o "$TMP/out.bin" 2>/dev/null; then
         echo "  LINK FAILED: $line"; fail=$((fail+1)); continue
     fi
     # shellcheck disable=SC2086  # args is intentionally word-split

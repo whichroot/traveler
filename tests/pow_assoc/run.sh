@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Regression gate: ** is right-associative (spec 2.10).
 #
 # Dumps the AST of `a ** b ** c` (tvc_self's default no-`-o` mode prints the

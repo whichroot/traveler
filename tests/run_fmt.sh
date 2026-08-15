@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Formatter regression suite (roadmap B3a).
 #
 # tvfmt is a conservative, comment-preserving reindenter written in Traveler.
@@ -42,18 +42,22 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/lib/env.sh"
+
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # --- Build the canonical compiler (Stage 1) ---
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || {
-    (cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
+    (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
 }
 "$SRC_DIR/tvc" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self.ll" 2>/dev/null || {
     echo "FATAL: Stage 1 compile failed" >&2; exit 1
 }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self.ll" -o "$TMPDIR/tvc_self.o" 2>/dev/null
-clang $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null
+"$LINKER" $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null
 TVC_SELF="$TMPDIR/tvc_self"
 
 # --- Build tvfmt ---
@@ -61,7 +65,7 @@ TVC_SELF="$TMPDIR/tvc_self"
     echo "FATAL: tvfmt compile failed" >&2; exit 1
 }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvfmt.ll" -o "$TMPDIR/tvfmt.o" 2>/dev/null
-clang $LINK_PIE "$TMPDIR/tvfmt.o" -o "$TMPDIR/tvfmt" 2>/dev/null
+"$LINKER" $LINK_PIE "$TMPDIR/tvfmt.o" -o "$TMPDIR/tvfmt" 2>/dev/null
 TVFMT="$TMPDIR/tvfmt"
 
 PASS=0
@@ -96,7 +100,7 @@ echo "=== Formatter meaning-preservation (compile orig vs formatted) ==="
 build_run() {
     "$TVC_SELF" "$1" -o "$TMPDIR/m.ll" 2>/dev/null || return 1
     "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/m.ll" -o "$TMPDIR/m.o" 2>/dev/null || return 1
-    clang $LINK_PIE "$TMPDIR/m.o" -o "$TMPDIR/m" 2>/dev/null || return 1
+    "$LINKER" $LINK_PIE "$TMPDIR/m.o" -o "$TMPDIR/m" 2>/dev/null || return 1
     "$TMPDIR/m" 2>/dev/null
 }
 for name in field_basics edge_cases bitwise_ops enum_basics int_match poly_classify; do

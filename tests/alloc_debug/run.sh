@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # alloc-debug gate (memory model M5): the --alloc-debug redzone runtime.
 #
 # Two properties pinned:
@@ -36,6 +36,10 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/../lib/env.sh"
+
 TMPD=$(mktemp -d)
 trap "rm -rf $TMPD" EXIT
 PASS=0; FAIL=0
@@ -43,7 +47,7 @@ PASS=0; FAIL=0
 # --- 1. correct program runs clean under redzones ---
 "$SELF" --alloc-debug "$SCRIPT_DIR/ok.tv" -o "$TMPD/ok.ll" 2>/dev/null || { echo "FAIL: ok.tv compile"; exit 1; }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPD/ok.ll" -o "$TMPD/ok.o" 2>/dev/null || { echo "FAIL: ok.tv llc"; exit 1; }
-cc $LINK_PIE "$TMPD/ok.o" -o "$TMPD/ok" 2>/dev/null || { echo "FAIL: ok.tv link"; exit 1; }
+"$LINKER" $LINK_PIE "$TMPD/ok.o" -o "$TMPD/ok" 2>/dev/null || { echo "FAIL: ok.tv link"; exit 1; }
 got=$("$TMPD/ok" 2>/dev/null)
 if [ "$got" = "1
 4
@@ -57,7 +61,7 @@ fi
 # --- 2. deliberate overflow aborts at free with the canary message ---
 "$SELF" --alloc-debug "$SCRIPT_DIR/smash.tv" -o "$TMPD/smash.ll" 2>/dev/null || { echo "FAIL: smash.tv compile"; exit 1; }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPD/smash.ll" -o "$TMPD/smash.o" 2>/dev/null || { echo "FAIL: smash.tv llc"; exit 1; }
-cc $LINK_PIE "$TMPD/smash.o" -o "$TMPD/smash" 2>/dev/null || { echo "FAIL: smash.tv link"; exit 1; }
+"$LINKER" $LINK_PIE "$TMPD/smash.o" -o "$TMPD/smash" 2>/dev/null || { echo "FAIL: smash.tv link"; exit 1; }
 smout=$("$TMPD/smash" 2>&1)
 smrc=$?
 # Must: print the in-bounds read, then abort (nonzero) naming the smear.

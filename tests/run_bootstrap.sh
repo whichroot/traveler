@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_bootstrap.sh — the B4 gate: Traveler builds itself with NO C in the trust
 # chain, the committed snapshot is fresh, and the C-free path is byte-identical
 # to the historical C-seed path (so dropping C changes nothing).

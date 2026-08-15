@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Typed-pointer dialect gate (-target tpc). @internal-note: plan-typed-pointer-emission.
 #
 # Proves the TP-1/TP-2 contract with NO Gaudi hardware and no tpc_llvm build:
@@ -27,6 +27,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$REPO_DIR" || exit 1
+
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver) plus
+# capability flags.
+. "$SCRIPT_DIR/../lib/env.sh"
 
 # --- Locate an LLVM-14-era toolchain (llvm-as + llc side by side) ---
 LLC14=""
@@ -127,11 +131,11 @@ for ex in $SEMCORPUS; do
         echo "  FAIL: $ex: opaque emission errored"; fail=1; continue
     fi
     if ! "$LLC" -filetype=obj "$TMP/$ex.op.ll" -o "$TMP/$ex.op.o" 2>/dev/null \
-       || ! cc "$TMP/$ex.op.o" -o "$TMP/$ex.op.bin" 2>/dev/null; then
+       || ! "$LINKER" "$TMP/$ex.op.o" -o "$TMP/$ex.op.bin" 2>/dev/null; then
         echo "  FAIL: $ex: opaque module did not lower"; fail=1; continue
     fi
     if ! "$LLC14BIN" -mtriple="$HOST_TRIPLE" -filetype=obj "$TMP/$ex.tp.ll" -o "$TMP/$ex.tp.o" 2>"$TMP/$ex.lerr" \
-       || ! cc "$TMP/$ex.tp.o" -o "$TMP/$ex.tp.bin" 2>/dev/null; then
+       || ! "$LINKER" "$TMP/$ex.tp.o" -o "$TMP/$ex.tp.bin" 2>/dev/null; then
         echo "  FAIL: $ex: typed module did not lower for host"; sed 's/^/        /' "$TMP/$ex.lerr" | head -3; fail=1; continue
     fi
     ( cd "$TMP" && "./$ex.op.bin" > op.out 2>/dev/null )

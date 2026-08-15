@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Traveler dual-compiler parity test
 # Runs every test through both bootstrap and tvc_self, diffs output.
 # Invoke manually or in CI — slower than run.sh due to Stage 1 build.
@@ -83,9 +83,13 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "$SCRIPT_DIR/lib/env.sh"
+
 # --- Build bootstrap ---
 echo "Building bootstrap compiler..."
-(cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c 2>&1) || {
+(cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c 2>&1) || {
     echo "FATAL: bootstrap build failed" >&2; exit 1
 }
 TVC="$SRC_DIR/tvc"
@@ -115,7 +119,7 @@ run_with_timeout "$TIMEOUT_STAGE1" "$TVC" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDI
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self.ll" -o "$TMPDIR/tvc_self.o" 2>/dev/null || {
     echo "FATAL: Stage 1 llc failed" >&2; exit 1
 }
-clang $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null || {
     echo "FATAL: Stage 1 link failed" >&2; exit 1
 }
 TVC_SELF="$TMPDIR/tvc_self"
@@ -166,7 +170,7 @@ parity_single() {
         FAILURES="$FAILURES $name"
         return
     }
-    clang $LINK_PIE "$TMPDIR/${name}_dual.o" -o "$TMPDIR/${name}_dual" 2>/dev/null || {
+    "$LINKER" $LINK_PIE "$TMPDIR/${name}_dual.o" -o "$TMPDIR/${name}_dual" 2>/dev/null || {
         printf "  [%2d] %-35s FAIL (tvc_self link)\n" "$TOTAL" "$name"
         FAIL=$((FAIL + 1))
         FAILURES="$FAILURES $name"
@@ -225,7 +229,7 @@ parity_multi() {
         objs="$objs $TMPDIR/${m}_dual.o"
     done
 
-    if ! clang $LINK_PIE $objs -o "$TMPDIR/${name}_dual" 2>/dev/null; then
+    if ! "$LINKER" $LINK_PIE $objs -o "$TMPDIR/${name}_dual" 2>/dev/null; then
         printf "  [%2d] %-35s FAIL (link)\n" "$TOTAL" "$name"
         FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"; return
     fi
@@ -278,7 +282,7 @@ parity_single barrett_test
 TOTAL=$((TOTAL + 1))
 run_with_timeout "$TIMEOUT_SINGLE" "$TVC_SELF" "$EXAMPLES/adc_pipeline.tv" -o "$TMPDIR/adc_pipeline_dual.ll" 2>/dev/null && \
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/adc_pipeline_dual.ll" -o "$TMPDIR/adc_pipeline_dual.o" 2>/dev/null && \
-clang $LINK_PIE "$TMPDIR/adc_pipeline_dual.o" -o "$TMPDIR/adc_pipeline_dual" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/adc_pipeline_dual.o" -o "$TMPDIR/adc_pipeline_dual" 2>/dev/null || {
     printf "  [%2d] %-35s FAIL (tvc_self compile)\n" "$TOTAL" "adc_pipeline"
     FAIL=$((FAIL + 1))
     FAILURES="$FAILURES adc_pipeline"
@@ -366,7 +370,7 @@ TOTAL=$((TOTAL + 1))
 
 run_with_timeout "$TIMEOUT_STAGE2" "$TVC_SELF" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self2.ll" 2>/dev/null && \
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self2.ll" -o "$TMPDIR/tvc_self2.o" 2>/dev/null && \
-clang $LINK_PIE "$TMPDIR/tvc_self2.o" -o "$TMPDIR/tvc_self2" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/tvc_self2.o" -o "$TMPDIR/tvc_self2" 2>/dev/null || {
     printf "  [%2d] %-35s FAIL (Stage 2 build)\n" "$TOTAL" "stage2_build"
     FAIL=$((FAIL + 1))
     FAILURES="$FAILURES stage2_build"
@@ -389,7 +393,7 @@ PASS=$((PASS + 1))
 TOTAL=$((TOTAL + 1))
 run_with_timeout "$TIMEOUT_SINGLE" "$TMPDIR/tvc_self2" "$EXAMPLES/field_basics.tv" -o "$TMPDIR/fb_s2.ll" 2>/dev/null && \
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/fb_s2.ll" -o "$TMPDIR/fb_s2.o" 2>/dev/null && \
-clang $LINK_PIE "$TMPDIR/fb_s2.o" -o "$TMPDIR/fb_s2" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/fb_s2.o" -o "$TMPDIR/fb_s2" 2>/dev/null || {
     printf "  [%2d] %-35s FAIL (Stage 2 compile)\n" "$TOTAL" "stage2_smoke"
     FAIL=$((FAIL + 1))
     FAILURES="$FAILURES stage2_smoke"

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Auto-parallelization soundness regression suite.
 #
 # Each test in tests/pfor/ asserts two things:
@@ -48,9 +48,13 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/lib/env.sh"
+
 # --- Build bootstrap compiler ---
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || {
-    (cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
+    (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
 }
 TVC="$SRC_DIR/tvc"
 
@@ -155,7 +159,7 @@ for entry in "${TESTS[@]}"; do
     # Build native
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-        clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || {
+        "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || {
             status="FAIL"; detail="link"
         }
     fi
@@ -237,7 +241,7 @@ if [ -x "$STAGE1" ]; then
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-        clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+        "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
     fi
     if [ "$status" = "PASS" ]; then
         out=$("$TMPDIR/${name}" 2>/dev/null)
@@ -313,7 +317,7 @@ if [ -x "$STAGE1" ]; then
         fi
         if [ "$status" = "PASS" ]; then
             "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-            clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+            "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
         fi
         if [ "$status" = "PASS" ]; then
             baseline=$(cat "$EXPECTED/${name}.txt")
@@ -377,20 +381,20 @@ if [ -x "$STAGE1" ]; then
           || proof1_setup=0
     fi
     if [ "$proof1_setup" = "1" ]; then
-        clang $LINK_PIE "$TMPDIR/proof1_regime_fri.o" \
+        "$LINKER" $LINK_PIE "$TMPDIR/proof1_regime_fri.o" \
             "$TMPDIR/proof1_genus_probe_lib.o" \
             "$TMPDIR/proof1_genus_alias_lib.o" \
             "$TMPDIR/proof1_genus_alias.o" -o "$TMPDIR/proof1_genus_alias" \
             2>/dev/null \
-          && clang $LINK_PIE "$TMPDIR/proof1_regime_fri.o" \
+          && "$LINKER" $LINK_PIE "$TMPDIR/proof1_regime_fri.o" \
             "$TMPDIR/proof1_genus_probe_lib.o" \
             "$TMPDIR/proof1_genus_probe.o" -o "$TMPDIR/proof1_genus_probe" \
             2>/dev/null \
-          && clang $LINK_PIE "$TMPDIR/proof1_poly_core.o" \
+          && "$LINKER" $LINK_PIE "$TMPDIR/proof1_poly_core.o" \
             -o "$TMPDIR/proof1_poly_core" 2>/dev/null \
-          && clang $LINK_PIE "$TMPDIR/proof1_parallel.o" \
+          && "$LINKER" $LINK_PIE "$TMPDIR/proof1_parallel.o" \
             -o "$TMPDIR/proof1_parallel" 2>/dev/null \
-          && clang $LINK_PIE "$TMPDIR/proof1_dyn_cast.o" \
+          && "$LINKER" $LINK_PIE "$TMPDIR/proof1_dyn_cast.o" \
             -o "$TMPDIR/proof1_dyn_cast" 2>/dev/null \
           || proof1_setup=0
     fi
@@ -519,7 +523,7 @@ if [ -x "$STAGE1" ]; then
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-        clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="llc/link (undefined-value regressed)"; }
+        "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="llc/link (undefined-value regressed)"; }
     fi
     if [ "$status" = "PASS" ]; then
         out=$("$TMPDIR/${name}" 2>/dev/null)
@@ -569,7 +573,7 @@ if [ -x "$STAGE1" ]; then
         fi
         if [ "$status" = "PASS" ]; then
             "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-            clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+            "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
         fi
         if [ "$status" = "PASS" ]; then
             baseline=$(cat "$EXPECTED/${name}.txt")
@@ -612,7 +616,7 @@ if [ -x "$STAGE1" ]; then
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-        clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+        "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
     fi
     if [ "$status" = "PASS" ]; then
         t1_out=$(TRAVELER_THREADS=1 "$TMPDIR/${name}" 2>/dev/null); t1_st=$?
@@ -660,7 +664,7 @@ if [ -x "$STAGE1" ]; then
         fi
         if [ "$status" = "PASS" ]; then
             "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}_s1.ll" -o "$TMPDIR/${name}_s1.o" 2>/dev/null && \
-            clang $LINK_PIE "$TMPDIR/${name}_s1.o" -o "$TMPDIR/${name}_s1" 2>/dev/null || { status="FAIL"; detail="link"; }
+            "$LINKER" $LINK_PIE "$TMPDIR/${name}_s1.o" -o "$TMPDIR/${name}_s1" 2>/dev/null || { status="FAIL"; detail="link"; }
         fi
         if [ "$status" = "PASS" ]; then
             baseline=$(cat "$EXPECTED/${name}.txt")
@@ -703,7 +707,7 @@ if [ -x "$STAGE1" ]; then
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-        clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+        "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
     fi
     if [ "$status" = "PASS" ]; then
         baseline=$(cat "$EXPECTED/${name}.txt")
@@ -728,7 +732,7 @@ if [ -x "$STAGE1" ]; then
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
-        clang $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+        "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
     fi
     if [ "$status" = "PASS" ]; then
         TRAVELER_THREADS=1 "$TMPDIR/${name}" >/dev/null 2>&1; t1_st=$?

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Diagnostics catalog (roadmap A5) — error-message regression suite.
 #
 # The structured diagnostics from A2.1/A2.2/A2.3 (file:line:col + caret,
@@ -47,6 +47,10 @@ case "$(uname -s)-$(uname -m)" in
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
 
+# Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
+# re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
+. "/lib/env.sh"
+
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
@@ -69,7 +73,7 @@ diag_compile() { # $1=timeout secs, rest = command
 
 # --- Build the canonical compiler (Stage 1: bootstrap -> tvc_self) ---
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || {
-    (cd "$SRC_DIR" && clang -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
+    (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
 }
 "$SRC_DIR/tvc" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self.ll" 2>/dev/null || {
     echo "FATAL: Stage 1 compile failed" >&2; exit 1
@@ -77,7 +81,7 @@ diag_compile() { # $1=timeout secs, rest = command
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self.ll" -o "$TMPDIR/tvc_self.o" 2>/dev/null || {
     echo "FATAL: Stage 1 llc failed" >&2; exit 1
 }
-clang $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null || {
+"$LINKER" $LINK_PIE "$TMPDIR/tvc_self.o" -o "$TMPDIR/tvc_self" 2>/dev/null || {
     echo "FATAL: Stage 1 link failed" >&2; exit 1
 }
 TVC_SELF="$TMPDIR/tvc_self"
