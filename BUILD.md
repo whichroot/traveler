@@ -376,6 +376,67 @@ LLC=/usr/lib/llvm-21/bin/llc tests/run.sh
 LLC=/usr/lib/llvm-21/bin/llc OPT=/usr/lib/llvm-21/bin/opt tests/run.sh
 ```
 
+### What each suite needs
+
+Not every suite needs the full toolchain. Pick by environment:
+
+- **stage1** — the self-hosted compiler at `src/bootstrap/out/stage1`
+  (build it once with `src/bootstrap/build.sh`, which itself needs `llc`
+  and a link driver).
+- **llc** — LLVM 21 `llc` for object lowering.
+- **link driver** — a `cc`/`clang` used only to link objects.
+- **C compiler** — builds the frozen seed `src-legacy/tvc` (unneeded where a
+  prebuilt `tvc` is already checked out/built).
+
+| Suite | stage1 | llc | Link driver | C compiler | Extra |
+|---|---|---|---|---|---|
+| `tests/run.sh` (regression) | ✓ | ✓ | ✓ | ✓ | `opt` recommended (IR verify) |
+| `tests/run_dual.sh` (full gate) | ✓ | ✓ | ✓ | ✓ | regression + pfor + dynfield + bootstrap + parity |
+| `tests/run_pfor.sh` | ✓ | ✓ | ✓ | — | |
+| `tests/dynfield/run.sh` | ✓ | ✓ | ✓ | ✓ | |
+| `tests/emit/run.sh` (`--emit` driver) | ✓ | ✓ | ✓ | — | |
+| `tests/eval_diff/run.sh` (evaluator oracle) | ✓ | ✓ | ✓ | — | |
+| `tests/alloc_debug/run.sh` | ✓ | ✓ | ✓ | — | |
+| `tests/foldbug/run.sh` | ✓ | ✓ | ✓ | — | |
+| `tests/run_diag.sh` / `run_fmt.sh` / `run_lsp.sh` / `run_doc.sh` | ✓ | ✓ | ✓ | ✓ | also run as `run.sh` sub-gates |
+| `tests/run_bootstrap.sh` (fixed point) | ✓ | ✓ | ✓ | — | rebuilds stage1/stage2 |
+| `tests/typedptr/run.sh` (`-target tpc`) | ✓ | ✓ | ✓ | — | also needs an LLVM-14-era `llvm-as` + `llc` pair |
+| `tests/gpu/run.sh` | ✓ | per leg | AGX leg | — | AMDGCN/NVPTX legs skip if `llc` lacks the target; AGX hardware legs need the measured M4 profile (macOS) |
+| `tests/fuzz_diff.py` | ✓ | — | — | ✓ | dual-compiler IR fuzzing |
+| `tests/codegen_diff/run.sh` | ✓ | — | — | — | IR-hash manifest |
+| `tests/repl/run.sh` | ✓ | — | — | — | evaluator only |
+| `tests/pow_assoc/run.sh` / `tests/pfor_report/run.sh` | ✓ | — | — | — | compiler-query gates |
+| `tests/run_sizegate.sh` | — | — | — | — | coreutils only |
+
+### Per-environment guide
+
+- **macOS (M4, measured AGX profile):** everything runs, including the
+  owned-device AGX legs of `tests/gpu/run.sh`.
+- **macOS (other) / Linux with LLVM 21 + cc:** everything except the
+  owned-device AGX legs (the canonical byte goldens still run). Add the
+  LLVM-14 pair for `tests/typedptr/run.sh`.
+- **Linux + Wayland:** as above. The `gfx_headless` / `gfx_pixel_test` /
+  `gfx_wire_test` regression entries need no compositor. The window demo
+  `examples/gfx_window.tv` is run manually against a live compositor (it
+  prints `404` and exits if `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` is absent;
+  with a compositor it prints `1` on open and runs until the window is
+  closed):
+
+  ```sh
+  src/bootstrap/out/stage1 examples/gfx_window.tv -o /tmp/gw.ll -target x86_64-linux-gnu
+  $LLC -mtriple=x86_64-linux-gnu -filetype=obj /tmp/gw.ll -o /tmp/gw.o
+  cc -no-pie /tmp/gw.o -o /tmp/gw && /tmp/gw
+  ```
+
+- **No LLVM toolchain (llc/opt absent):** the stage1-only gates still run —
+  `tests/codegen_diff/run.sh`, `tests/repl/run.sh`, `tests/pow_assoc/run.sh`,
+  `tests/pfor_report/run.sh` — plus `tests/run_sizegate.sh` (coreutils only)
+  and the canonical AGX byte goldens (emit with `--emit-gpu-agx` and diff
+  against `tests/gpu/golden/`).
+- **No C compiler:** the seed-dependent gates cannot build `src-legacy/tvc`
+  (`run_dual.sh` parity, `tests/fuzz_diff.py`); everything stage1-driven is
+  unaffected.
+
 ## Troubleshooting
 
 - **`llc not found` / `FATAL: llc not found`** — LLVM 21 isn't on `PATH`.
