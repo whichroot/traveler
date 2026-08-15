@@ -81,6 +81,14 @@ identical for any valid value):
 TRAVELER_THREADS=8 /tmp/p             # unset -> sysconf(_SC_NPROCESSORS_ONLN); 1 -> serial
 ```
 
+Run the test suites the local machine supports — the dispatcher probes
+llc/link drivers/Wayland/AGX and routes accordingly (missing tools degrade to
+SKIP, never a hard failure):
+
+```sh
+tests/run_all.sh               # probe + run; --list shows the plan, --suite=NAME runs one
+```
+
 Read-only compiler query modes (parse/analyze, no program emitted):
 
 | Flag | Effect |

@@ -358,7 +358,28 @@ diff /tmp/s2.ll /tmp/s3.ll && echo "FIXED POINT OK"
 
 ## 6. Run the test suites
 
-From the repo root:
+From the repo root, the dispatcher probes the environment and runs what it
+supports:
+
+```sh
+tests/run_all.sh               # probe + run; prints a capability matrix first
+tests/run_all.sh --list        # print the probe results and suite plan only
+tests/run_all.sh --suite=gpu   # run one suite (see --help for names)
+```
+
+The dispatcher's behavior by environment:
+
+- **llc + link driver(s) present:** the full gate on the primary driver
+  (`tests/run_dual.sh` when the C seed is available, else `tests/run.sh`),
+  then the full regression suite once per *additional* discovered link driver
+  (`cc`/`clang`/`gcc`), with tool-neutral sub-gates skipped on repeat passes.
+- **No llc or no link driver:** `tests/run.sh` runs degraded — compilation
+  and IR validation still happen, link/run stages report `SKIP (no llc)` /
+  `SKIP (no linker)` per test — plus the canonical AGX byte goldens via
+  `tests/gpu/run.sh --goldens-only`.
+- **No toolchain at all:** the coreutils-only `tests/run_sizegate.sh`.
+
+Individual suites remain directly runnable:
 
 ```sh
 tests/run_dual.sh      # the full gate: regression + pfor + dynfield + bootstrap,
@@ -368,13 +389,21 @@ tests/run_pfor.sh      # auto-parallelization soundness suite
 tests/dynfield/run.sh  # dynamic-field + traits + closures suite
 ```
 
-The test scripts auto-detect `llc`/`opt` across common locations; override
-with the `LLC` and `OPT` environment variables if detection fails:
+The test scripts auto-detect `llc`/`opt`/link drivers across common locations
+(`tests/lib/env.sh` is the shared probe); override with the `LLC`, `OPT`, and
+`LINKER` environment variables if detection fails:
 
 ```sh
 LLC=/usr/lib/llvm-21/bin/llc tests/run.sh
 LLC=/usr/lib/llvm-21/bin/llc OPT=/usr/lib/llvm-21/bin/opt tests/run.sh
+LINKER=gcc tests/run.sh        # link with a specific driver
 ```
+
+`tests/run.sh` never fails hard on a missing tool: an absent `llc`, link
+driver, C seed, or python3 turns the affected tests into named SKIPs (the C
+seed's output tests fall back to stage1; its diagnostics negative tests skip).
+The Wayland window test (`gfx_window`) runs only when a live compositor
+socket exists, and pops a real window for ~5 seconds when it does.
 
 ### What each suite needs
 
@@ -439,8 +468,11 @@ Not every suite needs the full toolchain. Pick by environment:
 
 ## Troubleshooting
 
-- **`llc not found` / `FATAL: llc not found`** — LLVM 21 isn't on `PATH`.
-  Set `LLC` to the full path of your `llc` binary.
+- **`llc not found`** — `tests/run.sh` no longer fails hard; it degrades to
+  IR-only checks and SKIPs the link/run stages. `tests/gpu/run.sh` still
+  requires `llc` for its device legs — use `tests/gpu/run.sh --goldens-only`
+  for the llc-free AGX byte goldens, or set `LLC` to the full path of your
+  `llc` binary.
 - **`make test` fails on the `llc` step** — the hardcoded path in
   `src-legacy/Makefile` doesn't match your install. Pass `LLC=<path>` to `make`.
 - **Linker errors about undefined field/helper symbols** — you're building a
