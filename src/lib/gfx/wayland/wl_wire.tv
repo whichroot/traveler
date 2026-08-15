@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// wire.tv — Wayland message pack and unpack. No socket. tvc_self ONLY.
+// wl_wire.tv — Wayland message pack and unpack. No socket. tvc_self ONLY.
 // @internal-design: gfx
 
 fn wl_align4(n: i32) -> i32 {
