@@ -49,7 +49,7 @@ esac
 
 # Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
-. "/../lib/env.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
 if [ -z "$LLC_BIN" ]; then
     echo "FATAL: llc not found (set LLC=<path>)"; exit 1
 fi

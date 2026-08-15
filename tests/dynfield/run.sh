@@ -52,7 +52,7 @@ esac
 
 # Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
-. "/../lib/env.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
 
 (cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || exit 1
 TVC="$SRC_DIR/tvc"

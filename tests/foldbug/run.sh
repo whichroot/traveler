@@ -48,7 +48,7 @@ esac
 
 # Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
-. "/../lib/env.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
 TVC_SELF="$REPO_DIR/src/bootstrap/out/stage1"
 if [ ! -x "$TVC_SELF" ]; then
   echo "FATAL: need src/bootstrap/out/stage1 (run src/bootstrap/build.sh)"; exit 1

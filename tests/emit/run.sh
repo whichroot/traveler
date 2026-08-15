@@ -66,7 +66,7 @@ if [ "100 1 26 57 100 303uname -s)" = "Linux" ]; then LINK_PIE="-no-pie"; fi
 
 # Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
-. "/../lib/env.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
 
 STAGE1="$REPO_DIR/src/bootstrap/out/stage1"
 if [ ! -x "$STAGE1" ]; then
