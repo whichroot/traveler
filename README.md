@@ -125,7 +125,7 @@ src/
     features/, dsp/    relational features and signal processing
     float/             IEEE-754 -> dyadic rationals (exact at rest)
     nn/, rns/          exact fixed-point and RNS neural-network kernels
-    gpu/               direct AGX codegen support and IOKit runtime
+    gpu/               Traveler-owned AGX, HIP, and Vulkan runtimes
     mem/               arenas and handle-based pools
     fs/, net/, time/   POSIX system interfaces
     fmt/, json/        formatting and JSON support
@@ -147,10 +147,16 @@ tests/                 test suite (regression, parity, pfor, dynfield, bootstrap
   transport.
 - **Formatter** (`src/tools/tvfmt.tv`) — idempotent, meaning-preserving.
 - **Doc generator** (`src/tools/tvdoc.tv`) — Markdown API docs from source.
-- **GPU codegen** — proven elementwise loops can emit AMDGCN LLVM IR
-  (`--emit-gpu`), NVPTX LLVM IR (`--emit-gpu-nvptx`), or direct Apple AGX G16X
-  instruction hex (`--emit-gpu-agx`). The AGX profile is deliberately bounded
-  and unsupported by Apple. It covers exact 32-bit field maps, canonical
+- **GPU codegen** — proven loops can emit AMDGCN LLVM IR (`--emit-gpu`), NVPTX
+  LLVM IR (`--emit-gpu-nvptx`), direct Apple AGX G16X instruction hex
+  (`--emit-gpu-agx`), or closed Vulkan GLSL (`--emit-gpu-vulkan`). Traveler
+  owns HIP module loading and public Vulkan submission without project C/C++.
+  Vulkan Stage 0 admits one exact 32-bit Mersenne map or one signed private-K=8
+  projection worker. Its runtimes support synchronized launches and resident
+  batches with one publication and one final synchronization; a standard GLSL
+  assembler encodes the compiler-owned source as SPIR-V. The AGX profile is
+  deliberately bounded and unsupported by Apple. It covers exact 32-bit field
+  maps, canonical
   `2^64-59`, narrow two-input own-cell maps, structured scalar control, flat
   aggregates, ordered dynamic indexing of scalarized private arrays, statically
   expanded calls, and fixed-`K=8` RNS reductions with matrix geometry derived
@@ -171,7 +177,7 @@ tests/                 test suite (regression, parity, pfor, dynfield, bootstrap
 ```sh
 tests/run_dual.sh    # the full gate: regression + pfor + dynfield + bootstrap,
                      # then Stage 1 build + dual-compiler parity
-tests/gpu/run.sh     # AMD/NV codegen + AGX bytes, IOKit runtime, CPU/GPU parity
+tests/gpu/run.sh     # AMD/NV/Vulkan codegen + Traveler-owned runtime parity
 ```
 
 Stage 2 (the compiler compiling itself) must be byte-identical to Stage 3

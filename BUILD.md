@@ -243,7 +243,20 @@ TVC=src/bootstrap/out/stage1
 $TVC --emit-gpu examples/gpu_field_map.tv -o /tmp/map-amd.ll
 $TVC --emit-gpu-nvptx examples/gpu_field_map.tv -o /tmp/map-nv.ll
 $TVC --emit-gpu-agx examples/gpu_field_map.tv -o /tmp/map-agx.hex
+$TVC --emit-gpu-vulkan examples/gpu_field_map.tv -o /tmp/map-vulkan.comp
 ```
+
+Vulkan Stage 0 reuses the proved worker records but emits canonical GLSL for
+exactly one worker per artifact. Its closed profiles are the unary
+`Field<2147483647>` map and a signed, overflow-free private-K=8 integer dot.
+`glslangValidator -V` is the standard SPIR-V encoder; it does not own source
+semantics or admission. `src/lib/gpu/vulkan_runtime.tv` owns instance/device
+selection, coherent device-local input buffers, host-cached coherent output
+publication, descriptors, pipeline construction, submission, synchronization,
+and teardown through the public Vulkan C ABI. `src/lib/gpu/hip_runtime.tv`
+owns the corresponding HIP module path. Their executables link only Traveler
+objects plus `libvulkan`/`libamdhip64`, with no project C, C++, HIP, or
+shader-runtime shim.
 
 AMDGCN and NVPTX are LLVM device modules; `tests/gpu/run.sh` lowers them with
 `llc` to a gfx1100 object and sm_90 PTX. AGX is different: Traveler directly
