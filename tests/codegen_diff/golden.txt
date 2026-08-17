@@ -27,7 +27,7 @@ f44e5c613e56fbd58f0a3fcf6e61af18  examples/dp_test.tv
 9b7aaffaf3c12e0339cbcfdae7679e25  examples/dynfield_eval.tv
 a351ad359968e8af978d6fdc72935c52  examples/dynfield_spike.tv
 2a1dd7829920a80646bfdf8a9e2da2d2  examples/dyn_fri_test.tv
-659a27189e6ba4dd6172d64e3de5be06  examples/dyn_kernel_test.tv
+807a8d2f1fdffbe9944a5e38b153e5a2  examples/dyn_kernel_test.tv
 96383d838c5ba26addb477eaf3e2df22  examples/dyn_merkle_test.tv
 a5cc9e952e5830f13a3fbaf430c0a11f  examples/dyn_mul_boundary_test.tv
 72685d2428f8e66d93c3073879c1879d  examples/dyn_nested_test.tv
@@ -135,8 +135,8 @@ b8fb773a3a823e36a9f2a67d72fe331f  examples/observe_learn_audio.tv
 7df703839094eb9c10689974e1f36caf  examples/observe_learn_gate.tv
 3082fd380494ea16e33b4ce5db33a74a  examples/observe_lossy_audio.tv
 558e148e4fb3f202ee3d2dcb2210f762  examples/observe_lossy_gate.tv
-286e17065555a84c971568e3b24c2c4e  examples/observe_onset.tv
-c6dcb4a46e69c2a6608003f0e2816d1c  examples/observe_satotate.tv
+d9e08c192931305a6a777f7a1810563b  examples/observe_onset.tv
+a834d9c80feb0b71eaca3237e8a5de12  examples/observe_satotate.tv
 028aa081357582259804201449683e44  examples/observe_stereo_probe.tv
 b669b22f3bcfd757766aec9945e8bee8  examples/observe_transfer_probe.tv
 c9c96b4d0bc3a66b4e6569c9f6992351  examples/observe_wire_audio.tv
@@ -201,8 +201,8 @@ c38a302ccee9169c6379263d10e4ca61  examples/syntax_shadow.tv
 bf5b04fecce2d991ccf726efd154f68d  examples/syntax_type.tv
 1908850dafa23b296d865de3d8b1250f  examples/syntax_var.tv
 4021b6d3621fc5620db0ae890ab75a55  examples/time_basics.tv
-a457bfc4d267d32e9e74a1d0578e99a7  examples/time_deltas.tv
-8404a83bb2fc92fc001c263d796ace2a  examples/time_regime.tv
+9120c9b53dd819dc0d68f2dd1f630799  examples/time_deltas.tv
+017244e5516fc4d91607fc1e8703552b  examples/time_regime.tv
 3810df67997f03f30fcb378dbf61024e  examples/trait_dispatch.tv
 0e08f819dfcd180e9016e50a816c4d6a  examples/trait_impl.tv
 813fbc557d5455c514914da460e1d8fa  examples/turning_test.tv
@@ -247,7 +247,7 @@ c33863f2244e8e44bf82b22e5d61d52e  examples/zk_loop_dyn_test.tv
 d2fa7ed3cd8bfd6a53f890c3b09732af  examples/zk_loop_test.tv
 381671fbe7204665a29005a6e1df47b5  examples/zk_range_test.tv
 2473a7c073dd34625be532e2ec3da63d  src/lib/codec/piecewise_codec.tv
-bca46c5d08a783a2e072f732b9fa770a  src/lib/core/poly_core.tv
+3f78b3aa83402ad6bb13bc38ad03e52c  src/lib/core/poly_core.tv
 71ef5a53f3823f4b51a36dd763b3012f  src/lib/crypto/mds_check.tv
 e583136356fd70f956a3f4c20a849af7  src/lib/crypto/ntt.tv
 90e2d0b3939a560ff701f06b1b6799e9  src/lib/crypto/poseidon2_wide.tv

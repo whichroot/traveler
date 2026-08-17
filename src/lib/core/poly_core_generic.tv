@@ -145,17 +145,49 @@ fn regime_detect<F: Field>(data: *F, n: i32, order: i32, threshold: i32, reg: *F
 
 // Evaluate a Newton-basis polynomial (coeffs[0..order]) at an arbitrary field
 // point x: Horner on the binomial basis f(x) = Σ c_k · C(x, k).
+//
+// The Horner step needs inv(1..order). Batch them with ONE inverse (prefix
+// products + a single 1/(order!) + back-substitution) instead of a per-step
+// Fermat. Order > 64 falls back to the per-step form (no stack table).
 #[export]
 fn eval_at<F: Field>(coeffs: *F, order: i32, x: F) -> F {
     let zero: F = 0;
+    let one: F = 1;
     if order < 0 { return zero; }
+    if order > 64 {
+        var result: F = coeffs[order];
+        var k: i32 = order - 1;
+        while k >= 0 {
+            let xmk: F = x - (k as F);
+            let kp1: F = (k + 1) as F;
+            let inv_kp1: F = 1 / kp1;
+            let factor: F = xmk * inv_kp1;
+            result = coeffs[k] + result * factor;
+            k = k - 1;
+        }
+        return result;
+    }
+    // inv[i] = i^{-1} for i in 1..=order via one inverse of order!.
+    var prod: [F; 65] = 0;   // prod[i] = i!
+    var inv: [F; 65] = 0;
+    prod[0] = one;
+    var i: i32 = 1;
+    while i <= order {
+        prod[i] = prod[i - 1] * (i as F);
+        i = i + 1;
+    }
+    var inv_all: F = 1 / prod[order];   // (order!)^{-1}
+    i = order;
+    while i >= 1 {
+        inv[i] = inv_all * prod[i - 1];
+        inv_all = inv_all * (i as F);   // now (i-1)!^{-1}
+        i = i - 1;
+    }
     var result: F = coeffs[order];
     var k: i32 = order - 1;
     while k >= 0 {
         let xmk: F = x - (k as F);
-        let kp1: F = (k + 1) as F;
-        let inv_kp1: F = 1 / kp1;
-        let factor: F = xmk * inv_kp1;
+        let factor: F = xmk * inv[k + 1];
         result = coeffs[k] + result * factor;
         k = k - 1;
     }

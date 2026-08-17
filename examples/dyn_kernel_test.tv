@@ -119,15 +119,44 @@ fn regime_detect<F: Field>(data: *F, n: i32, order: i32, threshold: i32, reg: *F
 }
 
 fn eval_at<F: Field>(coeffs: *F, order: i32, x: F) -> F {
+    // Mirrors the batched-inverse kernel in src/lib/core/poly_core_generic.tv:
+    // one 1/(order!) + O(order) muls, not a per-Horner-step Fermat.
     let zero: F = 0;
+    let one: F = 1;
     if order < 0 { return zero; }
+    if order > 64 {
+        var result: F = coeffs[order];
+        var k: i32 = order - 1;
+        while k >= 0 {
+            let xmk: F = x - (k as F);
+            let kp1: F = (k + 1) as F;
+            let inv_kp1: F = 1 / kp1;
+            let factor: F = xmk * inv_kp1;
+            result = coeffs[k] + result * factor;
+            k = k - 1;
+        }
+        return result;
+    }
+    var prod: [F; 65] = 0;
+    var inv: [F; 65] = 0;
+    prod[0] = one;
+    var i: i32 = 1;
+    while i <= order {
+        prod[i] = prod[i - 1] * (i as F);
+        i = i + 1;
+    }
+    var inv_all: F = 1 / prod[order];
+    i = order;
+    while i >= 1 {
+        inv[i] = inv_all * prod[i - 1];
+        inv_all = inv_all * (i as F);
+        i = i - 1;
+    }
     var result: F = coeffs[order];
     var k: i32 = order - 1;
     while k >= 0 {
         let xmk: F = x - (k as F);
-        let kp1: F = (k + 1) as F;
-        let inv_kp1: F = 1 / kp1;
-        let factor: F = xmk * inv_kp1;
+        let factor: F = xmk * inv[k + 1];
         result = coeffs[k] + result * factor;
         k = k - 1;
     }

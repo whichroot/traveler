@@ -221,15 +221,48 @@ fn regime_detect(data: *i32, n: i32, order: i32, threshold: i32, p: i32, reg: *i
 
 // Evaluate a Newton-basis polynomial (coeffs[0..order]) at an arbitrary field
 // point x. Requires p > 0: Horner on the binomial basis divides by k+1.
+//
+// The Horner step needs inv(1..order). A per-step Fermat inverse costs
+// O(log p) muls EACH, so batch them with one inverse: prefix products
+// prod[i] = i!, a single mod_inv(order!), then back-substitution
+// inv(i) = (i!)^{-1} * (i-1)!. Order > 64 falls back to the per-step form.
 #[export]
 fn eval_at(coeffs: *i32, order: i32, x: i32, p: i32) -> i32 {
     if order < 0 { return 0; }
+    if order > 64 {
+        // Rare high-degree path: per-step Fermat (no stack table).
+        var result: i32 = coeffs[order];
+        var k: i32 = order - 1;
+        while k >= 0 {
+            let xmk: i32 = mod_sub(x, k, p);
+            let inv_kp1: i32 = mod_inv(k + 1, p);
+            let factor: i32 = mod_mul(xmk, inv_kp1, p);
+            result = mod_add(coeffs[k], mod_mul(result, factor, p), p);
+            k = k - 1;
+        }
+        return result;
+    }
+    // Batch the inverses of 1..order (one Fermat + O(order) muls).
+    var prod: [i32; 65] = 0;   // prod[i] = i!
+    var inv: [i32; 65] = 0;    // inv[i]  = i^{-1}
+    prod[0] = 1;
+    var i: i32 = 1;
+    while i <= order {
+        prod[i] = mod_mul(prod[i - 1], i, p);
+        i = i + 1;
+    }
+    var inv_all: i32 = mod_inv(prod[order], p);   // (order!)^{-1}
+    i = order;
+    while i >= 1 {
+        inv[i] = mod_mul(inv_all, prod[i - 1], p);
+        inv_all = mod_mul(inv_all, i, p);         // now (i-1)!^{-1}
+        i = i - 1;
+    }
     var result: i32 = coeffs[order];
     var k: i32 = order - 1;
     while k >= 0 {
         let xmk: i32 = mod_sub(x, k, p);
-        let inv_kp1: i32 = mod_inv(k + 1, p);
-        let factor: i32 = mod_mul(xmk, inv_kp1, p);
+        let factor: i32 = mod_mul(xmk, inv[k + 1], p);
         result = mod_add(coeffs[k], mod_mul(result, factor, p), p);
         k = k - 1;
     }
