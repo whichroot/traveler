@@ -1814,6 +1814,22 @@ else
     fi
 fi
 
+# A5b. The dot must stay a mul/add chain in silicon.
+# gfx1100 v_dot4_i32_i8 is unsigned x unsigned on both operands.
+# The gfx9/10 signed dot4 is gone. The gfx11 instruction kept the shape,
+# not the semantics. A v_dot4/v_dot8 in the object voids the exactness
+# proof. Re-proof needs the x ^ 0x80 bias correction first. Fail loud.
+if [ "$fail" = "0" ] && [ -x "$OBJDUMP" ] && [ -f "$K8_OBJ" ]; then
+    k8dis="$("$OBJDUMP" -d "$K8_OBJ" 2>/dev/null)"
+    if echo "$k8dis" | grep -qE "v_dot[48]_"; then
+        echo "  FAIL: gfx1100 object contains a v_dot4/v_dot8 -- unsigned on"
+        echo "        gfx11; exactness needs the x ^ 0x80 bias re-proven first"
+        fail=1
+    else
+        echo "  ok   gfx1100 K=8 dot lowers as plain mul/add (no v_dot[48])"
+    fi
+fi
+
 # A6. Other proved private-mutable bodies stay outside the closed device class.
 PRIVATE_REFUSE_AMD="$TMP/gpu_private_refuse_amd.ll"
 if ! "$STAGE1" --emit-gpu "$PRIVATE_REFUSE_SRC" \
