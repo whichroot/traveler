@@ -98,6 +98,14 @@ if [ -z "$OPT" ] || ! command -v "$OPT" >/dev/null 2>&1; then
     fi
 fi
 
+# Resolve PATH-discovered bare names (llc, opt-21, ...) to absolute paths.
+# Consumers do more than exec: tests/gpu/run.sh derives llvm-objdump via
+# dirname "$LLC", tests/foldbug derives llvm-link the same way, and
+# tests/emit/run.sh symlinks "$OPT" into a spaces-in-path directory. A bare
+# name silently breaks all three (dirname -> ".", dangling relative symlink).
+if [ -n "$LLC" ]; then LLC="$(command -v "$LLC")"; fi
+if [ -n "$OPT" ]; then OPT="$(command -v "$OPT")"; fi
+
 # Device targets built into this llc (missing target = SKIP, not failure).
 LLC_HAS_AMDGCN=0
 LLC_HAS_NVPTX=0

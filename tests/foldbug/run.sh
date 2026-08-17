@@ -34,7 +34,6 @@ cd "$REPO_DIR" || exit 1
 
 # Toolchain
 LLC="${LLC:-/opt/homebrew/opt/llvm@21/bin/llc}"
-LLVM_LINK="${LLVM_LINK:-$(dirname "$LLC")/llvm-link}"
 
 # --- host target: retarget IR objects + non-PIE link off-macOS ---
 # Traveler-emitted IR text carries the canonical triple on every host (the
@@ -49,6 +48,12 @@ esac
 # Shared environment probe (tests/lib/env.sh): LINKER (link driver), LINK_PIE
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
+
+# llvm-link ships beside llc. Resolve LLC to an absolute path first: env.sh
+# may leave a bare PATH-discovered name, and dirname of that is "." — the
+# safe-path build then silently fails and reports an empty (wrong) output.
+LLC="$(command -v "$LLC")"
+LLVM_LINK="${LLVM_LINK:-$(dirname "$LLC")/llvm-link}"
 TVC_SELF="$REPO_DIR/src/bootstrap/out/stage1"
 if [ ! -x "$TVC_SELF" ]; then
   echo "FATAL: need src/bootstrap/out/stage1 (run src/bootstrap/build.sh)"; exit 1

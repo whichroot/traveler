@@ -73,6 +73,9 @@ find_llc() {
     echo "FATAL: llc not found. Set LLC env var (or run: $0 --goldens-only)." >&2; exit 1
 }
 find_llc
+# Resolve to an absolute path: llvm-objdump is derived via dirname below, and
+# a bare PATH-discovered name would silently disable the disasm legs.
+LLC="$(command -v "$LLC")"
 # The objdump that ships beside llc (for the disasm sanity check).
 OBJDUMP="$(dirname "$LLC")/llvm-objdump"
 HOST_MTRIPLE=""
