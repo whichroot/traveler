@@ -8322,6 +8322,43 @@ fn emit_ext_construct(src_reg: i32, src_type: i32, ext_fi: i32) -> i32 {
     return r;
 }
 
+// Unary negation of a FIELD element: additive inverse, emitted as field_sub(0, x)
+// — never a two's-complement wrap (that left the canonical residue class).
+// Prime -> @field{P}_sub(0, x); binary -> XOR-sub(0, x); ext -> @ext{P}_sub({0,0}, x);
+// dyn -> @field_dyn_sub(0, x, carrier). Returns the SSA register of the result.
+fn emit_field_neg(operand_reg: i32, type_off: i32) -> i32 {
+    if type_is_dyn(type_off) == 1 {
+        let fv: i32 = load_dyn_field_ptr();
+        let r: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(r); ir_wr(" = call i64 @field_dyn_sub(i64 0, i64 ");
+        ir_wr_reg(operand_reg); ir_wr(", ptr "); ir_wr_reg(fv); ir_wr(")\n");
+        return r;
+    }
+    let fi: i32 = find_field_by_alias(type_off);
+    if g_fields[fi].field_kind == FIELD_KIND_EXTENSION {
+        let zr: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(zr); ir_wr(" = add i32 0, 0\n");
+        let zero_ext: i32 = emit_ext_construct(zr, str_intern("i32"), fi);
+        let r: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(r); ir_wr(" = call ");
+        ir_wr_ext_elem(fi); ir_wr(" "); ir_wr_ext_prefix(fi); ir_wr("sub(");
+        ir_wr_ext_elem(fi); ir_wr(" "); ir_wr_reg(zero_ext); ir_wr(", ");
+        ir_wr_ext_elem(fi); ir_wr(" "); ir_wr_reg(operand_reg); ir_wr(")\n");
+        return r;
+    }
+    let r: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(r); ir_wr(" = call ");
+    if g_fields[fi].field_kind == FIELD_KIND_BINARY {
+        ir_wr_elem(fi); ir_wr(" "); ir_wr_bin_prefix(fi); ir_wr("sub(");
+        ir_wr_elem(fi); ir_wr(" 0, ");
+    } else {
+        ir_wr_elem(fi); ir_wr(" "); ir_wr_field_prefix(fi); ir_wr("sub(");
+        ir_wr_elem(fi); ir_wr(" 0, ");
+    }
+    ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(operand_reg); ir_wr(")\n");
+    return r;
+}
+
 // ===== SYMBOL TABLE =====
 
 fn sym_push_scope() {
@@ -13047,6 +13084,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         }
         let operand: IRValue = codegen_expr(g_nodes[node].child0, ctx_type);
         if uop == OP_NEG {
+            // Field elements: additive inverse, not two's-complement wrap
+            // (sub iN 0, x would leave the canonical residue class).
+            if type_is_dyn(operand.type_off) == 1
+                || find_field_by_alias(operand.type_off) >= 0 {
+                let r: i32 = emit_field_neg(operand.reg, operand.type_off);
+                return IRValue { reg: r, type_off: operand.type_off };
+            }
             let r: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(r); ir_wr(" = sub ");
             ir_wr_type(operand.type_off);
@@ -27008,13 +27052,25 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
         }
         let operand: LowVal = lower_expr(g_nodes[node].child0, ctx_type);
         if uop == OP_NEG || uop == OP_BITNOT {
-            // NB `-x` on a field element compiles to a RAW `sub iN 0, x` (wrap,
-            // NOT field negation) — mirrored faithfully at operand width.
+            // Field elements: additive inverse (field_sub(0, x)), NOT a raw
+            // two's-complement wrap. alg carries the field (or -2 for dyn).
             let e: i32 = eir_new(EIR_UN, ln, cl);
             g_eir[e].op = uop;
             g_eir[e].a = operand.e;
             g_eir[e].aux_type = operand.type_off;
             g_eir[e].type_off = operand.type_off;
+            if uop == OP_NEG {
+                if type_is_dyn(operand.type_off) == 1 {
+                    g_eir[e].alg = 0 - 2;
+                    g_eir[e].c = lw_dyn_slot();
+                } else {
+                    let nfi: i32 = find_field_by_alias(operand.type_off);
+                    if nfi >= 0 {
+                        if g_fields[nfi].field_kind == FIELD_KIND_EXTENSION { ev_refuse("extfield", ln, cl); }
+                        g_eir[e].alg = nfi;
+                    }
+                }
+            }
             return LowVal { e: e, type_off: operand.type_off };
         }
         if uop == OP_NOT {
@@ -34713,8 +34769,23 @@ fn ev_expr(e: i32, fr: *EvFrame) -> EvalVal {
             return EvalVal { tag: EV_WIDE, type_off: g_eir[e].type_off, bits: uwr as u64 };
         }
         if g_eir[e].op == OP_NEG {
-            // Raw `sub iN 0, x` — two's-complement wrap at operand width
-            // (on field elements too: the compiled semantics, mirrored).
+            // Field element: additive inverse field_sub(0, x), not a raw
+            // two's-complement wrap. alg carries the field (or -2 for dyn).
+            if g_eir[e].alg == 0 - 2 {
+                let dp: u64 = ev_dyn_p(fr, g_eir[e].c);
+                let r: u64 = ev_submod(0, ov.bits, dp);
+                return EvalVal { tag: EV_FIELD, type_off: g_eir[e].type_off, bits: r };
+            }
+            if g_eir[e].alg >= 0 {
+                let nfi: i32 = g_eir[e].alg;
+                if g_fields[nfi].field_kind == FIELD_KIND_BINARY {
+                    // GF(2^K): sub == add == XOR; -x == 0 ^ x == x.
+                    return EvalVal { tag: EV_FIELD, type_off: g_eir[e].type_off, bits: ov.bits };
+                }
+                let r: u64 = ev_submod(0, ov.bits, g_fields[nfi].prime);
+                return EvalVal { tag: EV_FIELD, type_off: g_eir[e].type_off, bits: r };
+            }
+            // Integer: two's-complement wrap at operand width.
             let r: u64 = ev_mask(0 - ov.bits, w);
             return EvalVal { tag: ov.tag, type_off: g_eir[e].type_off, bits: r };
         }

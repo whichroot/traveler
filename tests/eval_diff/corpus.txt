@@ -27,6 +27,7 @@ examples/wideint_selftest.tv    # u64 limb library (no wide types)
 examples/addr_scalar.tv         # &scalar/&global cells; print-vs-write interleave
 examples/barrett_test.tv        # 64-bit prime mul + the stdio law (the E2a finding)
 examples/wanderer_field_gates.tv # Wanderer gates: literal-coercion + cast-reduce eval==compile
+examples/field_neg.tv            # field unary neg = additive inverse (prime+binfield) eval==compile
 examples/bool_branch.tv         # #34: stored-bool if/while cond + -> bool predicate (eval==compile)
 examples/weil_recover_rns.tv    # nt capstone: BM-over-RNS, &arr[i] throughout
 examples/file_reader.tv | examples/field_basics.tv   # argv-main + read_bytes + &buf[i]

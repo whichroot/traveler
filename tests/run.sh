@@ -545,6 +545,13 @@ compile_obj_self wanderer_field_gates
 link_objs wanderer_field_gates wanderer_field_gates
 run_test wanderer_field_gates "$TIMEOUT_SINGLE"
 
+# Field unary negation gate: `-x` on a field element is the additive inverse
+# (field_sub(0, x)), never a two's-complement wrap. tvc_self-only — the frozen C
+# seed keeps the wrap semantics.
+compile_obj_self field_neg
+link_objs field_neg field_neg
+run_test field_neg "$TIMEOUT_SINGLE"
+
 # #34 gate: a STORED bool as an if/while condition + a `-> bool` predicate
 # returning a comparison (the return-path sibling). Both were llc-refused invalid
 # IR (`br i1 %i8` / `ret i1` into an i8 fn). tvc_self-only — the frozen C seed
@@ -1560,8 +1567,9 @@ if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
 fi
 
 # --- GPU Stage-0 device codegen gate (@internal-note: plan-gpu-purity-runtime) ---
-# AMDGCN object + NVPTX PTX via llc, plus direct AGX G16X byte goldens and
-# optional owned-M4 execution. @internal-note: plan-gpu-agx-target.
+# AMDGCN object + NVPTX PTX via llc, closed Vulkan GLSL/runtime parity, plus
+# direct AGX G16X byte goldens and optional owned-M4 execution.
+# @internal-note: plan-gpu-agx-target.
 if [ "$NEGATIVE_ONLY" -eq 0 ] && [ "$TIER1_ONLY" -eq 0 ]; then
     echo ""
     echo "=== gpu Stage-0 (tests/gpu/run.sh) ==="
