@@ -290,6 +290,7 @@ examples/read_bytes_expr.tv             # 62: read_bytes buffer arg is a general
 examples/alloc_cast_sizes.tv
 examples/generic_infer_cast.tv
 examples/ptr_cast_int.tv
+examples/ptr_stride_units.tv           # *T indexing is element-scaled; byte formulas are 4x strides
 examples/global_array_init.tv
 examples/defer_cleanup.tv
 examples/mem_arena_pool.tv

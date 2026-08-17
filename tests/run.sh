@@ -479,6 +479,11 @@ run_test read_bytes_expr "$TIMEOUT_SINGLE"
 # under-allocation); alloc/realloc now receive a pointer cast target as their
 # context. Dual-parity eligible: the seed always passed context through casts.
 test_single alloc_cast_sizes
+# Pointer arithmetic is element-scaled, not byte-scaled: a 32-BYTE block
+# stride written as v*32 on a *u32 is a silent 4x stride (the plane K5
+# signbits row; only faults at scale). Two interleaved sentinel grids pin
+# where each formula actually lands.
+test_single ptr_stride_units
 # #63(c) gate: a cast-typed argument drives generic inference (arg_value_type
 # reads through AST_CAST). tvc_self-only: the seed does not parse unbounded
 # `<F>` generics.

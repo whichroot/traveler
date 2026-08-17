@@ -161,6 +161,7 @@ c97e24b5c6d5368a69a6f70deebba4ce  examples/poly_discrim.tv
 8fe64919f248dab881723707afc3d9e0  examples/poseidon2_wide_test.tv
 53c1ea3ed70c6e8175d3d123cce24b39  examples/predict_decide.tv
 fbda02a6778d31b339e1c108f26d94a1  examples/ptr_cast_int.tv
+7c9670bf028453f110e3848e2e09de64  examples/ptr_stride_units.tv
 1afc02ecec455561aeb35d0b4c667771  examples/qmark_basics.tv
 7d0d1f356f25bd3c6ac0dec348bad113  examples/read_bytes_expr.tv
 6cc719432b192fdb366a2c77d135f8fc  examples/reed_solomon_test.tv
