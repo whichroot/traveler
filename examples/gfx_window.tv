@@ -9,6 +9,7 @@
 import "../src/lib/gfx/wayland/backend_wayland.tv";
 
 extern "C" fn nanosleep(req: *i64, rem: *i64) -> i32;
+extern "C" fn fflush(f: *u8) -> i32;
 
 fn sleep_16ms() {
     var req: [i64; 2] = 0;
@@ -39,6 +40,11 @@ fn main() -> i32 {
         Result::Err(e) => { print(404); return 1; }
     }
     print(1);
+    // print is libc printf. stdout is a pipe under the test gate, so the "1"
+    // sits in the block buffer. The render loop below never exits on its
+    // own; the gate kills the process and the buffer is lost. Flush the
+    // open-witness explicitly.
+    fflush(null);
     var t: i32 = 0;
     var run: i32 = 1;
     while run == 1 {
