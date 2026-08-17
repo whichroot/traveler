@@ -77,7 +77,7 @@ b2437a4fa37c0b51f7c17126e5a85959  examples/genus_soft_test.tv
 283adc40b28c897a59451b2093d55573  examples/genus_wav.tv
 049249c79b48bb52552b715fd0d76b3c  examples/gfx_headless.tv
 403e8cbdf13032d5c764e05534fecea2  examples/gfx_pixel_test.tv
-4e459ef9847bac7012efa1fcffae9195  examples/gfx_window.tv
+e24ff5dfb0372842795e7430ab8fc2aa  examples/gfx_window.tv
 9c825773b8c08be1821944bc459b1f2a  examples/gfx_wire_test.tv
 26a615063a291f77e8ddd5e31c389462  examples/global_array_init.tv
 5812370e31ba746ad201d5bea0a2ba52  examples/glyph_convergence_test.tv
