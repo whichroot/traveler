@@ -137,6 +137,11 @@ fn main() {
 }
 ```
 
+`/` is field division when an operand has a field type (either side — a typed
+binding or an `as F` cast). With **no** field operand — `1 / 100` — it is plain
+integer `sdiv` (0 here). To invert an untyped constant, bind or cast one side:
+`print(1 / (100 as F))`.
+
 Field carriers: `Field<p>` (any 64-bit prime; `Field<18446744069414584321>` is
 Goldilocks), `BinField<K, poly>` (GF(2^K), `+` is XOR), `ExtField<Field<p>, n>`
 (degree-`n` extension). A negative literal `-1` in a field means `p-1`. In the

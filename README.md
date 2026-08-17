@@ -27,7 +27,7 @@ fn main() {
     print(a + b);              // 49   (300 mod 251) — branchless, exact, no floats
     print(a * b);              // 171  (20000 mod 251)
     print(a / b);              // 2    (200 * inv(100) mod 251)
-    print(1 / 100);            // 123  (inverse via Fermat — a theorem of the axioms)
+    print(1 / b);              // 123  (inverse via Fermat — a theorem of the axioms)
 }
 ```
 
