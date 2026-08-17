@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: Apache-2.0
+// Exact Q8-by-Q4 projection tile at Splice's 17,408-channel FFN width. One
+// Traveler pfor supplies the CPU oracle, AMDGCN kernel, and Vulkan shader.
+
+import "../../src/lib/gpu/hip_runtime.tv";
+import "../../src/lib/gpu/vulkan_runtime.tv";
+
+extern "C" fn clock_gettime(clock: i32, time: *i64) -> i32;
+
+fn projection_now_ns() -> i64 {
+    var time: [i64; 2] = 0;
+    if clock_gettime(1, &time[0]) != 0 { return 0; }
+    return time[0] * 1000000000 + time[1];
+}
+
+fn projection_equal(left: *i64, right: *i64,
+                    n: i32) -> i32 {
+    var i: i32 = 0;
+    while i < n {
+        if left[i] != right[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 3 { return 2; }
+    let K: i32 = 8;
+    let N: i32 = 17408;
+    let input_bytes: usize = (K as usize) * 8;
+    let weight_bytes: usize = (K as usize) * (N as usize) * 8;
+    let output_bytes: usize = (N as usize) * 8;
+    let input: *i64 = alloc(K);
+    let weights: *i64 = alloc(K * N);
+    let expected: *i64 = alloc(N);
+    let hip_output: *i64 = alloc(N);
+    let vulkan_output: *i64 = alloc(N);
+
+    var i: i32 = 0;
+    while i < K {
+        let signed_input: i64 = ((i as i64 * 37 + 11) % 255) - 127;
+        input[i] = signed_input;
+        i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        let signed_weight: i64 = ((i as i64 * 13 + 5) % 16) - 8;
+        weights[i] = signed_weight;
+        i = i + 1;
+    }
+
+    for channel in 0..17408 {
+        var acc: i64 = 0;
+        for slot in 0..8 {
+            acc = acc + input[(channel / 17408) * 8 + slot]
+                * weights[slot * 17408 + (channel % 17408)];
+        }
+        expected[channel] = acc;
+    }
+
+    // Independently verify that the pfor oracle is the bounded signed dot.
+    i = 0;
+    while i < N {
+        var signed_dot: i64 = 0;
+        var k: i32 = 0;
+        while k < K {
+            let x: i64 = ((k as i64 * 37 + 11) % 255) - 127;
+            let w: i64 = (((k * N + i) as i64 * 13 + 5) % 16) - 8;
+            signed_dot = signed_dot + x * w;
+            k = k + 1;
+        }
+        if expected[i] != signed_dot { return 3; }
+        i = i + 1;
+    }
+
+    let hip: *HipRuntime = hip_runtime_open(
+        argv[1], "__pfor_gpu_worker_0", weight_bytes, output_bytes);
+    if hip == null { print(1000 + g_hip_error); print(g_hip_status); return 4; }
+    let vulkan: *VulkanRuntime = vulkan_runtime_open(argv[2]);
+    if vulkan == null {
+        print(2000 + g_vulkan_error); print(g_vulkan_status);
+        hip_runtime_close(hip); return 5;
+    }
+
+    i = 0;
+    while i < 5 {
+        if hip_runtime_launch_dot_k8(
+            hip, input as *u8, input_bytes, weights as *u8, weight_bytes,
+            hip_output as *u8, output_bytes, 0, N) == 0 { return 6; }
+        if vulkan_runtime_launch_dot_k8(
+            vulkan, input as *u8, input_bytes, weights as *u8, weight_bytes,
+            vulkan_output as *u8, output_bytes, 0, N) == 0 { return 7; }
+        i = i + 1;
+    }
+
+    let repetitions: i32 = 100;
+    var hip_ns: i64 = 0;
+    var vulkan_ns: i64 = 0;
+    var started: i64 = projection_now_ns();
+    i = 0;
+    while i < repetitions / 2 {
+        if hip_runtime_launch_dot_k8(
+            hip, input as *u8, input_bytes, weights as *u8, weight_bytes,
+            hip_output as *u8, output_bytes, 0, N) == 0 { return 8; }
+        i = i + 1;
+    }
+    hip_ns = hip_ns + (projection_now_ns() - started);
+
+    started = projection_now_ns();
+    i = 0;
+    while i < repetitions {
+        if vulkan_runtime_launch_dot_k8(
+            vulkan, input as *u8, input_bytes, weights as *u8, weight_bytes,
+            vulkan_output as *u8, output_bytes, 0, N) == 0 { return 9; }
+        i = i + 1;
+    }
+    vulkan_ns = vulkan_ns + (projection_now_ns() - started);
+
+    started = projection_now_ns();
+    i = repetitions / 2;
+    while i < repetitions {
+        if hip_runtime_launch_dot_k8(
+            hip, input as *u8, input_bytes, weights as *u8, weight_bytes,
+            hip_output as *u8, output_bytes, 0, N) == 0 { return 10; }
+        i = i + 1;
+    }
+    hip_ns = hip_ns + (projection_now_ns() - started);
+
+    var hip_batch_ns: i64 = 0;
+    var vulkan_batch_ns: i64 = 0;
+    started = projection_now_ns();
+    if hip_runtime_launch_dot_k8_batch(
+        hip, input as *u8, input_bytes, weights as *u8, weight_bytes,
+        hip_output as *u8, output_bytes, 0, N, repetitions) == 0 { return 11; }
+    hip_batch_ns = projection_now_ns() - started;
+
+    started = projection_now_ns();
+    if vulkan_runtime_launch_dot_k8_batch(
+        vulkan, input as *u8, input_bytes, weights as *u8, weight_bytes,
+        vulkan_output as *u8, output_bytes, 0, N, repetitions) == 0 { return 12; }
+    vulkan_batch_ns = projection_now_ns() - started;
+
+    let parity: i32 = projection_equal(expected, hip_output, N)
+        & projection_equal(expected, vulkan_output, N);
+    print(parity);
+    print(repetitions);
+    print(hip_ns);
+    print(vulkan_ns);
+    print(g_vulkan_memory_type);
+    print(g_vulkan_memory_flags);
+    print(hip_batch_ns);
+    print(vulkan_batch_ns);
+
+    vulkan_runtime_close(vulkan);
+    hip_runtime_close(hip);
+    free(vulkan_output); free(hip_output); free(expected);
+    free(weights); free(input);
+    if parity == 0 { return 13; }
+    return 0;
+}

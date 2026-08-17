@@ -24,6 +24,9 @@
 #   HAVE_SEED                    1/0 (src-legacy/tvc built, or a C compiler exists)
 #   HAVE_WAYLAND                 1/0 (live compositor socket)
 #   HAVE_AGX                     1/0 (Darwin arm64 + readable TRAVELER_AGX_PROFILE)
+#   HAVE_GLSLANG / GLSLANG_VALIDATOR  Vulkan GLSL-to-SPIR-V assembler
+#   HAVE_VULKAN                  1/0 (loader metadata + render node)
+#   HAVE_HIP                     1/0 (HIP runtime tools)
 #   tv_env_summary               prints the capability matrix
 
 TV_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -168,6 +171,26 @@ if [ "$TV_UNAME_S" = "Darwin" ] && [ "$TV_UNAME_M" = "arm64" ] \
     HAVE_AGX=1
 fi
 
+GLSLANG_VALIDATOR="${GLSLANG_VALIDATOR:-}"
+if [ -z "$GLSLANG_VALIDATOR" ] || ! command -v "$GLSLANG_VALIDATOR" >/dev/null 2>&1; then
+    GLSLANG_VALIDATOR=""
+    if command -v glslangValidator >/dev/null 2>&1; then
+        GLSLANG_VALIDATOR="glslangValidator"
+    fi
+fi
+if [ -n "$GLSLANG_VALIDATOR" ]; then HAVE_GLSLANG=1; else HAVE_GLSLANG=0; fi
+
+HAVE_VULKAN=0
+if [ "$TV_UNAME_S" = "Linux" ] && command -v pkg-config >/dev/null 2>&1 \
+   && pkg-config --exists vulkan 2>/dev/null; then
+    for _render in /dev/dri/renderD*; do
+        if [ -r "$_render" ]; then HAVE_VULKAN=1; break; fi
+    done
+    unset _render
+fi
+
+if command -v hipconfig >/dev/null 2>&1; then HAVE_HIP=1; else HAVE_HIP=0; fi
+
 # --- Summary ---------------------------------------------------------------
 tv_env_summary() {
     cat <<EOF
@@ -181,6 +204,9 @@ tv_env_summary() {
   C seed:      $( [ "$HAVE_SEED" = "1" ] && echo yes || echo no )
   wayland:     $( [ "$HAVE_WAYLAND" = "1" ] && echo "live ($WAYLAND_DISPLAY)" || echo no )
   agx profile: $( [ "$HAVE_AGX" = "1" ] && echo yes || echo no )
+  glslang:     ${GLSLANG_VALIDATOR:-none}
+  vulkan:      $( [ "$HAVE_VULKAN" = "1" ] && echo yes || echo no )
+  hip runtime: $( [ "$HAVE_HIP" = "1" ] && echo yes || echo no )
   python3:     $( [ "$HAVE_PYTHON3" = "1" ] && echo yes || echo no )
   timeout:     ${TIMEOUT_CMD:-none}
 EOF

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+// One Traveler source supplies the CPU pfor oracle, AMDGCN device kernel, and
+// HIP host runtime. The executable links no project C or HIP source.
+
+import "../../src/lib/gpu/hip_runtime.tv";
+
+field HipGateF = Field<2147483647>;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 2; }
+    let n: i32 = 4096;
+    let bytes: usize = (n as usize) * 4;
+    let input: *HipGateF = alloc(n);
+    let expected: *HipGateF = alloc(n);
+    let output: *HipGateF = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        input[i] = (i * 2 + 1) as HipGateF;
+        i = i + 1;
+    }
+
+    for j in 0..4096 {
+        expected[j] = input[j] * input[j] + 3;
+    }
+
+    let runtime: *HipRuntime = hip_runtime_open(
+        argv[1], "__pfor_gpu_worker_0", bytes, bytes);
+    if runtime == null {
+        print(g_hip_error);
+        print(g_hip_status);
+        free(output); free(expected); free(input);
+        return 1;
+    }
+    let ran: i32 = hip_runtime_launch_map_1d(
+        runtime, input as *u8, bytes, output as *u8, bytes, 0, n);
+    hip_runtime_close(runtime);
+    if ran == 0 || hip_dispatches() != 1 {
+        print(g_hip_error);
+        print(g_hip_status);
+        free(output); free(expected); free(input);
+        return 1;
+    }
+
+    i = 0;
+    while i < n {
+        if output[i] != expected[i] {
+            print(100 + i);
+            print(output[i] as i64);
+            print(expected[i] as i64);
+            free(output); free(expected); free(input);
+            return 1;
+        }
+        i = i + 1;
+    }
+    free(output); free(expected); free(input);
+    print(1);
+    return 0;
+}

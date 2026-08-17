@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: Apache-2.0
+// Same-source HIP/Vulkan comparison. Reported times include host publication,
+// one exact compute dispatch, synchronization, and host-visible output copy.
+
+import "../../src/lib/gpu/hip_runtime.tv";
+import "../../src/lib/gpu/vulkan_runtime.tv";
+
+extern "C" fn clock_gettime(clock: i32, time: *i64) -> i32;
+
+field F = Field<2147483647>;
+
+fn monotonic_ns() -> i64 {
+    let time: *i64 = alloc(2);
+    if clock_gettime(1, time) != 0 {
+        free(time);
+        return 0;
+    }
+    let value: i64 = time[0] * 1000000000 + time[1];
+    free(time);
+    return value;
+}
+
+fn equal_words(left: *F, right: *F, n: i32) -> i32 {
+    var i: i32 = 0;
+    while i < n {
+        if left[i] != right[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 3 { return 2; }
+    let n: i32 = 65535;
+    let bytes: usize = (n as usize) * 4;
+    let input: *F = alloc(n);
+    let expected: *F = alloc(n);
+    let hip_output: *F = alloc(n);
+    let vulkan_output: *F = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        input[i] = ((i * 8191 + 17) & 0x7fffffff) as F;
+        expected[i] = 0 as F;
+        hip_output[i] = 0 as F;
+        vulkan_output[i] = 0 as F;
+        i = i + 1;
+    }
+
+    for j in 0..65535 {
+        expected[j] = input[j] * input[j] + 3;
+    }
+
+    let hip: *HipRuntime = hip_runtime_open(
+        argv[1], "__pfor_gpu_worker_0", bytes, bytes);
+    if hip == null {
+        print(1000 + g_hip_error);
+        print(g_hip_status);
+        return 3;
+    }
+    let vulkan: *VulkanRuntime = vulkan_runtime_open(argv[2]);
+    if vulkan == null {
+        print(2000 + g_vulkan_error);
+        print(g_vulkan_status);
+        hip_runtime_close(hip);
+        return 4;
+    }
+
+    i = 0;
+    while i < 10 {
+        if hip_runtime_launch_map_1d(
+            hip, input as *u8, bytes, hip_output as *u8, bytes, 0, n) == 0 {
+            return 5;
+        }
+        if vulkan_runtime_launch_map_1d(
+            vulkan, input as *u8, vulkan_output as *u8, n, 0, n) == 0 {
+            return 6;
+        }
+        i = i + 1;
+    }
+
+    let repetitions: i32 = 200;
+    var hip_ns: i64 = 0;
+    var vulkan_ns: i64 = 0;
+    var started: i64 = 0;
+    var stopped: i64 = 0;
+
+    // Two balanced contiguous blocks avoid measuring a HIP/Vulkan context
+    // handoff on every dispatch while still cancelling first/last-order bias.
+    i = 0;
+    started = monotonic_ns();
+    while i < repetitions / 2 {
+        if hip_runtime_launch_map_1d(
+            hip, input as *u8, bytes, hip_output as *u8, bytes, 0, n) == 0 {
+            return 7;
+        }
+        i = i + 1;
+    }
+    stopped = monotonic_ns();
+    hip_ns = hip_ns + (stopped - started);
+
+    i = 0;
+    started = monotonic_ns();
+    while i < repetitions / 2 {
+        if vulkan_runtime_launch_map_1d(
+            vulkan, input as *u8, vulkan_output as *u8, n, 0, n) == 0 {
+            return 8;
+        }
+        i = i + 1;
+    }
+    stopped = monotonic_ns();
+    vulkan_ns = vulkan_ns + (stopped - started);
+
+    i = 0;
+    started = monotonic_ns();
+    while i < repetitions / 2 {
+        if vulkan_runtime_launch_map_1d(
+            vulkan, input as *u8, vulkan_output as *u8, n, 0, n) == 0 {
+            return 9;
+        }
+        i = i + 1;
+    }
+    stopped = monotonic_ns();
+    vulkan_ns = vulkan_ns + (stopped - started);
+
+    i = 0;
+    started = monotonic_ns();
+    while i < repetitions / 2 {
+        if hip_runtime_launch_map_1d(
+            hip, input as *u8, bytes, hip_output as *u8, bytes, 0, n) == 0 {
+            return 10;
+        }
+        i = i + 1;
+    }
+    stopped = monotonic_ns();
+    hip_ns = hip_ns + (stopped - started);
+
+    let parity: i32 = equal_words(expected, hip_output, n)
+        & equal_words(expected, vulkan_output, n);
+    print(parity);
+    print(repetitions);
+    print(hip_ns);
+    print(vulkan_ns);
+    print(g_vulkan_memory_type);
+    print(g_vulkan_memory_flags);
+
+    vulkan_runtime_close(vulkan);
+    hip_runtime_close(hip);
+    free(vulkan_output);
+    free(hip_output);
+    free(expected);
+    free(input);
+    if parity == 0 { return 11; }
+    return 0;
+}

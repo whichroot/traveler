@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// One source supplies the CPU pfor oracle, Vulkan shader, and host submission.
+
+import "../../src/lib/gpu/vulkan_runtime.tv";
+
+field F = Field<2147483647>;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 2; }
+    let n: i32 = 4096;
+    let input: *F = alloc(n);
+    let expected: *F = alloc(n);
+    let actual: *F = alloc(n);
+    var i: i32 = 0;
+    while i < n {
+        input[i] = (i * 2 + 1) as F;
+        expected[i] = 0 as F;
+        actual[i] = 0 as F;
+        i = i + 1;
+    }
+
+    for j in 0..4096 {
+        expected[j] = input[j] * input[j] + 3;
+    }
+
+    let runtime: *VulkanRuntime = vulkan_runtime_open(argv[1]);
+    if runtime == null {
+        print(1000 + g_vulkan_error);
+        print(g_vulkan_status);
+        return 3;
+    }
+    if vulkan_runtime_launch_map_1d(runtime, input as *u8, actual as *u8,
+                                    n, 0, n) == 0 {
+        print(2000 + g_vulkan_error);
+        print(g_vulkan_status);
+        vulkan_runtime_close(runtime);
+        return 4;
+    }
+    vulkan_runtime_close(runtime);
+
+    i = 0;
+    while i < n {
+        if actual[i] != expected[i] {
+            print(i);
+            print(actual[i]);
+            print(expected[i]);
+            return 5;
+        }
+        i = i + 1;
+    }
+    if g_vulkan_dispatch_count != 1 { return 6; }
+    print(1);
+    free(actual);
+    free(expected);
+    free(input);
+    return 0;
+}

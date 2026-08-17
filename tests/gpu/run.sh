@@ -2,7 +2,7 @@
 # GPU device-codegen and measured-profile runtime gate.
 # @internal-note: plan-gpu-purity-runtime.
 #
-# Proves that a proven-parallel pfor worker re-emits on three device targets:
+# Proves that a proven-parallel pfor worker re-emits on four device targets:
 #   AMDGCN (--emit-gpu)        `llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100`
 #                              lowers to a real gfx1100 code object that
 #                              disassembles to sane GCN (s_endpgm + memory op).
@@ -14,6 +14,9 @@
 #                              byte-goldens run everywhere; owned-queue execution
 #                              and the Traveler-native IOKit runtime run on the
 #                              measured M4 profile.
+#   Vulkan (--emit-gpu-vulkan) emits a closed GLSL artifact from the same
+#                              worker proof. glslang assembles SPIR-V when
+#                              present; Traveler owns public-ABI submission.
 #
 # Each leg skips cleanly if the local llc lacks that target; the gate fails only
 # on a real lowering failure.
@@ -1912,6 +1915,118 @@ fi
 fi
 else
     echo "  SKIP: no nvptx64 target in this llc (NVPTX leg)"
+fi
+
+# ========================== Vulkan/HIP runtime ownership =====================
+echo "  -- Vulkan shader and Traveler-owned AMD runtimes"
+VK_GATE_SRC="$SCRIPT_DIR/vulkan_runtime_gate.tv"
+VK_SHADER="$TMP/vulkan_runtime_gate.comp"
+VK_SPV="$TMP/vulkan_runtime_gate.spv"
+VK_HOST_LL="$TMP/vulkan_runtime_gate.ll"
+VK_HOST_OBJ="$TMP/vulkan_runtime_gate.o"
+VK_HOST_EXE="$TMP/vulkan-runtime-gate"
+VK_READY=1
+if ! "$STAGE1" --emit-gpu-vulkan "$VK_GATE_SRC" -o "$VK_SHADER" 2>/dev/null \
+   || ! grep -q '^#version 460$' "$VK_SHADER" \
+   || ! grep -q 'binding = 0.*readonly buffer TvInput0' "$VK_SHADER" \
+   || ! grep -q 'binding = 2.*writeonly buffer TvOutput' "$VK_SHADER" \
+   || ! grep -q 'umulExtended' "$VK_SHADER"; then
+    echo "  FAIL: closed Vulkan exact-map shader contract changed"; fail=1
+    VK_READY=0
+fi
+if ! "$STAGE1" "$VK_GATE_SRC" -o "$VK_HOST_LL" 2>/dev/null \
+   || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$VK_HOST_LL" \
+        -o "$VK_HOST_OBJ" 2>/dev/null; then
+    echo "  FAIL: Traveler-owned Vulkan runtime did not compile"; fail=1
+    VK_READY=0
+else
+    echo "  ok   Traveler-owned Vulkan runtime compiles without project C"
+fi
+if [ "$VK_READY" = "1" ] && [ "$HAVE_GLSLANG" = "1" ]; then
+    if ! "$GLSLANG_VALIDATOR" -V "$VK_SHADER" -o "$VK_SPV" >/dev/null 2>&1; then
+        echo "  FAIL: Vulkan exact-map shader did not assemble to SPIR-V"; fail=1
+        VK_READY=0
+    else
+        echo "  ok   closed Vulkan exact-map shader assembles to SPIR-V"
+    fi
+else
+    echo "  SKIP: glslangValidator unavailable (SPIR-V assembly)"
+fi
+if [ "$VK_READY" = "1" ] && [ "$HAVE_VULKAN" = "1" ] \
+   && [ "$HAVE_LINKER" = "1" ]; then
+    if ! "$LINKER" $HOST_LINK_PIE -pthread "$VK_HOST_OBJ" \
+            $(pkg-config --libs vulkan) -o "$VK_HOST_EXE" 2>/dev/null \
+       || [ "$("$VK_HOST_EXE" "$VK_SPV")" != "1" ]; then
+        echo "  FAIL: Traveler-owned Vulkan exact-map runtime parity"; fail=1
+    else
+        echo "  ok   Traveler-owned Vulkan exact-map runtime is CPU-byte-exact"
+    fi
+else
+    echo "  SKIP: Vulkan loader/render node unavailable (runtime execution)"
+fi
+
+# Projection-shaped closure: eight signed Q8xQ4 terms across Splice's 17,408
+# FFN channels. One source owns CPU, AMDGCN, Vulkan, and host runtime semantics.
+PROJ_SRC="$SCRIPT_DIR/amd_projection_compare.tv"
+PROJ_AMD_LL="$TMP/amd_projection_compare.amd.ll"
+PROJ_AMD_OBJ="$TMP/amd_projection_compare.amd.o"
+PROJ_HSACO="$TMP/amd_projection_compare.hsaco"
+PROJ_VK="$TMP/amd_projection_compare.comp"
+PROJ_SPV="$TMP/amd_projection_compare.spv"
+PROJ_HOST_LL="$TMP/amd_projection_compare.ll"
+PROJ_HOST_OBJ="$TMP/amd_projection_compare.o"
+PROJ_EXE="$TMP/amd-projection-compare"
+PROJ_READY=1
+if ! "$STAGE1" --emit-gpu-vulkan "$PROJ_SRC" -o "$PROJ_VK" 2>/dev/null \
+   || ! grep -q 'GL_EXT_shader_explicit_arithmetic_types_int64' "$PROJ_VK" \
+   || ! grep -q 'tv_k < 8u' "$PROJ_VK" \
+   || ! grep -q '17408u' "$PROJ_VK"; then
+    echo "  FAIL: Vulkan exact Q8xQ4 projection artifact changed"; fail=1
+    PROJ_READY=0
+fi
+if ! "$STAGE1" "$PROJ_SRC" -o "$PROJ_HOST_LL" 2>/dev/null \
+   || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$PROJ_HOST_LL" \
+        -o "$PROJ_HOST_OBJ" 2>/dev/null; then
+    echo "  FAIL: same-source AMD projection host runtime did not compile"; fail=1
+    PROJ_READY=0
+else
+    echo "  ok   same-source exact Q8xQ4 projection runtime compiles"
+fi
+if [ "$HAVE_AMD" = "1" ]; then
+    if ! "$STAGE1" --emit-gpu "$PROJ_SRC" -o "$PROJ_AMD_LL" 2>/dev/null \
+       || ! grep -q 'define amdgpu_kernel void @__pfor_gpu_worker_0' \
+            "$PROJ_AMD_LL"; then
+        echo "  FAIL: exact Q8xQ4 projection did not emit AMDGCN"; fail=1
+        PROJ_READY=0
+    fi
+else
+    PROJ_READY=0
+    echo "  SKIP: no amdgcn target (projection runtime comparison)"
+fi
+
+if [ "$PROJ_READY" = "1" ] && [ "$HAVE_GLSLANG" = "1" ] \
+   && [ "$HAVE_VULKAN" = "1" ] && [ "$HAVE_HIP" = "1" ] \
+   && [ "$HAVE_LINKER" = "1" ] && command -v ld.lld >/dev/null 2>&1; then
+    HIP_PATH="$(hipconfig -p)"
+    if ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+            "$PROJ_AMD_LL" -o "$PROJ_AMD_OBJ" 2>/dev/null \
+       || ! ld.lld -shared "$PROJ_AMD_OBJ" -o "$PROJ_HSACO" 2>/dev/null \
+       || ! "$GLSLANG_VALIDATOR" -V "$PROJ_VK" -o "$PROJ_SPV" \
+            >/dev/null 2>&1 \
+       || ! "$LINKER" $HOST_LINK_PIE -pthread "$PROJ_HOST_OBJ" \
+            -L"$HIP_PATH/lib" -Wl,-rpath,"$HIP_PATH/lib" -lamdhip64 \
+            $(pkg-config --libs vulkan) -o "$PROJ_EXE" 2>/dev/null; then
+        echo "  FAIL: exact AMD projection comparison did not build"; fail=1
+    else
+        mapfile -t projection_metrics < <("$PROJ_EXE" "$PROJ_HSACO" "$PROJ_SPV")
+        if [ "${projection_metrics[0]:-0}" != "1" ]; then
+            echo "  FAIL: HIP/Vulkan exact Q8xQ4 projection parity"; fail=1
+        else
+            echo "  ok   HIP/Vulkan exact Q8xQ4 projection parity (17,408 channels)"
+        fi
+    fi
+else
+    echo "  SKIP: HIP+Vulkan hardware toolchain unavailable (projection execution)"
 fi
 
 # PROOF1 changes ordinary CPU authority only. This source gains three CPU
