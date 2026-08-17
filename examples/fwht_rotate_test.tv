@@ -1,0 +1,117 @@
+// fwht_rotate_test.tv — integer Walsh-Hadamard rotation gates (TurboQuant
+// primitive in i64 lanes).
+//
+// Three pins:
+//   1. Roundtrip: x = D * (H * (H * (D * x))) / 8, exact (H*H = 8*I, D*D = I).
+//   2. Rotated-dot identity: with the SAME sign pattern D on q and k,
+//      sum(H*D*q . H*D*k) == 8 * sum(q.k). D must be seeded PER HEAD so every
+//      vector in a head shares it.
+//   3. Negative witness: seed D PER VECTOR and the identity collapses —
+//      q and k get different sign flips, Dq*Dk != I, cross terms survive.
+//      (The plane repo's K5 gate3 bug: splitmix64(seed + v) instead of
+//      splitmix64(seed + head). Attention dots vectors from DIFFERENT rows,
+//      so a per-row seed is exactly the wrong thing.)
+
+fn sm64(seed: u64) -> u64 {
+    var z: u64 = seed + 11400714819323198485; // 0x9E3779B97F4A7C15
+    z = (z ^ (z >> 30)) * 13787848793156543929; // 0xBF58476D1CE4E5B9
+    z = (z ^ (z >> 27)) * 10723151780598845931; // 0x94D049BB133111EB
+    return z ^ (z >> 31);
+}
+
+// Sign flip for lane e from the hash of `key` (head index, or — wrongly —
+// vector index).
+fn dsign(seed: u64, key: i32, e: i32) -> i64 {
+    let h: u64 = sm64(seed + (key as u64));
+    if ((h >> (e & 63)) & 1) != 0 { return 0 - 1; }
+    return 1;
+}
+
+// In-place unnormalized FWHT on 8 lanes: add/sub butterflies, 3 stages.
+fn fwht8(t: *i64) {
+    var s: i32 = 1;
+    while s < 8 {
+        var base: i32 = 0;
+        while base < 8 {
+            var k: i32 = 0;
+            while k < s {
+                let i0: i32 = base + k;
+                let i1: i32 = base + k + s;
+                let a0: i64 = t[i0];
+                let a1: i64 = t[i1];
+                t[i0] = a0 + a1;
+                t[i1] = a0 - a1;
+                k = k + 1;
+            }
+            base = base + 2 * s;
+        }
+        s = s * 2;
+    }
+}
+
+// y = H * (D * x)
+fn rot8(src: *i64, dst: *i64, seed: u64, key: i32) {
+    var e: i32 = 0;
+    while e < 8 {
+        dst[e] = dsign(seed, key, e) * src[e];
+        e = e + 1;
+    }
+    fwht8(dst);
+}
+
+// x = D * (H * y) / 8. Every lane is an exact multiple of 8, so the
+// arithmetic >> 3 is an exact division.
+fn invrot8(y: *i64, dst: *i64, seed: u64, key: i32) {
+    var e: i32 = 0;
+    while e < 8 { dst[e] = y[e]; e = e + 1; }
+    fwht8(dst);
+    e = 0;
+    while e < 8 {
+        dst[e] = dsign(seed, key, e) * (dst[e] >> 3);
+        e = e + 1;
+    }
+}
+
+fn dot8(a: *i64, b: *i64) -> i64 {
+    var s: i64 = 0;
+    var e: i32 = 0;
+    while e < 8 { s = s + a[e] * b[e]; e = e + 1; }
+    return s;
+}
+
+fn main() {
+    let seed: u64 = 11400714819323198485;
+    let q: *i64 = alloc(8);
+    let k: *i64 = alloc(8);
+    var e: i32 = 0;
+    while e < 8 { q[e] = (e + 1) as i64; e = e + 1; }
+    k[0] = 2; k[1] = 0; k[2] = 1; k[3] = 1; k[4] = 0; k[5] = 3; k[6] = 1; k[7] = 2;
+
+    let rq: *i64 = alloc(8);
+    let rk: *i64 = alloc(8);
+    let rec: *i64 = alloc(8);
+
+    // Gate 1: roundtrip is exact (head 0).
+    rot8(q, rq, seed, 0);
+    invrot8(rq, rec, seed, 0);
+    var mismatches: i32 = 0;
+    e = 0;
+    while e < 8 {
+        if rec[e] != q[e] { mismatches = mismatches + 1; }
+        e = e + 1;
+    }
+    print(mismatches); // 0
+
+    // Gate 2: per-head D preserves the dot. sum(H*D*q . H*D*k) == 8*sum(q.k).
+    rot8(q, rq, seed, 0);
+    rot8(k, rk, seed, 0);
+    print(dot8(rq, rk));        // 400
+    print(8 * dot8(q, k));      // 400
+
+    // Gate 3 (negative witness): per-vector D. q is vector 0, k is vector 1.
+    // Different sign patterns: Dq*Dk != I and the identity collapses.
+    rot8(q, rq, seed, 0);
+    rot8(k, rk, seed, 1);
+    print(dot8(rq, rk));        // 112, not 400
+    print(8 * dot8(q, k));      // 400
+}

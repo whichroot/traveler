@@ -78,6 +78,7 @@ examples/fn_pointer.tv
 examples/fri_highdeg_test.tv
 examples/fri_test.tv
 examples/frobenius_rmt.tv
+examples/fwht_rotate_test.tv           # per-head D or the rotated-dot identity collapses
 examples/generic_enum.tv
 examples/generic_export.tv
 examples/generic_extfield.tv

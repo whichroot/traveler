@@ -993,6 +993,11 @@ run_test observe_lossy_gate "$TIMEOUT_SINGLE"
 compile_obj ntt
 test_single ntt_test
 test_single ntt_roots_test
+# Integer FWHT rotation (TurboQuant primitive): roundtrip + rotated-dot
+# identity hold only when the sign pattern D is seeded PER HEAD. Per-vector
+# seeding is the plane K5 gate3 bug — Dq*Dk != I and the identity collapses
+# (pinned here as a negative witness).
+test_single fwht_rotate_test
 
 # NTT link test (2-file)
 compile_obj ntt_link_test

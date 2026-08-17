@@ -54,6 +54,7 @@ fb6a1ecdf9f2a89c9cfc5640ff5b09a2  examples/fri_highdeg_test.tv
 57e4efb02e3737cc0accd17527c5f35f  examples/fri_test.tv
 c2149e61724783b9787d12af0be53f27  examples/frobenius_rmt.tv
 01fe6f52ba06a595864a7caebf7fc303  examples/fs_basics.tv
+b91181e41a3727745627529dcd8b31ed  examples/fwht_rotate_test.tv
 e5fcb9702ba1ecb218a5baa6c7fde985  examples/generic_enum.tv
 93327537585be613a6976f9e2011bfb6  examples/generic_export.tv
 aed9057688cdede08d778180f8e12c59  examples/generic_extfield.tv
