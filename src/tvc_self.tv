@@ -38454,9 +38454,23 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
         exit(1);
     }
 
-    // Set default target triple
+    // Set default target triple: the HOST, not a hardcoded platform. A direct
+    // `stage1 prog.tv -o prog.ll` on Linux now emits x86_64/aarch64-linux-gnu IR
+    // that the local llc accepts without a manual -mtriple. The compiler's own
+    // self-compile keeps the canonical arm64-apple-darwin triple because
+    // bootstrap/build.sh and refresh.sh pass -target explicitly (the fixed-point
+    // freshness diff depends on host-independent IR text).
     if g_target_triple == null {
-        g_target_triple = "arm64-apple-darwin";
+        let dh: i32 = drv_host();
+        if dh == 1 {
+            g_target_triple = "x86_64-linux-gnu";
+            g_sysconf_nproc = 84;
+        } else if dh == 2 {
+            g_target_triple = "aarch64-linux-gnu";
+            g_sysconf_nproc = 84;
+        } else {
+            g_target_triple = "arm64-apple-darwin";
+        }
     }
 
     // Parse command-line: source path, optional -o output, optional -target triple

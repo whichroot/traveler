@@ -213,7 +213,10 @@ cc /tmp/core.o /tmp/test.o -o /tmp/poly_test
 
 ### Cross-compilation
 
-The compiler accepts `-target <triple>` (default `arm64-apple-darwin`):
+The compiler accepts `-target <triple>`. The default is the **detected host
+triple** (`uname`), so a plain `stage1 prog.tv -o prog.ll` produces IR the local
+`llc` accepts with no `-mtriple`. To cross-compile, pass `-target` to the
+compiler **and** the matching `-mtriple` to `llc`:
 
 ```sh
 src/bootstrap/out/stage1 examples/field_basics.tv -o /tmp/pc.ll -target x86_64-linux-gnu
@@ -223,10 +226,12 @@ $LLC -mtriple=x86_64-linux-gnu -filetype=obj /tmp/pc.ll -o /tmp/pc.o
 The C-free build itself cross-targets too: `src/bootstrap/build.sh --target
 x86_64-linux-gnu`.
 
-On a Linux **host**, `build.sh` and the test gates auto-detect the host triple
-(no flags needed) and link with `-no-pie`. Direct `stage1` invocations still
-default to the canonical triple: pass `-target` yourself (as above) and link
-with `cc -no-pie` on Linux.
+The compiler's **own** self-compile is pinned to the canonical
+`arm64-apple-darwin` triple by `build.sh`/`refresh.sh` (an explicit `-target`),
+so the committed snapshot and the fixed-point freshness diff stay
+host-independent. On a Linux **host**, `build.sh` and the test gates link with
+`-no-pie`; direct `stage1` invocations emit host IR, so add `cc -no-pie` when
+linking on Linux.
 
 ### GPU device kernels
 

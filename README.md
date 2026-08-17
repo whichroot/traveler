@@ -89,12 +89,21 @@ src/bootstrap/build.sh
 # -> src/bootstrap/out/stage1 is the canonical compiler. No C source compiled.
 ```
 
-Compile and run a program:
+Compile and run a program. The compiler emits IR for the **host** triple by
+default, so `llc` needs no `-mtriple` (Linux links add `-no-pie`):
 
 ```sh
 src/bootstrap/out/stage1 examples/field_basics.tv -o /tmp/fb.ll
-$LLC -filetype=obj /tmp/fb.ll -o /tmp/fb.o && cc /tmp/fb.o -o /tmp/fb
+$LLC -filetype=obj /tmp/fb.ll -o /tmp/fb.o && cc -no-pie /tmp/fb.o -o /tmp/fb
 /tmp/fb          # 49 100 171 2 123 1
+```
+
+To cross-compile, pass `-target` to the compiler **and** the matching
+`-mtriple` to `llc`:
+
+```sh
+src/bootstrap/out/stage1 examples/field_basics.tv -o /tmp/fb.ll -target aarch64-linux-gnu
+$LLC -mtriple=aarch64-linux-gnu -filetype=obj /tmp/fb.ll -o /tmp/fb.o
 ```
 
 Full build details are in [`BUILD.md`](BUILD.md).

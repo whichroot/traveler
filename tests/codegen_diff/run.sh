@@ -45,7 +45,10 @@ while IFS= read -r line; do
     if [ ! -f "$REPO_DIR/$line" ]; then
         echo "  MISSING SOURCE: $line"; fail=1; continue
     fi
-    if ! "$SELF" "$REPO_DIR/$line" -o "$TMP/out.ll" >/dev/null 2>&1; then
+    # Byte-identity gate: pin the canonical triple explicitly. tvc_self now
+    # defaults emitted IR to the HOST triple, which would make these hashes
+    # host-dependent; the golden is host-independent canonical-triple IR.
+    if ! "$SELF" "$REPO_DIR/$line" -o "$TMP/out.ll" -target arm64-apple-darwin >/dev/null 2>&1; then
         echo "  COMPILE FAILED: $line"; fail=1; continue
     fi
     h="$(md5 -q "$TMP/out.ll" 2>/dev/null || md5sum "$TMP/out.ll" | cut -d' ' -f1)"

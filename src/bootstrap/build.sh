@@ -70,11 +70,15 @@ command -v "$LINK" >/dev/null 2>&1 || { echo "FATAL: linker '$LINK' not found." 
 mkdir -p "$OUT"
 
 # --- host/target selection ---
-# All Traveler-emitted IR (and the committed snapshot) carries the canonical
-# triple; the byte-identity gates depend on that text being host-independent.
-# Execution retargets at llc: on a non-macOS host we auto-select the host
-# triple (or honor an explicit --target) and override with -mtriple. Linux
-# links need -no-pie (Traveler codegen is non-PIC; distro cc defaults to PIE).
+# The compiler's OWN self-compile is pinned to the canonical triple
+# (CANONICAL_TRIPLE below): the committed snapshot and the fixed-point freshness
+# diff depend on host-independent IR text, so stage1.ll/stage2.ll always carry
+# that triple. (tvc_self itself now defaults user-facing IR to the host triple;
+# the explicit -target here is what keeps the bootstrap canonical.) Execution
+# retargets at llc: on a non-macOS host we auto-select the host triple (or honor
+# an explicit --target) and override with -mtriple. Linux links need -no-pie
+# (Traveler codegen is non-PIC; distro cc defaults to PIE).
+CANONICAL_TRIPLE="arm64-apple-darwin"
 EXPLICIT_TARGET="$TARGET"
 LINK_PIE=""
 case "$(uname -s)-$(uname -m)" in
@@ -109,17 +113,19 @@ echo "[build] stage0: committed IR -> native (no C source compiled)"
 "$LINK" $LINK_PIE "$OUT/stage0.o" -o "$OUT/stage0" || exit 1
 
 # --- stage1: stage0 compiles the current source ---
-# stage1.ll keeps the canonical triple text (stage0 is not passed -target);
-# $MTRIPLE_FLAG overrides at codegen so the binary is host-native.
+# stage1.ll is pinned to the canonical triple text (stage0 IS passed -target
+# here: tvc_self would otherwise default to the host triple, breaking the
+# host-independent fixed-point/freshness diff). $MTRIPLE_FLAG overrides at
+# codegen so the resulting binary is host-native.
 echo "[build] stage1: stage0 compiles src/tvc_self.tv"
-"$OUT/stage0" "$SRC_TV" -o "$OUT/stage1.ll" >/dev/null 2>&1 || {
+"$OUT/stage0" "$SRC_TV" -o "$OUT/stage1.ll" -target "$CANONICAL_TRIPLE" >/dev/null 2>&1 || {
     echo "FATAL: stage0 failed to compile $SRC_TV" >&2; exit 1; }
 "$LLC" $MTRIPLE_FLAG -filetype=obj "$OUT/stage1.ll" -o "$OUT/stage1.o" || exit 1
 "$LINK" $LINK_PIE "$OUT/stage1.o" -o "$OUT/stage1" || exit 1
 
 # --- stage2: stage1 compiles the current source; assert fixed point ---
 echo "[build] stage2: stage1 compiles itself; asserting fixed point"
-"$OUT/stage1" "$SRC_TV" -o "$OUT/stage2.ll" >/dev/null 2>&1 || {
+"$OUT/stage1" "$SRC_TV" -o "$OUT/stage2.ll" -target "$CANONICAL_TRIPLE" >/dev/null 2>&1 || {
     echo "FATAL: stage1 failed to compile $SRC_TV" >&2; exit 1; }
 
 if ! diff -q "$OUT/stage1.ll" "$OUT/stage2.ll" >/dev/null; then

@@ -41,27 +41,25 @@ export LLC=/opt/homebrew/opt/llvm@21/bin/llc      # or your platform's llc path
 src/bootstrap/build.sh                             # -> src/bootstrap/out/stage1 (the compiler)
 ```
 
-Then compile and run a program. **`stage1` defaults to a macOS target
-(`arm64-apple-darwin`); off macOS you must pass the platform triple to both
-`stage1` and `llc`.** `build.sh` and the `tests/` gates auto-detect a Linux
-host; direct `stage1` invocations do not — be explicit there.
+Then compile and run a program. **`stage1` defaults to the host triple**
+(detected via `uname`), so the emitted IR matches the local `llc` with no
+`-mtriple` needed. Cross-compile by passing `-target <triple>` to `stage1` **and**
+the matching `-mtriple=<triple>` to `llc`. On Linux, link with `-no-pie`.
 
-macOS:
+Host build (macOS or Linux):
 
 ```sh
 src/bootstrap/out/stage1 examples/field_basics.tv -o /tmp/p.ll
 $LLC -filetype=obj /tmp/p.ll -o /tmp/p.o
-cc /tmp/p.o -o /tmp/p
+cc -no-pie /tmp/p.o -o /tmp/p                      # -no-pie on Linux; plain cc on macOS
 /tmp/p                                             # prints: 49 100 171 2 123 1
 ```
 
-Linux (x86_64; use `aarch64-linux-gnu` on ARM):
+Cross-compile (example: target x86_64-linux from any host):
 
 ```sh
 src/bootstrap/out/stage1 examples/field_basics.tv -o /tmp/p.ll -target x86_64-linux-gnu
 $LLC -mtriple=x86_64-linux-gnu -filetype=obj /tmp/p.ll -o /tmp/p.o
-cc -no-pie /tmp/p.o -o /tmp/p                     # -no-pie is required on Linux
-/tmp/p                                             # (verified in containers; desktop distros untested)
 ```
 
 `stage1` emits LLVM IR (`-o file.ll`) by default and is the compiler to use for
@@ -100,7 +98,7 @@ Read-only compiler query modes (parse/analyze, no program emitted):
 | `--emit-gpu` | Re-emit elementwise parallel loops as AMD GCN kernels (early). |
 | `--emit-gpu-nvptx` | Same, NVIDIA target: `nvptx64-nvidia-cuda` PTX kernels (early). |
 | `--emit-gpu-agx` | Direct AGX G16X instruction hex for the proved narrow and canonical `2^64-59` field-map profiles. |
-| `-target <triple>` | Cross-compile IR (default `arm64-apple-darwin`). |
+| `-target <triple>` | Cross-compile IR (default: the detected host triple). |
 
 ---
 
