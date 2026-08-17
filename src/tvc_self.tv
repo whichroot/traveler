@@ -1811,9 +1811,10 @@ var g_pfor_proof0_mode: i32 = 0;
 // 1 = --emit-gpu (Stage 0): ride the /dev/null codegen pass to populate the
 // registries, then re-emit each elementwise-class worker as a device kernel.
 var g_emit_gpu_mode: i32 = 0;
-// GPU device target: 0 = AMDGCN, 1 = NVPTX, 2 = AGX G16X. AMD/NV share LLVM
-// emission; AGX directly encodes measured machine instructions from the same
-// proven elementwise worker record. @internal-note: plan-gpu-agx-target.
+// GPU device target: 0 = AMDGCN, 1 = NVPTX, 2 = AGX G16X, 3 = Vulkan GLSL.
+// AMD/NV share LLVM emission; AGX directly encodes measured instructions and
+// Vulkan emits a closed shader source from the same proven worker record.
+// @internal-note: plan-gpu-agx-target.
 var g_gpu_target: i32 = 0;
 // --agx-dispatch: normal host IR keeps the CPU worker/fallback, but proven AGX
 // workers first call the imported Traveler IOKit adapter at runtime. Flag off
@@ -22907,6 +22908,277 @@ fn emit_agx_module() {
     if nemitted == 0 { ir_wr("; no AGX-0 workers emitted\n"); }
 }
 
+// ===== VULKAN STAGE-0 SHADER CODEGEN (--emit-gpu-vulkan) =====
+// The public Vulkan runtime consumes SPIR-V, but the compiler owns the shader
+// semantics. A standard GLSL assembler is only the artifact encoder. This first
+// closed profile accepts one unary, 32-bit Mersenne field map already admitted
+// by the AGX worker classifier; every other worker fails rather than drifting.
+var g_vulkan_expr_ok: i32 = 1;
+
+fn vulkan_emit_expr(node: i32, shape: *AgxWorkerShape) {
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        ir_wr("("); ir_wr_u64(g_nodes[node].int_val % 2147483647); ir_wr("u)");
+        return;
+    }
+    if kind == AST_CAST {
+        vulkan_emit_expr(g_nodes[node].child0, shape);
+        return;
+    }
+    if kind == AST_INDEX {
+        let object: i32 = g_nodes[node].child0;
+        let index: i32 = g_nodes[node].child1;
+        if g_nodes[object].kind != AST_IDENT
+            || g_nodes[object].name0 != shape.input0_name
+            || g_nodes[index].kind != AST_IDENT
+            || g_nodes[index].name0 != shape.loop_name {
+            g_vulkan_expr_ok = 0;
+            ir_wr("0u");
+            return;
+        }
+        ir_wr("tv_in0.values[tv_index]");
+        return;
+    }
+    if kind == AST_BINARY {
+        let op: i32 = g_nodes[node].op;
+        if op == OP_ADD { ir_wr("tv_fadd("); }
+        else if op == OP_SUB { ir_wr("tv_fsub("); }
+        else if op == OP_MUL { ir_wr("tv_fmul("); }
+        else {
+            g_vulkan_expr_ok = 0;
+            ir_wr("0u");
+            return;
+        }
+        vulkan_emit_expr(g_nodes[node].child0, shape);
+        ir_wr(", ");
+        vulkan_emit_expr(g_nodes[node].child1, shape);
+        ir_wr(")");
+        return;
+    }
+    g_vulkan_expr_ok = 0;
+    ir_wr("0u");
+}
+
+fn vulkan_emit_index_expr(node: i32, outer_name: i32, inner_name: i32) {
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        ir_wr_u64(g_nodes[node].int_val); ir_wr("u");
+        return;
+    }
+    if kind == AST_IDENT {
+        if g_nodes[node].name0 == outer_name { ir_wr("tv_index"); return; }
+        if g_nodes[node].name0 == inner_name { ir_wr("tv_k"); return; }
+        g_vulkan_expr_ok = 0; ir_wr("0u"); return;
+    }
+    if kind == AST_BINARY {
+        let op: i32 = g_nodes[node].op;
+        if op != OP_ADD && op != OP_SUB && op != OP_MUL
+            && op != OP_DIV && op != OP_MOD {
+            g_vulkan_expr_ok = 0; ir_wr("0u"); return;
+        }
+        ir_wr("(");
+        vulkan_emit_index_expr(g_nodes[node].child0, outer_name, inner_name);
+        if op == OP_ADD { ir_wr(" + "); }
+        else if op == OP_SUB { ir_wr(" - "); }
+        else if op == OP_MUL { ir_wr(" * "); }
+        else if op == OP_DIV { ir_wr(" / "); }
+        else { ir_wr(" % "); }
+        vulkan_emit_index_expr(g_nodes[node].child1, outer_name, inner_name);
+        ir_wr(")");
+        return;
+    }
+    g_vulkan_expr_ok = 0; ir_wr("0u");
+}
+
+fn vulkan_classify_k8(body: i32, loop_name: i32, ncaps: i32,
+                       caps_base: i32, shape: *AgxWorkerShape) -> i32 {
+    if pfor_body_k8_private_dot(body) == 0 || ncaps != 3 { return 0; }
+    let base: i32 = g_nodes[body].args_start;
+    let init: i32 = g_args[base];
+    let inner: i32 = g_args[base + 1];
+    let output: i32 = g_args[base + 2];
+    let assign: i32 = g_args[g_nodes[g_nodes[inner].child2].args_start];
+    let sum: i32 = g_nodes[assign].child0;
+    let product: i32 = g_nodes[sum].child1;
+    let left_index: i32 = g_nodes[product].child0;
+    let right_index: i32 = g_nodes[product].child1;
+    let left_object: i32 = g_nodes[left_index].child0;
+    let right_object: i32 = g_nodes[right_index].child0;
+    let output_object: i32 = g_nodes[output].child0;
+    let output_index: i32 = g_nodes[output].child1;
+    if g_nodes[left_object].kind != AST_IDENT
+        || g_nodes[right_object].kind != AST_IDENT
+        || g_nodes[output_object].kind != AST_IDENT
+        || g_nodes[output_index].kind != AST_IDENT
+        || g_nodes[output_index].name0 != loop_name { return 0; }
+    let input0_name: i32 = g_nodes[left_object].name0;
+    let input1_name: i32 = g_nodes[right_object].name0;
+    let output_name: i32 = g_nodes[output_object].name0;
+    if input0_name == input1_name || input0_name == output_name
+        || input1_name == output_name { return 0; }
+    let input0_cap: i32 = agx_cap_pos(input0_name, caps_base, ncaps);
+    let input1_cap: i32 = agx_cap_pos(input1_name, caps_base, ncaps);
+    let output_cap: i32 = agx_cap_pos(output_name, caps_base, ncaps);
+    if input0_cap < 0 || input1_cap < 0 || output_cap < 0 { return 0; }
+    let output_type: i32 = resolve_type_sub(
+        g_pfor_workers[caps_base + output_cap * 4 + 1]);
+    let input0_type: i32 = resolve_type_sub(
+        g_pfor_workers[caps_base + input0_cap * 4 + 1]);
+    let input1_type: i32 = resolve_type_sub(
+        g_pfor_workers[caps_base + input1_cap * 4 + 1]);
+    if type_is_ptr(output_type) == 0 || type_is_ptr(input0_type) == 0
+        || type_is_ptr(input1_type) == 0 { return 0; }
+    let element_type: i32 = resolve_type_sub(type_pointee(output_type));
+    if str_eq(&g_strings[element_type], "i64") == 0
+        || resolve_type_sub(type_pointee(input0_type)) != element_type
+        || resolve_type_sub(type_pointee(input1_type)) != element_type
+        || resolve_type_sub(g_nodes[init].name1) != element_type { return 0; }
+    let outer: i32 = agx_find_for_body(body);
+    if outer < 0 || g_nodes[g_nodes[outer].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[outer].child0].int_val != 0
+        || g_nodes[g_nodes[outer].child1].kind != AST_LIT_INT
+        || g_nodes[g_nodes[outer].child1].int_val == 0
+        || g_nodes[g_nodes[outer].child1].int_val > 2147483647 { return 0; }
+    shape.kind = 7;
+    shape.output_name = output_name;
+    shape.input0_name = input0_name;
+    shape.input1_name = input1_name;
+    shape.field_alias = element_type;
+    shape.field_index = 0 - 1;
+    shape.rhs = product;
+    shape.grid = g_nodes[g_nodes[outer].child1].int_val as i32;
+    shape.output_cap = output_cap;
+    shape.input0_cap = input0_cap;
+    shape.input1_cap = input1_cap;
+    shape.output_words = shape.grid;
+    shape.input0_words = 0;
+    shape.input1_words = 0;
+    shape.input_layout = 0;
+    shape.body = body;
+    shape.loop_name = loop_name;
+    shape.ncaps = ncaps;
+    shape.caps_base = caps_base;
+    return 1;
+}
+
+fn vulkan_emit_worker(shape: *AgxWorkerShape) -> i32 {
+    if shape.kind != 1 || shape.input1_name >= 0
+        || g_fields[shape.field_index].field_kind != FIELD_KIND_PRIME
+        || g_fields[shape.field_index].elem_bits != 32
+        || g_fields[shape.field_index].prime != 2147483647 {
+        return 0;
+    }
+    ir_wr("#version 460\n");
+    ir_wr("// Traveler Vulkan Stage-0 artifact; exact Field<2147483647>.\n");
+    ir_wr("layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n");
+    ir_wr("layout(set = 0, binding = 0, std430) readonly buffer TvInput0 { uint values[]; } tv_in0;\n");
+    ir_wr("layout(set = 0, binding = 2, std430) writeonly buffer TvOutput { uint values[]; } tv_out;\n");
+    ir_wr("layout(push_constant) uniform TvRange { uint lo; uint hi; } tv_range;\n\n");
+    ir_wr("const uint TV_P = 2147483647u;\n");
+    ir_wr("uint tv_fadd(uint a, uint b) { uint s = a + b; return s >= TV_P ? s - TV_P : s; }\n");
+    ir_wr("uint tv_fsub(uint a, uint b) { return a >= b ? a - b : TV_P - (b - a); }\n");
+    ir_wr("uint tv_fmul(uint a, uint b) {\n");
+    ir_wr("    uint hi; uint lo; umulExtended(a, b, hi, lo);\n");
+    ir_wr("    uint r = (lo & TV_P) + (hi << 1) + (lo >> 31);\n");
+    ir_wr("    r = (r & TV_P) + (r >> 31);\n");
+    ir_wr("    return r == TV_P ? 0u : r;\n}\n\n");
+    ir_wr("void main() {\n");
+    ir_wr("    uint tv_index = gl_GlobalInvocationID.x + tv_range.lo;\n");
+    ir_wr("    if (tv_index >= tv_range.hi) { return; }\n");
+    ir_wr("    tv_out.values[tv_index] = ");
+    g_vulkan_expr_ok = 1;
+    vulkan_emit_expr(shape.rhs, shape);
+    ir_wr(";\n}\n");
+    return g_vulkan_expr_ok;
+}
+
+fn vulkan_emit_k8_worker(shape: *AgxWorkerShape) -> i32 {
+    if shape.kind != 7 { return 0; }
+    let body: i32 = shape.body;
+    let base: i32 = g_nodes[body].args_start;
+    let inner: i32 = g_args[base + 1];
+    let inner_name: i32 = g_nodes[inner].name0;
+    let product: i32 = shape.rhs;
+    let left_index: i32 = g_nodes[g_nodes[product].child0].child1;
+    let right_index: i32 = g_nodes[g_nodes[product].child1].child1;
+    ir_wr("#version 460\n");
+    ir_wr("#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n");
+    ir_wr("// Traveler Vulkan Stage-0 artifact; exact signed eight-term Q8xQ4 tile.\n");
+    ir_wr("layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n");
+    ir_wr("layout(set = 0, binding = 0, std430) readonly buffer TvInput0 { int64_t values[]; } tv_in0;\n");
+    ir_wr("layout(set = 0, binding = 1, std430) readonly buffer TvInput1 { int64_t values[]; } tv_in1;\n");
+    ir_wr("layout(set = 0, binding = 2, std430) writeonly buffer TvOutput { int64_t values[]; } tv_out;\n");
+    ir_wr("layout(push_constant) uniform TvRange { uint lo; uint hi; } tv_range;\n\n");
+    ir_wr("void main() {\n");
+    ir_wr("    uint tv_index = gl_GlobalInvocationID.x + tv_range.lo;\n");
+    ir_wr("    if (tv_index >= tv_range.hi) { return; }\n");
+    ir_wr("    int64_t tv_acc = int64_t(0);\n");
+    ir_wr("    for (uint tv_k = 0u; tv_k < 8u; ++tv_k) {\n");
+    ir_wr("        tv_acc += tv_in0.values[");
+    g_vulkan_expr_ok = 1;
+    vulkan_emit_index_expr(left_index, shape.loop_name, inner_name);
+    ir_wr("] * tv_in1.values[");
+    vulkan_emit_index_expr(right_index, shape.loop_name, inner_name);
+    ir_wr("];\n    }\n");
+    ir_wr("    tv_out.values[tv_index] = tv_acc;\n}\n");
+    return g_vulkan_expr_ok;
+}
+
+fn emit_vulkan_module() {
+    if g_npfor_workers != 1 {
+        wr(2, "error: --emit-gpu-vulkan Stage 0 requires exactly one pfor worker (saw ");
+        wr_int(2, g_npfor_workers as i64);
+        wr(2, ")\n");
+        exit(1);
+    }
+    let wid: i32 = g_pfor_workers[0];
+    let body: i32 = g_pfor_workers[1];
+    let loop_name: i32 = g_pfor_workers[2];
+    let ncaps: i32 = g_pfor_workers[3];
+    let ngen: i32 = g_pfor_workers[4];
+    let iter_width: i32 = g_pfor_workers[5];
+    var roff: i32 = 7;
+    let saved_gen_nsub: i32 = g_gen_nsub;
+    g_gen_nsub = ngen;
+    var gi: i32 = 0;
+    while gi < ngen {
+        g_gen_sub_names[gi] = g_pfor_workers[roff];
+        g_gen_sub_types[gi] = g_pfor_workers[roff + 1];
+        roff = roff + 2;
+        gi = gi + 1;
+    }
+    let shape: *AgxWorkerShape = alloc(1);
+    var accepted: i32 = 0;
+    if iter_width != 64
+        && agx_classify_worker(body, loop_name, ncaps, roff, shape) == 1 {
+        accepted = vulkan_emit_worker(shape);
+    }
+    if accepted == 0 && iter_width != 64
+        && vulkan_classify_k8(body, loop_name, ncaps, roff, shape) == 1 {
+        accepted = vulkan_emit_k8_worker(shape);
+    }
+    free(shape);
+    g_gen_nsub = saved_gen_nsub;
+    if accepted == 0 {
+        wr(2, "error: Vulkan Stage-0 worker __pfor_gpu_worker_");
+        wr_int(2, wid as i64);
+        wr(2, " is outside the exact map/K8 projection profile\n");
+        exit(1);
+    }
+}
+
+// ===== STAGE-0 GPU DEVICE CODEGEN (--emit-gpu, --emit-gpu-nvptx) =====
+// Re-emit each elementwise-class pfor worker as a device kernel: the SIMT
+// identity idx = wg.id.x*WGSIZE + wi.id.x + lo replaces the serial loop.
+// Registers-only/flat-access (AMDGPU rejects addrspace(0) allocas). Two device
+// targets share this one path (g_gpu_target) — only the triple, the SIMT id
+// intrinsics, the kernel calling convention and the launch-bound attribute
+// differ: AMDGCN (amdgpu_kernel, gate = llc -mcpu=gfx1100 lowers to a valid
+// object) and NVPTX (ptx_kernel, gate = llc -mcpu=sm_90 lowers to valid PTX).
+// Design: @internal-note: plan-gpu-purity-runtime.
+
+// GPU-eligible iff the body is ONLY index-assigns (out[idx]=expr): no allocas,
+// own-cell writes. Private mutables / multi-stmt reductions are Stage 3.
 fn pfor_body_all_index_assign(body: i32) -> i32 {
     if g_nodes[body].kind != AST_BLOCK { return 0; }
     let nstmts: i32 = g_nodes[body].nargs;
@@ -23000,6 +23272,10 @@ fn codegen_gpu_k8_private_dot(body: i32) {
 fn emit_gpu_module() {
     if g_gpu_target == 2 {
         emit_agx_module();
+        return;
+    }
+    if g_gpu_target == 3 {
+        emit_vulkan_module();
         return;
     }
     if g_gpu_target == 1 {
@@ -38724,6 +39000,11 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
             // no Metal compiler; the output is canonical reviewable hex.
             g_emit_gpu_mode = 1;
             g_gpu_target = 2;
+        } else if str_eq(argv[ai], "--emit-gpu-vulkan") == 1 {
+            // Closed Vulkan Stage-0 shader emission from the same proven pfor
+            // record. A standard GLSL assembler turns this artifact into SPIR-V.
+            g_emit_gpu_mode = 1;
+            g_gpu_target = 3;
         } else if str_eq(argv[ai], "--emit") == 1 && ai + 1 < argc {
             // --emit ir|obj|exe: ir (default) writes LLVM IR to -o; obj/exe
             // additionally drive llc (+ cc) so -o is a native artifact.
