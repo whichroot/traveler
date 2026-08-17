@@ -139,6 +139,8 @@ assert_dispatch "$REPO_DIR/tests/pfor/pfor_ok_private_var.tv"
 assert_dispatch "$REPO_DIR/tests/pfor/pfor_self_proof1_parallel.tv"
 assert_dispatch "$REPO_DIR/tests/pfor/pfor_self_dyn_cast_capture.tv"
 assert_reason "$SCRIPT_DIR/fixtures/proof1_extfield_capture.tv" "cap-elem"
+# Local/global fixed arrays decay to *T in the worker slot: now dispatch.
+assert_dispatch "$REPO_DIR/tests/pfor/pfor_ok_local_array.tv"
 
 # The detailed recursive-proof schema exposes effects, affine hazards, captures,
 # and the legacy verdict used to audit the PROOF1 CPU authority handoff.

@@ -649,6 +649,7 @@ if [ -x "$STAGE1" ]; then
         "pfor_ok_private_var:1"
         "pfor_race_alias_letptr:0"
         "pfor_private_escape:0"
+        "pfor_ok_local_array:3"
     )
     for entry in "${PRIV_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"

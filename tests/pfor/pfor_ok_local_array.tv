@@ -1,0 +1,43 @@
+// pfor_ok_local_array.tv — POSITIVE CONTROL: a body-visible LOCAL fixed array
+// [T; N] decays to its base pointer (*T) in the worker context slot. The
+// 8-byte slot cannot hold an [N x T] value, so capture used to refuse with
+// cap-elem even though the heap `*i32` twin already dispatched.
+//
+// The decay reuses the alloca register as the address (local) / a GEP @name
+// (global); the worker rebinds the capture as *T, so arr[i] indexing in the
+// body is unchanged. Independence proof is identical to the pointer case:
+// stride-1 injective own-cell write, own-cell reads.
+//
+// MUST PARALLELIZE.  Expected workers: 1 (local) + 1 (global).  Deterministic.
+
+field F = Field<251>;
+var gout: [i32; 8] = 0;
+
+fn main() -> i32 {
+    // Local i32 array: decayed capture.
+    var a: [i32; 8] = 0;
+    var out: [i32; 8] = 0;
+    var w: i32 = 0;
+    while w < 8 { a[w] = w; out[w] = 0; w = w + 1; }
+    for i in 0..8 {
+        out[i] = a[i] * 2;
+    }
+    print(out[7]);       // 14
+
+    // Global i32 array: decayed capture via GEP @name.
+    w = 0;
+    while w < 8 { gout[w] = w + 1; w = w + 1; }
+    for i in 0..8 {
+        gout[i] = gout[i] * 3;
+    }
+    print(gout[7]);      // 24
+
+    // Local field array: decayed *F capture.
+    var fa: [F; 4] = 0;
+    fa[0] = 10; fa[1] = 20; fa[2] = 30; fa[3] = 40;
+    for i in 0..4 {
+        fa[i] = fa[i] + 1;
+    }
+    print(fa[3]);        // 41
+    return 0;
+}

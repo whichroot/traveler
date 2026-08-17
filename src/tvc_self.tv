@@ -14047,6 +14047,34 @@ fn compute_all_purity() {
 
 // Add a symbol to the capture set if not already present.
 // Returns 0 on capture-set overflow (reject loop).
+// Local/global fixed array captured into a worker: the 8-byte context slot
+// cannot hold an [N x T] value, so the array DECAYS to its base pointer (*T) —
+// the alloca register IS the address (no load). is_alloca sentinel marks the
+// fill path: 3 = local array (use reg as address), 4 = global array (GEP @name).
+let PFR_ALLOCA_LOCAL_ARR: i32 = 3;
+let PFR_ALLOCA_GLOBAL_ARR: i32 = 4;
+
+// Decay an admissible [T; N] capture to (*T, sentinel). Returns the (possibly
+// unchanged) type; *is_alloca_io is updated in lockstep. Only arrays whose
+// element is already in the closed U1/field set decay — nested arrays, wide
+// values, and struct elements still refuse downstream as cap-elem.
+fn pfor_decay_capture_type(type_off: i32, is_alloca: i32, is_alloca_io: *i32) -> i32 {
+    let rt: i32 = resolve_type_sub(type_off);
+    if type_is_array(rt) == 1 {
+        let et: i32 = resolve_type_sub(type_array_elem(rt));
+        if type_is_array(et) == 0 {
+            if pfor_prim_int(et) == 1 || type_is_dyn(et) == 1
+                || type_is_field_value(et) == 1 { return type_add_star(et); }
+            let efi: i32 = find_field_by_alias(et);
+            if efi >= 0 && g_fields[efi].field_kind != FIELD_KIND_EXTENSION {
+                return type_add_star(et);
+            }
+        }
+        return rt;
+    }
+    return type_off;
+}
+
 fn pfor_add_capture(pf: *PForState, name: i32, type_off: i32, reg: i32, is_alloca: i32) -> i32 {
     let caps: *i32 = pf.caps;
     var i: i32 = 0;
@@ -14055,10 +14083,18 @@ fn pfor_add_capture(pf: *PForState, name: i32, type_off: i32, reg: i32, is_alloc
         i = i + 1;
     }
     if pf.ncaps >= MAX_PFOR_CAP { pfor_refuse(PFR_CAPTURE_LIMIT); return 0; }
+    var st: i32 = type_off;
+    var sa: i32 = is_alloca;
+    let dt: i32 = pfor_decay_capture_type(type_off, is_alloca, &sa);
+    if dt != st {
+        // Decayed [T; N] -> *T: rewrite the slot kind.
+        st = dt;
+        if is_alloca == 2 { sa = PFR_ALLOCA_GLOBAL_ARR; } else { sa = PFR_ALLOCA_LOCAL_ARR; }
+    }
     caps[pf.ncaps * 4] = name;
-    caps[pf.ncaps * 4 + 1] = type_off;
+    caps[pf.ncaps * 4 + 1] = st;
     caps[pf.ncaps * 4 + 2] = reg;
-    caps[pf.ncaps * 4 + 3] = is_alloca;
+    caps[pf.ncaps * 4 + 3] = sa;
     pf.ncaps = pf.ncaps + 1;
     return 1;
 }
@@ -15288,12 +15324,22 @@ fn proof0_add_capture(P: *PForProof0, A: *PForState, name: i32) -> i32 {
         proof0_cpu_refuse(P, PFR_CAPTURE_LIMIT);
         return 0;
     }
+    var cap_ty: i32 = g_syms[si].type_off;
+    var cap_al: i32 = g_syms[si].is_alloca;
+    let cap_dt: i32 = pfor_decay_capture_type(cap_ty, cap_al, &cap_al);
+    if cap_dt != cap_ty {
+        cap_ty = cap_dt;
+        if g_syms[si].is_alloca == 2 { cap_al = PFR_ALLOCA_GLOBAL_ARR; }
+        else { cap_al = PFR_ALLOCA_LOCAL_ARR; }
+    }
     caps[A.ncaps * 4] = name;
-    caps[A.ncaps * 4 + 1] = g_syms[si].type_off;
+    caps[A.ncaps * 4 + 1] = cap_ty;
     caps[A.ncaps * 4 + 2] = g_syms[si].reg;
-    caps[A.ncaps * 4 + 3] = g_syms[si].is_alloca;
+    caps[A.ncaps * 4 + 3] = cap_al;
     A.ncaps = A.ncaps + 1;
-    let rt: i32 = resolve_type_sub(g_syms[si].type_off);
+    // Field/dyn detection reads the DECAYED type so [Field; N] -> *Field marks
+    // has_field just like a heap *Field capture.
+    let rt: i32 = resolve_type_sub(cap_ty);
     if type_is_dyn(rt) == 1 { P.needs_dyn_field = 1; }
     if type_is_ptr(rt) == 1 {
         let pt: i32 = resolve_type_sub(type_pointee(rt));
@@ -17429,10 +17475,21 @@ fn pfor_alias_has_call_read(pf: *PForState, name: i32) -> i32 {
     return 0;
 }
 
+// The caps is_alloca slot uses the decay sentinels 3/4 for [T; N]->*T captures;
+// map them back to the symbol's 1/2 before comparing against g_syms.
+fn pfor_cap_alloca_matches(sym_alloca: i32, cap_alloca: i32) -> i32 {
+    // NB: explicit 1/0 returns (not `return a == b`) — the frozen C seed emits
+    // `ret i1` into an i32 fn for a bare comparison return (dual parity).
+    if cap_alloca == 3 { if sym_alloca == 1 { return 1; } return 0; }
+    if cap_alloca == 4 { if sym_alloca == 2 { return 1; } return 0; }
+    if sym_alloca == cap_alloca { return 1; }
+    return 0;
+}
+
 fn pfor_alias_capture_trusted(caps: *i32, cap: i32) -> i32 {
     let si: i32 = sym_find(caps[cap * 4]);
     if si < 0 || g_syms[si].reg != caps[cap * 4 + 2]
-        || g_syms[si].is_alloca != caps[cap * 4 + 3]
+        || pfor_cap_alloca_matches(g_syms[si].is_alloca, caps[cap * 4 + 3]) == 0
         || g_syms[si].ptr_provenance == 0 { return 0; }
     return 1;
 }
@@ -17440,7 +17497,7 @@ fn pfor_alias_capture_trusted(caps: *i32, cap: i32) -> i32 {
 fn pfor_alias_capture_origin(caps: *i32, cap: i32) -> i32 {
     let si: i32 = sym_find(caps[cap * 4]);
     if si < 0 || g_syms[si].reg != caps[cap * 4 + 2]
-        || g_syms[si].is_alloca != caps[cap * 4 + 3] { return 0; }
+        || pfor_cap_alloca_matches(g_syms[si].is_alloca, caps[cap * 4 + 3]) == 0 { return 0; }
     return g_syms[si].ptr_provenance;
 }
 
@@ -18489,6 +18546,18 @@ fn codegen_stmt(stmt: i32) {
                     ir_wr("  "); ir_wr_reg(loaded); ir_wr(" = load ");
                     ir_wr_type(cap_type); ir_wr(", ptr @");
                     ir_wr_sym(caps[ci * 4]); ir_wr("\n");
+                }
+                if cap_is_alloca == 3 {
+                    // Decayed LOCAL [T; N]: the alloca register IS the base
+                    // address (*T); store it directly, no load.
+                    loaded = cap_reg;
+                }
+                if cap_is_alloca == 4 {
+                    // Decayed GLOBAL [T; N]: materialize the base address.
+                    loaded = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(loaded);
+                    ir_wr(" = getelementptr i8, ptr @");
+                    ir_wr_sym(caps[ci * 4]); ir_wr(", i64 0\n");
                 }
                 cap_loaded[ci] = loaded;
                 ir_wr("  store "); ir_wr_type(cap_type); ir_wr(" ");
