@@ -74,14 +74,8 @@ nix develop   # LLVM 21 (llc/opt), cc, make, python3 on PATH
 ```
 
 The committed `flake.nix` dev shell provides the full toolchain the test
-gates consume (`tests/lib/env.sh` discovers everything from `PATH`). One
-caveat: nixpkgs' LLVM is built without the AMDGCN backend, so the AMDGCN
-leg of `tests/gpu/run.sh` skips in this shell. Point `LLC` at an
-AMDGCN-capable build (e.g. a ROCm LLVM) to run that leg:
-
-```sh
-LLC=/path/to/rocm-llvm/bin/llc tests/gpu/run.sh
-```
+gates consume (`tests/lib/env.sh` discovers everything from `PATH`),
+including AMDGCN and NVPTX backends for `tests/gpu/run.sh`.
 
 
 ## 2. Build the compiler (canonical, C-free)
