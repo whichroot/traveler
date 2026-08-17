@@ -1,0 +1,23 @@
+// pfor_ok_stride_evenodd.tv — POSITIVE CONTROL: constant stride-2 even/odd split
+//
+// Writes a[2i] and a[2i+1] for i in 0..8 (literal bounds). Same stride k=2 on
+// both writes, delta 1; gcd(2, 2^32)=2 and 1 mod 2 != 0, so the residue classes
+// NEVER collide — provably disjoint for any trip count. The even-stride
+// injectivity guard admits it because the literal trip (8) <= 2^32/2.
+//
+// Disjointness proof obligation: same non-unit stride, d mod gcd(k, 2^32) != 0.
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+fn main() -> i32 {
+    var a: [i32; 16] = 0;
+    for i in 0..8 {
+        a[2 * i] = i;
+        a[2 * i + 1] = i + 100;
+    }
+    print(a[0]);        // 0
+    print(a[1]);        // 100
+    print(a[14]);       // 7
+    print(a[15]);       // 107
+    return 0;
+}

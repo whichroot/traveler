@@ -1611,6 +1611,7 @@ struct PForState {
     aff_lit: i64,
     aff_nterms: i32,
     aff_lv_count: i32,
+    aff_stride: i64,     // loop-var coefficient: 1 (i), k (k*i), -1 (-i), 2 (i+i)
     aff_terms: *i32,     // 4
     aff_signs: *i32,     // 4
     // Loop bound facts (set per analyzed loop)
@@ -14045,8 +14046,6 @@ fn compute_all_purity() {
 // typing, (3) the capture set. State in *PForState; failure is a RETURN
 // status, never a poisoned flag. Verdict lands in pf.independent.
 
-// Add a symbol to the capture set if not already present.
-// Returns 0 on capture-set overflow (reject loop).
 // Local/global fixed array captured into a worker: the 8-byte context slot
 // cannot hold an [N x T] value, so the array DECAYS to its base pointer (*T) —
 // the alloca register IS the address (no load). is_alloca sentinel marks the
@@ -14075,6 +14074,8 @@ fn pfor_decay_capture_type(type_off: i32, is_alloca: i32, is_alloca_io: *i32) ->
     return type_off;
 }
 
+// Add a symbol to the capture set if not already present.
+// Returns 0 on capture-set overflow (reject loop).
 fn pfor_add_capture(pf: *PForState, name: i32, type_off: i32, reg: i32, is_alloca: i32) -> i32 {
     let caps: *i32 = pf.caps;
     var i: i32 = 0;
@@ -14318,12 +14319,13 @@ fn pfor_classify_index(pf: *PForState, node: i32, loop_var: i32, sign: i32) -> i
 
     if kind == AST_IDENT {
         if g_nodes[node].name0 == loop_var {
-            // Loop variable: coefficient must be +1, appear once
-            if sign != 1 { pfor_refuse(PFR_NONINJECTIVE); return 0; }
+            // Loop variable: accumulate the stride coefficient (sign = ±1 from
+            // +/-; scaled by any enclosing literal MUL). Multiple occurrences
+            // (i+i) sum the coefficient; a literal-scaled occurrence (2*i)
+            // multiplies it. Injectivity is decided from aff_stride afterwards.
             pf.aff_lv_count = pf.aff_lv_count + 1;
-            if pf.aff_lv_count == 1 { return 1; }
-            pfor_refuse(PFR_NONINJECTIVE);
-            return 0;
+            pf.aff_stride = pf.aff_stride + (sign as i64);
+            return 1;
         }
     }
 
@@ -14334,6 +14336,53 @@ fn pfor_classify_index(pf: *PForState, node: i32, loop_var: i32, sign: i32) -> i
     if kind == AST_BINARY && g_nodes[node].op == OP_SUB {
         if pfor_classify_index(pf, g_nodes[node].child0, loop_var, sign) == 0 { return 0; }
         return pfor_classify_index(pf, g_nodes[node].child1, loop_var, 0 - sign);
+    }
+    if kind == AST_BINARY && g_nodes[node].op == OP_MUL {
+        // Literal * subexpr (either order): scale the subexpr's accumulated
+        // literal and stride by the literal. The literal must fit i32 (the
+        // affine record is an i32-residue proof); a huge factor refuses.
+        var lit: i64 = 0 - 1;
+        var rest: i32 = 0 - 1;
+        if g_nodes[g_nodes[node].child0].kind == AST_LIT_INT {
+            lit = g_nodes[g_nodes[node].child0].int_val as i64;
+            rest = g_nodes[node].child1;
+        } else if g_nodes[g_nodes[node].child1].kind == AST_LIT_INT {
+            lit = g_nodes[g_nodes[node].child1].int_val as i64;
+            rest = g_nodes[node].child0;
+        }
+        // Decompose literal * subexpr ONLY when the subexpr uses the loop var
+        // (that's the stride-k case). An invariant `rest` (e.g. n_rounds * 4)
+        // is a single invariant term, handled by the generic term path below.
+        if rest >= 0 && lit >= 0 && lit <= 2147483647
+            && pfor_expr_uses(pf, rest, loop_var) == 1 {
+            let save_lit: i64 = pf.aff_lit;
+            let save_stride: i64 = pf.aff_stride;
+            let save_nterms: i32 = pf.aff_nterms;
+            if pfor_classify_index(pf, rest, loop_var, sign) == 0 { return 0; }
+            // Scale the increment this subtree contributed.
+            pf.aff_lit = save_lit + (pf.aff_lit - save_lit) * lit;
+            pf.aff_stride = save_stride + (pf.aff_stride - save_stride) * lit;
+            // Terms scale too: a term's sign is ±1, but the term VALUE under
+            // k*(...) differs from the unscaled form, so any invariant term
+            // inside a literal product is not the recorded key. Refuse terms
+            // here rather than record a wrong key (conservative).
+            if pf.aff_nterms != save_nterms { pfor_refuse(PFR_NONAFFINE); return 0; }
+            return 1;
+        }
+        // Non-literal product (i*i, i*invariant): nonlinear.
+        if pfor_expr_uses(pf, node, loop_var) == 1 {
+            pfor_refuse(PFR_NONINJECTIVE); return 0;
+        }
+        // Purely invariant product: a term.
+        let mkey: i32 = pfor_expr_key(pf, node);
+        if mkey < 0 { pfor_refuse(PFR_TERM_LIMIT); return 0; }
+        if pf.aff_nterms >= 4 { pfor_refuse(PFR_TERM_LIMIT); return 0; }
+        let mterms: *i32 = pf.aff_terms;
+        let msigns: *i32 = pf.aff_signs;
+        mterms[pf.aff_nterms] = mkey;
+        msigns[pf.aff_nterms] = sign;
+        pf.aff_nterms = pf.aff_nterms + 1;
+        return pfor_walk_expr(pf, node, loop_var);
     }
 
     // Candidate TERM: must be loop-invariant and serializable.
@@ -14364,6 +14413,7 @@ fn pfor_affine_eq(a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
     if a[ao + 2] != b[bo + 2] { return 0; }   // has_lv
     if a[ao + 3] != b[bo + 3] { return 0; }   // nterms
     if a[ao + 4] != b[bo + 4] { return 0; }   // lit
+    if a[ao + 13] != b[bo + 13] { return 0; } // stride (loop-var coefficient)
     let n: i32 = a[ao + 3] as i32;
     var used: i32 = 0;                    // bitmask of matched b terms
     var i: i32 = 0;
@@ -14439,14 +14489,45 @@ fn pfor_affine_delta(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 
 
 // Prove two affine footprints disjoint over [start, end): both stride-1 needs
 // |delta| >= trip count (literal, or ±end_key+slack); const-vs-stride-1 = point-vs-interval.
+// gcd(a, b) over non-negative i64 (Euclid) — for the stride-k residue test.
+fn pfor_gcd(mut_a: i64, mut_b: i64) -> i64 {
+    var x: i64 = mut_a;
+    var y: i64 = mut_b;
+    if x < 0 { x = 0 - x; }
+    if y < 0 { y = 0 - y; }
+    while y != 0 {
+        let t: i64 = x % y;
+        x = y;
+        y = t;
+    }
+    return x;
+}
+
 fn pfor_disjoint(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
     let a_lv: i32 = a[ao + 2] as i32;
     let b_lv: i32 = b[bo + 2] as i32;
     if a_lv == 1 && b_lv == 1 {
+        let a_stride: i64 = a[ao + 13];
+        let b_stride: i64 = b[bo + 13];
+        // Mixed strides: the residue classes interleave in a way this proof
+        // does not model — fail closed (serial), never unsound.
+        if a_stride != b_stride { return 0; }
         if pfor_affine_delta(pf, a, ao, b, bo) == 0 { return 0; }
         let dterms: *i64 = pf.dlt_terms;
         let dsigns: *i64 = pf.dlt_signs;
         if pf.dlt_n == 0 {
+            if a_stride != 1 {
+                // Same NON-UNIT stride k on both writes. A collision needs
+                // k*(i-j) ≡ d (mod 2^32) for iterations i≠j. That congruence has
+                // a solution only if gcd(k, 2^32) divides d — so d mod g != 0 is
+                // PROOF of disjointness for ANY trip count (e.g. the even/odd
+                // split out[2i] / out[2i+1]: d=1, g=2). Otherwise fail closed.
+                if pf.pfb_start_lit_ok == 0 || pf.pfb_end_lit_ok == 0 { return 0; }
+                let g: i64 = pfor_gcd(a_stride, 4294967296);
+                let dm: i64 = pf.dlt_lit % g;
+                if dm != 0 { return 1; }
+                return 0;
+            }
             // Case (a): literal delta vs literal trip count. Compare on the
             // i32 residue circle: this is sufficient for wider indices too,
             // and prevents a 2^32+k mathematical delta proving a runtime k.
@@ -14463,6 +14544,9 @@ fn pfor_disjoint(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
             return 0;
         }
         if pf.dlt_n == 1 {
+            // Case (c) is a stride-1 interval argument; a non-unit stride fails
+            // closed (its footprint is an arithmetic progression, not an interval).
+            if a_stride != 1 { return 0; }
             if pf.pfb_end_key >= 0 && dterms[0] == pf.pfb_end_key as i64 {
                 if pf.pfb_start_lit_ok == 1 && pf.pfb_start_lit >= 0 {
                     // Case (c): exact delta = ±end. Nonzero slack can wrap a
@@ -14491,6 +14575,9 @@ fn pfor_disjoint(pf: *PForState, a: *i64, ao: i32, b: *i64, bo: i32) -> i32 {
         po = bo; pb = b;
         io = ao; ib = a;
     }
+    // The point-vs-interval test models a CONTIGUOUS stride-1 interval; a
+    // non-unit stride makes the footprint an arithmetic progression — fail closed.
+    if ib[io + 13] != 1 { return 0; }
     if pb[po + 3] != 0 { return 0; }          // point has terms: no proof
     if ib[io + 3] != 0 { return 0; }          // interval has terms: no proof
     if pf.pfb_start_lit_ok == 0 || pf.pfb_end_lit_ok == 0 { return 0; }
@@ -14526,6 +14613,7 @@ fn pfor_fill_scratch(pf: *PForState, arr_name: i32, flag: i32, has_lv: i32, with
         }
         t = t + 1;
     }
+    scratch[13] = pf.aff_stride;   // loop-var coefficient k (was pad; layout is 16)
 }
 
 // Record a write arr[idx].  Returns 0 (reject loop) unless the index
@@ -14534,8 +14622,26 @@ fn pfor_record_write(pf: *PForState, arr_name: i32, idx_node: i32, loop_var: i32
     pf.aff_lit = 0;
     pf.aff_nterms = 0;
     pf.aff_lv_count = 0;
+    pf.aff_stride = 0;
     if pfor_classify_index(pf, idx_node, loop_var, 1) == 0 { pfor_refuse(PFR_NONAFFINE); return 0; }
-    if pf.aff_lv_count != 1 { pfor_refuse(PFR_CONST_IDX); return 0; }     // no loop var = non-injective
+    // Injective affine write index: a NONZERO loop-var coefficient. Constant or
+    // self-cancelling (i - i) indices give stride 0 and are non-injective.
+    if pf.aff_stride == 0 { pfor_refuse(PFR_CONST_IDX); return 0; }
+    // Even stride k: k*(i-j) ≡ 0 (mod 2^32) has a nonzero solution once the trip
+    // count exceeds 2^32 / gcd(k, 2^32) — the map wraps onto itself. Odd k is a
+    // unit mod 2^32 (always injective). Guard the even case on the literal trip.
+    let wstride: i64 = pf.aff_stride;
+    let wg: i64 = pfor_gcd(wstride, 4294967296);
+    if wg > 1 {
+        if pf.pfb_start_lit_ok == 0 || pf.pfb_end_lit_ok == 0 {
+            pfor_refuse(PFR_NONINJECTIVE); return 0;
+        }
+        let wtrip: i64 = pf.pfb_end_lit - pf.pfb_start_lit;
+        // injective iff trip <= 2^32 / g
+        if wtrip < 0 || wtrip > 4294967296 / wg {
+            pfor_refuse(PFR_NONINJECTIVE); return 0;
+        }
+    }
     pfor_fill_scratch(pf, arr_name, 1, 1, 1);
     let writes: *i64 = pf.writes;
     // Dedup identical write forms
@@ -14564,6 +14670,7 @@ fn pfor_record_read(pf: *PForState, arr_name: i32, idx_node: i32, loop_var: i32)
     pf.aff_lit = 0;
     pf.aff_nterms = 0;
     pf.aff_lv_count = 0;
+    pf.aff_stride = 0;
     // A WILD read does not reject — suppress reason capture while classifying
     // this index so it cannot mislabel the loop's verdict.
     let saved_ctx: i32 = g_pf_reason_ctx;
@@ -15471,13 +15578,11 @@ fn proof0_affine_classify(P: *PForProof0, A: *PForState,
         let binding: i32 = proof0_resolve(P, g_nodes[node].name0);
         if binding >= 0 && P.env_kinds[binding] == P0_BIND_OUTER
             && P.env_decls[binding] == P.env_decls[0] {
-            if sign != 1 {
-                proof0_affine_refuse(P, P0A_NONINJECTIVE); return 0;
-            }
+            // Accumulate the loop-var coefficient (the stride); injectivity is
+            // decided from aff_stride afterwards, not occurrence count.
             A.aff_lv_count = A.aff_lv_count + 1;
-            if A.aff_lv_count == 1 { return 1; }
-            proof0_affine_refuse(P, P0A_NONINJECTIVE);
-            return 0;
+            A.aff_stride = A.aff_stride + (sign as i64);
+            return 1;
         }
     }
     if kind == AST_BINARY && g_nodes[node].op == OP_ADD {
@@ -15491,6 +15596,44 @@ fn proof0_affine_classify(P: *PForProof0, A: *PForState,
             return 0;
         }
         return proof0_affine_classify(P, A, g_nodes[node].child1, 0 - sign);
+    }
+    if kind == AST_BINARY && g_nodes[node].op == OP_MUL {
+        // Literal * subexpr: scale the subexpr's accumulated literal and stride.
+        var lit: i64 = 0 - 1;
+        var rest: i32 = 0 - 1;
+        if g_nodes[g_nodes[node].child0].kind == AST_LIT_INT {
+            lit = g_nodes[g_nodes[node].child0].int_val as i64;
+            rest = g_nodes[node].child1;
+        } else if g_nodes[g_nodes[node].child1].kind == AST_LIT_INT {
+            lit = g_nodes[g_nodes[node].child1].int_val as i64;
+            rest = g_nodes[node].child0;
+        }
+        if rest >= 0 && lit >= 0 && lit <= 2147483647
+            && proof0_affine_varies(P, rest) == 1 {
+            let save_lit: i64 = A.aff_lit;
+            let save_stride: i64 = A.aff_stride;
+            let save_nterms: i32 = A.aff_nterms;
+            if proof0_affine_classify(P, A, rest, sign) == 0 { return 0; }
+            A.aff_lit = save_lit + (A.aff_lit - save_lit) * lit;
+            A.aff_stride = save_stride + (A.aff_stride - save_stride) * lit;
+            if A.aff_nterms != save_nterms {
+                proof0_affine_refuse(P, P0A_NONAFFINE); return 0;
+            }
+            return 1;
+        }
+        if proof0_affine_varies(P, node) == 1 {
+            proof0_affine_refuse(P, P0A_NONINJECTIVE); return 0;
+        }
+        let mkey: i32 = proof0_affine_expr_key(P, A, node);
+        if mkey < 0 || A.aff_nterms >= 4 {
+            proof0_affine_refuse(P, P0A_TERM_LIMIT); return 0;
+        }
+        let mterms: *i32 = A.aff_terms;
+        let msigns: *i32 = A.aff_signs;
+        mterms[A.aff_nterms] = mkey;
+        msigns[A.aff_nterms] = sign;
+        A.aff_nterms = A.aff_nterms + 1;
+        return 1;
     }
     if proof0_affine_varies(P, node) == 1 {
         if kind == AST_IDENT && proof0_resolve(P, g_nodes[node].name0) >= 0 {
@@ -15535,9 +15678,23 @@ fn proof0_affine_record_write(P: *PForProof0, A: *PForState,
     A.aff_lit = 0;
     A.aff_nterms = 0;
     A.aff_lv_count = 0;
+    A.aff_stride = 0;
     if proof0_affine_classify(P, A, idx, 1) == 0 { return; }
-    if A.aff_lv_count != 1 {
+    if A.aff_stride == 0 {
         proof0_affine_refuse(P, P0A_CONST_IDX); return;
+    }
+    // Even-stride wrap guard (mirrors pfor_record_write): injective only while
+    // the trip count stays within 2^32 / gcd(k, 2^32).
+    let wstride: i64 = A.aff_stride;
+    let wg: i64 = pfor_gcd(wstride, 4294967296);
+    if wg > 1 {
+        if A.pfb_start_lit_ok == 0 || A.pfb_end_lit_ok == 0 {
+            proof0_affine_refuse(P, P0A_NONINJECTIVE); return;
+        }
+        let wtrip: i64 = A.pfb_end_lit - A.pfb_start_lit;
+        if wtrip < 0 || wtrip > 4294967296 / wg {
+            proof0_affine_refuse(P, P0A_NONINJECTIVE); return;
+        }
     }
     pfor_fill_scratch(A, arr, 1, 1, 1);
     let writes: *i64 = A.writes;
@@ -15567,6 +15724,7 @@ fn proof0_affine_record_read(P: *PForProof0, A: *PForState,
     A.aff_lit = 0;
     A.aff_nterms = 0;
     A.aff_lv_count = 0;
+    A.aff_stride = 0;
     let saved_safe: i32 = P.affine_safe;
     let saved_reason: i32 = P.affine_reason;
     let saved_cpu_reason: i32 = P.cpu_reason;
@@ -17385,6 +17543,7 @@ fn pfor_alias_emit_range(ptr_reg: i32, rec: *i64,
                           start64: i32, end64: i32,
                           elem_bytes: i32, iter_bits: i32) -> PForAliasRange {
     let lit: i64 = rec[4];
+    let stride: i64 = rec[13];
     var lo_idx: PForAliasChecked = PForAliasChecked {
         value: 0, bad: 0 - 1
     };
@@ -17392,8 +17551,43 @@ fn pfor_alias_emit_range(ptr_reg: i32, rec: *i64,
         value: 0, bad: 0 - 1
     };
     if rec[2] == 1 {
-        lo_idx = pfor_alias_checked_add(start64, lit);
-        hi_idx = pfor_alias_checked_add(end64, lit);
+        if stride == 1 {
+            lo_idx = pfor_alias_checked_add(start64, lit);
+            hi_idx = pfor_alias_checked_add(end64, lit);
+        } else {
+            // Stride-k footprint { k*i + lit : i in [start,end) } is an
+            // arithmetic progression; take the CONVEX HULL as a byte interval
+            // (over-approximate: the alias guard only ever falls back to serial,
+            // so a superset range is sound). Endpoints k*start+lit / k*(end-1)+lit,
+            // normalized lo<=hi, hi exclusive (+1 on the max end).
+            let em1: PForAliasChecked = pfor_alias_checked_add(end64, 0 - 1);
+            let ks: PForAliasChecked = pfor_alias_checked_mul(start64, stride);
+            let ke: PForAliasChecked = pfor_alias_checked_mul(em1.value, stride);
+            let e0: PForAliasChecked = pfor_alias_checked_add(ks.value, lit);
+            let e1: PForAliasChecked = pfor_alias_checked_add(ke.value, lit);
+            var sbad: i32 = pfor_alias_or(em1.bad, ks.bad);
+            sbad = pfor_alias_or(sbad, ke.bad);
+            sbad = pfor_alias_or(sbad, e0.bad);
+            sbad = pfor_alias_or(sbad, e1.bad);
+            // lo = min(e0, e1); hi_incl = max(e0, e1)
+            let lt: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(lt); ir_wr(" = icmp slt i64 ");
+            ir_wr_reg(e0.value); ir_wr(", "); ir_wr_reg(e1.value); ir_wr("\n");
+            let lov: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(lov); ir_wr(" = select i1 ");
+            ir_wr_reg(lt); ir_wr(", i64 "); ir_wr_reg(e0.value);
+            ir_wr(", i64 "); ir_wr_reg(e1.value); ir_wr("\n");
+            let hiv: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(hiv); ir_wr(" = select i1 ");
+            ir_wr_reg(lt); ir_wr(", i64 "); ir_wr_reg(e1.value);
+            ir_wr(", i64 "); ir_wr_reg(e0.value); ir_wr("\n");
+            lo_idx.value = lov;
+            lo_idx.bad = sbad;
+            // hi exclusive = max + 1
+            let hi1: PForAliasChecked = pfor_alias_checked_add(hiv, 1);
+            hi_idx.value = hi1.value;
+            hi_idx.bad = pfor_alias_or(sbad, hi1.bad);
+        }
     } else {
         lo_idx.value = pfor_alias_const_i64(lit);
         hi_idx.value = pfor_alias_const_i64(lit + 1);
@@ -22713,18 +22907,6 @@ fn emit_agx_module() {
     if nemitted == 0 { ir_wr("; no AGX-0 workers emitted\n"); }
 }
 
-// ===== STAGE-0 GPU DEVICE CODEGEN (--emit-gpu, --emit-gpu-nvptx) =====
-// Re-emit each elementwise-class pfor worker as a device kernel: the SIMT
-// identity idx = wg.id.x*WGSIZE + wi.id.x + lo replaces the serial loop.
-// Registers-only/flat-access (AMDGPU rejects addrspace(0) allocas). Two device
-// targets share this one path (g_gpu_target) — only the triple, the SIMT id
-// intrinsics, the kernel calling convention and the launch-bound attribute
-// differ: AMDGCN (amdgpu_kernel, gate = llc -mcpu=gfx1100 lowers to a valid
-// object) and NVPTX (ptx_kernel, gate = llc -mcpu=sm_90 lowers to valid PTX).
-// Design: @internal-note: plan-gpu-purity-runtime.
-
-// GPU-eligible iff the body is ONLY index-assigns (out[idx]=expr): no allocas,
-// own-cell writes. Private mutables / multi-stmt reductions are Stage 3.
 fn pfor_body_all_index_assign(body: i32) -> i32 {
     if g_nodes[body].kind != AST_BLOCK { return 0; }
     let nstmts: i32 = g_nodes[body].nargs;

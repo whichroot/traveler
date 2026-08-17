@@ -1,0 +1,20 @@
+// pfor_ok_stride_reverse.tv — POSITIVE CONTROL: reverse copy, stride -1
+//
+// Writes b[7 - i] for i in 0..8. The loop-var coefficient is -1 (odd, a unit
+// mod 2^32), so the iteration->cell map is injective: distinct i write distinct
+// cells. Stride -1 needs no trip guard (gcd(1, 2^32) = 1).
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+fn main() -> i32 {
+    var a: [i32; 8] = 0;
+    var b: [i32; 8] = 0;
+    var w: i32 = 0;
+    while w < 8 { a[w] = w + 1; b[w] = 0; w = w + 1; }
+    for i in 0..8 {
+        b[7 - i] = a[i];
+    }
+    print(b[0]);        // 8
+    print(b[7]);        // 1
+    return 0;
+}
