@@ -1,0 +1,949 @@
+// SPDX-License-Identifier: Apache-2.0
+// Traveler-owned Vulkan compute submission. The shader artifact is compiler
+// owned; this file performs the public Vulkan C ABI calls without a C shim.
+
+import "vulkan_ffi.tv";
+
+extern "C" fn fopen(path: *u8, mode: *u8) -> *u8;
+extern "C" fn fread(buffer: *u8, size: i64, count: i64, file: *u8) -> i64;
+extern "C" fn fclose(file: *u8) -> i32;
+extern "C" fn fseek(file: *u8, offset: i64, origin: i32) -> i32;
+extern "C" fn ftell(file: *u8) -> i64;
+extern "C" fn memcpy(destination: *u8, source: *u8, count: usize) -> *u8;
+extern "C" fn memset(destination: *u8, value: i32, count: usize) -> *u8;
+
+var g_vulkan_error: i32 = 0;
+var g_vulkan_status: i32 = 0;
+var g_vulkan_dispatch_count: i32 = 0;
+var g_vulkan_memory_type: i32 = 0 - 1;
+var g_vulkan_memory_flags: u32 = 0;
+
+struct VulkanRuntime {
+    instance: *u8,
+    physical: *u8,
+    device: *u8,
+    queue: *u8,
+    queue_family: u32,
+    shader_module: *u8,
+    descriptor_layout: *u8,
+    pipeline_layout: *u8,
+    pipeline: *u8,
+    descriptor_pool: *u8,
+    descriptor_set: *u8,
+    command_pool: *u8,
+    command: *u8,
+    fence: *u8,
+    input_buffer: *u8,
+    input_memory: *u8,
+    input_map: *u8,
+    input2_buffer: *u8,
+    input2_memory: *u8,
+    input2_map: *u8,
+    output_buffer: *u8,
+    output_memory: *u8,
+    output_map: *u8,
+    capacity: u64,
+}
+
+fn vulkan_read_spirv(path: *u8, size_out: *i64) -> *u8 {
+    let file: *u8 = fopen(path, "rb");
+    if file == null { return null; }
+    if fseek(file, 0, 2) != 0 { fclose(file); return null; }
+    let size: i64 = ftell(file);
+    if size <= 0 || (size & 3) != 0 {
+        fclose(file);
+        return null;
+    }
+    if fseek(file, 0, 0) != 0 { fclose(file); return null; }
+    let bytes: *u8 = alloc(size as i32);
+    if fread(bytes, 1, size, file) != size {
+        free(bytes);
+        fclose(file);
+        return null;
+    }
+    fclose(file);
+    size_out[0] = size;
+    return bytes;
+}
+
+fn vulkan_release_buffers(runtime: *VulkanRuntime) {
+    if runtime == null || runtime.device == null { return; }
+    if runtime.input_map != null && runtime.input_memory != null {
+        vkUnmapMemory(runtime.device, runtime.input_memory);
+    }
+    if runtime.output_map != null && runtime.output_memory != null {
+        vkUnmapMemory(runtime.device, runtime.output_memory);
+    }
+    if runtime.input2_map != null && runtime.input2_memory != null {
+        vkUnmapMemory(runtime.device, runtime.input2_memory);
+    }
+    if runtime.input_buffer != null {
+        vkDestroyBuffer(runtime.device, runtime.input_buffer, null);
+    }
+    if runtime.output_buffer != null {
+        vkDestroyBuffer(runtime.device, runtime.output_buffer, null);
+    }
+    if runtime.input2_buffer != null {
+        vkDestroyBuffer(runtime.device, runtime.input2_buffer, null);
+    }
+    if runtime.input_memory != null {
+        vkFreeMemory(runtime.device, runtime.input_memory, null);
+    }
+    if runtime.output_memory != null {
+        vkFreeMemory(runtime.device, runtime.output_memory, null);
+    }
+    if runtime.input2_memory != null {
+        vkFreeMemory(runtime.device, runtime.input2_memory, null);
+    }
+    runtime.input_buffer = null;
+    runtime.input_memory = null;
+    runtime.input_map = null;
+    runtime.input2_buffer = null;
+    runtime.input2_memory = null;
+    runtime.input2_map = null;
+    runtime.output_buffer = null;
+    runtime.output_memory = null;
+    runtime.output_map = null;
+    runtime.capacity = 0;
+}
+
+fn vulkan_runtime_close(runtime: *VulkanRuntime) {
+    if runtime == null { return; }
+    if runtime.device != null { vkDeviceWaitIdle(runtime.device); }
+    vulkan_release_buffers(runtime);
+    if runtime.device != null && runtime.fence != null {
+        vkDestroyFence(runtime.device, runtime.fence, null);
+    }
+    if runtime.device != null && runtime.command_pool != null {
+        vkDestroyCommandPool(runtime.device, runtime.command_pool, null);
+    }
+    if runtime.device != null && runtime.descriptor_pool != null {
+        vkDestroyDescriptorPool(runtime.device, runtime.descriptor_pool, null);
+    }
+    if runtime.device != null && runtime.pipeline != null {
+        vkDestroyPipeline(runtime.device, runtime.pipeline, null);
+    }
+    if runtime.device != null && runtime.pipeline_layout != null {
+        vkDestroyPipelineLayout(runtime.device, runtime.pipeline_layout, null);
+    }
+    if runtime.device != null && runtime.descriptor_layout != null {
+        vkDestroyDescriptorSetLayout(runtime.device, runtime.descriptor_layout, null);
+    }
+    if runtime.device != null && runtime.shader_module != null {
+        vkDestroyShaderModule(runtime.device, runtime.shader_module, null);
+    }
+    if runtime.device != null { vkDestroyDevice(runtime.device, null); }
+    if runtime.instance != null { vkDestroyInstance(runtime.instance, null); }
+    free(runtime);
+}
+
+fn vulkan_open_fail(runtime: *VulkanRuntime, phase: i32,
+                     status: i32) -> *VulkanRuntime {
+    g_vulkan_error = phase;
+    g_vulkan_status = status;
+    vulkan_runtime_close(runtime);
+    return null;
+}
+
+fn vulkan_pick_physical(runtime: *VulkanRuntime) -> i32 {
+    let count: *u32 = alloc(1);
+    count[0] = 0;
+    var status: i32 = vkEnumeratePhysicalDevices(runtime.instance, count, null);
+    if status != VK_SUCCESS || count[0] == 0 {
+        free(count);
+        return status;
+    }
+    let devices: **u8 = alloc(count[0] as i32);
+    status = vkEnumeratePhysicalDevices(runtime.instance, count, devices);
+    if status != VK_SUCCESS {
+        free(devices as *u8);
+        free(count);
+        return status;
+    }
+    let properties: *u8 = alloc(1024);
+    let words: *u32 = properties as *u32;
+    runtime.physical = devices[0];
+    var i: i32 = 0;
+    while i < count[0] as i32 {
+        memset(properties, 0, 1024);
+        vkGetPhysicalDeviceProperties(devices[i], properties);
+        if words[2] == 0x1002 && words[4] == 2 {
+            runtime.physical = devices[i];
+            i = count[0] as i32;
+        } else {
+            i = i + 1;
+        }
+    }
+    free(properties);
+    free(devices as *u8);
+    free(count);
+    return VK_SUCCESS;
+}
+
+fn vulkan_pick_queue(runtime: *VulkanRuntime) -> i32 {
+    let count: *u32 = alloc(1);
+    count[0] = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(runtime.physical, count, null);
+    if count[0] == 0 { free(count); return 0; }
+    let bytes: i32 = (count[0] as i32) * 24;
+    let properties: *u8 = alloc(bytes);
+    memset(properties, 0, bytes as usize);
+    vkGetPhysicalDeviceQueueFamilyProperties(runtime.physical, count, properties);
+    let words: *u32 = properties as *u32;
+    var found: i32 = 0;
+    var i: i32 = 0;
+    while i < count[0] as i32 && found == 0 {
+        if (words[i * 6] & VK_QUEUE_COMPUTE_BIT) != 0
+            && words[i * 6 + 1] != 0 {
+            runtime.queue_family = i as u32;
+            found = 1;
+        }
+        i = i + 1;
+    }
+    free(properties);
+    free(count);
+    return found;
+}
+
+fn vulkan_find_memory_type(runtime: *VulkanRuntime, type_bits: u32,
+                           required: u32, preferred: u32) -> i32 {
+    let properties: *u8 = alloc(544);
+    memset(properties, 0, 544);
+    vkGetPhysicalDeviceMemoryProperties(runtime.physical, properties);
+    let words: *u32 = properties as *u32;
+    var fallback: i32 = 0 - 1;
+    var i: i32 = 0;
+    while i < words[0] as i32 && i < 32 {
+        let flags: u32 = words[1 + i * 2];
+        if (type_bits & ((1 as u32) << (i as u32))) != 0
+            && (flags & required) == required {
+            if (flags & preferred) == preferred {
+                g_vulkan_memory_type = i;
+                g_vulkan_memory_flags = flags;
+                free(properties);
+                return i;
+            }
+            if fallback < 0 { fallback = i; }
+        }
+        i = i + 1;
+    }
+    if fallback >= 0 {
+        g_vulkan_memory_type = fallback;
+        g_vulkan_memory_flags = words[1 + fallback * 2];
+    }
+    free(properties);
+    return fallback;
+}
+
+fn vulkan_make_buffer(runtime: *VulkanRuntime, size: u64,
+                       buffer_out: **u8, memory_out: **u8,
+                       map_out: **u8, preferred: u32) -> i32 {
+    buffer_out[0] = null;
+    memory_out[0] = null;
+    map_out[0] = null;
+    let create: *VkBufferCreateInfo = alloc(1);
+    create[0] = VkBufferCreateInfo {
+        sType: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        size: size,
+        usage: VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        sharingMode: VK_SHARING_MODE_EXCLUSIVE,
+        queueFamilyIndexCount: 0,
+        pQueueFamilyIndices: null
+    };
+    var status: i32 = vkCreateBuffer(runtime.device, create, null, buffer_out);
+    free(create);
+    if status != VK_SUCCESS { return status; }
+
+    let requirements: *u8 = alloc(24);
+    memset(requirements, 0, 24);
+    vkGetBufferMemoryRequirements(runtime.device, buffer_out[0], requirements);
+    let req64: *u64 = requirements as *u64;
+    let req32: *u32 = requirements as *u32;
+    let allocation_size: u64 = req64[0];
+    let memory_type: i32 = vulkan_find_memory_type(
+        runtime, req32[4],
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        preferred);
+    free(requirements);
+    if memory_type < 0 {
+        vkDestroyBuffer(runtime.device, buffer_out[0], null);
+        buffer_out[0] = null;
+        return 0 - 1;
+    }
+
+    let allocate: *VkMemoryAllocateInfo = alloc(1);
+    allocate[0] = VkMemoryAllocateInfo {
+        sType: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        pNext: null,
+        allocationSize: allocation_size,
+        memoryTypeIndex: memory_type as u32
+    };
+    status = vkAllocateMemory(runtime.device, allocate, null, memory_out);
+    free(allocate);
+    if status != VK_SUCCESS {
+        vkDestroyBuffer(runtime.device, buffer_out[0], null);
+        buffer_out[0] = null;
+        return status;
+    }
+    status = vkBindBufferMemory(runtime.device, buffer_out[0], memory_out[0], 0);
+    if status == VK_SUCCESS {
+        status = vkMapMemory(runtime.device, memory_out[0], 0,
+                             allocation_size, 0, map_out);
+    }
+    if status != VK_SUCCESS {
+        vkFreeMemory(runtime.device, memory_out[0], null);
+        vkDestroyBuffer(runtime.device, buffer_out[0], null);
+        memory_out[0] = null;
+        buffer_out[0] = null;
+    }
+    return status;
+}
+
+fn vulkan_runtime_open(spirv_path: *u8) -> *VulkanRuntime {
+    g_vulkan_error = 0;
+    g_vulkan_status = 0;
+    let runtime: *VulkanRuntime = alloc(1);
+    memset(runtime as *u8, 0, 24 * 8);
+
+    let app: *VkApplicationInfo = alloc(1);
+    app[0] = VkApplicationInfo {
+        sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pNext: null,
+        pApplicationName: "Traveler",
+        applicationVersion: 1,
+        pEngineName: "Traveler",
+        engineVersion: 1,
+        apiVersion: 4198400
+    };
+    let instance_info: *VkInstanceCreateInfo = alloc(1);
+    instance_info[0] = VkInstanceCreateInfo {
+        sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        pApplicationInfo: app,
+        enabledLayerCount: 0,
+        ppEnabledLayerNames: null,
+        enabledExtensionCount: 0,
+        ppEnabledExtensionNames: null
+    };
+    let instance_slot: **u8 = alloc(1);
+    instance_slot[0] = null;
+    var status: i32 = vkCreateInstance(instance_info, null, instance_slot);
+    runtime.instance = instance_slot[0];
+    free(instance_slot as *u8);
+    free(instance_info);
+    free(app);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 1, status); }
+
+    status = vulkan_pick_physical(runtime);
+    if status != VK_SUCCESS || runtime.physical == null {
+        return vulkan_open_fail(runtime, 2, status);
+    }
+    if vulkan_pick_queue(runtime) == 0 {
+        return vulkan_open_fail(runtime, 3, 0 - 1);
+    }
+
+    let priority: *u32 = alloc(1);
+    priority[0] = 0x3f800000;
+    let queue_info: *VkDeviceQueueCreateInfo = alloc(1);
+    queue_info[0] = VkDeviceQueueCreateInfo {
+        sType: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        queueFamilyIndex: runtime.queue_family,
+        queueCount: 1,
+        pQueuePriorities: priority
+    };
+    let device_info: *VkDeviceCreateInfo = alloc(1);
+    let device_features: *u32 = alloc(55);
+    memset(device_features as *u8, 0, 220);
+    vkGetPhysicalDeviceFeatures(runtime.physical, device_features as *u8);
+    let has_shader_int64: u32 = device_features[40];
+    memset(device_features as *u8, 0, 220);
+    device_features[40] = has_shader_int64;
+    device_info[0] = VkDeviceCreateInfo {
+        sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        queueCreateInfoCount: 1,
+        pQueueCreateInfos: queue_info,
+        enabledLayerCount: 0,
+        ppEnabledLayerNames: null,
+        enabledExtensionCount: 0,
+        ppEnabledExtensionNames: null,
+        pEnabledFeatures: device_features as *u8
+    };
+    let device_slot: **u8 = alloc(1);
+    device_slot[0] = null;
+    status = vkCreateDevice(runtime.physical, device_info, null, device_slot);
+    runtime.device = device_slot[0];
+    free(device_slot as *u8);
+    free(device_info);
+    free(device_features);
+    free(queue_info);
+    free(priority);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 4, status); }
+    let queue_slot: **u8 = alloc(1);
+    vkGetDeviceQueue(runtime.device, runtime.queue_family, 0, queue_slot);
+    runtime.queue = queue_slot[0];
+    free(queue_slot as *u8);
+    if runtime.queue == null { return vulkan_open_fail(runtime, 5, 0 - 1); }
+
+    let code_size: *i64 = alloc(1);
+    let code: *u8 = vulkan_read_spirv(spirv_path, code_size);
+    if code == null { free(code_size); return vulkan_open_fail(runtime, 6, 0 - 1); }
+    let shader_info: *VkShaderModuleCreateInfo = alloc(1);
+    shader_info[0] = VkShaderModuleCreateInfo {
+        sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        codeSize: code_size[0] as usize,
+        pCode: code as *u32
+    };
+    let shader_slot: **u8 = alloc(1);
+    status = vkCreateShaderModule(runtime.device, shader_info, null, shader_slot);
+    runtime.shader_module = shader_slot[0];
+    free(shader_slot as *u8);
+    free(shader_info);
+    free(code);
+    free(code_size);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 7, status); }
+
+    let bindings: *VkDescriptorSetLayoutBinding = alloc(3);
+    bindings[0] = VkDescriptorSetLayoutBinding {
+        binding: 0,
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        descriptorCount: 1,
+        stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
+        pImmutableSamplers: null
+    };
+    bindings[1] = VkDescriptorSetLayoutBinding {
+        binding: 1,
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        descriptorCount: 1,
+        stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
+        pImmutableSamplers: null
+    };
+    bindings[2] = VkDescriptorSetLayoutBinding {
+        binding: 2,
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        descriptorCount: 1,
+        stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
+        pImmutableSamplers: null
+    };
+    let descriptor_info: *VkDescriptorSetLayoutCreateInfo = alloc(1);
+    descriptor_info[0] = VkDescriptorSetLayoutCreateInfo {
+        sType: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        bindingCount: 3,
+        pBindings: bindings
+    };
+    let descriptor_layout_slot: **u8 = alloc(1);
+    status = vkCreateDescriptorSetLayout(runtime.device, descriptor_info,
+                                          null, descriptor_layout_slot);
+    runtime.descriptor_layout = descriptor_layout_slot[0];
+    free(descriptor_layout_slot as *u8);
+    free(descriptor_info);
+    free(bindings);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 8, status); }
+
+    let push_range: *VkPushConstantRange = alloc(1);
+    push_range[0] = VkPushConstantRange {
+        stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
+        offset: 0,
+        size: 8
+    };
+    let set_layouts: **u8 = alloc(1);
+    set_layouts[0] = runtime.descriptor_layout;
+    let layout_info: *VkPipelineLayoutCreateInfo = alloc(1);
+    layout_info[0] = VkPipelineLayoutCreateInfo {
+        sType: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        setLayoutCount: 1,
+        pSetLayouts: set_layouts,
+        pushConstantRangeCount: 1,
+        pPushConstantRanges: push_range
+    };
+    let pipeline_layout_slot: **u8 = alloc(1);
+    status = vkCreatePipelineLayout(runtime.device, layout_info, null,
+                                    pipeline_layout_slot);
+    runtime.pipeline_layout = pipeline_layout_slot[0];
+    free(pipeline_layout_slot as *u8);
+    free(layout_info);
+    free(push_range);
+    if status != VK_SUCCESS {
+        free(set_layouts as *u8);
+        return vulkan_open_fail(runtime, 9, status);
+    }
+
+    let pipeline_info: *VkComputePipelineCreateInfo = alloc(1);
+    pipeline_info[0] = VkComputePipelineCreateInfo {
+        sType: VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        stagePadding: 0,
+        stageSType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        stagePNext: null,
+        stageFlags: 0,
+        stageStage: VK_SHADER_STAGE_COMPUTE_BIT,
+        stageModule: runtime.shader_module,
+        stagePName: "main",
+        stagePSpecializationInfo: null,
+        layout: runtime.pipeline_layout,
+        basePipelineHandle: null,
+        basePipelineIndex: 0 - 1
+    };
+    let pipeline_slot: **u8 = alloc(1);
+    status = vkCreateComputePipelines(runtime.device, null, 1, pipeline_info,
+                                      null, pipeline_slot);
+    runtime.pipeline = pipeline_slot[0];
+    free(pipeline_slot as *u8);
+    free(pipeline_info);
+    if status != VK_SUCCESS {
+        free(set_layouts as *u8);
+        return vulkan_open_fail(runtime, 10, status);
+    }
+
+    let pool_size: *VkDescriptorPoolSize = alloc(1);
+    pool_size[0] = VkDescriptorPoolSize {
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        descriptorCount: 3
+    };
+    let pool_info: *VkDescriptorPoolCreateInfo = alloc(1);
+    pool_info[0] = VkDescriptorPoolCreateInfo {
+        sType: VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        pNext: null,
+        flags: 0,
+        maxSets: 1,
+        poolSizeCount: 1,
+        pPoolSizes: pool_size
+    };
+    let descriptor_pool_slot: **u8 = alloc(1);
+    status = vkCreateDescriptorPool(runtime.device, pool_info, null,
+                                    descriptor_pool_slot);
+    runtime.descriptor_pool = descriptor_pool_slot[0];
+    free(descriptor_pool_slot as *u8);
+    free(pool_info);
+    free(pool_size);
+    if status != VK_SUCCESS {
+        free(set_layouts as *u8);
+        return vulkan_open_fail(runtime, 11, status);
+    }
+    let set_info: *VkDescriptorSetAllocateInfo = alloc(1);
+    set_info[0] = VkDescriptorSetAllocateInfo {
+        sType: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        pNext: null,
+        descriptorPool: runtime.descriptor_pool,
+        descriptorSetCount: 1,
+        pSetLayouts: set_layouts
+    };
+    let descriptor_set_slot: **u8 = alloc(1);
+    status = vkAllocateDescriptorSets(runtime.device, set_info,
+                                      descriptor_set_slot);
+    runtime.descriptor_set = descriptor_set_slot[0];
+    free(descriptor_set_slot as *u8);
+    free(set_info);
+    free(set_layouts as *u8);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 12, status); }
+
+    let command_pool_info: *VkCommandPoolCreateInfo = alloc(1);
+    command_pool_info[0] = VkCommandPoolCreateInfo {
+        sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        pNext: null,
+        flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        queueFamilyIndex: runtime.queue_family
+    };
+    let command_pool_slot: **u8 = alloc(1);
+    status = vkCreateCommandPool(runtime.device, command_pool_info, null,
+                                 command_pool_slot);
+    runtime.command_pool = command_pool_slot[0];
+    free(command_pool_slot as *u8);
+    free(command_pool_info);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 13, status); }
+    let command_info: *VkCommandBufferAllocateInfo = alloc(1);
+    command_info[0] = VkCommandBufferAllocateInfo {
+        sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        pNext: null,
+        commandPool: runtime.command_pool,
+        level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        commandBufferCount: 1
+    };
+    let command_slot: **u8 = alloc(1);
+    status = vkAllocateCommandBuffers(runtime.device, command_info, command_slot);
+    runtime.command = command_slot[0];
+    free(command_slot as *u8);
+    free(command_info);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 14, status); }
+
+    let fence_info: *VkFenceCreateInfo = alloc(1);
+    fence_info[0] = VkFenceCreateInfo {
+        sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        pNext: null,
+        flags: 0
+    };
+    let fence_slot: **u8 = alloc(1);
+    status = vkCreateFence(runtime.device, fence_info, null, fence_slot);
+    runtime.fence = fence_slot[0];
+    free(fence_slot as *u8);
+    free(fence_info);
+    if status != VK_SUCCESS { return vulkan_open_fail(runtime, 15, status); }
+    return runtime;
+}
+
+fn vulkan_prepare_buffers(runtime: *VulkanRuntime, size: u64,
+                          with_input2: i32) -> i32 {
+    if runtime.capacity >= size && runtime.input_buffer != null
+        && runtime.output_buffer != null
+        && (with_input2 == 0 || runtime.input2_buffer != null) { return 1; }
+    vulkan_release_buffers(runtime);
+    let input_buffer: **u8 = alloc(1);
+    let input_memory: **u8 = alloc(1);
+    let input_map: **u8 = alloc(1);
+    var status: i32 = vulkan_make_buffer(runtime, size, input_buffer,
+                                         input_memory, input_map,
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if status != VK_SUCCESS {
+        free(input_buffer as *u8); free(input_memory as *u8); free(input_map as *u8);
+        g_vulkan_status = status;
+        return 0;
+    }
+    runtime.input_buffer = input_buffer[0];
+    runtime.input_memory = input_memory[0];
+    runtime.input_map = input_map[0];
+    free(input_buffer as *u8); free(input_memory as *u8); free(input_map as *u8);
+
+    if with_input2 != 0 {
+        let input2_buffer: **u8 = alloc(1);
+        let input2_memory: **u8 = alloc(1);
+        let input2_map: **u8 = alloc(1);
+        status = vulkan_make_buffer(runtime, size, input2_buffer,
+                                    input2_memory, input2_map,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if status != VK_SUCCESS {
+            free(input2_buffer as *u8); free(input2_memory as *u8);
+            free(input2_map as *u8);
+            g_vulkan_status = status;
+            vulkan_release_buffers(runtime);
+            return 0;
+        }
+        runtime.input2_buffer = input2_buffer[0];
+        runtime.input2_memory = input2_memory[0];
+        runtime.input2_map = input2_map[0];
+        free(input2_buffer as *u8); free(input2_memory as *u8);
+        free(input2_map as *u8);
+    }
+
+    let output_buffer: **u8 = alloc(1);
+    let output_memory: **u8 = alloc(1);
+    let output_map: **u8 = alloc(1);
+    // CPU publication must not read through an uncached device-local BAR map.
+    status = vulkan_make_buffer(runtime, size, output_buffer,
+                                output_memory, output_map,
+                                VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if status != VK_SUCCESS {
+        free(output_buffer as *u8); free(output_memory as *u8); free(output_map as *u8);
+        g_vulkan_status = status;
+        vulkan_release_buffers(runtime);
+        return 0;
+    }
+    runtime.output_buffer = output_buffer[0];
+    runtime.output_memory = output_memory[0];
+    runtime.output_map = output_map[0];
+    free(output_buffer as *u8); free(output_memory as *u8); free(output_map as *u8);
+    runtime.capacity = size;
+
+    let infos: *VkDescriptorBufferInfo = alloc(3);
+    infos[0] = VkDescriptorBufferInfo {
+        buffer: runtime.input_buffer, offset: 0, range: size
+    };
+    infos[1] = VkDescriptorBufferInfo {
+        buffer: runtime.input2_buffer, offset: 0, range: size
+    };
+    infos[2] = VkDescriptorBufferInfo {
+        buffer: runtime.output_buffer, offset: 0, range: size
+    };
+    let writes: *VkWriteDescriptorSet = alloc(3);
+    writes[0] = VkWriteDescriptorSet {
+        sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        pNext: null,
+        dstSet: runtime.descriptor_set,
+        dstBinding: 0,
+        dstArrayElement: 0,
+        descriptorCount: 1,
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        pImageInfo: null,
+        pBufferInfo: &infos[0],
+        pTexelBufferView: null
+    };
+    writes[1] = VkWriteDescriptorSet {
+        sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        pNext: null,
+        dstSet: runtime.descriptor_set,
+        dstBinding: 2,
+        dstArrayElement: 0,
+        descriptorCount: 1,
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        pImageInfo: null,
+        pBufferInfo: &infos[2],
+        pTexelBufferView: null
+    };
+    var write_count: u32 = 2;
+    if with_input2 != 0 {
+        writes[2] = writes[1];
+        writes[1] = VkWriteDescriptorSet {
+            sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            pNext: null,
+            dstSet: runtime.descriptor_set,
+            dstBinding: 1,
+            dstArrayElement: 0,
+            descriptorCount: 1,
+            descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            pImageInfo: null,
+            pBufferInfo: &infos[1],
+            pTexelBufferView: null
+        };
+        write_count = 3;
+    }
+    vkUpdateDescriptorSets(runtime.device, write_count, writes, 0, null);
+    free(writes);
+    free(infos);
+    return 1;
+}
+
+fn vulkan_runtime_launch_map_1d(runtime: *VulkanRuntime, input: *u8,
+                                output: *u8, count: i32,
+                                lo: i32, hi: i32) -> i32 {
+    g_vulkan_error = 0;
+    g_vulkan_status = 0;
+    if runtime == null || input == null || output == null || count <= 0
+        || lo < 0 || hi <= lo || hi > count {
+        g_vulkan_error = 20;
+        return 0;
+    }
+    let size: u64 = (count as u64) * 4;
+    if vulkan_prepare_buffers(runtime, size, 0) == 0 {
+        g_vulkan_error = 21;
+        return 0;
+    }
+    memcpy(runtime.input_map, input, size as usize);
+    memset(runtime.output_map, 0, size as usize);
+
+    let fences: **u8 = alloc(1);
+    fences[0] = runtime.fence;
+    var status: i32 = vkResetFences(runtime.device, 1, fences);
+    if status != VK_SUCCESS {
+        free(fences as *u8);
+        g_vulkan_error = 22; g_vulkan_status = status;
+        return 0;
+    }
+    status = vkResetCommandBuffer(runtime.command, 0);
+    let begin: *VkCommandBufferBeginInfo = alloc(1);
+    begin[0] = VkCommandBufferBeginInfo {
+        sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        pNext: null,
+        flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        pInheritanceInfo: null
+    };
+    if status == VK_SUCCESS { status = vkBeginCommandBuffer(runtime.command, begin); }
+    free(begin);
+    if status != VK_SUCCESS {
+        free(fences as *u8);
+        g_vulkan_error = 23; g_vulkan_status = status;
+        return 0;
+    }
+
+    vkCmdBindPipeline(runtime.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      runtime.pipeline);
+    let sets: **u8 = alloc(1);
+    sets[0] = runtime.descriptor_set;
+    vkCmdBindDescriptorSets(runtime.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            runtime.pipeline_layout, 0, 1, sets, 0, null);
+    let range: *u32 = alloc(2);
+    range[0] = lo as u32;
+    range[1] = hi as u32;
+    vkCmdPushConstants(runtime.command, runtime.pipeline_layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, range as *u8);
+    let groups: u32 = ((hi - lo + 255) / 256) as u32;
+    vkCmdDispatch(runtime.command, groups, 1, 1);
+    status = vkEndCommandBuffer(runtime.command);
+    free(range);
+    free(sets as *u8);
+    if status != VK_SUCCESS {
+        free(fences as *u8);
+        g_vulkan_error = 24; g_vulkan_status = status;
+        return 0;
+    }
+
+    let commands: **u8 = alloc(1);
+    commands[0] = runtime.command;
+    let submit: *VkSubmitInfo = alloc(1);
+    submit[0] = VkSubmitInfo {
+        sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        pNext: null,
+        waitSemaphoreCount: 0,
+        pWaitSemaphores: null,
+        pWaitDstStageMask: null,
+        commandBufferCount: 1,
+        pCommandBuffers: commands,
+        signalSemaphoreCount: 0,
+        pSignalSemaphores: null
+    };
+    status = vkQueueSubmit(runtime.queue, 1, submit, runtime.fence);
+    free(submit);
+    free(commands as *u8);
+    if status == VK_SUCCESS {
+        status = vkWaitForFences(runtime.device, 1, fences, 1,
+                                 0xffffffffffffffff);
+    }
+    free(fences as *u8);
+    if status != VK_SUCCESS {
+        g_vulkan_error = 25; g_vulkan_status = status;
+        return 0;
+    }
+    memcpy(output, runtime.output_map, size as usize);
+    g_vulkan_dispatch_count = g_vulkan_dispatch_count + 1;
+    return 1;
+}
+
+fn vulkan_runtime_launch_dot_k8_repeated(runtime: *VulkanRuntime,
+                                         input0: *u8, input0_bytes: usize,
+                                         input1: *u8, input1_bytes: usize,
+                                         output: *u8, output_bytes: usize,
+                                         lo: i32, hi: i32,
+                                         repetitions: i32) -> i32 {
+    g_vulkan_error = 0;
+    g_vulkan_status = 0;
+    if runtime == null || input0 == null || input1 == null || output == null
+        || input0_bytes == 0 || input1_bytes == 0 || output_bytes == 0
+        || lo < 0 || hi <= lo || output_bytes < (hi as usize) * 8
+        || repetitions <= 0 {
+        g_vulkan_error = 30;
+        return 0;
+    }
+    var capacity: usize = input0_bytes;
+    if input1_bytes > capacity { capacity = input1_bytes; }
+    if output_bytes > capacity { capacity = output_bytes; }
+    if vulkan_prepare_buffers(runtime, capacity as u64, 1) == 0 {
+        g_vulkan_error = 31;
+        return 0;
+    }
+    memcpy(runtime.input_map, input0, input0_bytes);
+    memcpy(runtime.input2_map, input1, input1_bytes);
+    memset(runtime.output_map, 0, output_bytes);
+
+    let fences: **u8 = alloc(1);
+    fences[0] = runtime.fence;
+    var status: i32 = vkResetFences(runtime.device, 1, fences);
+    if status == VK_SUCCESS { status = vkResetCommandBuffer(runtime.command, 0); }
+    let begin: *VkCommandBufferBeginInfo = alloc(1);
+    begin[0] = VkCommandBufferBeginInfo {
+        sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        pNext: null,
+        flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        pInheritanceInfo: null
+    };
+    if status == VK_SUCCESS { status = vkBeginCommandBuffer(runtime.command, begin); }
+    free(begin);
+    if status != VK_SUCCESS {
+        free(fences as *u8);
+        g_vulkan_error = 32; g_vulkan_status = status;
+        return 0;
+    }
+
+    vkCmdBindPipeline(runtime.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      runtime.pipeline);
+    let sets: **u8 = alloc(1);
+    sets[0] = runtime.descriptor_set;
+    vkCmdBindDescriptorSets(runtime.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            runtime.pipeline_layout, 0, 1, sets, 0, null);
+    let range: *u32 = alloc(2);
+    range[0] = lo as u32;
+    range[1] = hi as u32;
+    vkCmdPushConstants(runtime.command, runtime.pipeline_layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, range as *u8);
+    let barrier: *VkMemoryBarrier = alloc(1);
+    barrier[0] = VkMemoryBarrier {
+        sType: VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        pNext: null,
+        srcAccessMask: VK_ACCESS_SHADER_WRITE_BIT,
+        dstAccessMask: VK_ACCESS_SHADER_WRITE_BIT
+    };
+    var repetition: i32 = 0;
+    while repetition < repetitions {
+        vkCmdDispatch(runtime.command, ((hi - lo + 255) / 256) as u32, 1, 1);
+        repetition = repetition + 1;
+        if repetition < repetitions {
+            vkCmdPipelineBarrier(runtime.command,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 1, barrier, 0, null, 0, null);
+        }
+    }
+    status = vkEndCommandBuffer(runtime.command);
+    free(barrier);
+    free(range);
+    free(sets as *u8);
+    if status != VK_SUCCESS {
+        free(fences as *u8);
+        g_vulkan_error = 33; g_vulkan_status = status;
+        return 0;
+    }
+    let commands: **u8 = alloc(1);
+    commands[0] = runtime.command;
+    let submit: *VkSubmitInfo = alloc(1);
+    submit[0] = VkSubmitInfo {
+        sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        pNext: null,
+        waitSemaphoreCount: 0,
+        pWaitSemaphores: null,
+        pWaitDstStageMask: null,
+        commandBufferCount: 1,
+        pCommandBuffers: commands,
+        signalSemaphoreCount: 0,
+        pSignalSemaphores: null
+    };
+    status = vkQueueSubmit(runtime.queue, 1, submit, runtime.fence);
+    free(submit);
+    free(commands as *u8);
+    if status == VK_SUCCESS {
+        status = vkWaitForFences(runtime.device, 1, fences, 1,
+                                 0xffffffffffffffff);
+    }
+    free(fences as *u8);
+    if status != VK_SUCCESS {
+        g_vulkan_error = 34; g_vulkan_status = status;
+        return 0;
+    }
+    memcpy(output, runtime.output_map, output_bytes);
+    g_vulkan_dispatch_count = g_vulkan_dispatch_count + repetitions;
+    return 1;
+}
+
+// Launches the proved private K=8 projection ABI with two integer inputs:
+//   kernel(input0, input1, output, lo, hi)
+fn vulkan_runtime_launch_dot_k8(runtime: *VulkanRuntime,
+                                input0: *u8, input0_bytes: usize,
+                                input1: *u8, input1_bytes: usize,
+                                output: *u8, output_bytes: usize,
+                                lo: i32, hi: i32) -> i32 {
+    return vulkan_runtime_launch_dot_k8_repeated(
+        runtime, input0, input0_bytes, input1, input1_bytes,
+        output, output_bytes, lo, hi, 1);
+}
+
+// Records all repetitions into one command buffer with shader-write ordering,
+// then performs one submission, one fence wait, and one output publication.
+fn vulkan_runtime_launch_dot_k8_batch(runtime: *VulkanRuntime,
+                                      input0: *u8, input0_bytes: usize,
+                                      input1: *u8, input1_bytes: usize,
+                                      output: *u8, output_bytes: usize,
+                                      lo: i32, hi: i32,
+                                      repetitions: i32) -> i32 {
+    return vulkan_runtime_launch_dot_k8_repeated(
+        runtime, input0, input0_bytes, input1, input1_bytes,
+        output, output_bytes, lo, hi, repetitions);
+}

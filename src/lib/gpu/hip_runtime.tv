@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: Apache-2.0
+// Traveler-owned HIP module runtime. The driver owns device mechanisms;
+// Traveler owns module, allocation, launch, synchronization, and failure state.
+
+import "hip_ffi.tv";
+
+var g_hip_error: i32 = 0;
+var g_hip_status: i32 = 0;
+var g_hip_dispatch_count: i32 = 0;
+
+struct HipRuntime {
+    module: *u8,
+    function: *u8,
+    input: *u8,
+    input2: *u8,
+    output: *u8,
+    input_capacity: usize,
+    output_capacity: usize,
+}
+
+fn hip_record_error(boundary: i32, status: i32) {
+    g_hip_error = boundary;
+    g_hip_status = status;
+}
+
+fn hip_runtime_close(runtime: *HipRuntime) {
+    if runtime == null { return; }
+    if runtime.output != null { hipFree(runtime.output); }
+    if runtime.input2 != null { hipFree(runtime.input2); }
+    if runtime.input != null { hipFree(runtime.input); }
+    if runtime.module != null { hipModuleUnload(runtime.module); }
+    free(runtime);
+}
+
+fn hip_runtime_open(module_path: *u8, kernel_name: *u8,
+                    input_capacity: usize,
+                    output_capacity: usize) -> *HipRuntime {
+    g_hip_error = 0;
+    g_hip_status = 0;
+    if module_path == null || kernel_name == null
+        || input_capacity == 0 || output_capacity == 0 {
+        hip_record_error(1, 0 - 1);
+        return null;
+    }
+
+    let runtime: *HipRuntime = alloc(1);
+    runtime.module = null;
+    runtime.function = null;
+    runtime.input = null;
+    runtime.input2 = null;
+    runtime.output = null;
+    runtime.input_capacity = input_capacity;
+    runtime.output_capacity = output_capacity;
+
+    var status: i32 = hipInit(0);
+    if status != 0 {
+        hip_record_error(2, status);
+        hip_runtime_close(runtime);
+        return null;
+    }
+    status = hipSetDevice(0);
+    if status != 0 {
+        hip_record_error(3, status);
+        hip_runtime_close(runtime);
+        return null;
+    }
+
+    let module_slot: **u8 = alloc(1);
+    module_slot[0] = null;
+    status = hipModuleLoad(module_slot, module_path);
+    if status != 0 || module_slot[0] == null {
+        hip_record_error(4, status);
+        free(module_slot as *u8);
+        hip_runtime_close(runtime);
+        return null;
+    }
+    runtime.module = module_slot[0];
+    free(module_slot as *u8);
+
+    let function_slot: **u8 = alloc(1);
+    function_slot[0] = null;
+    status = hipModuleGetFunction(function_slot, runtime.module, kernel_name);
+    if status != 0 || function_slot[0] == null {
+        hip_record_error(5, status);
+        free(function_slot as *u8);
+        hip_runtime_close(runtime);
+        return null;
+    }
+    runtime.function = function_slot[0];
+    free(function_slot as *u8);
+
+    let input_slot: **u8 = alloc(1);
+    input_slot[0] = null;
+    status = hipMalloc(input_slot, input_capacity);
+    if status != 0 || input_slot[0] == null {
+        hip_record_error(6, status);
+        free(input_slot as *u8);
+        hip_runtime_close(runtime);
+        return null;
+    }
+    runtime.input = input_slot[0];
+    free(input_slot as *u8);
+
+    let output_slot: **u8 = alloc(1);
+    output_slot[0] = null;
+    status = hipMalloc(output_slot, output_capacity);
+    if status != 0 || output_slot[0] == null {
+        hip_record_error(7, status);
+        free(output_slot as *u8);
+        hip_runtime_close(runtime);
+        return null;
+    }
+    runtime.output = output_slot[0];
+    free(output_slot as *u8);
+    return runtime;
+}
+
+// Launches the Stage-0 one-input/one-output pfor ABI:
+//   kernel(input, output, lo, hi)
+fn hip_runtime_launch_map_1d(runtime: *HipRuntime,
+                             input: *u8, input_bytes: usize,
+                             output: *u8, output_bytes: usize,
+                             lo: i32, hi: i32) -> i32 {
+    g_hip_error = 0;
+    g_hip_status = 0;
+    if runtime == null || input == null || output == null || lo < 0 || hi <= lo
+        || input_bytes == 0 || output_bytes == 0
+        || input_bytes > runtime.input_capacity
+        || output_bytes > runtime.output_capacity {
+        hip_record_error(8, 0 - 1);
+        return 0;
+    }
+
+    var status: i32 = hipMemcpy(runtime.input, input, input_bytes,
+                                HIP_MEMCPY_HOST_TO_DEVICE);
+    if status != 0 {
+        hip_record_error(9, status);
+        return 0;
+    }
+
+    var device_input: *u8 = runtime.input;
+    var device_output: *u8 = runtime.output;
+    var kernel_lo: i32 = lo;
+    var kernel_hi: i32 = hi;
+    let args: **u8 = alloc(4);
+    args[0] = (&device_input) as *u8;
+    args[1] = (&device_output) as *u8;
+    args[2] = (&kernel_lo) as *u8;
+    args[3] = (&kernel_hi) as *u8;
+    let groups: u32 = (((hi - lo) + 255) / 256) as u32;
+    status = hipModuleLaunchKernel(runtime.function,
+                                   groups, 1, 1, 256, 1, 1,
+                                   0, null, args, null);
+    free(args as *u8);
+    if status != 0 {
+        hip_record_error(10, status);
+        return 0;
+    }
+    status = hipDeviceSynchronize();
+    if status != 0 {
+        hip_record_error(11, status);
+        return 0;
+    }
+    status = hipMemcpy(output, runtime.output, output_bytes,
+                       HIP_MEMCPY_DEVICE_TO_HOST);
+    if status != 0 {
+        hip_record_error(12, status);
+        return 0;
+    }
+    g_hip_dispatch_count = g_hip_dispatch_count + 1;
+    return 1;
+}
+
+fn hip_dispatches() -> i32 { return g_hip_dispatch_count; }
+
+fn hip_runtime_launch_dot_k8_repeated(runtime: *HipRuntime,
+                                      input0: *u8, input0_bytes: usize,
+                                      input1: *u8, input1_bytes: usize,
+                                      output: *u8, output_bytes: usize,
+                                      lo: i32, hi: i32,
+                                      repetitions: i32) -> i32 {
+    g_hip_error = 0;
+    g_hip_status = 0;
+    if runtime == null || input0 == null || input1 == null || output == null
+        || input0_bytes == 0 || input1_bytes == 0 || output_bytes == 0
+        || input0_bytes > runtime.input_capacity
+        || input1_bytes > runtime.input_capacity
+        || output_bytes > runtime.output_capacity || lo < 0 || hi <= lo
+        || repetitions <= 0 {
+        hip_record_error(20, 0 - 1);
+        return 0;
+    }
+    if runtime.input2 == null {
+        let input2_slot: **u8 = alloc(1);
+        input2_slot[0] = null;
+        let allocation_status: i32 = hipMalloc(
+            input2_slot, runtime.input_capacity);
+        if allocation_status != 0 || input2_slot[0] == null {
+            free(input2_slot as *u8);
+            hip_record_error(21, allocation_status);
+            return 0;
+        }
+        runtime.input2 = input2_slot[0];
+        free(input2_slot as *u8);
+    }
+    var status: i32 = hipMemcpy(runtime.input, input0, input0_bytes,
+                                 HIP_MEMCPY_HOST_TO_DEVICE);
+    if status == 0 {
+        status = hipMemcpy(runtime.input2, input1, input1_bytes,
+                           HIP_MEMCPY_HOST_TO_DEVICE);
+    }
+    if status != 0 { hip_record_error(22, status); return 0; }
+
+    var device_input0: *u8 = runtime.input;
+    var device_input1: *u8 = runtime.input2;
+    var device_output: *u8 = runtime.output;
+    var kernel_lo: i32 = lo;
+    var kernel_hi: i32 = hi;
+    let args: **u8 = alloc(5);
+    args[0] = (&device_input0) as *u8;
+    args[1] = (&device_input1) as *u8;
+    args[2] = (&device_output) as *u8;
+    args[3] = (&kernel_lo) as *u8;
+    args[4] = (&kernel_hi) as *u8;
+    var repetition: i32 = 0;
+    while repetition < repetitions && status == 0 {
+        status = hipModuleLaunchKernel(runtime.function,
+                                       (((hi - lo) + 255) / 256) as u32,
+                                       1, 1, 256, 1, 1, 0, null, args, null);
+        repetition = repetition + 1;
+    }
+    free(args as *u8);
+    if status != 0 { hip_record_error(23, status); return 0; }
+    status = hipDeviceSynchronize();
+    if status != 0 { hip_record_error(24, status); return 0; }
+    status = hipMemcpy(output, runtime.output, output_bytes,
+                       HIP_MEMCPY_DEVICE_TO_HOST);
+    if status != 0 { hip_record_error(25, status); return 0; }
+    g_hip_dispatch_count = g_hip_dispatch_count + repetitions;
+    return 1;
+}
+
+// Launches the proved private K=8 projection ABI:
+//   kernel(input0, input1, output, lo, hi)
+fn hip_runtime_launch_dot_k8(runtime: *HipRuntime,
+                             input0: *u8, input0_bytes: usize,
+                             input1: *u8, input1_bytes: usize,
+                             output: *u8, output_bytes: usize,
+                             lo: i32, hi: i32) -> i32 {
+    return hip_runtime_launch_dot_k8_repeated(
+        runtime, input0, input0_bytes, input1, input1_bytes,
+        output, output_bytes, lo, hi, 1);
+}
+
+// Publishes once, queues all repetitions on the default stream, then performs
+// one synchronization and one output transfer.
+fn hip_runtime_launch_dot_k8_batch(runtime: *HipRuntime,
+                                   input0: *u8, input0_bytes: usize,
+                                   input1: *u8, input1_bytes: usize,
+                                   output: *u8, output_bytes: usize,
+                                   lo: i32, hi: i32,
+                                   repetitions: i32) -> i32 {
+    return hip_runtime_launch_dot_k8_repeated(
+        runtime, input0, input0_bytes, input1, input1_bytes,
+        output, output_bytes, lo, hi, repetitions);
+}

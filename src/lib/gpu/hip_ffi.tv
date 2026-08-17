@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Public HIP C ABI floor for Traveler-owned AMD device submission. Linux only.
+
+extern "C" fn hipInit(flags: u32) -> i32;
+extern "C" fn hipSetDevice(device: i32) -> i32;
+extern "C" fn hipModuleLoad(module_out: **u8, path: *u8) -> i32;
+extern "C" fn hipModuleGetFunction(function_out: **u8, module: *u8,
+                                     name: *u8) -> i32;
+extern "C" fn hipModuleLaunchKernel(function: *u8,
+                                     grid_x: u32, grid_y: u32, grid_z: u32,
+                                     block_x: u32, block_y: u32, block_z: u32,
+                                     shared_bytes: u32, stream: *u8,
+                                     kernel_params: **u8, extra: **u8) -> i32;
+extern "C" fn hipModuleUnload(module: *u8) -> i32;
+extern "C" fn hipMalloc(pointer_out: **u8, size: usize) -> i32;
+extern "C" fn hipFree(pointer: *u8) -> i32;
+extern "C" fn hipMemcpy(destination: *u8, source: *u8, size: usize,
+                         kind: i32) -> i32;
+extern "C" fn hipDeviceSynchronize() -> i32;
+
+let HIP_MEMCPY_HOST_TO_DEVICE: i32 = 1;
+let HIP_MEMCPY_DEVICE_TO_HOST: i32 = 2;
