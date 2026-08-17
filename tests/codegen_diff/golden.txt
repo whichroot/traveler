@@ -187,6 +187,7 @@ addfa6099d556278f399f7706f45830c  examples/rs_error_decode_test.tv
 bec53d7b4f91cb6c11217e0fa220d31d  examples/satotate_vertical.tv
 d83940814142d0aefdf65ce0e8d5d4f1  examples/segment_test.tv
 d1972aef7f2de51afae9db56c5cbe050  examples/self_host_test.tv
+7234f9b9e243a969b564b838c42630ea  examples/shift_semantics.tv
 6c83adc378305efd6b96f92d02a2a244  examples/shm_map.tv
 3ec22fac95108e1c75de36c7b9707137  examples/short_circuit.tv
 fe569c107b5fcc5408569f77466817cb  examples/simd_bench.tv

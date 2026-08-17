@@ -261,6 +261,16 @@ Bitwise (integer and `BinField` context):
 >>   right shift
 ```
 
+**Right-shift semantics.** `>>` follows the signedness of its left operand.
+On a signed type (`i8` … `i64`) it is an **arithmetic** shift: the sign bit
+replicates into the vacated high bits (`(-8) >> 1 == -4`). On an unsigned
+type (`u8` … `u64`) it is a **logical** shift: zeros fill
+(`(2^63 as u64) >> 1 == 2^62`). This matters for hash and mixing functions —
+splitmix64, xorshift, FNV-style avalanche steps are specified over bit
+patterns and assume logical shifts. They must be written in an unsigned type;
+in a signed type the sign-extending shift silently destroys avalanche.
+`examples/shift_semantics.tv` pins both rules with known-answer vectors.
+
 Logical:
 ```
 &&   short-circuit AND

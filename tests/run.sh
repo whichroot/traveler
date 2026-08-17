@@ -634,6 +634,10 @@ test_single pointer_basics
 test_single int_match
 test_single match_nested_scalar
 test_single bitwise_ops
+# >> is arithmetic on iN, logical on uN. Hash code written in i64 silently
+# loses avalanche (sign smear through the xors). splitmix64 known answers pin
+# the u64 path. Found in the plane repo K5 kernel.
+test_single shift_semantics
 test_single compare_let
 test_single short_circuit
 

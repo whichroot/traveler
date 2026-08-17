@@ -193,6 +193,7 @@ examples/satotate_horizontal.tv
 examples/satotate_vertical.tv
 examples/segment_test.tv
 examples/self_host_test.tv
+examples/shift_semantics.tv            # >> is ashr on iN, lshr on uN; splitmix64 known answers
 examples/short_circuit.tv
 examples/shm_map.tv
 examples/simd_bench.tv
