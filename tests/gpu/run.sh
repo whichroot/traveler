@@ -1957,6 +1957,24 @@ elif [ -x "$OBJDUMP" ] && "$OBJDUMP" -d "$BLOCKED_OBJ" 2>/dev/null \
 else
     echo "  ok   AMD Stage-1 blocked dot: mapped multiplicands, phi-carried, gfx1100-lowered"
 fi
+
+# A8. Capacity cliffs stay admitted. 26 captures + 51 lets sat past the old
+# limits (MAX_PFOR_CAP=24, MAX_PFOR_LETS=48, 48-name device bound) and the
+# refusal was SILENT: dispatched:1 in the report, zero kernels emitted.
+# The fixture pins the raised limits (64 lets / 32 caps) as a real kernel.
+CLIFF_SRC="$SCRIPT_DIR/gpu_capacity_cliffs.tv"
+CLIFF_DEV="$TMP/gpu_capacity_cliffs_amd.ll"
+CLIFF_OBJ="$TMP/gpu_capacity_cliffs_amd.o"
+if ! "$STAGE1" --emit-gpu "$CLIFF_SRC" -o "$CLIFF_DEV" 2>/dev/null; then
+    echo "  FAIL: capacity-cliff fixture did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$CLIFF_DEV"; then
+    echo "  FAIL: capacity-cliff fixture emitted no kernel (limit regressed)"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$CLIFF_DEV" -o "$CLIFF_OBJ" 2>"$TMP/cliff-llc.err"; then
+    echo "  FAIL: capacity-cliff kernel did not lower for gfx1100"; fail=1
+else
+    echo "  ok   capacity cliffs admitted: 51 lets / 26 captures emit + lower"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi

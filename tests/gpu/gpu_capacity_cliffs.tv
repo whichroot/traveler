@@ -1,0 +1,93 @@
+// gpu_capacity_cliffs.tv - silent-refusal regression pin for the raised
+// admission limits. 26 captures (> the old MAX_PFOR_CAP=24) and 51 lets
+// (> the old MAX_PFOR_LETS=48 and the old 48-name device bound). Under
+// the old limits this body silently refused (no kernel, no diagnostic);
+// the gate asserts an amdgpu_kernel EXISTS. Totals stay under the new
+// limits: 64 lets, 32 captures, 32 distinct read forms.
+
+fn main() -> i32 {
+    let out: *i64 = alloc(64);
+    let a0: *i64 = alloc(64);
+    let a1: *i64 = alloc(64);
+    let a2: *i64 = alloc(64);
+    let a3: *i64 = alloc(64);
+    let a4: *i64 = alloc(64);
+    let a5: *i64 = alloc(64);
+    let a6: *i64 = alloc(64);
+    let a7: *i64 = alloc(64);
+    let a8: *i64 = alloc(64);
+    let a9: *i64 = alloc(64);
+    let a10: *i64 = alloc(64);
+    let a11: *i64 = alloc(64);
+    let a12: *i64 = alloc(64);
+    let a13: *i64 = alloc(64);
+    let a14: *i64 = alloc(64);
+    let a15: *i64 = alloc(64);
+    let a16: *i64 = alloc(64);
+    let a17: *i64 = alloc(64);
+    let a18: *i64 = alloc(64);
+    let a19: *i64 = alloc(64);
+    let a20: *i64 = alloc(64);
+    let a21: *i64 = alloc(64);
+    let a22: *i64 = alloc(64);
+    let a23: *i64 = alloc(64);
+    let a24: *i64 = alloc(64);
+    for i in 0..64 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            var t0: i64 = a0[i] + 0;
+            var t1: i64 = a1[i] + 1;
+            var t2: i64 = a2[i] + 2;
+            var t3: i64 = a3[i] + 3;
+            var t4: i64 = a4[i] + 4;
+            var t5: i64 = a5[i] + 5;
+            var t6: i64 = a6[i] + 6;
+            var t7: i64 = a7[i] + 7;
+            var t8: i64 = a8[i] + 8;
+            var t9: i64 = a9[i] + 9;
+            var t10: i64 = a10[i] + 10;
+            var t11: i64 = a11[i] + 11;
+            var t12: i64 = a12[i] + 12;
+            var t13: i64 = a13[i] + 13;
+            var t14: i64 = a14[i] + 14;
+            var t15: i64 = a15[i] + 15;
+            var t16: i64 = a16[i] + 16;
+            var t17: i64 = a17[i] + 17;
+            var t18: i64 = a18[i] + 18;
+            var t19: i64 = a19[i] + 19;
+            var t20: i64 = a20[i] + 20;
+            var t21: i64 = a21[i] + 21;
+            var t22: i64 = a22[i] + 22;
+            var t23: i64 = a23[i] + 23;
+            var t24: i64 = a24[i] + 24;
+            var t25: i64 = a0[i] + 25;
+            var t26: i64 = a1[i] + 26;
+            var t27: i64 = a2[i] + 27;
+            var t28: i64 = a3[i] + 28;
+            var t29: i64 = a4[i] + 29;
+            var t30: i64 = a5[i] + 30;
+            var t31: i64 = a6[i] + 31;
+            var t32: i64 = a7[i] + 32;
+            var t33: i64 = a8[i] + 33;
+            var t34: i64 = a9[i] + 34;
+            var t35: i64 = a10[i] + 35;
+            var t36: i64 = a11[i] + 36;
+            var t37: i64 = a12[i] + 37;
+            var t38: i64 = a13[i] + 38;
+            var t39: i64 = a14[i] + 39;
+            var t40: i64 = a15[i] + 40;
+            var t41: i64 = a16[i] + 41;
+            var t42: i64 = a17[i] + 42;
+            var t43: i64 = a18[i] + 43;
+            var t44: i64 = a19[i] + 44;
+            var t45: i64 = a20[i] + 45;
+            var t46: i64 = a21[i] + 46;
+            var t47: i64 = a22[i] + 47;
+            var t48: i64 = a23[i] + 48;
+            var t49: i64 = a24[i] + 49;
+            acc = acc + t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14 + t15 + t16 + t17 + t18 + t19 + t20 + t21 + t22 + t23 + t24 + t25 + t26 + t27 + t28 + t29 + t30 + t31 + t32 + t33 + t34 + t35 + t36 + t37 + t38 + t39 + t40 + t41 + t42 + t43 + t44 + t45 + t46 + t47 + t48 + t49;
+        }
+        out[i] = acc;
+    }
+    return 0;
+}

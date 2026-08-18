@@ -1531,7 +1531,7 @@ var g_zk_is_dyn: i32 = 0;            // 1 while building/emitting a dyn #[zk] fn
 // (independence + admitted capture types); runtime decides HOW MANY threads.
 
 let MAX_PFOR: i32 = 64;
-let MAX_PFOR_CAP: i32 = 24;
+let MAX_PFOR_CAP: i32 = 32;
 let MAX_PFOR_WORKER_INTS: i32 = MAX_PFOR *
     (7 + MAX_GEN_PARAMS * 2 + MAX_PFOR_CAP * 4);
 // Dispatch a proven loop only above this output count — a CPU performance knob
@@ -1586,7 +1586,7 @@ let MAX_CLO_CAPS: i32 = 64;             // max captures per closure
 //   tvc.c's int64_t (dual-compiler parity).
 let MAX_PFOR_WRITES: i32 = 8;
 let MAX_PFOR_READS: i32 = 32;
-let MAX_PFOR_LETS: i32 = 48;
+let MAX_PFOR_LETS: i32 = 64;
 
 struct PForState {
     independent: i32,    // final verdict, read by the dispatch site
@@ -23510,7 +23510,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
         if sk == AST_LET {
             if (g_nodes[s].flags & 1) == 0
                 || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
-            if nnames[0] >= 48 { return 0; }
+            if nnames[0] >= 64 { return 0; }
             names[nnames[0]] = g_nodes[s].name0;
             ntypes[nnames[0]] = resolve_type_sub(g_nodes[s].name1);
             nnames[0] = nnames[0] + 1;
@@ -23586,8 +23586,8 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         oi = oi + 1;
     }
     let lbody: i32 = g_nodes[loop].child2;
-    var names: [i32; 48] = 0;
-    var ntypes: [i32; 48] = 0;
+    var names: [i32; 64] = 0;
+    var ntypes: [i32; 64] = 0;
     var nnames: [i32; 1] = 0;
     var saw_acc: [i32; 1] = 0;
     var ai: i32 = 0;
