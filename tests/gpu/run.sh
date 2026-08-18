@@ -1846,6 +1846,32 @@ elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
 else
     echo "  ok   AMD general private-mutable body remains device-refused"
 fi
+
+# A7. Stage-1 blocked private dot: mapped multiplicands (dequant expressions
+#     as dot operands), a rolled outer block loop with loop-carried SSA phis,
+#     unrolled inner K-loops, no allocas. This is the fused Q4_K shape.
+BLOCKED_SRC="$SCRIPT_DIR/gpu_blocked_dot.tv"
+BLOCKED_DEV="$TMP/gpu_blocked_dot_amd.ll"
+BLOCKED_OBJ="$TMP/gpu_blocked_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$BLOCKED_SRC" -o "$BLOCKED_DEV" 2>/dev/null; then
+    echo "  FAIL: AMD blocked dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$BLOCKED_DEV"; then
+    echo "  FAIL: AMD blocked dot emitted no kernel"; fail=1
+elif grep -q "alloca" "$BLOCKED_DEV"; then
+    echo "  FAIL: AMD blocked dot spilled through alloca"; fail=1
+elif ! grep -q " = phi i64 " "$BLOCKED_DEV"; then
+    echo "  FAIL: AMD blocked dot lost its loop-carried accumulator phi"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$BLOCKED_DEV" -o "$BLOCKED_OBJ" 2>"$TMP/blocked-llc.err"; then
+    echo "  FAIL: AMD blocked dot did not lower for gfx1100:"; \
+        sed 's/^/       /' "$TMP/blocked-llc.err"; fail=1
+elif [ -x "$OBJDUMP" ] && "$OBJDUMP" -d "$BLOCKED_OBJ" 2>/dev/null \
+        | grep -qE "v_dot[48]_"; then
+    echo "  FAIL: AMD blocked dot formed a v_dot4/v_dot8 (unsigned on gfx11)"; \
+        fail=1
+else
+    echo "  ok   AMD Stage-1 blocked dot: mapped multiplicands, phi-carried, gfx1100-lowered"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -1929,6 +1955,23 @@ elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
     echo "  FAIL: NVPTX private-mutable refusal record absent"; fail=1
 else
     echo "  ok   NVPTX general private-mutable body remains device-refused"
+fi
+
+# N6. The Stage-1 blocked dot stays target-neutral.
+BLOCKED_NVDEV="$TMP/gpu_blocked_dot_nv.ll"
+BLOCKED_PTX="$TMP/gpu_blocked_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_blocked_dot.tv" \
+        -o "$BLOCKED_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX blocked dot did not produce a module"; fail=1
+elif grep -q "alloca" "$BLOCKED_NVDEV"; then
+    echo "  FAIL: NVPTX blocked dot spilled through alloca"; fail=1
+elif ! grep -q " = phi i64 " "$BLOCKED_NVDEV"; then
+    echo "  FAIL: NVPTX blocked dot lost its loop-carried accumulator phi"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$BLOCKED_NVDEV" -o "$BLOCKED_PTX" 2>"$TMP/blocked-llcnv.err"; then
+    echo "  FAIL: NVPTX blocked dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX Stage-1 blocked dot: mapped multiplicands, phi-carried, sm_90-lowered"
 fi
 
 fi

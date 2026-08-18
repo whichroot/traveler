@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Stage-1 blocked private dot for AMDGCN/NVPTX device emission: a rolled
+// outer block loop carrying a private i64 accumulator, inner K-loops
+// unrolled to SSA, and mapped multiplicands (pure own-cell dequant
+// expressions, not bare array indexes). This is the fused
+// dequant-dot-combine class the Q4_K projection kernel needs.
+
+fn main() -> i32 {
+    let packed: *u8 = alloc(64 * 4 * 8);
+    let x: *i32 = alloc(64 * 4 * 8);
+    let scale: *i64 = alloc(64 * 4);
+    let out: *i64 = alloc(64);
+    for lane in 0..64 {
+        var acc: i64 = 0;
+        for blk in 0..4 {
+            var dot: i32 = 0;
+            for k in 0..8 {
+                dot = dot + ((packed[lane * 32 + blk * 8 + k] as i32) & 15)
+                    * x[lane * 32 + blk * 8 + k];
+            }
+            var xs: i32 = 0;
+            for k in 0..8 {
+                xs = xs + x[lane * 32 + blk * 8 + k];
+            }
+            acc = acc + scale[lane * 4 + blk] * ((dot as i64) - (xs as i64));
+        }
+        out[lane] = acc + 1;
+    }
+    free(out); free(scale); free(x); free(packed);
+    return 0;
+}

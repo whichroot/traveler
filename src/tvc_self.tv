@@ -15143,6 +15143,97 @@ fn pfor_admit_inner_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
     return 1;
 }
 
+// Accumulate-rhs shape: a left-nested +/- chain whose spine ends at the
+// target ident (`acc = acc + P - M + ...`). Every right child must be a
+// pure expression; reads ride the ordinary walker (WILD is safe unless the
+// same array is also written).
+fn pfor_gpu_dot_accum_rhs(pf: *PForState, rhs: i32, name: i32,
+                          outer_var: i32) -> i32 {
+    var node: i32 = rhs;
+    while g_nodes[node].kind == AST_BINARY
+          && (g_nodes[node].op == OP_ADD || g_nodes[node].op == OP_SUB) {
+        if pfor_walk_expr(pf, g_nodes[node].child1, outer_var) == 0 {
+            return 0;
+        }
+        node = g_nodes[node].child0;
+    }
+    if g_nodes[node].kind != AST_IDENT || g_nodes[node].name0 != name {
+        return 0;
+    }
+    return 1;
+}
+
+// Stage-1 blocked private dot (GPU class; @internal-note: plan-gpu-purity-runtime).
+// FOR v in 0..N1 (literal, N1 <= 64) whose body is a sequence of:
+//   - private accumulator lets (mut, pure init),
+//   - inner K-loops FOR k in 0..N2 (literal, N2 <= 32) holding exactly one
+//     `name = name + <pure expr>` assign to a declared accumulator,
+//   - `name = name + <pure expr>` assigns to a declared accumulator.
+// Multiplicands are arbitrary pure expressions (mapped multiplicands: the
+// dequant shifts/masks ride inside the dot, not in a materialized array).
+// Reads are recorded by the ordinary walker: unclassifiable footprints are
+// WILD and only refuse when the same array is also written. Body-local let
+// names are rolled back on exit so post-loop references stay out of scope.
+fn pfor_admit_gpu_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
+    if g_nodes[stmt].kind != AST_FOR { return 0; }
+    if g_nodes[g_nodes[stmt].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[stmt].child0].int_val != 0
+        || g_nodes[g_nodes[stmt].child1].kind != AST_LIT_INT
+        || g_nodes[g_nodes[stmt].child1].int_val < 1
+        || g_nodes[g_nodes[stmt].child1].int_val > 64 { return 0; }
+    let body: i32 = g_nodes[stmt].child2;
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs < 1 { return 0; }
+    let saved_nlets: i32 = pf.nlets;
+    let nstmts: i32 = g_nodes[body].nargs;
+    let sbase: i32 = g_nodes[body].args_start;
+    let lets: *i32 = pf.lets;
+    var ok: i32 = 1;
+    var si: i32 = 0;
+    while si < nstmts {
+        let s: i32 = g_args[sbase + si];
+        let sk: i32 = g_nodes[s].kind;
+        if sk == AST_LET {
+            if (g_nodes[s].flags & 1) == 0 { ok = 0; break; }
+            if pfor_walk_expr(pf, g_nodes[s].child0, outer_var) == 0 {
+                ok = 0; break;
+            }
+            if pf.nlets >= MAX_PFOR_LETS { ok = 0; break; }
+            lets[pf.nlets] = g_nodes[s].name0;
+            pf.nlets = pf.nlets + 1;
+        } else if sk == AST_ASSIGN {
+            if pfor_is_loop_let(pf, g_nodes[s].name0) == 0 { ok = 0; break; }
+            if pfor_gpu_dot_accum_rhs(pf, g_nodes[s].child0,
+                                      g_nodes[s].name0, outer_var) == 0 {
+                ok = 0; break;
+            }
+        } else if sk == AST_FOR {
+            if g_nodes[g_nodes[s].child0].kind != AST_LIT_INT
+                || g_nodes[g_nodes[s].child0].int_val != 0
+                || g_nodes[g_nodes[s].child1].kind != AST_LIT_INT
+                || g_nodes[g_nodes[s].child1].int_val < 1
+                || g_nodes[g_nodes[s].child1].int_val > 32 { ok = 0; break; }
+            let ibody: i32 = g_nodes[s].child2;
+            if g_nodes[ibody].kind != AST_BLOCK
+                || g_nodes[ibody].nargs != 1 { ok = 0; break; }
+            let asg: i32 = g_args[g_nodes[ibody].args_start];
+            if g_nodes[asg].kind != AST_ASSIGN
+                || pfor_is_loop_let(pf, g_nodes[asg].name0) == 0 {
+                ok = 0; break;
+            }
+            if pfor_gpu_dot_accum_rhs(pf, g_nodes[asg].child0,
+                                      g_nodes[asg].name0, outer_var) == 0 {
+                ok = 0; break;
+            }
+        } else {
+            ok = 0; break;
+        }
+        si = si + 1;
+    }
+    if ok == 0 { pf.nlets = saved_nlets; return 0; }
+    pf.nlets = saved_nlets;
+    return 1;
+}
+
 // LANG0 deliberately precedes PROOF0. Structured bodies therefore enter the
 // existing pfor proof only in an explicit AGX compilation, through this closed
 // recursive surface; ordinary CPU/AMD/NV dispatch decisions remain unchanged.
@@ -17969,7 +18060,8 @@ fn pfor_analyze_body(pf: *PForState, body: i32, loop_var: i32, start_node: i32, 
                 return;
             }
         } else if sk == AST_FOR {
-            if pfor_admit_inner_dot(pf, s, loop_var) == 0 {
+            if pfor_admit_inner_dot(pf, s, loop_var) == 0
+                && pfor_admit_gpu_dot(pf, s, loop_var) == 0 {
                 pfor_refuse(PFR_UNSUPPORTED_STMT);
                 pf.independent = 0;
                 return;
@@ -23269,6 +23361,261 @@ fn codegen_gpu_k8_private_dot(body: i32) {
     sym_pop_scope();
 }
 
+// ===== STAGE-1 BLOCKED PRIVATE DOT (GPU class) =====
+// The fused dequant-dot-combine shape: pfor body = [private acc let,
+// FOR v in 0..N1 (literal <= 64), one own-cell index-assign]. The FOR body
+// holds private accumulator lets, inner K-loops (literal <= 32) with one
+// `name = name + <pure>` assign, and `<acc> = <acc> + <pure>` assigns.
+// Multiplicands are arbitrary pure expressions (mapped multiplicands), so
+// the dequant lives in registers instead of a materialized intermediate.
+// Device lowering rolls the outer loop as a real branch loop (loop-carried
+// SSA phis for v and acc) and unrolls inner K-loops; no allocas.
+
+// Expression purity for device lowering: literals, idents, casts, unary and
+// binary operators, and array indexes with a simple base. Anything else
+// (calls, field access, strings, ...) is outside the closed class.
+fn gpu_dot_expr_ok(node: i32) -> i32 {
+    if node < 0 || node == 0 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL || kind == AST_IDENT {
+        return 1;
+    }
+    if kind == AST_CAST || kind == AST_UNARY {
+        return gpu_dot_expr_ok(g_nodes[node].child0);
+    }
+    if kind == AST_BINARY {
+        if gpu_dot_expr_ok(g_nodes[node].child0) == 0 { return 0; }
+        return gpu_dot_expr_ok(g_nodes[node].child1);
+    }
+    if kind == AST_INDEX {
+        if g_nodes[g_nodes[node].child0].kind != AST_IDENT { return 0; }
+        return gpu_dot_expr_ok(g_nodes[node].child1);
+    }
+    return 0;
+}
+
+// One `name = name (+|-) <pure> ...` accumulate statement: a left-nested
+// +/- chain whose spine ends at the target ident, all right children pure.
+// Returns the target name (interned) or 0 when the statement is not the
+// closed accumulate form.
+fn gpu_dot_accum_name(stmt: i32) -> i32 {
+    if g_nodes[stmt].kind != AST_ASSIGN { return 0; }
+    var node: i32 = g_nodes[stmt].child0;
+    while g_nodes[node].kind == AST_BINARY
+          && (g_nodes[node].op == OP_ADD || g_nodes[node].op == OP_SUB) {
+        if gpu_dot_expr_ok(g_nodes[node].child1) == 0 { return 0; }
+        node = g_nodes[node].child0;
+    }
+    if g_nodes[node].kind != AST_IDENT
+        || g_nodes[node].name0 != g_nodes[stmt].name0 { return 0; }
+    return g_nodes[stmt].name0;
+}
+
+fn pfor_body_gpu_dot(body: i32) -> i32 {
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 3 { return 0; }
+    let base: i32 = g_nodes[body].args_start;
+    let init: i32 = g_args[base];
+    let loop: i32 = g_args[base + 1];
+    let output: i32 = g_args[base + 2];
+    if g_nodes[init].kind != AST_LET || (g_nodes[init].flags & 1) == 0
+        || gpu_dot_expr_ok(g_nodes[init].child0) == 0 { return 0; }
+    if g_nodes[loop].kind != AST_FOR
+        || g_nodes[g_nodes[loop].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[loop].child0].int_val != 0
+        || g_nodes[g_nodes[loop].child1].kind != AST_LIT_INT
+        || g_nodes[g_nodes[loop].child1].int_val < 1
+        || g_nodes[g_nodes[loop].child1].int_val > 64 { return 0; }
+    if g_nodes[output].kind != AST_INDEX_ASSIGN
+        || g_nodes[g_nodes[output].child0].kind != AST_IDENT
+        || gpu_dot_expr_ok(g_nodes[output].child1) == 0
+        || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
+    let acc_name: i32 = g_nodes[init].name0;
+    let lbody: i32 = g_nodes[loop].child2;
+    if g_nodes[lbody].kind != AST_BLOCK || g_nodes[lbody].nargs < 1 { return 0; }
+    // Declared accumulator names: the outer acc plus body lets (<= 8).
+    var names: [i32; 9] = 0;
+    names[0] = acc_name;
+    var nnames: i32 = 1;
+    var saw_acc: i32 = 0;
+    let nstmts: i32 = g_nodes[lbody].nargs;
+    let sbase: i32 = g_nodes[lbody].args_start;
+    var si: i32 = 0;
+    while si < nstmts {
+        let s: i32 = g_args[sbase + si];
+        let sk: i32 = g_nodes[s].kind;
+        if sk == AST_LET {
+            if (g_nodes[s].flags & 1) == 0
+                || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
+            if nnames >= 9 { return 0; }
+            names[nnames] = g_nodes[s].name0;
+            nnames = nnames + 1;
+        } else if sk == AST_ASSIGN {
+            let tn: i32 = gpu_dot_accum_name(s);
+            if tn == 0 { return 0; }
+            var found: i32 = 0;
+            var ni: i32 = 0;
+            while ni < nnames {
+                if names[ni] == tn { found = 1; break; }
+                ni = ni + 1;
+            }
+            if found == 0 { return 0; }
+            if tn == acc_name { saw_acc = 1; }
+        } else if sk == AST_FOR {
+            if g_nodes[g_nodes[s].child0].kind != AST_LIT_INT
+                || g_nodes[g_nodes[s].child0].int_val != 0
+                || g_nodes[g_nodes[s].child1].kind != AST_LIT_INT
+                || g_nodes[g_nodes[s].child1].int_val < 1
+                || g_nodes[g_nodes[s].child1].int_val > 32 { return 0; }
+            let ibody: i32 = g_nodes[s].child2;
+            if g_nodes[ibody].kind != AST_BLOCK
+                || g_nodes[ibody].nargs != 1 { return 0; }
+            let asg: i32 = g_args[g_nodes[ibody].args_start];
+            let tn2: i32 = gpu_dot_accum_name(asg);
+            if tn2 == 0 { return 0; }
+            var found2: i32 = 0;
+            var nj: i32 = 0;
+            while nj < nnames {
+                if names[nj] == tn2 { found2 = 1; break; }
+                nj = nj + 1;
+            }
+            if found2 == 0 { return 0; }
+            if tn2 == acc_name { saw_acc = 1; }
+        } else {
+            return 0;
+        }
+        si = si + 1;
+    }
+    // The shape exists to carry the outer accumulator; a loop that never
+    // touches it is the elementwise class, not this one.
+    if saw_acc == 0 { return 0; }
+    return 1;
+}
+
+fn codegen_gpu_blocked_dot(body: i32) {
+    let base: i32 = g_nodes[body].args_start;
+    let init: i32 = g_args[base];
+    let loop: i32 = g_args[base + 1];
+    let output: i32 = g_args[base + 2];
+    let acc_name: i32 = g_nodes[init].name0;
+    let acc_type: i32 = resolve_type_sub(g_nodes[init].name1);
+    let n1: i64 = g_nodes[g_nodes[loop].child1].int_val;
+    let loop_var: i32 = g_nodes[loop].name0;
+    let lbody: i32 = g_nodes[loop].child2;
+
+    // Pre-reserve the loop-carried registers and the block labels so the
+    // header phis can name the latch values before the latch is emitted.
+    let v_phi: i32 = ir_tmp();
+    let acc_phi: i32 = ir_tmp();
+    let v_next: i32 = ir_tmp();
+    let acc_next: i32 = ir_tmp();
+    let lbl_ph: i32 = ir_label();
+    let lbl_hdr: i32 = ir_label();
+    let lbl_body: i32 = ir_label();
+    let lbl_latch: i32 = ir_label();
+    let lbl_exit: i32 = ir_label();
+
+    sym_push_scope();
+    let initial: IRValue = codegen_expr(g_nodes[init].child0, acc_type);
+    var acc0: i32 = initial.reg;
+    if initial.type_off != NULL_STR && initial.type_off != acc_type {
+        acc0 = emit_implicit_convert(initial.reg, initial.type_off, acc_type);
+    }
+    sym_add(acc_name, acc_type, acc_phi, 0);
+    g_syms[g_sym_count - 1].is_mut = 1;
+    let acc_si: i32 = g_sym_count - 1;
+
+    // Dedicated preheader: the phi's entry edge names %ph regardless of
+    // which block the init expression happened to end in.
+    ir_wr("  br label %"); ir_wr_label(lbl_ph); ir_wr("\n");
+    ir_wr_label_def(lbl_ph);
+    ir_wr("  br label %"); ir_wr_label(lbl_hdr); ir_wr("\n");
+    ir_wr_label_def(lbl_hdr);
+    ir_wr("  "); ir_wr_reg(v_phi);
+    ir_wr(" = phi i32 [ 0, %"); ir_wr_label(lbl_ph);
+    ir_wr(" ], [ "); ir_wr_reg(v_next); ir_wr(", %"); ir_wr_label(lbl_latch);
+    ir_wr(" ]\n");
+    ir_wr("  "); ir_wr_reg(acc_phi); ir_wr(" = phi ");
+    ir_wr_type(acc_type);
+    ir_wr(" [ "); ir_wr_reg(acc0); ir_wr(", %"); ir_wr_label(lbl_ph);
+    ir_wr(" ], [ "); ir_wr_reg(acc_next); ir_wr(", %"); ir_wr_label(lbl_latch);
+    ir_wr(" ]\n");
+    let cond: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(cond); ir_wr(" = icmp slt i32 ");
+    ir_wr_reg(v_phi); ir_wr(", "); ir_wr_int(n1); ir_wr("\n");
+    ir_wr("  br i1 "); ir_wr_reg(cond); ir_wr(", label %");
+    ir_wr_label(lbl_body); ir_wr(", label %"); ir_wr_label(lbl_exit);
+    ir_wr("\n");
+
+    ir_wr_label_def(lbl_body);
+    sym_push_scope();
+    sym_add(loop_var, str_intern("i32"), v_phi, 0);
+    let nstmts: i32 = g_nodes[lbody].nargs;
+    let sbase: i32 = g_nodes[lbody].args_start;
+    var si: i32 = 0;
+    while si < nstmts {
+        let s: i32 = g_args[sbase + si];
+        let sk: i32 = g_nodes[s].kind;
+        if sk == AST_LET {
+            let lt: i32 = resolve_type_sub(g_nodes[s].name1);
+            let lv: IRValue = codegen_expr(g_nodes[s].child0, lt);
+            var lr: i32 = lv.reg;
+            if lv.type_off != NULL_STR && lv.type_off != lt {
+                lr = emit_implicit_convert(lv.reg, lv.type_off, lt);
+            }
+            sym_add(g_nodes[s].name0, lt, lr, 0);
+            g_syms[g_sym_count - 1].is_mut = 1;
+        } else if sk == AST_ASSIGN {
+            let tsi: i32 = sym_find(g_nodes[s].name0);
+            let tt: i32 = resolve_type_sub(g_syms[tsi].type_off);
+            let av: IRValue = codegen_expr(g_nodes[s].child0, tt);
+            var ar: i32 = av.reg;
+            if av.type_off != NULL_STR && av.type_off != tt {
+                ar = emit_implicit_convert(av.reg, av.type_off, tt);
+            }
+            g_syms[tsi].reg = ar;
+        } else {
+            // Inner K-loop: unroll to SSA (the proved K-dot lowering).
+            let n2: i32 = g_nodes[g_nodes[s].child1].int_val as i32;
+            let ivar: i32 = g_nodes[s].name0;
+            let ibody: i32 = g_nodes[s].child2;
+            let asg: i32 = g_args[g_nodes[ibody].args_start];
+            let tsi2: i32 = sym_find(g_nodes[asg].name0);
+            let tt2: i32 = resolve_type_sub(g_syms[tsi2].type_off);
+            var kk: i32 = 0;
+            while kk < n2 {
+                sym_push_scope();
+                let kreg: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(kreg); ir_wr(" = add i32 0, ");
+                ir_wr_int(kk as i64); ir_wr("\n");
+                sym_add(ivar, str_intern("i32"), kreg, 0);
+                let kv: IRValue = codegen_expr(g_nodes[asg].child0, tt2);
+                var kr: i32 = kv.reg;
+                if kv.type_off != NULL_STR && kv.type_off != tt2 {
+                    kr = emit_implicit_convert(kv.reg, kv.type_off, tt2);
+                }
+                g_syms[tsi2].reg = kr;
+                sym_pop_scope();
+                kk = kk + 1;
+            }
+        }
+        si = si + 1;
+    }
+    let last_acc: i32 = g_syms[acc_si].reg;
+    sym_pop_scope();
+    ir_wr("  br label %"); ir_wr_label(lbl_latch); ir_wr("\n");
+    ir_wr_label_def(lbl_latch);
+    ir_wr("  "); ir_wr_reg(v_next); ir_wr(" = add i32 ");
+    ir_wr_reg(v_phi); ir_wr(", 1\n");
+    ir_wr("  "); ir_wr_reg(acc_next); ir_wr(" = add ");
+    ir_wr_type(acc_type); ir_wr(" "); ir_wr_reg(last_acc); ir_wr(", 0\n");
+    ir_wr("  br label %"); ir_wr_label(lbl_hdr); ir_wr("\n");
+
+    ir_wr_label_def(lbl_exit);
+    g_syms[acc_si].reg = acc_phi;
+    codegen_stmt(output);
+    sym_pop_scope();
+}
+
 fn emit_gpu_module() {
     if g_gpu_target == 2 {
         emit_agx_module();
@@ -23330,8 +23677,9 @@ fn emit_gpu_module() {
         // (the dyn carrier needs the %__Field kernarg — Stage 3). i64-wide
         // iterators (#54) are Stage-3-deferred: the SIMT identity is i32.
         let k8_private_dot: i32 = pfor_body_k8_private_dot(body_node);
+        let blocked_dot: i32 = pfor_body_gpu_dot(body_node);
         var eligible: i32 = pfor_body_all_index_assign(body_node);
-        if k8_private_dot == 1 { eligible = 1; }
+        if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
         var ci: i32 = 0;
         while ci < ncaps {
@@ -23431,9 +23779,12 @@ fn emit_gpu_module() {
             sym_add(loop_var_name, str_intern("i32"), idxr, 0);
 
             // Flat bodies reuse ordinary codegen. The proved K=8 reduction is
-            // lowered separately so its private accumulator remains SSA-only.
+            // lowered separately so its private accumulator remains SSA-only;
+            // the Stage-1 blocked dot rolls its outer loop with SSA phis.
             if k8_private_dot == 1 {
                 codegen_gpu_k8_private_dot(body_node);
+            } else if blocked_dot == 1 {
+                codegen_gpu_blocked_dot(body_node);
             } else {
                 codegen_stmt(body_node);
             }
