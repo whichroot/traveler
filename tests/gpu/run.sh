@@ -1896,6 +1896,28 @@ else
     fi
 fi
 
+# A10. Stage-1c per-row accumulators: R=2 phi-carried accumulators, R
+#      wave reductions, R stores.
+BATCH_SRC="$SCRIPT_DIR/gpu_batch_dot.tv"
+BATCH_DEV="$TMP/gpu_batch_dot_amd.ll"
+BATCH_OBJ="$TMP/gpu_batch_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$BATCH_SRC" -o "$BATCH_DEV" 2>/dev/null; then
+    echo "  FAIL: AMD batch dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$BATCH_DEV"; then
+    echo "  FAIL: AMD batch dot emitted no kernel"; fail=1
+elif grep -q "alloca" "$BATCH_DEV"; then
+    echo "  FAIL: AMD batch dot spilled through alloca"; fail=1
+elif [ "$(grep -c ' = phi i64 ' "$BATCH_DEV")" -lt 2 ]; then
+    echo "  FAIL: AMD batch dot lost its per-row accumulator phis"; fail=1
+elif [ "$(grep -c 'store i64' "$BATCH_DEV")" -lt 2 ]; then
+    echo "  FAIL: AMD batch dot lost its per-row stores"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$BATCH_DEV" -o "$BATCH_OBJ" 2>"$TMP/batch-llc.err"; then
+    echo "  FAIL: AMD batch dot did not lower for gfx1100:"; \
+        sed 's/^/       /' "$TMP/batch-llc.err"; fail=1
+else
+    echo "  ok   AMD Stage-1c batch dot: per-row phis + stores, gfx1100-lowered"
+fi
 # A6. Other proved private-mutable bodies stay outside the closed device class.
 PRIVATE_REFUSE_AMD="$TMP/gpu_private_refuse_amd.ll"
 if ! "$STAGE1" --emit-gpu "$PRIVATE_REFUSE_SRC" \

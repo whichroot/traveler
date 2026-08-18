@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// Stage-1c per-row accumulators for AMDGCN/NVPTX device emission: R=2
+// leading accumulator lets, each phi-carried across the rolled loop, two
+// butterfly-reduced wave accumulators per block, R trailing index-assigns
+// (one store per row). The weight-side work is shared across rows.
+
+fn main() -> i32 {
+    let x: *i32 = alloc(4 * 2 * 32);
+    let out0: *i64 = alloc(4);
+    let out1: *i64 = alloc(4);
+    for i in 0..4 {
+        var acc0: i64 = 0;
+        var acc1: i64 = 0;
+        for b in 0..2 {
+            var p0: i32 = 0;
+            var p1: i32 = 0;
+            for lane in 0..32 {
+                p0 = p0 + x[(i * 2 + b) * 32 + lane] + lane;
+                p1 = p1 + x[(i * 2 + b) * 32 + lane] * 2 + lane;
+            }
+            acc0 = acc0 + (p0 as i64);
+            acc1 = acc1 + (p1 as i64);
+        }
+        out0[i] = acc0;
+        out1[i] = acc1;
+    }
+    free(out1); free(out0); free(x);
+    return 0;
+}

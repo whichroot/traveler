@@ -1531,7 +1531,7 @@ var g_zk_is_dyn: i32 = 0;            // 1 while building/emitting a dyn #[zk] fn
 // (independence + admitted capture types); runtime decides HOW MANY threads.
 
 let MAX_PFOR: i32 = 64;
-let MAX_PFOR_CAP: i32 = 16;
+let MAX_PFOR_CAP: i32 = 24;
 let MAX_PFOR_WORKER_INTS: i32 = MAX_PFOR *
     (7 + MAX_GEN_PARAMS * 2 + MAX_PFOR_CAP * 4);
 // Dispatch a proven loop only above this output count — a CPU performance knob
@@ -1585,8 +1585,8 @@ let MAX_CLO_CAPS: i32 = 64;             // max captures per closure
 //   [13..15]=pad. Affine part starts at offset 2; cells are i64 to match
 //   tvc.c's int64_t (dual-compiler parity).
 let MAX_PFOR_WRITES: i32 = 8;
-let MAX_PFOR_READS: i32 = 16;
-let MAX_PFOR_LETS: i32 = 32;
+let MAX_PFOR_READS: i32 = 32;
+let MAX_PFOR_LETS: i32 = 48;
 
 struct PForState {
     independent: i32,    // final verdict, read by the dispatch site
@@ -23510,7 +23510,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
         if sk == AST_LET {
             if (g_nodes[s].flags & 1) == 0
                 || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
-            if nnames[0] >= 24 { return 0; }
+            if nnames[0] >= 48 { return 0; }
             names[nnames[0]] = g_nodes[s].name0;
             ntypes[nnames[0]] = resolve_type_sub(g_nodes[s].name1);
             nnames[0] = nnames[0] + 1;
@@ -23554,36 +23554,52 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
 }
 
 fn pfor_body_gpu_dot(body: i32) -> i32 {
-    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 3 { return 0; }
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs < 3 { return 0; }
     let base: i32 = g_nodes[body].args_start;
-    let init: i32 = g_args[base];
-    let loop: i32 = g_args[base + 1];
-    let output: i32 = g_args[base + 2];
-    if g_nodes[init].kind != AST_LET || (g_nodes[init].flags & 1) == 0
-        || gpu_dot_expr_ok(g_nodes[init].child0) == 0 { return 0; }
+    let nstmts: i32 = g_nodes[body].nargs;
+    // Stage-1c: one or more leading accumulator lets (R <= 8), then the
+    // rolled loop, then R index-assigns (one store per row).
+    var r: i32 = 0;
+    while r < nstmts - 2 && r < 8 {
+        let lt: i32 = g_args[base + r];
+        if g_nodes[lt].kind != AST_LET { break; }
+        if (g_nodes[lt].flags & 1) == 0
+            || gpu_dot_expr_ok(g_nodes[lt].child0) == 0 { return 0; }
+        r = r + 1;
+    }
+    if r == 0 { return 0; }
+    let loop: i32 = g_args[base + r];
     if g_nodes[loop].kind != AST_FOR
         || g_nodes[g_nodes[loop].child0].kind != AST_LIT_INT
         || g_nodes[g_nodes[loop].child0].int_val != 0
         || g_nodes[g_nodes[loop].child1].kind != AST_LIT_INT
         || g_nodes[g_nodes[loop].child1].int_val < 1
         || g_nodes[g_nodes[loop].child1].int_val > 64 { return 0; }
-    if g_nodes[output].kind != AST_INDEX_ASSIGN
-        || g_nodes[g_nodes[output].child0].kind != AST_IDENT
-        || gpu_dot_expr_ok(g_nodes[output].child1) == 0
-        || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
-    let acc_name: i32 = g_nodes[init].name0;
+    if nstmts != r + 1 + r { return 0; }
+    var oi: i32 = 0;
+    while oi < r {
+        let output: i32 = g_args[base + r + 1 + oi];
+        if g_nodes[output].kind != AST_INDEX_ASSIGN
+            || g_nodes[g_nodes[output].child0].kind != AST_IDENT
+            || gpu_dot_expr_ok(g_nodes[output].child1) == 0
+            || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
+        oi = oi + 1;
+    }
     let lbody: i32 = g_nodes[loop].child2;
-    var names: [i32; 24] = 0;
-    var ntypes: [i32; 24] = 0;
+    var names: [i32; 48] = 0;
+    var ntypes: [i32; 48] = 0;
     var nnames: [i32; 1] = 0;
     var saw_acc: [i32; 1] = 0;
-    names[0] = acc_name;
-    ntypes[0] = resolve_type_sub(g_nodes[init].name1);
-    nnames[0] = 1;
+    var ai: i32 = 0;
+    while ai < r {
+        names[ai] = g_nodes[g_args[base + ai]].name0;
+        ntypes[ai] = resolve_type_sub(g_nodes[g_args[base + ai]].name1);
+        ai = ai + 1;
+    }
+    nnames[0] = r;
+    // Any leading accumulator carried through the loop qualifies the shape.
     if gpu_dot_body_ok(lbody, &names[0], &ntypes[0], &nnames[0], 1, 0 - 1,
-                       &saw_acc[0], acc_name) == 0 { return 0; }
-    // The shape exists to carry the outer accumulator; a loop that never
-    // touches it is the elementwise class, not this one.
+                       &saw_acc[0], names[0]) == 0 { return 0; }
     if saw_acc[0] == 0 { return 0; }
     return 1;
 }
@@ -23703,7 +23719,7 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
             }
             g_syms[tsi].reg = ar;
             if in_wave == 1 && depth == wave_tdepth
-                && wave_ntgts[0] < 8 {
+                && wave_ntgts[0] < 16 {
                 var dup: i32 = 0;
                 var wi: i32 = 0;
                 while wi < wave_ntgts[0] {
@@ -23745,11 +23761,14 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
 
 fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let base: i32 = g_nodes[body].args_start;
-    let init: i32 = g_args[base];
-    let loop: i32 = g_args[base + 1];
-    let output: i32 = g_args[base + 2];
-    let acc_name: i32 = g_nodes[init].name0;
-    let acc_type: i32 = resolve_type_sub(g_nodes[init].name1);
+    let nstmts: i32 = g_nodes[body].nargs;
+    // R leading accumulator lets (R <= 8), then the loop, then R stores.
+    var nrows: i32 = 0;
+    while nrows < nstmts - 2 && nrows < 8 {
+        if g_nodes[g_args[base + nrows]].kind != AST_LET { break; }
+        nrows = nrows + 1;
+    }
+    let loop: i32 = g_args[base + nrows];
     let n1: i64 = g_nodes[g_nodes[loop].child1].int_val;
     let loop_var: i32 = g_nodes[loop].name0;
     let lbody: i32 = g_nodes[loop].child2;
@@ -23757,9 +23776,18 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     // Pre-reserve the loop-carried registers and the block labels so the
     // header phis can name the latch values before the latch is emitted.
     let v_phi: i32 = ir_tmp();
-    let acc_phi: i32 = ir_tmp();
     let v_next: i32 = ir_tmp();
-    let acc_next: i32 = ir_tmp();
+    var acc_phi: [i32; 8] = 0;
+    var acc_next: [i32; 8] = 0;
+    var acc0: [i32; 8] = 0;
+    var acc_si: [i32; 8] = 0;
+    var acc_ty: [i32; 8] = 0;
+    var ri: i32 = 0;
+    while ri < nrows {
+        acc_phi[ri] = ir_tmp();
+        acc_next[ri] = ir_tmp();
+        ri = ri + 1;
+    }
     let lbl_ph: i32 = ir_label();
     let lbl_hdr: i32 = ir_label();
     let lbl_body: i32 = ir_label();
@@ -23767,14 +23795,22 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let lbl_exit: i32 = ir_label();
 
     sym_push_scope();
-    let initial: IRValue = codegen_expr(g_nodes[init].child0, acc_type);
-    var acc0: i32 = initial.reg;
-    if initial.type_off != NULL_STR && initial.type_off != acc_type {
-        acc0 = emit_implicit_convert(initial.reg, initial.type_off, acc_type);
+    ri = 0;
+    while ri < nrows {
+        let init: i32 = g_args[base + ri];
+        let at: i32 = resolve_type_sub(g_nodes[init].name1);
+        acc_ty[ri] = at;
+        let initial: IRValue = codegen_expr(g_nodes[init].child0, at);
+        var a0: i32 = initial.reg;
+        if initial.type_off != NULL_STR && initial.type_off != at {
+            a0 = emit_implicit_convert(initial.reg, initial.type_off, at);
+        }
+        acc0[ri] = a0;
+        sym_add(g_nodes[init].name0, at, acc_phi[ri], 0);
+        g_syms[g_sym_count - 1].is_mut = 1;
+        acc_si[ri] = g_sym_count - 1;
+        ri = ri + 1;
     }
-    sym_add(acc_name, acc_type, acc_phi, 0);
-    g_syms[g_sym_count - 1].is_mut = 1;
-    let acc_si: i32 = g_sym_count - 1;
 
     // Dedicated preheader: the phi's entry edge names %ph regardless of
     // which block the init expression happened to end in.
@@ -23786,11 +23822,15 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     ir_wr(" = phi i32 [ 0, %"); ir_wr_label(lbl_ph);
     ir_wr(" ], [ "); ir_wr_reg(v_next); ir_wr(", %"); ir_wr_label(lbl_latch);
     ir_wr(" ]\n");
-    ir_wr("  "); ir_wr_reg(acc_phi); ir_wr(" = phi ");
-    ir_wr_type(acc_type);
-    ir_wr(" [ "); ir_wr_reg(acc0); ir_wr(", %"); ir_wr_label(lbl_ph);
-    ir_wr(" ], [ "); ir_wr_reg(acc_next); ir_wr(", %"); ir_wr_label(lbl_latch);
-    ir_wr(" ]\n");
+    ri = 0;
+    while ri < nrows {
+        ir_wr("  "); ir_wr_reg(acc_phi[ri]); ir_wr(" = phi ");
+        ir_wr_type(acc_ty[ri]);
+        ir_wr(" [ "); ir_wr_reg(acc0[ri]); ir_wr(", %"); ir_wr_label(lbl_ph);
+        ir_wr(" ], [ "); ir_wr_reg(acc_next[ri]); ir_wr(", %");
+        ir_wr_label(lbl_latch); ir_wr(" ]\n");
+        ri = ri + 1;
+    }
     let cond: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(cond); ir_wr(" = icmp slt i32 ");
     ir_wr_reg(v_phi); ir_wr(", "); ir_wr_int(n1); ir_wr("\n");
@@ -23801,22 +23841,30 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     ir_wr_label_def(lbl_body);
     sym_push_scope();
     sym_add(loop_var, str_intern("i32"), v_phi, 0);
-    var wave_tgts: [i32; 8] = 0;
+    var wave_tgts: [i32; 16] = 0;
     var wave_ntgts: [i32; 1] = 0;
     codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
                          &wave_tgts[0], &wave_ntgts[0]);
-    let last_acc: i32 = g_syms[acc_si].reg;
     sym_pop_scope();
     ir_wr("  br label %"); ir_wr_label(lbl_latch); ir_wr("\n");
     ir_wr_label_def(lbl_latch);
     ir_wr("  "); ir_wr_reg(v_next); ir_wr(" = add i32 ");
     ir_wr_reg(v_phi); ir_wr(", 1\n");
-    ir_wr("  "); ir_wr_reg(acc_next); ir_wr(" = add ");
-    ir_wr_type(acc_type); ir_wr(" "); ir_wr_reg(last_acc); ir_wr(", 0\n");
+    ri = 0;
+    while ri < nrows {
+        ir_wr("  "); ir_wr_reg(acc_next[ri]); ir_wr(" = add ");
+        ir_wr_type(acc_ty[ri]); ir_wr(" ");
+        ir_wr_reg(g_syms[acc_si[ri]].reg); ir_wr(", 0\n");
+        ri = ri + 1;
+    }
     ir_wr("  br label %"); ir_wr_label(lbl_hdr); ir_wr("\n");
 
     ir_wr_label_def(lbl_exit);
-    g_syms[acc_si].reg = acc_phi;
+    ri = 0;
+    while ri < nrows {
+        g_syms[acc_si[ri]].reg = acc_phi[ri];
+        ri = ri + 1;
+    }
     if wave_mapped == 1 {
         // One work item per wave: lane 0 stores (all lanes computed the
         // same reduced value; a 32-wide same-address store would be
@@ -23830,11 +23878,19 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         ir_wr_label(lbl_store); ir_wr(", label %"); ir_wr_label(lbl_skip);
         ir_wr("\n");
         ir_wr_label_def(lbl_store);
-        codegen_stmt(output);
+        ri = 0;
+        while ri < nrows {
+            codegen_stmt(g_args[base + nrows + 1 + ri]);
+            ri = ri + 1;
+        }
         ir_wr("  br label %"); ir_wr_label(lbl_skip); ir_wr("\n");
         ir_wr_label_def(lbl_skip);
     } else {
-        codegen_stmt(output);
+        ri = 0;
+        while ri < nrows {
+            codegen_stmt(g_args[base + nrows + 1 + ri]);
+            ri = ri + 1;
+        }
     }
     sym_pop_scope();
 }

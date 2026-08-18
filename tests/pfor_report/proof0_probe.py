@@ -225,7 +225,7 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "a0549570b24708ae6798df2bf5fcb08c9d9692f4c2af8754821afa749ff362fa"
+        "2ea417e2fc6576f26e76154751ebac6b3b1885a1f3b74016a4eaea1d9b37d494"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")
