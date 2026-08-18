@@ -1,7 +1,8 @@
-// gpu_wavepipe_dot.tv — emitter software pipelining: the two wave loads
-// become loop-carried phis (prologue + guarded reload at the body head).
-// Exactly 4 i64 loads remain: 2 prologue, 2 reload. @internal-design: stage1-dot.
+// gpu_wavepipe_dot.tv — emitter software pipelining, opt-in via
+// #[wave_pipe]: the two wave loads become loop-carried phis (prologue +
+// guarded reload at the body head). @internal-design: stage1-dot.
 
+#[wave_pipe]
 fn main() -> i32 {
     let w: *i64 = alloc(4 * 4 * 32);
     let x: *i64 = alloc(4 * 4 * 32);

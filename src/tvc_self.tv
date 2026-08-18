@@ -4171,6 +4171,7 @@ fn parse_program() -> i32 {
 
     var pending_export: i32 = 0;  // set to 1 when #[export] is parsed
     var pending_zk: i32 = 0;      // set to 1 when #[zk] is parsed
+    var pending_wpipe: i32 = 0;   // set to 1 when #[wave_pipe] is parsed
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
@@ -4185,6 +4186,12 @@ fn parse_program() -> i32 {
             if pending_zk == 1 {
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 256;  // bit8 = is_zk
                 pending_zk = 0;
+            }
+            if pending_wpipe == 1 {
+                // bit9 = wave_pipe: opt in to wave-load pipelining.
+                // @internal-design: stage1-dot.
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 512;
+                pending_wpipe = 0;
             }
         } else if k == TOK_KW_EXTERN {
             decl_node = parse_extern_fn();
@@ -4341,9 +4348,9 @@ fn parse_program() -> i32 {
             p_advance();
             continue;
         } else if k == TOK_HASH_LBRACKET {
-            // Parse attribute: check for #[export] and #[zk]
+            // Parse attribute: check for #[export], #[zk], #[wave_pipe]
             p_advance();  // consume #[
-            // Scan tokens until ] for export and zk keywords
+            // Scan tokens until ] for the known attribute keywords
             while p_peek() != TOK_RBRACKET && p_peek() != TOK_EOF {
                 if p_peek() == TOK_IDENT {
                     if str_eq(&g_tokens[g_tok_pos].text[0], "export") == 1 {
@@ -4351,6 +4358,9 @@ fn parse_program() -> i32 {
                     }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "zk") == 1 {
                         pending_zk = 1;
+                    }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "wave_pipe") == 1 {
+                        pending_wpipe = 1;
                     }
                 }
                 p_advance();
@@ -23583,6 +23593,9 @@ fn gpu_dot_expr_refs(node: i32, names: *i32, n: i32) -> i32 {
 var g_wpipe_cnt: i32 = 0;
 var g_wpipe_node: *i32 = null;
 var g_wpipe_reg: *i32 = null;
+// Set per worker from the owner fn's #[wave_pipe] bit. Off by default:
+// pipelining wins only when the loads actually miss.
+var g_wave_pipe_on: i32 = 0;
 
 fn wpipe_init() {
     if g_wpipe_node == null {
@@ -24071,12 +24084,12 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let loop_var: i32 = g_nodes[loop].name0;
     let lbody: i32 = g_nodes[loop].child2;
 
-    // Collect the wave-map loads to pipeline (wave-mapped kernels only).
+    // Collect the wave-map loads to pipeline (opt-in, wave-mapped only).
     var wpipe_loads: [i32; 8] = 0;
     var wpipe_vars: [i32; 8] = 0;
     var wpipe_nvars: [i32; 1] = 0;
     var nwpipe: i32 = 0;
-    if wave_mapped == 1 {
+    if wave_mapped == 1 && g_wave_pipe_on == 1 {
         nwpipe = dot_wave_loads_collect(lbody, loop_var, &wpipe_loads[0],
                                        &wpipe_vars[0], &wpipe_nvars[0]);
     }
@@ -24373,6 +24386,7 @@ fn emit_gpu_module() {
         let ncaps: i32 = g_pfor_workers[roff + 3];
         let wngen: i32 = g_pfor_workers[roff + 4];
         let wbw: i32 = g_pfor_workers[roff + 5];  // #54: iterator width
+        let owner_fn: i32 = g_pfor_workers[roff + 6];
         roff = roff + 7;
 
         // Restore the generic substitution context (mirrors emit_pfor_workers)
@@ -24396,6 +24410,14 @@ fn emit_gpu_module() {
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
+        // #[wave_pipe] opt-in travels via the worker's owner fn.
+        g_wave_pipe_on = 0;
+        let owner_fi: i32 = find_func_idx(owner_fn);
+        if owner_fi >= 0 {
+            if (g_nodes[g_funcs[owner_fi].node].flags & 512) != 0 {
+                g_wave_pipe_on = 1;
+            }
+        }
         var ci: i32 = 0;
         while ci < ncaps {
             let cn: i32 = g_pfor_workers[caps_base + ci * 4];

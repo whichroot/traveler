@@ -2042,8 +2042,10 @@ elif [ "$(grep -c 'llvm.amdgcn.ds.swizzle' "$WP_DEV")" -lt 5 ]; then
 elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
         "$WP_DEV" -o "$WP_OBJ" 2>"$TMP/wp-llc.err"; then
     echo "  FAIL: wave-pipeline dot did not lower for gfx1100"; fail=1
+elif [ "$(grep -c ' = load i32' "$WAVE_DEV")" -ne 1 ]; then
+    echo "  FAIL: unmarked wave dot got pipelined (opt-in regressed)"; fail=1
 else
-    echo "  ok   wave-map loads pipelined: phi-carried, guarded, gfx1100-lowered"
+    echo "  ok   wave-load pipelining is opt-in: marked emits phis, unmarked does not"
 fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
