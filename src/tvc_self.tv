@@ -15224,7 +15224,7 @@ fn pfor_gpu_dot_accum_rhs(pf: *PForState, rhs: i32, name: i32,
 }
 
 // Stage-1 blocked private dot (GPU class; @internal-note: plan-gpu-purity-runtime).
-// FOR v in 0..N1 (literal, N1 <= 64) whose body is a recursive sequence of:
+// FOR v in 0..N1 (literal, N1 <= 128) whose body is a recursive sequence of:
 //   - private accumulator lets (mut, pure init),
 //   - `name = name (+|-) <pure> ...` accumulate assigns (left-nested spine),
 //   - inner FORs in 0..N2 (literal, N2 <= 32) with the same body grammar
@@ -15294,7 +15294,7 @@ fn pfor_admit_gpu_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
         || g_nodes[g_nodes[stmt].child0].int_val != 0
         || g_nodes[g_nodes[stmt].child1].kind != AST_LIT_INT
         || g_nodes[g_nodes[stmt].child1].int_val < 1
-        || g_nodes[g_nodes[stmt].child1].int_val > 64 { return 0; }
+        || g_nodes[g_nodes[stmt].child1].int_val > 128 { return 0; }
     return pfor_admit_gpu_dot_body(pf, g_nodes[stmt].child2, outer_var, 1);
 }
 
@@ -23471,7 +23471,7 @@ fn codegen_gpu_k8_private_dot(body: i32) {
 
 // ===== STAGE-1 BLOCKED PRIVATE DOT (GPU class) =====
 // The fused dequant-dot-combine shape: pfor body = [private acc let,
-// FOR v in 0..N1 (literal <= 64), one own-cell index-assign]. The FOR body
+// FOR v in 0..N1 (literal <= 128), one own-cell index-assign]. The FOR body
 // holds private accumulator lets, inner K-loops (literal <= 32) with one
 // `name = name + <pure>` assign, and `<acc> = <acc> + <pure>` assigns.
 // Multiplicands are arbitrary pure expressions (mapped multiplicands), so
@@ -23667,7 +23667,7 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         || g_nodes[g_nodes[loop].child0].int_val != 0
         || g_nodes[g_nodes[loop].child1].kind != AST_LIT_INT
         || g_nodes[g_nodes[loop].child1].int_val < 1
-        || g_nodes[g_nodes[loop].child1].int_val > 64 { return 0; }
+        || g_nodes[g_nodes[loop].child1].int_val > 128 { return 0; }
     let lbody: i32 = g_nodes[loop].child2;
     var names: [i32; 64] = 0;
     var ntypes: [i32; 64] = 0;

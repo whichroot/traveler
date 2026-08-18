@@ -2004,6 +2004,24 @@ elif grep -q "define amdgpu_kernel" "$PFN_DEV"; then
 else
     echo "  ok   prefetch negatives (mixed assign, stored prefetch) stay refused"
 fi
+
+# A14. A 68-block rolled loop (ffn_down) emits and lowers. The old 64
+# bound refused it silently.
+B68_DEV="$TMP/gpu_block68_dot_amd.ll"
+B68_OBJ="$TMP/gpu_block68_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$SCRIPT_DIR/gpu_block68_dot.tv" \
+        -o "$B68_DEV" 2>/dev/null; then
+    echo "  FAIL: 68-block dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$B68_DEV"; then
+    echo "  FAIL: 68-block dot emitted no kernel (bound regressed)"; fail=1
+elif ! grep -q "icmp slt i32 .*, 67$" "$B68_DEV"; then
+    echo "  FAIL: 68-block dot lost the carried-fetch guard"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$B68_DEV" -o "$B68_OBJ" 2>"$TMP/b68-llc.err"; then
+    echo "  FAIL: 68-block dot did not lower for gfx1100"; fail=1
+else
+    echo "  ok   68-block rolled loop admitted: emits, guarded, gfx1100-lowered"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi

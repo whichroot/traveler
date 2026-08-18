@@ -1,0 +1,19 @@
+// gpu_block68_dot.tv - a 68-block rolled loop must emit a kernel. The old
+// 64 bound refused ffn_down silently. @internal-design: stage1-dot.
+
+fn main() -> i32 {
+    let w: *i64 = alloc(64 * 69);
+    let x: *i64 = alloc(64 * 68);
+    let out: *i64 = alloc(64);
+    for i in 0..64 {
+        var pre: i64 = w[i * 68];
+        var acc: i64 = 0;
+        for b in 0..68 {
+            acc = acc + pre * x[i * 68 + b];
+            pre = w[i * 68 + b + 1];
+        }
+        out[i] = acc;
+    }
+    free(out); free(x); free(w);
+    return 0;
+}
