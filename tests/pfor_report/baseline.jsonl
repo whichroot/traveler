@@ -6,8 +6,8 @@ examples/binfield_newton.tv	{"fn":"forward_sum","var":"i","independent":0,"has_f
 examples/closure_eval.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-expr"}
 examples/closure_prove_through.tv	{"fn":"closure_map","var":"i","independent":1,"has_field":1,"ncaps":3,"dispatched":1,"reason":""}
 examples/closure_prove_through.tv	{"fn":"fnptr_map","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"indirect-call"}
-examples/dyn_fri_test.tv	{"fn":"bit_reverse_swap_dyn","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_fri_test.tv	{"fn":"bit_rev","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
+examples/dyn_fri_test.tv	{"fn":"bit_reverse_swap_dyn","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_fri_test.tv	{"fn":"fri_fold_layer_dyn","var":"i","independent":0,"has_field":1,"ncaps":2,"dispatched":0,"reason":"raw"}
 examples/dyn_fri_test.tv	{"fn":"fri_fold_layer_dyn","var":"i","independent":1,"has_field":1,"ncaps":7,"dispatched":1,"reason":""}
 examples/dyn_fri_test.tv	{"fn":"fri_hash_layer_dyn","var":"i","independent":0,"has_field":1,"ncaps":1,"dispatched":0,"reason":"mutating-call"}
@@ -71,8 +71,8 @@ examples/dyn_merkle_test.tv	{"fn":"poseidon2_permute_8_dyn","var":"i","independe
 examples/dyn_merkle_test.tv	{"fn":"poseidon2_permute_8_dyn","var":"r","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"const-idx"}
 examples/dyn_merkle_test.tv	{"fn":"poseidon2_permute_8_dyn","var":"r","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_merkle_test.tv	{"fn":"poseidon2_permute_8_dyn","var":"r","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
-examples/dyn_ntt_test.tv	{"fn":"bit_reverse_swap_dyn","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_ntt_test.tv	{"fn":"bit_rev","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
+examples/dyn_ntt_test.tv	{"fn":"bit_reverse_swap_dyn","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_ntt_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/dyn_ntt_test.tv	{"fn":"main","var":"i","independent":1,"has_field":0,"ncaps":1,"dispatched":1,"reason":""}
 examples/dyn_ntt_test.tv	{"fn":"main","var":"i","independent":1,"has_field":0,"ncaps":1,"dispatched":1,"reason":""}
@@ -215,8 +215,8 @@ examples/net_zk_serve.tv	{"fn":"zk_prove_and_verify","var":"i","independent":1,"
 examples/ntt_link_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/ntt_link_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/ntt_link_test.tv	{"fn":"main","var":"i","independent":1,"has_field":1,"ncaps":2,"dispatched":1,"reason":""}
-examples/ntt_test.tv	{"fn":"bit_reverse_swap_Goldilocks","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/ntt_test.tv	{"fn":"bit_rev","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
+examples/ntt_test.tv	{"fn":"bit_reverse_swap_Goldilocks","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 examples/ntt_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/ntt_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
 examples/ntt_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"unsupported-stmt"}
@@ -344,10 +344,10 @@ src/lib/crypto/mds_check.tv	{"fn":"poly_powp_mod_dyn","var":"i","independent":1,
 src/lib/crypto/mds_check.tv	{"fn":"poly_sub_into_dyn","var":"i","independent":1,"has_field":1,"ncaps":3,"dispatched":1,"reason":""}
 src/lib/crypto/mds_check.tv	{"fn":"poseidon2_diag_checked","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"extern-call"}
 src/lib/crypto/mds_check.tv	{"fn":"poseidon2_diag_generate_w","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"extern-call"}
+src/lib/crypto/ntt.tv	{"fn":"bit_rev","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
 src/lib/crypto/ntt.tv	{"fn":"bit_reverse_swap_Fermat16","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 src/lib/crypto/ntt.tv	{"fn":"bit_reverse_swap_Field18446744069414584321","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
 src/lib/crypto/ntt.tv	{"fn":"bit_reverse_swap_Goldilocks","var":"i","independent":0,"has_field":0,"ncaps":1,"dispatched":0,"reason":"unsupported-stmt"}
-src/lib/crypto/ntt.tv	{"fn":"bit_rev","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
 src/lib/crypto/ntt.tv	{"fn":"ntt_coset_forward_Field18446744069414584321","var":"i","independent":0,"has_field":1,"ncaps":2,"dispatched":0,"reason":"raw"}
 src/lib/crypto/ntt.tv	{"fn":"ntt_coset_forward_Field18446744069414584321","var":"i","independent":1,"has_field":1,"ncaps":2,"dispatched":1,"reason":""}
 src/lib/crypto/ntt.tv	{"fn":"ntt_coset_inverse_Field18446744069414584321","var":"i","independent":0,"has_field":1,"ncaps":2,"dispatched":0,"reason":"raw"}

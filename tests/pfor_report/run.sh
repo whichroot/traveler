@@ -270,7 +270,10 @@ while IFS= read -r line; do
             | sed "s|^{|{\"source\":\"$line\",|" >> "$TMP/proof0.jsonl"
     fi
 done < "$CORPUS"
-sort "$TMP/current.jsonl" > "$TMP/current.sorted"
+# LC_ALL=C: the golden is diffed byte-for-byte, and locale collation (e.g.
+# en_US.UTF-8 vs C.UTF-8 on CI runners) reorders records that differ only in
+# punctuation — a pure-reorder false FAIL. Pin the collation.
+LC_ALL=C sort "$TMP/current.jsonl" > "$TMP/current.sorted"
 
 if ! python3 "$SCRIPT_DIR/proof0_probe.py" --corpus "$TMP/proof0.jsonl"; then
     echo "  FAIL: PROOF0 whole-corpus summary drifted"; fail=1
