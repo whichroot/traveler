@@ -2047,6 +2047,35 @@ elif [ "$(grep -c ' = load i32' "$WAVE_DEV")" -ne 1 ]; then
 else
     echo "  ok   wave-load pipelining is opt-in: marked emits phis, unmarked does not"
 fi
+
+# A16. #[fits_i32] narrows signed i64 mul operands so gfx1100 selects
+# v_mad_i64_i32. Exact only under the source-asserted range invariant.
+FITS_SRC="$SCRIPT_DIR/gpu_fits_i32_dot.tv"
+FITS_DEV="$TMP/gpu_fits_i32_dot_amd.ll"
+FITS_OBJ="$TMP/gpu_fits_i32_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$FITS_SRC" -o "$FITS_DEV" 2>/dev/null; then
+    echo "  FAIL: fits_i32 dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$FITS_DEV"; then
+    echo "  FAIL: fits_i32 dot emitted no kernel"; fail=1
+elif [ "$(grep -c 'trunc i64' "$FITS_DEV")" -lt 2 ]; then
+    echo "  FAIL: fits_i32 dot lost its mul-operand narrowing"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$FITS_DEV" -o "$FITS_OBJ" 2>"$TMP/fits-llc.err"; then
+    echo "  FAIL: fits_i32 dot did not lower for gfx1100"; fail=1
+elif grep -q "trunc i64" "$PF_DEV"; then
+    echo "  FAIL: unmarked dot got narrowed muls (opt-in regressed)"; fail=1
+else
+    fitsdis=""
+    if [ -x "$OBJDUMP" ]; then
+        fitsdis="$("$OBJDUMP" -d "$FITS_OBJ" 2>/dev/null || true)"
+    fi
+    if [ -n "$fitsdis" ] && ! echo "$fitsdis" \
+            | grep -q "v_mad_i64_i32"; then
+        echo "  FAIL: fits_i32 dot mul is not v_mad_i64_i32"; fail=1
+    else
+        echo "  ok   fits_i32 narrows mul operands: v_mad_i64_i32, opt-in pinned"
+    fi
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2179,6 +2208,21 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX wave-pipeline dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX wave-map loads pipelined: guarded, sm_90-lowered"
+fi
+
+# N10. The fits_i32 narrowing stays target-neutral.
+FITS_NVDEV="$TMP/gpu_fits_i32_dot_nv.ll"
+FITS_PTX="$TMP/gpu_fits_i32_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_fits_i32_dot.tv" \
+        -o "$FITS_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX fits_i32 dot did not produce a module"; fail=1
+elif [ "$(grep -c 'trunc i64' "$FITS_NVDEV")" -lt 2 ]; then
+    echo "  FAIL: NVPTX fits_i32 dot lost its narrowing"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$FITS_NVDEV" -o "$FITS_PTX" 2>"$TMP/fits-llcnv.err"; then
+    echo "  FAIL: NVPTX fits_i32 dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX fits_i32 narrows mul operands, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.

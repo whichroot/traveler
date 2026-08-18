@@ -1,0 +1,19 @@
+// gpu_fits_i32_dot.tv — #[fits_i32] narrows signed i64 mul operands to
+// sext(trunc(x)) so gfx1100 selects v_mad_i64_i32. Exact only under the
+// source-asserted range invariant. @internal-design: stage1-dot.
+
+#[fits_i32]
+fn main() -> i32 {
+    let w: *i64 = alloc(256);
+    let x: *i64 = alloc(256);
+    let out: *i64 = alloc(64);
+    for i in 0..64 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            acc = acc + w[i * 4 + b] * x[i * 4 + b];
+        }
+        out[i] = acc;
+    }
+    free(out); free(x); free(w);
+    return 0;
+}

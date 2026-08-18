@@ -4172,6 +4172,7 @@ fn parse_program() -> i32 {
     var pending_export: i32 = 0;  // set to 1 when #[export] is parsed
     var pending_zk: i32 = 0;      // set to 1 when #[zk] is parsed
     var pending_wpipe: i32 = 0;   // set to 1 when #[wave_pipe] is parsed
+    var pending_fits: i32 = 0;    // set to 1 when #[fits_i32] is parsed
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
@@ -4192,6 +4193,12 @@ fn parse_program() -> i32 {
                 // @internal-design: stage1-dot.
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 512;
                 pending_wpipe = 0;
+            }
+            if pending_fits == 1 {
+                // bit10 = fits_i32: source asserts i64 values fit i32.
+                // @internal-design: stage1-dot.
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 1024;
+                pending_fits = 0;
             }
         } else if k == TOK_KW_EXTERN {
             decl_node = parse_extern_fn();
@@ -4361,6 +4368,9 @@ fn parse_program() -> i32 {
                     }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "wave_pipe") == 1 {
                         pending_wpipe = 1;
+                    }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "fits_i32") == 1 {
+                        pending_fits = 1;
                     }
                 }
                 p_advance();
@@ -11254,6 +11264,27 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         // Integer arithmetic (signed or unsigned based on source type)
         let r: i32 = ir_tmp();
         let is_signed: i32 = type_is_signed(wide_t);
+        // #[fits_i32] (device only): narrow signed 64-bit mul operands so
+        // the backend selects a widening i32 multiply. Bit-identical only
+        // under the source-asserted range invariant. @internal-design: stage1-dot.
+        if op == OP_MUL && g_fits_i32_on == 1
+            && type_bits(wide_t) == 64 && is_signed == 1 {
+            let lt: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(lt); ir_wr(" = trunc i64 ");
+            ir_wr_reg(lhs_r2); ir_wr(" to i32\n");
+            let ls: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(ls); ir_wr(" = sext i32 ");
+            ir_wr_reg(lt); ir_wr(" to i64\n");
+            let rt: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rt); ir_wr(" = trunc i64 ");
+            ir_wr_reg(rhs_r2); ir_wr(" to i32\n");
+            let rs: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rs); ir_wr(" = sext i32 ");
+            ir_wr_reg(rt); ir_wr(" to i64\n");
+            ir_wr("  "); ir_wr_reg(r); ir_wr(" = mul i64 ");
+            ir_wr_reg(ls); ir_wr(", "); ir_wr_reg(rs); ir_wr("\n");
+            return IRValue { reg: r, type_off: wide_t };
+        }
         ir_wr("  "); ir_wr_reg(r);
         if op == OP_ADD    { ir_wr(" = add "); }
         if op == OP_SUB    { ir_wr(" = sub "); }
@@ -23596,6 +23627,9 @@ var g_wpipe_reg: *i32 = null;
 // Set per worker from the owner fn's #[wave_pipe] bit. Off by default:
 // pipelining wins only when the loads actually miss.
 var g_wave_pipe_on: i32 = 0;
+// Set per worker from the owner fn's #[fits_i32] bit. Off by default:
+// narrowing is exact only under the source-asserted range invariant.
+var g_fits_i32_on: i32 = 0;
 
 fn wpipe_init() {
     if g_wpipe_node == null {
@@ -24410,12 +24444,16 @@ fn emit_gpu_module() {
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
-        // #[wave_pipe] opt-in travels via the worker's owner fn.
+        // #[wave_pipe]/#[fits_i32] opt-ins travel via the worker's owner fn.
         g_wave_pipe_on = 0;
+        g_fits_i32_on = 0;
         let owner_fi: i32 = find_func_idx(owner_fn);
         if owner_fi >= 0 {
             if (g_nodes[g_funcs[owner_fi].node].flags & 512) != 0 {
                 g_wave_pipe_on = 1;
+            }
+            if (g_nodes[g_funcs[owner_fi].node].flags & 1024) != 0 {
+                g_fits_i32_on = 1;
             }
         }
         var ci: i32 = 0;
