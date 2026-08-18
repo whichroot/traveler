@@ -15261,7 +15261,13 @@ fn pfor_admit_gpu_dot_body(pf: *PForState, body: i32, outer_var: i32,
             if pfor_is_loop_let(pf, g_nodes[s].name0) == 0 { ok = 0; break; }
             if pfor_gpu_dot_accum_rhs(pf, g_nodes[s].child0,
                                       g_nodes[s].name0, outer_var) == 0 {
-                ok = 0; break;
+                // Stage-1d carried-fetch replacement: a pure RHS assigned
+                // to a private let (the #43 fresh-cell rule); the device
+                // shape check enforces the strict prefetch grammar.
+                if depth != 1 { ok = 0; break; }
+                if pfor_walk_expr(pf, g_nodes[s].child0, outer_var) == 0 {
+                    ok = 0; break;
+                }
             }
         } else if sk == AST_FOR {
             if g_nodes[g_nodes[s].child0].kind != AST_LIT_INT
@@ -18526,6 +18532,36 @@ fn codegen_stmt(stmt: i32) {
                 "closure variable cannot be reassigned (each closure has a unique identity; no dyn Fn). Use a generic <C> parameter to abstract over closures.");
             exit(1);
         }
+        // Stage-1d carried-fetch replacement (flags bit2, set by
+        // pfor_body_gpu_dot): skip the reassign on the final rolled
+        // iteration so the b+1 prefetch load stays in bounds. The shape
+        // proves the value is dead after the loop, so the skip is
+        // output-invisible; name1 = rolled loop var, int_val = N1-1.
+        var pfg_end: i32 = 0 - 1;
+        if (g_nodes[stmt].flags & 4) != 0 {
+            let pfg_vsi: i32 = sym_find(g_nodes[stmt].name1);
+            if pfg_vsi >= 0 {
+                let pfg_vt: i32 = g_syms[pfg_vsi].type_off;
+                var pfg_vr: i32 = g_syms[pfg_vsi].reg;
+                if g_syms[pfg_vsi].is_alloca >= 1 {
+                    let pfg_l: i32 = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(pfg_l); ir_wr(" = load ");
+                    ir_wr_type(pfg_vt); ir_wr(", ptr ");
+                    ir_wr_reg(pfg_vr); ir_wr("\n");
+                    pfg_vr = pfg_l;
+                }
+                let pfg_c: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(pfg_c); ir_wr(" = icmp slt ");
+                ir_wr_type(pfg_vt); ir_wr(" "); ir_wr_reg(pfg_vr);
+                ir_wr(", "); ir_wr_int(g_nodes[stmt].int_val); ir_wr("\n");
+                let pfg_do: i32 = ir_label();
+                pfg_end = ir_label();
+                ir_wr("  br i1 "); ir_wr_reg(pfg_c); ir_wr(", label %");
+                ir_wr_label(pfg_do); ir_wr(", label %");
+                ir_wr_label(pfg_end); ir_wr("\n");
+                ir_wr_label_def(pfg_do);
+            }
+        }
         let asgn_val: IRValue = codegen_expr(g_nodes[stmt].child0, s_type);
         // Implicit widen/narrow when the RHS type differs from the declared
         // (`c = buf[p]` into i32) — mirrors member/index assign; no-op on match.
@@ -18556,6 +18592,10 @@ fn codegen_stmt(stmt: i32) {
             ir_wr("  store "); ir_wr_type(s_type); ir_wr(" ");
             ir_wr_reg(asgn_store); ir_wr(", ptr ");
             ir_wr_reg(g_syms[si].reg); ir_wr("\n");
+        }
+        if pfg_end >= 0 {
+            ir_wr("  br label %"); ir_wr_label(pfg_end); ir_wr("\n");
+            ir_wr_label_def(pfg_end);
         }
         if type_is_ptr(s_type) == 1 {
             // Provenance is a must-fact across control-flow paths. Once any
@@ -20414,6 +20454,11 @@ fn emit_pfor_workers() {
             wty = str_intern("i64");
             emit_pfor_runtime64();  // lazy: the i64 dispatch runtime pair
         }
+        // Stage-1d: run the blocked-dot shape check for its marking side
+        // effect (carried-fetch replacement assigns get the last-iteration
+        // guard) so CPU-only builds predicate the b+1 prefetch load too.
+        // Idempotent; a non-matching body is untouched.
+        pfor_body_gpu_dot(body_node);
 
         // Restore the generic substitution context captured at record
         // time so the worker body's generic type annotations resolve.
@@ -23490,14 +23535,54 @@ fn gpu_dot_accum_name(stmt: i32) -> i32 {
     return g_nodes[stmt].name0;
 }
 
+// Does the pure expression reference any of names[0..n)? Used to keep
+// carried-fetch values out of prefetch RHS and store expressions.
+fn gpu_dot_expr_refs(node: i32, names: *i32, n: i32) -> i32 {
+    if node < 0 || node == 0 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_IDENT {
+        var i: i32 = 0;
+        while i < n {
+            if names[i] == g_nodes[node].name0 { return 1; }
+            i = i + 1;
+        }
+        return 0;
+    }
+    if kind == AST_CAST || kind == AST_UNARY {
+        return gpu_dot_expr_refs(g_nodes[node].child0, names, n);
+    }
+    if kind == AST_BINARY {
+        if gpu_dot_expr_refs(g_nodes[node].child0, names, n) == 1 { return 1; }
+        return gpu_dot_expr_refs(g_nodes[node].child1, names, n);
+    }
+    if kind == AST_INDEX {
+        if gpu_dot_expr_refs(g_nodes[node].child0, names, n) == 1 { return 1; }
+        return gpu_dot_expr_refs(g_nodes[node].child1, names, n);
+    }
+    if kind == AST_CALL {
+        let rbase: i32 = g_nodes[node].args_start;
+        var ri: i32 = 0;
+        while ri < g_nodes[node].nargs {
+            if gpu_dot_expr_refs(g_args[rbase + ri], names, n) == 1 { return 1; }
+            ri = ri + 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
 // names/ntypes are parallel declaration stacks (name intern, resolved type
 // intern); wave_frame >= 0 means the body being validated is the DIRECT body
 // of a K=32 wave-map candidate: its top-level accumulate targets must be
 // lets declared in the enclosing frame (index >= wave_frame) with a 32-bit
 // integer type (the butterfly reduces one i32 per accumulator).
+// nlead/letflags: the pfor body's leading lets. letflags bit0 = accumulate
+// assign seen, bit1 = replacement (carried-fetch) assign seen. Replacement
+// assigns (`name = <pure>`, RHS free of every leading name) are admitted
+// only in the rolled loop's direct body (depth 1, outside any wave map).
 fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
-                   depth: i32, wave_frame: i32, saw_acc: *i32,
-                   acc_name: i32) -> i32 {
+                   depth: i32, wave_frame: i32, nlead: i32,
+                   letflags: *i32) -> i32 {
     if g_nodes[lbody].kind != AST_BLOCK || g_nodes[lbody].nargs < 1 { return 0; }
     if depth > 3 { return 0; }
     let frame_start: i32 = nnames[0];
@@ -23516,7 +23601,26 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
             nnames[0] = nnames[0] + 1;
         } else if sk == AST_ASSIGN {
             let tn: i32 = gpu_dot_accum_name(s);
-            if tn == 0 { return 0; }
+            if tn == 0 {
+                // Stage-1d carried-fetch replacement: `name = <pure>` where
+                // name is a leading let and the RHS references no leading
+                // name. Rolled-loop direct body only.
+                if depth != 1 || wave_frame >= 0 { return 0; }
+                var pfound: i32 = 0 - 1;
+                var pi: i32 = 0;
+                while pi < nlead {
+                    if names[pi] == g_nodes[s].name0 { pfound = pi; break; }
+                    pi = pi + 1;
+                }
+                if pfound < 0 { return 0; }
+                if gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
+                if gpu_dot_expr_refs(g_nodes[s].child0, names, nlead) == 1 {
+                    return 0;
+                }
+                letflags[pfound] = letflags[pfound] | 2;
+                si = si + 1;
+                continue;
+            }
             var found: i32 = 0 - 1;
             var ni: i32 = 0;
             while ni < nnames[0] {
@@ -23530,7 +23634,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
                 if str_eq(&g_strings[wt], "i32") == 0
                     && str_eq(&g_strings[wt], "u32") == 0 { return 0; }
             }
-            if tn == acc_name { saw_acc[0] = 1; }
+            if found < nlead { letflags[found] = letflags[found] | 1; }
         } else if sk == AST_FOR {
             if g_nodes[g_nodes[s].child0].kind != AST_LIT_INT
                 || g_nodes[g_nodes[s].child0].int_val != 0
@@ -23542,8 +23646,8 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
             var child_frame: i32 = wave_frame;
             if n2 == 32 { child_frame = frame_start; }
             if gpu_dot_body_ok(g_nodes[s].child2, names, ntypes, nnames,
-                               depth + 1, child_frame, saw_acc,
-                               acc_name) == 0 { return 0; }
+                               depth + 1, child_frame, nlead,
+                               letflags) == 0 { return 0; }
         } else {
             return 0;
         }
@@ -23557,10 +23661,10 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs < 3 { return 0; }
     let base: i32 = g_nodes[body].args_start;
     let nstmts: i32 = g_nodes[body].nargs;
-    // Stage-1c: one or more leading accumulator lets (R <= 8), then the
-    // rolled loop, then R index-assigns (one store per row).
+    // Stage-1c/1d: leading lets (accumulators + carried-fetch prefetch,
+    // L <= 16), then the rolled loop, then one index-assign per ACCUMULATOR.
     var r: i32 = 0;
-    while r < nstmts - 2 && r < 8 {
+    while r < nstmts - 2 && r < 16 {
         let lt: i32 = g_args[base + r];
         if g_nodes[lt].kind != AST_LET { break; }
         if (g_nodes[lt].flags & 1) == 0
@@ -23575,21 +23679,11 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         || g_nodes[g_nodes[loop].child1].kind != AST_LIT_INT
         || g_nodes[g_nodes[loop].child1].int_val < 1
         || g_nodes[g_nodes[loop].child1].int_val > 64 { return 0; }
-    if nstmts != r + 1 + r { return 0; }
-    var oi: i32 = 0;
-    while oi < r {
-        let output: i32 = g_args[base + r + 1 + oi];
-        if g_nodes[output].kind != AST_INDEX_ASSIGN
-            || g_nodes[g_nodes[output].child0].kind != AST_IDENT
-            || gpu_dot_expr_ok(g_nodes[output].child1) == 0
-            || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
-        oi = oi + 1;
-    }
     let lbody: i32 = g_nodes[loop].child2;
     var names: [i32; 64] = 0;
     var ntypes: [i32; 64] = 0;
     var nnames: [i32; 1] = 0;
-    var saw_acc: [i32; 1] = 0;
+    var letflags: [i32; 16] = 0;
     var ai: i32 = 0;
     while ai < r {
         names[ai] = g_nodes[g_args[base + ai]].name0;
@@ -23597,10 +23691,70 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         ai = ai + 1;
     }
     nnames[0] = r;
-    // Any leading accumulator carried through the loop qualifies the shape.
     if gpu_dot_body_ok(lbody, &names[0], &ntypes[0], &nnames[0], 1, 0 - 1,
-                       &saw_acc[0], names[0]) == 0 { return 0; }
-    if saw_acc[0] == 0 { return 0; }
+                       r, &letflags[0]) == 0 { return 0; }
+    // Classify: bit0-only or untouched = accumulator (stored), bit1-only =
+    // carried-fetch (never stored, dead after the loop). Mixed refuses.
+    var nacc: i32 = 0;
+    var npre: i32 = 0;
+    var ci: i32 = 0;
+    while ci < r {
+        if letflags[ci] == 3 { return 0; }
+        if (letflags[ci] & 2) != 0 { npre = npre + 1; }
+        else { nacc = nacc + 1; }
+        ci = ci + 1;
+    }
+    if nacc < 1 || nacc > 8 || npre > 8 { return 0; }
+    // At least one leading let must actually accumulate through the loop.
+    var saw_acc: i32 = 0;
+    ci = 0;
+    while ci < r {
+        if (letflags[ci] & 1) != 0 { saw_acc = 1; break; }
+        ci = ci + 1;
+    }
+    if saw_acc == 0 { return 0; }
+    if nstmts != r + 1 + nacc { return 0; }
+    // Prefetch values must stay dead: no store may reference one.
+    var pre_names: [i32; 8] = 0;
+    var npn: i32 = 0;
+    ci = 0;
+    while ci < r {
+        if (letflags[ci] & 2) != 0 { pre_names[npn] = names[ci]; npn = npn + 1; }
+        ci = ci + 1;
+    }
+    var oi: i32 = 0;
+    while oi < nacc {
+        let output: i32 = g_args[base + r + 1 + oi];
+        if g_nodes[output].kind != AST_INDEX_ASSIGN
+            || g_nodes[g_nodes[output].child0].kind != AST_IDENT
+            || gpu_dot_expr_ok(g_nodes[output].child1) == 0
+            || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
+        if npn > 0 {
+            if gpu_dot_expr_refs(g_nodes[output].child1, &pre_names[0], npn) == 1
+                || gpu_dot_expr_refs(g_nodes[output].child2, &pre_names[0],
+                                     npn) == 1 { return 0; }
+        }
+        oi = oi + 1;
+    }
+    // Mark the replacement assigns for the last-iteration guard. The shape
+    // proves the prefetch value is dead after the loop (scoped to the pfor
+    // body, unreferenced by any store), so skipping the final reassign is
+    // output-invisible on every path; the guard exists to keep the b+1 load
+    // in bounds. name1 = rolled loop var, int_val = N1-1, flags bit2 = mark.
+    if npre > 0 {
+        let msbase: i32 = g_nodes[lbody].args_start;
+        var mi: i32 = 0;
+        while mi < g_nodes[lbody].nargs {
+            let ms: i32 = g_args[msbase + mi];
+            if g_nodes[ms].kind == AST_ASSIGN
+                && gpu_dot_accum_name(ms) == 0 {
+                g_nodes[ms].flags = g_nodes[ms].flags | 4;
+                g_nodes[ms].name1 = g_nodes[loop].name0;
+                g_nodes[ms].int_val = g_nodes[g_nodes[loop].child1].int_val - 1;
+            }
+            mi = mi + 1;
+        }
+    }
     return 1;
 }
 
@@ -23712,6 +23866,44 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
         } else if sk == AST_ASSIGN {
             let tsi: i32 = sym_find(g_nodes[s].name0);
             let tt: i32 = resolve_type_sub(g_syms[tsi].type_off);
+            if (g_nodes[s].flags & 4) != 0 {
+                // Stage-1d carried-fetch replacement: skip the reassign on
+                // the final rolled iteration so the b+1 load stays in
+                // bounds. The rolled loop var is uniform, so the branch is
+                // convergent; the join phi passes the old value through.
+                let pfg_old: i32 = g_syms[tsi].reg;
+                let pfg_vsi: i32 = sym_find(g_nodes[s].name1);
+                let lbl_g: i32 = ir_label();
+                let lbl_pre: i32 = ir_label();
+                let lbl_join: i32 = ir_label();
+                ir_wr("  br label %"); ir_wr_label(lbl_g); ir_wr("\n");
+                ir_wr_label_def(lbl_g);
+                let pfg_c: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(pfg_c); ir_wr(" = icmp slt i32 ");
+                ir_wr_reg(g_syms[pfg_vsi].reg); ir_wr(", ");
+                ir_wr_int(g_nodes[s].int_val); ir_wr("\n");
+                ir_wr("  br i1 "); ir_wr_reg(pfg_c); ir_wr(", label %");
+                ir_wr_label(lbl_pre); ir_wr(", label %");
+                ir_wr_label(lbl_join); ir_wr("\n");
+                ir_wr_label_def(lbl_pre);
+                let pfg_v: IRValue = codegen_expr(g_nodes[s].child0, tt);
+                var pfg_r: i32 = pfg_v.reg;
+                if pfg_v.type_off != NULL_STR && pfg_v.type_off != tt {
+                    pfg_r = emit_implicit_convert(pfg_v.reg, pfg_v.type_off,
+                                                  tt);
+                }
+                ir_wr("  br label %"); ir_wr_label(lbl_join); ir_wr("\n");
+                ir_wr_label_def(lbl_join);
+                let pfg_m: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(pfg_m); ir_wr(" = phi ");
+                ir_wr_type(tt); ir_wr(" [ "); ir_wr_reg(pfg_r);
+                ir_wr(", %"); ir_wr_label(lbl_pre); ir_wr(" ], [ ");
+                ir_wr_reg(pfg_old); ir_wr(", %"); ir_wr_label(lbl_g);
+                ir_wr(" ]\n");
+                g_syms[tsi].reg = pfg_m;
+                si = si + 1;
+                continue;
+            }
             let av: IRValue = codegen_expr(g_nodes[s].child0, tt);
             var ar: i32 = av.reg;
             if av.type_off != NULL_STR && av.type_off != tt {
@@ -23762,12 +23954,16 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
 fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let base: i32 = g_nodes[body].args_start;
     let nstmts: i32 = g_nodes[body].nargs;
-    // R leading accumulator lets (R <= 8), then the loop, then R stores.
+    // L leading lets (accumulators + carried-fetch prefetch, L <= 16), then
+    // the loop, then one store per ACCUMULATOR (nstores = nstmts - L - 1).
+    // Every leading let is phi-carried identically; prefetch lets simply
+    // have no trailing store.
     var nrows: i32 = 0;
-    while nrows < nstmts - 2 && nrows < 8 {
+    while nrows < nstmts - 2 && nrows < 16 {
         if g_nodes[g_args[base + nrows]].kind != AST_LET { break; }
         nrows = nrows + 1;
     }
+    let nstores: i32 = nstmts - nrows - 1;
     let loop: i32 = g_args[base + nrows];
     let n1: i64 = g_nodes[g_nodes[loop].child1].int_val;
     let loop_var: i32 = g_nodes[loop].name0;
@@ -23777,11 +23973,11 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     // header phis can name the latch values before the latch is emitted.
     let v_phi: i32 = ir_tmp();
     let v_next: i32 = ir_tmp();
-    var acc_phi: [i32; 8] = 0;
-    var acc_next: [i32; 8] = 0;
-    var acc0: [i32; 8] = 0;
-    var acc_si: [i32; 8] = 0;
-    var acc_ty: [i32; 8] = 0;
+    var acc_phi: [i32; 16] = 0;
+    var acc_next: [i32; 16] = 0;
+    var acc0: [i32; 16] = 0;
+    var acc_si: [i32; 16] = 0;
+    var acc_ty: [i32; 16] = 0;
     var ri: i32 = 0;
     while ri < nrows {
         acc_phi[ri] = ir_tmp();
@@ -23879,7 +24075,7 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         ir_wr("\n");
         ir_wr_label_def(lbl_store);
         ri = 0;
-        while ri < nrows {
+        while ri < nstores {
             codegen_stmt(g_args[base + nrows + 1 + ri]);
             ri = ri + 1;
         }
@@ -23887,7 +24083,7 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         ir_wr_label_def(lbl_skip);
     } else {
         ri = 0;
-        while ri < nrows {
+        while ri < nstores {
             codegen_stmt(g_args[base + nrows + 1 + ri]);
             ri = ri + 1;
         }

@@ -293,6 +293,8 @@ examples/poseidon2_wide_test.tv	{"fn":"test_t8_parity","var":"i","independent":1
 examples/poseidon2_wide_test.tv	{"fn":"test_t8_parity","var":"i","independent":1,"has_field":0,"ncaps":2,"dispatched":1,"reason":""}
 examples/poseidon2_wide_test.tv	{"fn":"test_t8_parity","var":"i","independent":1,"has_field":0,"ncaps":2,"dispatched":1,"reason":""}
 examples/poseidon2_wide_test.tv	{"fn":"test_t8_parity","var":"i","independent":1,"has_field":0,"ncaps":2,"dispatched":1,"reason":""}
+examples/prefetch_dot.tv	{"fn":"main","var":"b","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"assign-carried"}
+examples/prefetch_dot.tv	{"fn":"main","var":"i","independent":1,"has_field":0,"ncaps":3,"dispatched":1,"reason":""}
 examples/regime_fri_zk_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"mutating-call"}
 examples/regime_mnist_zk_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"mutating-call"}
 examples/regime_wav_zk_test.tv	{"fn":"main","var":"i","independent":0,"has_field":0,"ncaps":0,"dispatched":0,"reason":"mutating-call"}

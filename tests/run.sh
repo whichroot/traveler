@@ -1337,6 +1337,12 @@ run_test wide_print "$TIMEOUT_SINGLE"
 # promotion. The narrow specimen is seed-compatible; the wide accumulator
 # boundary requires the self-hosted i128/i256 surface.
 test_single dot_product_narrow
+# Stage-1d carried-fetch prefetch: the blocked-dot shape with a replacement
+# assign that loads block b+1 during block b. The compiler predicates the
+# reassign on the final iteration (value dead by shape); outputs must be
+# byte-identical to the serial semantics. Dual-parity: the seed runs the
+# unguarded source (w sized +1) and must agree.
+test_single prefetch_dot
 compile_obj_self dot_product_wide
 link_objs dot_product_wide dot_product_wide
 run_test dot_product_wide "$TIMEOUT_SINGLE"

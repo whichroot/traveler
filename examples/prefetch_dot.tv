@@ -1,0 +1,41 @@
+// prefetch_dot.tv — Stage-1d carried-fetch prefetch, CPU semantics gate.
+//
+// The pfor body is the blocked-dot shape with one carried-fetch let: `pre`
+// holds block b's operand, and the trailing replacement assign loads block
+// b+1 during iteration b (software pipelining depth 1, expressed in
+// source). The compiler skips the reassign on the final iteration (the
+// value is dead — scoped to the body, never stored), which keeps the b+1
+// load in bounds. w is sized one element long anyway so the unguarded
+// paths (the frozen C seed, the evaluator) read in bounds too.
+//
+// Expected output: 20 37 17 2279
+
+fn main() -> i32 {
+    let w: *i64 = alloc(257);   // 64*4 + 1
+    let x: *i64 = alloc(256);
+    let out: *i64 = alloc(64);
+    var j: i32 = 0;
+    while j < 257 { w[j] = (j % 7) as i64; j = j + 1; }
+    j = 0;
+    while j < 256 { x[j] = ((j % 5) + 1) as i64; j = j + 1; }
+
+    for i in 0..64 {
+        var pre: i64 = w[i * 4];
+        var acc: i64 = 0;
+        for b in 0..4 {
+            acc = acc + pre * x[i * 4 + b];
+            pre = w[i * 4 + b + 1];
+        }
+        out[i] = acc;
+    }
+
+    print(out[0]);   // 20
+    print(out[1]);   // 37
+    print(out[63]);  // 17
+    var s: i64 = 0;
+    j = 0;
+    while j < 64 { s = s + out[j]; j = j + 1; }
+    print(s);        // 2279
+    free(out); free(x); free(w);
+    return 0;
+}

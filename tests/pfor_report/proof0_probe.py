@@ -25,8 +25,8 @@ def read_rows(path: str) -> list[dict]:
 
 
 def check_corpus(rows: list[dict]) -> None:
-    if len(rows) != 408:
-        raise ValueError(f"expected 408 corpus summaries, saw {len(rows)}")
+    if len(rows) != 410:
+        raise ValueError(f"expected 410 corpus summaries, saw {len(rows)}")
     if any(row.get("line", 0) <= 0 or row.get("col", 0) <= 0 for row in rows):
         raise ValueError("PROOF1 emitted a missing/invalid source location")
     dispatched = sum(row["legacy_dispatched"] for row in rows)
@@ -37,7 +37,7 @@ def check_corpus(rows: list[dict]) -> None:
     agx_candidate = sum(row["agx_candidate"] for row in rows)
     lang1_candidate = sum(row["lang1_candidate"] for row in rows)
     independent = sum(row["legacy_independent"] for row in rows)
-    if dispatched != 206:
+    if dispatched != 207:
         raise ValueError(
             f"legacy dispatch baseline changed: dispatched={dispatched}, "
             f"cpu={cpu}, agx={agx}"
@@ -45,7 +45,7 @@ def check_corpus(rows: list[dict]) -> None:
     incomplete = [row for row in rows if row["complete"] == 0]
     if incomplete:
         raise ValueError("unexpected whole-corpus summary incompleteness")
-    if (cpu, agx) != (262, 179):
+    if (cpu, agx) != (263, 180):
         raise ValueError(
             f"PROOF0 effect baseline changed: cpu={cpu} agx={agx}"
         )
@@ -60,7 +60,7 @@ def check_corpus(rows: list[dict]) -> None:
         sum(row["iterator_width"] == width for row in rows)
         for width in (0, 32, 64)
     )
-    if widths != (1, 401, 6):
+    if widths != (1, 403, 6):
         raise ValueError(f"LANG1 iterator-width census changed: {widths}")
     cpu_added = sum(
         row["cpu_candidate"] == 1 and row["legacy_independent"] == 0
@@ -71,7 +71,7 @@ def check_corpus(rows: list[dict]) -> None:
         for row in rows
     )
     census = (independent, cpu_candidate, agx_candidate, cpu_added, cpu_removed)
-    if census != (206, 216, 163, 10, 0):
+    if census != (207, 217, 164, 10, 0):
         raise ValueError(f"PROOF1 candidate census changed: {census}")
     c1_inlineable = sum(row["c1_inlineable_calls"] for row in rows)
     c1_refusals = {
@@ -79,9 +79,9 @@ def check_corpus(rows: list[dict]) -> None:
         for reason in ("", "callee-shape", "closure-shape", "short-circuit")
     }
     if (lang1_candidate, c1_inlineable, c1_refusals) != (
-        178,
+        179,
         38,
-        {"": 398, "callee-shape": 9, "closure-shape": 1,
+        {"": 400, "callee-shape": 9, "closure-shape": 1,
          "short-circuit": 0},
     ):
         raise ValueError(
@@ -97,7 +97,7 @@ def check_corpus(rows: list[dict]) -> None:
         row for row in rows
         if row["cpu_candidate"] == 1 and row["cpu_dispatched"] == 0
     ]
-    if cpu_dispatched != 216 or operationally_blocked:
+    if cpu_dispatched != 217 or operationally_blocked:
         raise ValueError(
             "PROOF1 operational census changed: "
             f"dispatched={cpu_dispatched} blocked={operationally_blocked}"
@@ -225,14 +225,14 @@ def check_corpus(rows: list[dict]) -> None:
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     expected_digest = (
-        "2ea417e2fc6576f26e76154751ebac6b3b1885a1f3b74016a4eaea1d9b37d494"
+        "2065dd9d905d8f59f46537e51f2a1fc31adeb8017c533789855f400dbdcddb77"
     )
     if digest != expected_digest:
         raise ValueError(f"PROOF0 per-record baseline changed: sha256={digest}")
     print(
-        "PROOF1 corpus PASS: 408 records, "
-        f"effects cpu={cpu} agx={agx}, dispatch 206->216, "
-        "prior capture/write parity 206/206"
+        "PROOF1 corpus PASS: 410 records, "
+        f"effects cpu={cpu} agx={agx}, dispatch 207->217, "
+        "prior capture/write parity 207/207"
     )
 
 

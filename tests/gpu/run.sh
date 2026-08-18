@@ -1975,6 +1975,45 @@ elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
 else
     echo "  ok   capacity cliffs admitted: 51 lets / 26 captures emit + lower"
 fi
+
+# A9. Stage-1d carried-fetch prefetch: [LET pre, LET acc, FOR, one store].
+# pre is phi-carried; the replacement assign loads block b+1 during block b
+# and is guarded on the final iteration (icmp against N1-1 + join phi) so
+# the prefetch load stays in bounds. The value is dead by shape, so the
+# guard is output-invisible.
+PF_SRC="$SCRIPT_DIR/gpu_prefetch_dot.tv"
+PF_DEV="$TMP/gpu_prefetch_dot_amd.ll"
+PF_OBJ="$TMP/gpu_prefetch_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$PF_SRC" -o "$PF_DEV" 2>/dev/null; then
+    echo "  FAIL: prefetch dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$PF_DEV"; then
+    echo "  FAIL: prefetch dot emitted no kernel"; fail=1
+elif grep -q "alloca" "$PF_DEV"; then
+    echo "  FAIL: prefetch dot spilled through alloca"; fail=1
+elif [ "$(grep -c ' = phi i64 ' "$PF_DEV")" -lt 3 ]; then
+    echo "  FAIL: prefetch dot lost a carried phi (want pre + acc + join)"; fail=1
+elif ! grep -q "icmp slt i32 .*, 3$" "$PF_DEV"; then
+    echo "  FAIL: prefetch dot lost the last-iteration guard"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$PF_DEV" -o "$PF_OBJ" 2>"$TMP/pf-llc.err"; then
+    echo "  FAIL: prefetch dot did not lower for gfx1100:"; \
+        sed 's/^/       /' "$TMP/pf-llc.err"; fail=1
+else
+    echo "  ok   AMD Stage-1d prefetch: carried-fetch phi, guarded reassign, gfx1100-lowered"
+fi
+
+# A10. Stage-1d negative catalogue: mixed accumulate+replacement on one let,
+# and a stored carried-fetch value (deadness is what makes the guard
+# output-invisible). Both loops must stay off the device.
+PFN_DEV="$TMP/gpu_prefetch_refuse_amd.ll"
+if ! "$STAGE1" --emit-gpu "$SCRIPT_DIR/gpu_prefetch_refuse.tv" \
+        -o "$PFN_DEV" 2>/dev/null; then
+    echo "  FAIL: prefetch negative catalogue did not produce a module"; fail=1
+elif grep -q "define amdgpu_kernel" "$PFN_DEV"; then
+    echo "  FAIL: prefetch negative catalogue reached the device"; fail=1
+else
+    echo "  ok   prefetch negatives (mixed assign, stored prefetch) stay refused"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2075,6 +2114,21 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX blocked dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX Stage-1 blocked dot: mapped multiplicands, phi-carried, sm_90-lowered"
+fi
+
+# N7. The Stage-1d carried-fetch prefetch stays target-neutral.
+PF_NVDEV="$TMP/gpu_prefetch_dot_nv.ll"
+PF_PTX="$TMP/gpu_prefetch_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_prefetch_dot.tv" \
+        -o "$PF_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX prefetch dot did not produce a module"; fail=1
+elif ! grep -q "icmp slt i32 .*, 3$" "$PF_NVDEV"; then
+    echo "  FAIL: NVPTX prefetch dot lost the last-iteration guard"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$PF_NVDEV" -o "$PF_PTX" 2>"$TMP/pf-llcnv.err"; then
+    echo "  FAIL: NVPTX prefetch dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX Stage-1d prefetch: guarded carried-fetch, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.

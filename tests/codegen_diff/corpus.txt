@@ -163,6 +163,7 @@ examples/plonk_test.tv
 examples/pointer_basics.tv
 examples/pointer_index.tv
 examples/poly_classify.tv
+examples/prefetch_dot.tv               # Stage-1d carried-fetch prefetch (guarded replacement assign)
 examples/poly_core_generic_test.tv
 examples/poly_core_test.tv
 examples/poly_discrim.tv
