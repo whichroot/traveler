@@ -1833,6 +1833,38 @@ if [ "$fail" = "0" ] && [ -x "$OBJDUMP" ] && [ -f "$K8_OBJ" ]; then
     fi
 fi
 
+# A8. Stage-1b wave map: the K=32 loop lowers across the wave with a
+#     ds.swizzle xor butterfly (pattern (off<<10)|0x1F — gfx11 SWAP; the
+#     gfx9 0xFC00|off encoding is FFT bit-rotation on gfx11, probed).
+WAVE_SRC="$SCRIPT_DIR/gpu_wave_dot.tv"
+WAVE_DEV="$TMP/gpu_wave_dot_amd.ll"
+WAVE_OBJ="$TMP/gpu_wave_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$WAVE_SRC" -o "$WAVE_DEV" 2>/dev/null; then
+    echo "  FAIL: AMD wave dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$WAVE_DEV"; then
+    echo "  FAIL: AMD wave dot emitted no kernel"; fail=1
+elif grep -q "alloca" "$WAVE_DEV"; then
+    echo "  FAIL: AMD wave dot spilled through alloca"; fail=1
+elif [ "$(grep -c 'llvm.amdgcn.ds.swizzle' "$WAVE_DEV")" -lt 6 ]; then
+    echo "  FAIL: AMD wave dot lost its ds.swizzle butterfly"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$WAVE_DEV" -o "$WAVE_OBJ" 2>"$TMP/wave-llc.err"; then
+    echo "  FAIL: AMD wave dot did not lower for gfx1100:"; \
+        sed 's/^/       /' "$TMP/wave-llc.err"; fail=1
+else
+    wavedis=""
+    if [ -x "$OBJDUMP" ]; then
+        wavedis="$("$OBJDUMP" -d "$WAVE_OBJ" 2>/dev/null || true)"
+    fi
+    if [ -n "$wavedis" ] && ! echo "$wavedis" \
+            | grep -q "ds_swizzle_b32.*SWAP"; then
+        echo "  FAIL: AMD wave dot butterfly is not the gfx11 SWAP xor-permute"; \
+            fail=1
+    else
+        echo "  ok   AMD Stage-1b wave map: ds.swizzle SWAP butterfly, gfx1100-lowered"
+    fi
+fi
+
 # A6. Other proved private-mutable bodies stay outside the closed device class.
 PRIVATE_REFUSE_AMD="$TMP/gpu_private_refuse_amd.ll"
 if ! "$STAGE1" --emit-gpu "$PRIVATE_REFUSE_SRC" \
@@ -1972,6 +2004,25 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX blocked dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX Stage-1 blocked dot: mapped multiplicands, phi-carried, sm_90-lowered"
+fi
+
+# N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.
+WAVE_NVDEV="$TMP/gpu_wave_dot_nv.ll"
+WAVE_PTX="$TMP/gpu_wave_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_wave_dot.tv" \
+        -o "$WAVE_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX wave dot did not produce a module"; fail=1
+elif grep -q "alloca" "$WAVE_NVDEV"; then
+    echo "  FAIL: NVPTX wave dot spilled through alloca"; fail=1
+elif ! grep -q "llvm.nvvm.shfl.sync.i32" "$WAVE_NVDEV"; then
+    echo "  FAIL: NVPTX wave dot lost its shfl.sync butterfly"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$WAVE_NVDEV" -o "$WAVE_PTX" 2>"$TMP/wave-llcnv.err"; then
+    echo "  FAIL: NVPTX wave dot did not lower for sm_90"; fail=1
+elif ! grep -q "shfl.sync" "$WAVE_PTX"; then
+    echo "  FAIL: NVPTX wave dot PTX lost the shfl.sync butterfly"; fail=1
+else
+    echo "  ok   NVPTX Stage-1b wave map: shfl.sync.bfly, sm_90-lowered"
 fi
 
 fi

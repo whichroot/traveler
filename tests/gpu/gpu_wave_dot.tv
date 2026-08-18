@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+// Stage-1b wave map for AMDGCN/NVPTX device emission: an inner K=32 loop
+// lowers across the wave (lane id binds the loop var) and each top-level
+// i32 accumulator is butterfly-reduced — ds.swizzle xor steps on AMDGCN
+// (pattern (off<<10)|0x1F; the gfx9 0xFC00|off encoding is FFT bit-rotation
+// on gfx11), shfl.sync.bfly on NVPTX. Integer sums, so the reduction order
+// is bit-identical to the serial sum.
+
+fn main() -> i32 {
+    let x: *i32 = alloc(4 * 2 * 32);
+    let out: *i64 = alloc(4);
+    for i in 0..4 {
+        var acc: i64 = 0;
+        for b in 0..2 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + x[(i * 2 + b) * 32 + lane] + lane + b;
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+    free(out); free(x);
+    return 0;
+}

@@ -15164,25 +15164,22 @@ fn pfor_gpu_dot_accum_rhs(pf: *PForState, rhs: i32, name: i32,
 }
 
 // Stage-1 blocked private dot (GPU class; @internal-note: plan-gpu-purity-runtime).
-// FOR v in 0..N1 (literal, N1 <= 64) whose body is a sequence of:
+// FOR v in 0..N1 (literal, N1 <= 64) whose body is a recursive sequence of:
 //   - private accumulator lets (mut, pure init),
-//   - inner K-loops FOR k in 0..N2 (literal, N2 <= 32) holding exactly one
-//     `name = name + <pure expr>` assign to a declared accumulator,
-//   - `name = name + <pure expr>` assigns to a declared accumulator.
+//   - `name = name (+|-) <pure> ...` accumulate assigns (left-nested spine),
+//   - inner FORs in 0..N2 (literal, N2 <= 32) with the same body grammar
+//     (depth <= 3). An inner FOR with N2 == 32 is the Stage-1b wave-map
+//     candidate: the device lowers it across the wave with a butterfly
+//     reduction instead of unrolling or rolling it serially.
 // Multiplicands are arbitrary pure expressions (mapped multiplicands: the
 // dequant shifts/masks ride inside the dot, not in a materialized array).
 // Reads are recorded by the ordinary walker: unclassifiable footprints are
 // WILD and only refuse when the same array is also written. Body-local let
 // names are rolled back on exit so post-loop references stay out of scope.
-fn pfor_admit_gpu_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
-    if g_nodes[stmt].kind != AST_FOR { return 0; }
-    if g_nodes[g_nodes[stmt].child0].kind != AST_LIT_INT
-        || g_nodes[g_nodes[stmt].child0].int_val != 0
-        || g_nodes[g_nodes[stmt].child1].kind != AST_LIT_INT
-        || g_nodes[g_nodes[stmt].child1].int_val < 1
-        || g_nodes[g_nodes[stmt].child1].int_val > 64 { return 0; }
-    let body: i32 = g_nodes[stmt].child2;
+fn pfor_admit_gpu_dot_body(pf: *PForState, body: i32, outer_var: i32,
+                           depth: i32) -> i32 {
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs < 1 { return 0; }
+    if depth > 3 { return 0; }
     let saved_nlets: i32 = pf.nlets;
     let nstmts: i32 = g_nodes[body].nargs;
     let sbase: i32 = g_nodes[body].args_start;
@@ -15212,16 +15209,8 @@ fn pfor_admit_gpu_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
                 || g_nodes[g_nodes[s].child1].kind != AST_LIT_INT
                 || g_nodes[g_nodes[s].child1].int_val < 1
                 || g_nodes[g_nodes[s].child1].int_val > 32 { ok = 0; break; }
-            let ibody: i32 = g_nodes[s].child2;
-            if g_nodes[ibody].kind != AST_BLOCK
-                || g_nodes[ibody].nargs != 1 { ok = 0; break; }
-            let asg: i32 = g_args[g_nodes[ibody].args_start];
-            if g_nodes[asg].kind != AST_ASSIGN
-                || pfor_is_loop_let(pf, g_nodes[asg].name0) == 0 {
-                ok = 0; break;
-            }
-            if pfor_gpu_dot_accum_rhs(pf, g_nodes[asg].child0,
-                                      g_nodes[asg].name0, outer_var) == 0 {
+            if pfor_admit_gpu_dot_body(pf, g_nodes[s].child2, outer_var,
+                                       depth + 1) == 0 {
                 ok = 0; break;
             }
         } else {
@@ -15232,6 +15221,16 @@ fn pfor_admit_gpu_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
     if ok == 0 { pf.nlets = saved_nlets; return 0; }
     pf.nlets = saved_nlets;
     return 1;
+}
+
+fn pfor_admit_gpu_dot(pf: *PForState, stmt: i32, outer_var: i32) -> i32 {
+    if g_nodes[stmt].kind != AST_FOR { return 0; }
+    if g_nodes[g_nodes[stmt].child0].kind != AST_LIT_INT
+        || g_nodes[g_nodes[stmt].child0].int_val != 0
+        || g_nodes[g_nodes[stmt].child1].kind != AST_LIT_INT
+        || g_nodes[g_nodes[stmt].child1].int_val < 1
+        || g_nodes[g_nodes[stmt].child1].int_val > 64 { return 0; }
+    return pfor_admit_gpu_dot_body(pf, g_nodes[stmt].child2, outer_var, 1);
 }
 
 // LANG0 deliberately precedes PROOF0. Structured bodies therefore enter the
@@ -23411,6 +23410,69 @@ fn gpu_dot_accum_name(stmt: i32) -> i32 {
     return g_nodes[stmt].name0;
 }
 
+// names/ntypes are parallel declaration stacks (name intern, resolved type
+// intern); wave_frame >= 0 means the body being validated is the DIRECT body
+// of a K=32 wave-map candidate: its top-level accumulate targets must be
+// lets declared in the enclosing frame (index >= wave_frame) with a 32-bit
+// integer type (the butterfly reduces one i32 per accumulator).
+fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
+                   depth: i32, wave_frame: i32, saw_acc: *i32,
+                   acc_name: i32) -> i32 {
+    if g_nodes[lbody].kind != AST_BLOCK || g_nodes[lbody].nargs < 1 { return 0; }
+    if depth > 3 { return 0; }
+    let frame_start: i32 = nnames[0];
+    let nstmts: i32 = g_nodes[lbody].nargs;
+    let sbase: i32 = g_nodes[lbody].args_start;
+    var si: i32 = 0;
+    while si < nstmts {
+        let s: i32 = g_args[sbase + si];
+        let sk: i32 = g_nodes[s].kind;
+        if sk == AST_LET {
+            if (g_nodes[s].flags & 1) == 0
+                || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
+            if nnames[0] >= 12 { return 0; }
+            names[nnames[0]] = g_nodes[s].name0;
+            ntypes[nnames[0]] = resolve_type_sub(g_nodes[s].name1);
+            nnames[0] = nnames[0] + 1;
+        } else if sk == AST_ASSIGN {
+            let tn: i32 = gpu_dot_accum_name(s);
+            if tn == 0 { return 0; }
+            var found: i32 = 0 - 1;
+            var ni: i32 = 0;
+            while ni < nnames[0] {
+                if names[ni] == tn { found = ni; break; }
+                ni = ni + 1;
+            }
+            if found < 0 { return 0; }
+            if wave_frame >= 0 && found < wave_frame { return 0; }
+            if wave_frame >= 0 {
+                let wt: i32 = ntypes[found];
+                if str_eq(&g_strings[wt], "i32") == 0
+                    && str_eq(&g_strings[wt], "u32") == 0 { return 0; }
+            }
+            if tn == acc_name { saw_acc[0] = 1; }
+        } else if sk == AST_FOR {
+            if g_nodes[g_nodes[s].child0].kind != AST_LIT_INT
+                || g_nodes[g_nodes[s].child0].int_val != 0
+                || g_nodes[g_nodes[s].child1].kind != AST_LIT_INT
+                || g_nodes[g_nodes[s].child1].int_val < 1
+                || g_nodes[g_nodes[s].child1].int_val > 32 { return 0; }
+            let n2: i64 = g_nodes[g_nodes[s].child1].int_val;
+            if n2 == 32 && wave_frame >= 0 { return 0; }  // no nested wave
+            var child_frame: i32 = wave_frame;
+            if n2 == 32 { child_frame = frame_start; }
+            if gpu_dot_body_ok(g_nodes[s].child2, names, ntypes, nnames,
+                               depth + 1, child_frame, saw_acc,
+                               acc_name) == 0 { return 0; }
+        } else {
+            return 0;
+        }
+        si = si + 1;
+    }
+    nnames[0] = frame_start;
+    return 1;
+}
+
 fn pfor_body_gpu_dot(body: i32) -> i32 {
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 3 { return 0; }
     let base: i32 = g_nodes[body].args_start;
@@ -23431,12 +23493,111 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
     let acc_name: i32 = g_nodes[init].name0;
     let lbody: i32 = g_nodes[loop].child2;
-    if g_nodes[lbody].kind != AST_BLOCK || g_nodes[lbody].nargs < 1 { return 0; }
-    // Declared accumulator names: the outer acc plus body lets (<= 8).
-    var names: [i32; 9] = 0;
+    var names: [i32; 12] = 0;
+    var ntypes: [i32; 12] = 0;
+    var nnames: [i32; 1] = 0;
+    var saw_acc: [i32; 1] = 0;
     names[0] = acc_name;
-    var nnames: i32 = 1;
-    var saw_acc: i32 = 0;
+    ntypes[0] = resolve_type_sub(g_nodes[init].name1);
+    nnames[0] = 1;
+    if gpu_dot_body_ok(lbody, &names[0], &ntypes[0], &nnames[0], 1, 0 - 1,
+                       &saw_acc[0], acc_name) == 0 { return 0; }
+    // The shape exists to carry the outer accumulator; a loop that never
+    // touches it is the elementwise class, not this one.
+    if saw_acc[0] == 0 { return 0; }
+    return 1;
+}
+
+// Does this worker body wave-map (any inner K=32 loop, depth >= 2 — the
+// pfor body's own FOR at depth 1 is the rolled accumulator loop and never
+// wave-maps)? The entry SIMT identity depends on it: wave-mapped workers
+// get one work item per wave32.
+fn gpu_dot_uses_wave(node: i32, depth: i32) -> i32 {
+    if node < 0 || node == 0 || depth > 5 { return 0; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_FOR {
+        if depth >= 2
+            && g_nodes[g_nodes[node].child1].kind == AST_LIT_INT
+            && g_nodes[g_nodes[node].child1].int_val == 32 { return 1; }
+        return gpu_dot_uses_wave(g_nodes[node].child2, depth + 1);
+    }
+    if kind == AST_BLOCK {
+        let n: i32 = g_nodes[node].nargs;
+        let b: i32 = g_nodes[node].args_start;
+        var i: i32 = 0;
+        while i < n {
+            if gpu_dot_uses_wave(g_args[b + i], depth + 1) == 1 { return 1; }
+            i = i + 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+// ===== STAGE-1B WAVE MAP =====
+// An inner FOR in 0..32 (admission proved: top-level accumulate targets are
+// i32/u32 lets from the enclosing frame) lowers across the wave instead of
+// unrolling: the loop var binds to the lane id, the body runs once per lane,
+// and each top-level accumulator is butterfly-reduced (5 ds.swizzle xor
+// steps; integer sums, so the reorder is bit-identical to the serial sum).
+// NVPTX lowers the same reduction through shfl.sync.bfly (emission gate).
+
+fn gpu_emit_butterfly_i32(reg: i32) -> i32 {
+    var cur: i32 = reg;
+    var off: i64 = 16;
+    while off > 0 {
+        let sw: i32 = ir_tmp();
+        if g_gpu_target == 1 {
+            let packed: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(packed);
+            ir_wr(" = call { i32, i1 } @llvm.nvvm.shfl.sync.i32(i32 -1, i32 2, i32 ");
+            ir_wr_reg(cur); ir_wr(", i32 "); ir_wr_int(off);
+            ir_wr(", i32 31)\n");
+            ir_wr("  "); ir_wr_reg(sw);
+            ir_wr(" = extractvalue { i32, i1 } "); ir_wr_reg(packed);
+            ir_wr(", 0\n");
+        } else {
+            // gfx11 ds_swizzle xor-permute (disasm shows "SWAP,off"):
+            // pattern = (off << 10) | 0x1F. NOT the gfx9 bitmask encoding
+            // 0xFC00|off — that is FFT bit-rotation on gfx11 (probed).
+            ir_wr("  "); ir_wr_reg(sw);
+            ir_wr(" = call i32 @llvm.amdgcn.ds.swizzle(i32 ");
+            ir_wr_reg(cur); ir_wr(", i32 "); ir_wr_int(off * 1024 + 31);
+            ir_wr(")\n");
+        }
+        let nxt: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(nxt); ir_wr(" = add i32 ");
+        ir_wr_reg(cur); ir_wr(", "); ir_wr_reg(sw); ir_wr("\n");
+        cur = nxt;
+        off = off / 2;
+    }
+    return cur;
+}
+
+fn emit_wave_mapped_for(stmt: i32, depth: i32, lane_reg: i32,
+                        wave_tgts: *i32, wave_ntgts: *i32) {
+    let ibody: i32 = g_nodes[stmt].child2;
+    let ivar: i32 = g_nodes[stmt].name0;
+    sym_push_scope();
+    sym_add(ivar, str_intern("i32"), lane_reg, 0);
+    wave_ntgts[0] = 0;
+    codegen_gpu_dot_body(ibody, depth + 1, 1, depth + 1, lane_reg,
+                         wave_tgts, wave_ntgts);
+    var t: i32 = 0;
+    while t < wave_ntgts[0] {
+        let tsi: i32 = wave_tgts[t];
+        g_syms[tsi].reg = gpu_emit_butterfly_i32(g_syms[tsi].reg);
+        t = t + 1;
+    }
+    sym_pop_scope();
+}
+
+// Recursive body walker for the blocked-dot class. in_wave marks the direct
+// body of a wave-mapped loop at wave_tdepth: top-level assigns there are
+// recorded in wave_tgts for the post-body butterfly.
+fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
+                        wave_tdepth: i32, lane_reg: i32,
+                        wave_tgts: *i32, wave_ntgts: *i32) {
     let nstmts: i32 = g_nodes[lbody].nargs;
     let sbase: i32 = g_nodes[lbody].args_start;
     var si: i32 = 0;
@@ -23444,54 +23605,65 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         let s: i32 = g_args[sbase + si];
         let sk: i32 = g_nodes[s].kind;
         if sk == AST_LET {
-            if (g_nodes[s].flags & 1) == 0
-                || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
-            if nnames >= 9 { return 0; }
-            names[nnames] = g_nodes[s].name0;
-            nnames = nnames + 1;
+            let lt: i32 = resolve_type_sub(g_nodes[s].name1);
+            let lv: IRValue = codegen_expr(g_nodes[s].child0, lt);
+            var lr: i32 = lv.reg;
+            if lv.type_off != NULL_STR && lv.type_off != lt {
+                lr = emit_implicit_convert(lv.reg, lv.type_off, lt);
+            }
+            sym_add(g_nodes[s].name0, lt, lr, 0);
+            g_syms[g_sym_count - 1].is_mut = 1;
         } else if sk == AST_ASSIGN {
-            let tn: i32 = gpu_dot_accum_name(s);
-            if tn == 0 { return 0; }
-            var found: i32 = 0;
-            var ni: i32 = 0;
-            while ni < nnames {
-                if names[ni] == tn { found = 1; break; }
-                ni = ni + 1;
+            let tsi: i32 = sym_find(g_nodes[s].name0);
+            let tt: i32 = resolve_type_sub(g_syms[tsi].type_off);
+            let av: IRValue = codegen_expr(g_nodes[s].child0, tt);
+            var ar: i32 = av.reg;
+            if av.type_off != NULL_STR && av.type_off != tt {
+                ar = emit_implicit_convert(av.reg, av.type_off, tt);
             }
-            if found == 0 { return 0; }
-            if tn == acc_name { saw_acc = 1; }
-        } else if sk == AST_FOR {
-            if g_nodes[g_nodes[s].child0].kind != AST_LIT_INT
-                || g_nodes[g_nodes[s].child0].int_val != 0
-                || g_nodes[g_nodes[s].child1].kind != AST_LIT_INT
-                || g_nodes[g_nodes[s].child1].int_val < 1
-                || g_nodes[g_nodes[s].child1].int_val > 32 { return 0; }
-            let ibody: i32 = g_nodes[s].child2;
-            if g_nodes[ibody].kind != AST_BLOCK
-                || g_nodes[ibody].nargs != 1 { return 0; }
-            let asg: i32 = g_args[g_nodes[ibody].args_start];
-            let tn2: i32 = gpu_dot_accum_name(asg);
-            if tn2 == 0 { return 0; }
-            var found2: i32 = 0;
-            var nj: i32 = 0;
-            while nj < nnames {
-                if names[nj] == tn2 { found2 = 1; break; }
-                nj = nj + 1;
+            g_syms[tsi].reg = ar;
+            if in_wave == 1 && depth == wave_tdepth
+                && wave_ntgts[0] < 8 {
+                var dup: i32 = 0;
+                var wi: i32 = 0;
+                while wi < wave_ntgts[0] {
+                    if wave_tgts[wi] == tsi { dup = 1; break; }
+                    wi = wi + 1;
+                }
+                if dup == 0 {
+                    wave_tgts[wave_ntgts[0]] = tsi;
+                    wave_ntgts[0] = wave_ntgts[0] + 1;
+                }
             }
-            if found2 == 0 { return 0; }
-            if tn2 == acc_name { saw_acc = 1; }
         } else {
-            return 0;
+            // Inner FOR: a K=32 loop wave-maps; anything else unrolls to SSA.
+            let n2: i32 = g_nodes[g_nodes[s].child1].int_val as i32;
+            if n2 == 32 && in_wave == 0 {
+                emit_wave_mapped_for(s, depth, lane_reg,
+                                    wave_tgts, wave_ntgts);
+            } else {
+                let ivar: i32 = g_nodes[s].name0;
+                let ibody: i32 = g_nodes[s].child2;
+                var kk: i32 = 0;
+                while kk < n2 {
+                    sym_push_scope();
+                    let kreg: i32 = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(kreg); ir_wr(" = add i32 0, ");
+                    ir_wr_int(kk as i64); ir_wr("\n");
+                    sym_add(ivar, str_intern("i32"), kreg, 0);
+                    codegen_gpu_dot_body(ibody, depth + 1, in_wave,
+                                         wave_tdepth, lane_reg,
+                                         wave_tgts, wave_ntgts);
+                    sym_pop_scope();
+                    kk = kk + 1;
+                }
+            }
         }
         si = si + 1;
     }
-    // The shape exists to carry the outer accumulator; a loop that never
-    // touches it is the elementwise class, not this one.
-    if saw_acc == 0 { return 0; }
-    return 1;
 }
 
-fn codegen_gpu_blocked_dot(body: i32) {
+fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let base: i32 = g_nodes[body].args_start;
     let init: i32 = g_args[base];
     let loop: i32 = g_args[base + 1];
@@ -23549,57 +23721,10 @@ fn codegen_gpu_blocked_dot(body: i32) {
     ir_wr_label_def(lbl_body);
     sym_push_scope();
     sym_add(loop_var, str_intern("i32"), v_phi, 0);
-    let nstmts: i32 = g_nodes[lbody].nargs;
-    let sbase: i32 = g_nodes[lbody].args_start;
-    var si: i32 = 0;
-    while si < nstmts {
-        let s: i32 = g_args[sbase + si];
-        let sk: i32 = g_nodes[s].kind;
-        if sk == AST_LET {
-            let lt: i32 = resolve_type_sub(g_nodes[s].name1);
-            let lv: IRValue = codegen_expr(g_nodes[s].child0, lt);
-            var lr: i32 = lv.reg;
-            if lv.type_off != NULL_STR && lv.type_off != lt {
-                lr = emit_implicit_convert(lv.reg, lv.type_off, lt);
-            }
-            sym_add(g_nodes[s].name0, lt, lr, 0);
-            g_syms[g_sym_count - 1].is_mut = 1;
-        } else if sk == AST_ASSIGN {
-            let tsi: i32 = sym_find(g_nodes[s].name0);
-            let tt: i32 = resolve_type_sub(g_syms[tsi].type_off);
-            let av: IRValue = codegen_expr(g_nodes[s].child0, tt);
-            var ar: i32 = av.reg;
-            if av.type_off != NULL_STR && av.type_off != tt {
-                ar = emit_implicit_convert(av.reg, av.type_off, tt);
-            }
-            g_syms[tsi].reg = ar;
-        } else {
-            // Inner K-loop: unroll to SSA (the proved K-dot lowering).
-            let n2: i32 = g_nodes[g_nodes[s].child1].int_val as i32;
-            let ivar: i32 = g_nodes[s].name0;
-            let ibody: i32 = g_nodes[s].child2;
-            let asg: i32 = g_args[g_nodes[ibody].args_start];
-            let tsi2: i32 = sym_find(g_nodes[asg].name0);
-            let tt2: i32 = resolve_type_sub(g_syms[tsi2].type_off);
-            var kk: i32 = 0;
-            while kk < n2 {
-                sym_push_scope();
-                let kreg: i32 = ir_tmp();
-                ir_wr("  "); ir_wr_reg(kreg); ir_wr(" = add i32 0, ");
-                ir_wr_int(kk as i64); ir_wr("\n");
-                sym_add(ivar, str_intern("i32"), kreg, 0);
-                let kv: IRValue = codegen_expr(g_nodes[asg].child0, tt2);
-                var kr: i32 = kv.reg;
-                if kv.type_off != NULL_STR && kv.type_off != tt2 {
-                    kr = emit_implicit_convert(kv.reg, kv.type_off, tt2);
-                }
-                g_syms[tsi2].reg = kr;
-                sym_pop_scope();
-                kk = kk + 1;
-            }
-        }
-        si = si + 1;
-    }
+    var wave_tgts: [i32; 8] = 0;
+    var wave_ntgts: [i32; 1] = 0;
+    codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
+                         &wave_tgts[0], &wave_ntgts[0]);
     let last_acc: i32 = g_syms[acc_si].reg;
     sym_pop_scope();
     ir_wr("  br label %"); ir_wr_label(lbl_latch); ir_wr("\n");
@@ -23612,7 +23737,25 @@ fn codegen_gpu_blocked_dot(body: i32) {
 
     ir_wr_label_def(lbl_exit);
     g_syms[acc_si].reg = acc_phi;
-    codegen_stmt(output);
+    if wave_mapped == 1 {
+        // One work item per wave: lane 0 stores (all lanes computed the
+        // same reduced value; a 32-wide same-address store would be
+        // value-identical but wasteful).
+        let sc: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(sc); ir_wr(" = icmp eq i32 ");
+        ir_wr_reg(lane_reg); ir_wr(", 0\n");
+        let lbl_store: i32 = ir_label();
+        let lbl_skip: i32 = ir_label();
+        ir_wr("  br i1 "); ir_wr_reg(sc); ir_wr(", label %");
+        ir_wr_label(lbl_store); ir_wr(", label %"); ir_wr_label(lbl_skip);
+        ir_wr("\n");
+        ir_wr_label_def(lbl_store);
+        codegen_stmt(output);
+        ir_wr("  br label %"); ir_wr_label(lbl_skip); ir_wr("\n");
+        ir_wr_label_def(lbl_skip);
+    } else {
+        codegen_stmt(output);
+    }
     sym_pop_scope();
 }
 
@@ -23625,16 +23768,39 @@ fn emit_gpu_module() {
         emit_vulkan_module();
         return;
     }
+    // Stage-1b: the swizzle/shfl declares appear only when a wave-mapped
+    // worker exists — ordinary modules stay byte-identical (the PROOF1
+    // device-authority fence pins their hashes).
+    var any_wave: i32 = 0;
+    var wscan: i32 = 0;
+    var soff: i32 = 0;
+    while wscan < g_npfor_workers {
+        let sbody: i32 = g_pfor_workers[soff + 1];
+        let sncaps: i32 = g_pfor_workers[soff + 3];
+        let sngen: i32 = g_pfor_workers[soff + 4];
+        soff = soff + 7 + sngen * 2 + sncaps * 4;
+        if pfor_body_gpu_dot(sbody) == 1
+            && gpu_dot_uses_wave(sbody, 0) == 1 { any_wave = 1; }
+        wscan = wscan + 1;
+    }
     if g_gpu_target == 1 {
         ir_wr("; Traveler GPU device module — Stage 0 (ptx_kernel, registers-only)\n");
         ir_wr("target triple = \"nvptx64-nvidia-cuda\"\n\n");
         ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.tid.x()\n");
-        ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n\n");
+        ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n");
+        if any_wave == 1 {
+            ir_wr("declare { i32, i1 } @llvm.nvvm.shfl.sync.i32(i32, i32, i32, i32, i32)\n");
+        }
+        ir_wr("\n");
     } else {
         ir_wr("; Traveler GPU device module — Stage 0 (amdgpu_kernel, registers-only)\n");
         ir_wr("target triple = \"amdgcn-amd-amdhsa\"\n\n");
         ir_wr("declare i32 @llvm.amdgcn.workitem.id.x()\n");
-        ir_wr("declare i32 @llvm.amdgcn.workgroup.id.x()\n\n");
+        ir_wr("declare i32 @llvm.amdgcn.workgroup.id.x()\n");
+        if any_wave == 1 {
+            ir_wr("declare i32 @llvm.amdgcn.ds.swizzle(i32, i32)\n");
+        }
+        ir_wr("\n");
     }
 
     // Baked prime-field arithmetic (alloca-free, alwaysinline -> GCN urem-as-
@@ -23765,8 +23931,31 @@ fn emit_gpu_module() {
             ir_wr("  "); ir_wr_reg(baser); ir_wr(" = mul i32 "); ir_wr_reg(gidr); ir_wr(", 256\n");
             let offr: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(offr); ir_wr(" = add i32 "); ir_wr_reg(baser); ir_wr(", "); ir_wr_reg(widr); ir_wr("\n");
-            let idxr: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(idxr); ir_wr(" = add i32 "); ir_wr_reg(offr); ir_wr(", "); ir_wr_reg(lo_reg); ir_wr("\n");
+            // Stage-1b wave map: one work item per wave32, so the SIMT
+            // identity divides down (i = idx/32 + lo) and the lane id binds
+            // the wave-mapped loop variables.
+            var wave_mapped: i32 = 0;
+            if blocked_dot == 1 {
+                wave_mapped = gpu_dot_uses_wave(body_node, 0);
+            }
+            var lane_reg: i32 = 0;
+            if wave_mapped == 1 {
+                lane_reg = ir_tmp();
+                ir_wr("  "); ir_wr_reg(lane_reg); ir_wr(" = and i32 ");
+                ir_wr_reg(widr); ir_wr(", 31\n");
+            }
+            var idxr: i32 = 0;
+            if wave_mapped == 1 {
+                let wvr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(wvr); ir_wr(" = lshr i32 ");
+                ir_wr_reg(offr); ir_wr(", 5\n");
+                idxr = ir_tmp();
+                ir_wr("  "); ir_wr_reg(idxr); ir_wr(" = add i32 ");
+                ir_wr_reg(wvr); ir_wr(", "); ir_wr_reg(lo_reg); ir_wr("\n");
+            } else {
+                idxr = ir_tmp();
+                ir_wr("  "); ir_wr_reg(idxr); ir_wr(" = add i32 "); ir_wr_reg(offr); ir_wr(", "); ir_wr_reg(lo_reg); ir_wr("\n");
+            }
             let oobr: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(oobr); ir_wr(" = icmp sge i32 "); ir_wr_reg(idxr); ir_wr(", "); ir_wr_reg(hi_reg); ir_wr("\n");
             let lbl_body: i32 = ir_label();
@@ -23784,7 +23973,7 @@ fn emit_gpu_module() {
             if k8_private_dot == 1 {
                 codegen_gpu_k8_private_dot(body_node);
             } else if blocked_dot == 1 {
-                codegen_gpu_blocked_dot(body_node);
+                codegen_gpu_blocked_dot(body_node, wave_mapped, lane_reg);
             } else {
                 codegen_stmt(body_node);
             }
