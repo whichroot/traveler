@@ -1586,7 +1586,7 @@ let MAX_CLO_CAPS: i32 = 64;             // max captures per closure
 //   tvc.c's int64_t (dual-compiler parity).
 let MAX_PFOR_WRITES: i32 = 8;
 let MAX_PFOR_READS: i32 = 16;
-let MAX_PFOR_LETS: i32 = 16;
+let MAX_PFOR_LETS: i32 = 32;
 
 struct PForState {
     independent: i32,    // final verdict, read by the dispatch site
@@ -1811,6 +1811,9 @@ var g_pfor_proof0_mode: i32 = 0;
 // 1 = --emit-gpu (Stage 0): ride the /dev/null codegen pass to populate the
 // registries, then re-emit each elementwise-class worker as a device kernel.
 var g_emit_gpu_mode: i32 = 0;
+// Set when a device worker body calls the udot4 builtin: the module gains a
+// trailing @llvm.amdgcn.udot4 declare (declares may follow uses in LLVM IR).
+var g_gpu_used_udot4: i32 = 0;
 // GPU device target: 0 = AMDGCN, 1 = NVPTX, 2 = AGX G16X, 3 = Vulkan GLSL.
 // AMD/NV share LLVM emission; AGX directly encodes measured instructions and
 // Vulkan emits a closed shader source from the same proven worker record.
@@ -11479,6 +11482,53 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
     // ---- Function call ----
     if kind == AST_CALL {
         let call_name: i32 = g_nodes[node].name0;
+        // udot4(a, b, c): packed unsigned byte dot — Σ_j byte_j(a)*byte_j(b)
+        // + c over the four byte lanes of two i32 words. AMDGCN device
+        // emission maps it to v_dot4_u32_u8 (the honest unsigned spelling;
+        // gfx1100's signed dot4 is unsigned×unsigned — known-issues §7a).
+        // NVPTX and all host paths lower the exact byte expansion (LLVM 21's
+        // NVPTX has no dp4a intrinsic).
+        if str_eq(&g_strings[call_name], "udot4") == 1
+        && find_func(call_name) < 0 && g_nodes[node].nargs == 3 {
+            let uab: i32 = g_nodes[node].args_start;
+            let ua: IRValue = codegen_expr(g_args[uab], str_intern("i32"));
+            let ub: IRValue = codegen_expr(g_args[uab + 1], str_intern("i32"));
+            let uc: IRValue = codegen_expr(g_args[uab + 2], str_intern("i32"));
+            if g_emit_gpu_mode == 1 && g_gpu_target == 0 {
+                let ur: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(ur);
+                ir_wr(" = call i32 @llvm.amdgcn.udot4(i32 ");
+                ir_wr_reg(ua.reg); ir_wr(", i32 "); ir_wr_reg(ub.reg);
+                ir_wr(", i32 "); ir_wr_reg(uc.reg); ir_wr(", i1 false)\n");
+                g_gpu_used_udot4 = 1;
+                return IRValue { reg: ur, type_off: str_intern("i32") };
+            }
+            var uacc: i32 = uc.reg;
+            var uj: i64 = 0;
+            while uj < 32 {
+                let usa: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(usa); ir_wr(" = lshr i32 ");
+                ir_wr_reg(ua.reg); ir_wr(", "); ir_wr_int(uj); ir_wr("\n");
+                let uba: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(uba); ir_wr(" = and i32 ");
+                ir_wr_reg(usa); ir_wr(", 255\n");
+                let usb: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(usb); ir_wr(" = lshr i32 ");
+                ir_wr_reg(ub.reg); ir_wr(", "); ir_wr_int(uj); ir_wr("\n");
+                let ubb: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(ubb); ir_wr(" = and i32 ");
+                ir_wr_reg(usb); ir_wr(", 255\n");
+                let upr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(upr); ir_wr(" = mul i32 ");
+                ir_wr_reg(uba); ir_wr(", "); ir_wr_reg(ubb); ir_wr("\n");
+                let unr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(unr); ir_wr(" = add i32 ");
+                ir_wr_reg(uacc); ir_wr(", "); ir_wr_reg(upr); ir_wr("\n");
+                uacc = unr;
+                uj = uj + 8;
+            }
+            return IRValue { reg: uacc, type_off: str_intern("i32") };
+        }
         // field(p) / field(p, data_max) builtin: runtime Field carrier via
         // @__field_init (Miller-Rabin + Barrett). One-time per prime.
         if str_eq(&g_strings[call_name], "field") == 1
@@ -14959,6 +15009,16 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
     // are opaque to this loop's affine hazard tables just like callee writes.
     if kind == AST_CALL {
         let fn_name: i32 = g_nodes[expr].name0;
+        // udot4: pure packed-byte dot builtin — its three argument expressions
+        // are the whole footprint.
+        if str_eq(&g_strings[fn_name], "udot4") == 1
+            && g_nodes[expr].nargs == 3 {
+
+            let uab: i32 = g_nodes[expr].args_start;
+            if pfor_walk_expr(pf, g_args[uab], loop_var) == 0 { return 0; }
+            if pfor_walk_expr(pf, g_args[uab + 1], loop_var) == 0 { return 0; }
+            return pfor_walk_expr(pf, g_args[uab + 2], loop_var);
+        }
         // Match codegen precedence before consulting a same-named closure.
         if call_may_use_builtin_precedence(expr) == 1 {
             if is_impure_builtin(fn_name) == 1 {
@@ -16838,6 +16898,16 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         var call_handled: i32 = 0;
         var synthetic_receiver: i32 = 0 - 1;
         var closure_capture: i32 = NULL_STR;
+        // udot4: pure packed-byte dot builtin — no effect; the three argument
+        // expressions are the whole footprint.
+        if str_eq(&g_strings[call_name], "udot4") == 1
+            && g_nodes[node].nargs == 3 {
+            call_handled = 1;
+            let uab: i32 = g_nodes[node].args_start;
+            proof0_expr(P, g_args[uab], depth + 1, control_depth);
+            proof0_expr(P, g_args[uab + 1], depth + 1, control_depth);
+            proof0_expr(P, g_args[uab + 2], depth + 1, control_depth);
+        }
         // Builtins execute before closure lookup. Classify their own effect,
         // never a same-named closure's body.
         if call_may_use_builtin_precedence(node) == 1 {
@@ -23390,6 +23460,16 @@ fn gpu_dot_expr_ok(node: i32) -> i32 {
         if g_nodes[g_nodes[node].child0].kind != AST_IDENT { return 0; }
         return gpu_dot_expr_ok(g_nodes[node].child1);
     }
+    if kind == AST_CALL {
+        if str_eq(&g_strings[g_nodes[node].name0], "udot4") == 1
+            && g_nodes[node].nargs == 3 {
+            let uab: i32 = g_nodes[node].args_start;
+            if gpu_dot_expr_ok(g_args[uab]) == 0 { return 0; }
+            if gpu_dot_expr_ok(g_args[uab + 1]) == 0 { return 0; }
+            return gpu_dot_expr_ok(g_args[uab + 2]);
+        }
+        return 0;
+    }
     return 0;
 }
 
@@ -23430,7 +23510,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
         if sk == AST_LET {
             if (g_nodes[s].flags & 1) == 0
                 || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
-            if nnames[0] >= 12 { return 0; }
+            if nnames[0] >= 24 { return 0; }
             names[nnames[0]] = g_nodes[s].name0;
             ntypes[nnames[0]] = resolve_type_sub(g_nodes[s].name1);
             nnames[0] = nnames[0] + 1;
@@ -23493,8 +23573,8 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         || gpu_dot_expr_ok(g_nodes[output].child2) == 0 { return 0; }
     let acc_name: i32 = g_nodes[init].name0;
     let lbody: i32 = g_nodes[loop].child2;
-    var names: [i32; 12] = 0;
-    var ntypes: [i32; 12] = 0;
+    var names: [i32; 24] = 0;
+    var ntypes: [i32; 24] = 0;
     var nnames: [i32; 1] = 0;
     var saw_acc: [i32; 1] = 0;
     names[0] = acc_name;
@@ -23817,6 +23897,7 @@ fn emit_gpu_module() {
     var roff: i32 = 0;
     var w: i32 = 0;
     var nemitted: i32 = 0;
+    g_gpu_used_udot4 = 0;
     while w < g_npfor_workers {
         let wid: i32 = g_pfor_workers[roff];
         let body_node: i32 = g_pfor_workers[roff + 1];
@@ -24001,6 +24082,9 @@ fn emit_gpu_module() {
         w = w + 1;
     }
 
+    if g_gpu_used_udot4 == 1 {
+        ir_wr("\ndeclare i32 @llvm.amdgcn.udot4(i32, i32, i32, i1)\n");
+    }
     if g_gpu_target == 1 {
         ir_wr("\nattributes #0 = { \"nvvm.maxntid\"=\"256\" }\n");
     } else {

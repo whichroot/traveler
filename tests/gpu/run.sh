@@ -1865,6 +1865,37 @@ else
     fi
 fi
 
+# A9. The udot4 builtin lowers to a REAL v_dot4_u32_u8 (the deliberate,
+#     honest unsigned spelling — A5b's mul/add fixture must still NEVER
+#     form one accidentally).
+UDOT_SRC="$SCRIPT_DIR/gpu_udot4.tv"
+UDOT_DEV="$TMP/gpu_udot4_amd.ll"
+UDOT_OBJ="$TMP/gpu_udot4_amd.o"
+if ! "$STAGE1" --emit-gpu "$UDOT_SRC" -o "$UDOT_DEV" 2>/dev/null; then
+    echo "  FAIL: AMD udot4 did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$UDOT_DEV"; then
+    echo "  FAIL: AMD udot4 emitted no kernel"; fail=1
+elif ! grep -q "call i32 @llvm.amdgcn.udot4" "$UDOT_DEV"; then
+    echo "  FAIL: AMD udot4 did not emit the udot4 intrinsic"; fail=1
+elif ! grep -q "declare i32 @llvm.amdgcn.udot4" "$UDOT_DEV"; then
+    echo "  FAIL: AMD udot4 module lost the intrinsic declare"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$UDOT_DEV" -o "$UDOT_OBJ" 2>"$TMP/udot-llc.err"; then
+    echo "  FAIL: AMD udot4 did not lower for gfx1100:"; \
+        sed 's/^/       /' "$TMP/udot-llc.err"; fail=1
+else
+    udotdis=""
+    if [ -x "$OBJDUMP" ]; then
+        udotdis="$("$OBJDUMP" -d "$UDOT_OBJ" 2>/dev/null || true)"
+    fi
+    if [ -n "$udotdis" ] && ! echo "$udotdis" \
+            | grep -q "v_dot4_u32_u8"; then
+        echo "  FAIL: AMD udot4 builtin did not become v_dot4_u32_u8"; fail=1
+    else
+        echo "  ok   AMD udot4 builtin: v_dot4_u32_u8, gfx1100-lowered"
+    fi
+fi
+
 # A6. Other proved private-mutable bodies stay outside the closed device class.
 PRIVATE_REFUSE_AMD="$TMP/gpu_private_refuse_amd.ll"
 if ! "$STAGE1" --emit-gpu "$PRIVATE_REFUSE_SRC" \

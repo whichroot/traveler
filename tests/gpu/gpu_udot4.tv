@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// udot4 builtin for AMDGCN device emission: the packed unsigned byte dot
+// maps to v_dot4_u32_u8 (the honest unsigned spelling; gfx1100's signed
+// dot4 is unsigned×unsigned, so callers bias activations per byte with
+// x ^ 0x80 and subtract 128 * sumq — the K1-proven identity). Everywhere
+// else the builtin lowers the exact byte expansion.
+
+fn main() -> i32 {
+    let q: *i32 = alloc(64);
+    let x: *i32 = alloc(64);
+    let out: *i32 = alloc(64);
+    for i in 0..64 {
+        out[i] = udot4(q[i], x[i] ^ 0x80808080, 0)
+            + udot4(q[i], 0x01010101, 0);
+    }
+    return 0;
+}
