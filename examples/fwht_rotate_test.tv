@@ -1,16 +1,7 @@
-// fwht_rotate_test.tv — integer Walsh-Hadamard rotation gates (TurboQuant
-// primitive in i64 lanes).
+// fwht_rotate_test.tv — integer Walsh-Hadamard rotation. The rotated-dot
+// identity needs one sign pattern per head. @internal-note: known-issues #7c.
 //
-// Three pins:
-//   1. Roundtrip: x = D * (H * (H * (D * x))) / 8, exact (H*H = 8*I, D*D = I).
-//   2. Rotated-dot identity: with the SAME sign pattern D on q and k,
-//      sum(H*D*q . H*D*k) == 8 * sum(q.k). D must be seeded PER HEAD so every
-//      vector in a head shares it.
-//   3. Negative witness: seed D PER VECTOR and the identity collapses —
-//      q and k get different sign flips, Dq*Dk != I, cross terms survive.
-//      (The plane repo's K5 gate3 bug: splitmix64(seed + v) instead of
-//      splitmix64(seed + head). Attention dots vectors from DIFFERENT rows,
-//      so a per-row seed is exactly the wrong thing.)
+// Expected output: 0 400 400 112 400
 
 fn sm64(seed: u64) -> u64 {
     var z: u64 = seed + 11400714819323198485; // 0x9E3779B97F4A7C15
@@ -108,8 +99,7 @@ fn main() {
     print(dot8(rq, rk));        // 400
     print(8 * dot8(q, k));      // 400
 
-    // Gate 3 (negative witness): per-vector D. q is vector 0, k is vector 1.
-    // Different sign patterns: Dq*Dk != I and the identity collapses.
+    // Gate 3 (negative witness): per-vector D collapses the identity.
     rot8(q, rq, seed, 0);
     rot8(k, rk, seed, 1);
     print(dot8(rq, rk));        // 112, not 400

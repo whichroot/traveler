@@ -1,14 +1,8 @@
-// shift_semantics.tv — pins right-shift semantics per operand type.
+// shift_semantics.tv — >> is arithmetic on signed types, logical on
+// unsigned. Hash code must run unsigned. @internal-note: known-issues #7b.
 //
-// >> on a signed type is ARITHMETIC (sign bit replicates).
-// >> on an unsigned type is LOGICAL (zero fill).
-//
-// Why this gate exists: hash functions (splitmix64, xorshift) are written
-// against bit patterns. Run one in i64 and the sign-extending shift smears
-// the top bit through every xor, silently destroying avalanche. The splitmix64
-// known-answer vectors below only pass when every step is a logical shift.
-// (Found the hard way in the plane repo's K5 kernel: Traveler >> on i64 is
-// arithmetic, so splitmix64 must run in u64.)
+// Expected output: -4 -1 4611686018427387904 1152921504606846975
+//                  16294208416658607535 10451216379200822465 13679457532755275413
 
 fn sm64(seed: u64) -> u64 {
     var z: u64 = seed + 11400714819323198485; // 0x9E3779B97F4A7C15

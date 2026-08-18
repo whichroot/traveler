@@ -1,12 +1,5 @@
-// prefetch_dot.tv — Stage-1d carried-fetch prefetch, CPU semantics gate.
-//
-// The pfor body is the blocked-dot shape with one carried-fetch let: `pre`
-// holds block b's operand, and the trailing replacement assign loads block
-// b+1 during iteration b (software pipelining depth 1, expressed in
-// source). The compiler skips the reassign on the final iteration (the
-// value is dead — scoped to the body, never stored), which keeps the b+1
-// load in bounds. w is sized one element long anyway so the unguarded
-// paths (the frozen C seed, the evaluator) read in bounds too.
+// prefetch_dot.tv — carried-fetch prefetch: `pre` loads block b+1 during
+// block b. The final reassign is skipped. @internal-design: stage1-dot.
 //
 // Expected output: 20 37 17 2279
 

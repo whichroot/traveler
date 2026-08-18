@@ -73,8 +73,7 @@ find_llc() {
     echo "FATAL: llc not found. Set LLC env var (or run: $0 --goldens-only)." >&2; exit 1
 }
 find_llc
-# Resolve to an absolute path: llvm-objdump is derived via dirname below, and
-# a bare PATH-discovered name would silently disable the disasm legs.
+# Resolve to an absolute path: llvm-objdump is derived via dirname below.
 LLC="$(command -v "$LLC")"
 # The objdump that ships beside llc (for the disasm sanity check).
 OBJDUMP="$(dirname "$LLC")/llvm-objdump"
@@ -1817,11 +1816,8 @@ else
     fi
 fi
 
-# A5b. The dot must stay a mul/add chain in silicon.
-# gfx1100 v_dot4_i32_i8 is unsigned x unsigned on both operands.
-# The gfx9/10 signed dot4 is gone. The gfx11 instruction kept the shape,
-# not the semantics. A v_dot4/v_dot8 in the object voids the exactness
-# proof. Re-proof needs the x ^ 0x80 bias correction first. Fail loud.
+# A5b. The dot must stay a mul/add chain in silicon. gfx1100 dot4 is
+# unsigned on both operands. @internal-note: known-issues #7a.
 if [ "$fail" = "0" ] && [ -x "$OBJDUMP" ] && [ -f "$K8_OBJ" ]; then
     k8dis="$("$OBJDUMP" -d "$K8_OBJ" 2>/dev/null)"
     if echo "$k8dis" | grep -qE "v_dot[48]_"; then
@@ -1958,10 +1954,8 @@ else
     echo "  ok   AMD Stage-1 blocked dot: mapped multiplicands, phi-carried, gfx1100-lowered"
 fi
 
-# A8. Capacity cliffs stay admitted. 26 captures + 51 lets sat past the old
-# limits (MAX_PFOR_CAP=24, MAX_PFOR_LETS=48, 48-name device bound) and the
-# refusal was SILENT: dispatched:1 in the report, zero kernels emitted.
-# The fixture pins the raised limits (64 lets / 32 caps) as a real kernel.
+# A11. Capacity cliffs stay admitted: 51 lets / 26 captures emit a real
+# kernel. The old limits refused silently. @internal-design: stage1-dot.
 CLIFF_SRC="$SCRIPT_DIR/gpu_capacity_cliffs.tv"
 CLIFF_DEV="$TMP/gpu_capacity_cliffs_amd.ll"
 CLIFF_OBJ="$TMP/gpu_capacity_cliffs_amd.o"
@@ -1976,11 +1970,8 @@ else
     echo "  ok   capacity cliffs admitted: 51 lets / 26 captures emit + lower"
 fi
 
-# A9. Stage-1d carried-fetch prefetch: [LET pre, LET acc, FOR, one store].
-# pre is phi-carried; the replacement assign loads block b+1 during block b
-# and is guarded on the final iteration (icmp against N1-1 + join phi) so
-# the prefetch load stays in bounds. The value is dead by shape, so the
-# guard is output-invisible.
+# A12. Carried-fetch prefetch: pre is phi-carried and the reassign is
+# guarded on the final iteration. @internal-design: stage1-dot.
 PF_SRC="$SCRIPT_DIR/gpu_prefetch_dot.tv"
 PF_DEV="$TMP/gpu_prefetch_dot_amd.ll"
 PF_OBJ="$TMP/gpu_prefetch_dot_amd.o"
@@ -1999,12 +1990,11 @@ elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
     echo "  FAIL: prefetch dot did not lower for gfx1100:"; \
         sed 's/^/       /' "$TMP/pf-llc.err"; fail=1
 else
-    echo "  ok   AMD Stage-1d prefetch: carried-fetch phi, guarded reassign, gfx1100-lowered"
+    echo "  ok   AMD carried-fetch prefetch: carried-fetch phi, guarded reassign, gfx1100-lowered"
 fi
 
-# A10. Stage-1d negative catalogue: mixed accumulate+replacement on one let,
-# and a stored carried-fetch value (deadness is what makes the guard
-# output-invisible). Both loops must stay off the device.
+# A13. Prefetch negatives: a mixed-assign let and a stored carried fetch
+# must stay off the device.
 PFN_DEV="$TMP/gpu_prefetch_refuse_amd.ll"
 if ! "$STAGE1" --emit-gpu "$SCRIPT_DIR/gpu_prefetch_refuse.tv" \
         -o "$PFN_DEV" 2>/dev/null; then
@@ -2116,7 +2106,7 @@ else
     echo "  ok   NVPTX Stage-1 blocked dot: mapped multiplicands, phi-carried, sm_90-lowered"
 fi
 
-# N7. The Stage-1d carried-fetch prefetch stays target-neutral.
+# N8. The carried-fetch prefetch stays target-neutral.
 PF_NVDEV="$TMP/gpu_prefetch_dot_nv.ll"
 PF_PTX="$TMP/gpu_prefetch_dot_nv.ptx"
 if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_prefetch_dot.tv" \
@@ -2128,7 +2118,7 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
         "$PF_NVDEV" -o "$PF_PTX" 2>"$TMP/pf-llcnv.err"; then
     echo "  FAIL: NVPTX prefetch dot did not lower for sm_90"; fail=1
 else
-    echo "  ok   NVPTX Stage-1d prefetch: guarded carried-fetch, sm_90-lowered"
+    echo "  ok   NVPTX carried-fetch prefetch: guarded carried-fetch, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.

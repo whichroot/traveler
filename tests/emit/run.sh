@@ -53,9 +53,7 @@ OPT_OK=0
 if find_opt && "$OPT" --version 2>/dev/null | grep -q 'version 21\.'; then
     OPT_OK=1
 fi
-# Resolve to an absolute path: the -opt override leg symlinks "$OPT" into a
-# spaces-in-path directory, and a bare PATH-discovered name makes a dangling
-# relative symlink there.
+# Resolve to an absolute path: the -opt override leg symlinks "$OPT".
 if [ "$OPT_OK" = "1" ]; then OPT="$(command -v "$OPT")"; fi
 if [ -n "$OPT_OVERRIDE" ] && [ "$OPT_OK" = "0" ]; then
     echo "FATAL: OPT must name LLVM 21 opt (got: $OPT_OVERRIDE)" >&2

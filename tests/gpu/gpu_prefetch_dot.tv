@@ -1,9 +1,5 @@
-// gpu_prefetch_dot.tv — Stage-1d carried-fetch prefetch, device structure.
-// [LET pre (carried-fetch), LET acc, FOR b in 0..4, one store]: pre is
-// phi-carried like an accumulator, the replacement assign issues block
-// b+1's load during block b (consumed after the backedge — software
-// pipelining depth 1), and the emitter guards the reassign on the final
-// iteration so the b+1 load stays in bounds.
+// gpu_prefetch_dot.tv — carried-fetch prefetch, device structure: pre is
+// phi-carried, its reassign guarded. @internal-design: stage1-dot.
 
 fn main() -> i32 {
     let w: *i64 = alloc(257);

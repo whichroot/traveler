@@ -479,10 +479,8 @@ run_test read_bytes_expr "$TIMEOUT_SINGLE"
 # under-allocation); alloc/realloc now receive a pointer cast target as their
 # context. Dual-parity eligible: the seed always passed context through casts.
 test_single alloc_cast_sizes
-# Pointer arithmetic is element-scaled, not byte-scaled: a 32-BYTE block
-# stride written as v*32 on a *u32 is a silent 4x stride (the plane K5
-# signbits row; only faults at scale). Two interleaved sentinel grids pin
-# where each formula actually lands.
+# Pointer arithmetic is element-scaled, not byte-scaled. Sentinel grids
+# pin where each stride formula lands. @internal-note: known-issues #7d.
 test_single ptr_stride_units
 # #63(c) gate: a cast-typed argument drives generic inference (arg_value_type
 # reads through AST_CAST). tvc_self-only: the seed does not parse unbounded
@@ -639,9 +637,8 @@ test_single pointer_basics
 test_single int_match
 test_single match_nested_scalar
 test_single bitwise_ops
-# >> is arithmetic on iN, logical on uN. Hash code written in i64 silently
-# loses avalanche (sign smear through the xors). splitmix64 known answers pin
-# the u64 path. Found in the plane repo K5 kernel.
+# >> is arithmetic on iN, logical on uN. splitmix64 known answers pin
+# the u64 path. @internal-note: known-issues #7b.
 test_single shift_semantics
 test_single compare_let
 test_single short_circuit
@@ -998,10 +995,8 @@ run_test observe_lossy_gate "$TIMEOUT_SINGLE"
 compile_obj ntt
 test_single ntt_test
 test_single ntt_roots_test
-# Integer FWHT rotation (TurboQuant primitive): roundtrip + rotated-dot
-# identity hold only when the sign pattern D is seeded PER HEAD. Per-vector
-# seeding is the plane K5 gate3 bug — Dq*Dk != I and the identity collapses
-# (pinned here as a negative witness).
+# Integer FWHT rotation: the identity needs a per-head sign pattern.
+# Per-vector seeding collapses it. @internal-note: known-issues #7c.
 test_single fwht_rotate_test
 
 # NTT link test (2-file)
@@ -1337,11 +1332,8 @@ run_test wide_print "$TIMEOUT_SINGLE"
 # promotion. The narrow specimen is seed-compatible; the wide accumulator
 # boundary requires the self-hosted i128/i256 surface.
 test_single dot_product_narrow
-# Stage-1d carried-fetch prefetch: the blocked-dot shape with a replacement
-# assign that loads block b+1 during block b. The compiler predicates the
-# reassign on the final iteration (value dead by shape); outputs must be
-# byte-identical to the serial semantics. Dual-parity: the seed runs the
-# unguarded source (w sized +1) and must agree.
+# Carried-fetch prefetch, CPU semantics: guarded self output must equal
+# the unguarded seed output. @internal-design: stage1-dot.
 test_single prefetch_dot
 compile_obj_self dot_product_wide
 link_objs dot_product_wide dot_product_wide

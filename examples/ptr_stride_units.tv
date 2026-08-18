@@ -1,34 +1,21 @@
-// ptr_stride_units.tv — pins pointer-arithmetic units: indexing and p + n
-// on a *T are ELEMENT-scaled, not byte-scaled.
+// ptr_stride_units.tv — pointer indexing is element-scaled, not
+// byte-scaled. @internal-note: known-issues #7d.
 //
-// Why this gate exists: quant block layouts are documented in BYTES (a Q4_K
-// sub-block is 32 bytes; a K5 code row is 128 bytes). Apply a byte formula
-// to a typed pointer — words + v*32 on a *u32 — and C/Traveler scale it by
-// the element size again: 32 words = 128 bytes, a silent 4x stride. The
-// plane repo's K5 signbits row had exactly this; small test tensors kept
-// the overrun inside the allocation, so it only faulted at scale. The fix
-// pattern: offset in bytes FIRST, cast after — (u8*)p + v*32, then cast.
-//
-// This test writes two interleaved sentinel grids over one buffer and counts
-// where they land. The counts only match if *u32 indexing is word-scaled.
+// Expected output: 4 3 7
 
 fn main() {
-    // 512 bytes. Through a *u32 view that is 128 words (alloc counts
-    // elements of the DECLARED pointer type — see alloc_cast_sizes.tv).
+    // 512 bytes = 128 words through the *u32 view.
     let bytes: *u8 = alloc(512);
     let words: *u32 = bytes as *u32;
 
     var i: i32 = 0;
     while i < 128 { words[i] = 0; i = i + 1; }
 
-    // Grid B: the BUG SHAPE, kept in-bounds here on purpose. A 32-BYTE
-    // block stride applied as v*32 on a *u32 lands at words 0, 32, 64, 96
-    // — 128 bytes apart, 4x the intended 32.
+    // Grid B: the byte formula v*32 on a *u32 — a 4x stride.
     var v: i32 = 0;
     while v < 4 { words[v * 32] = 222; v = v + 1; }
 
-    // Grid A: the CORRECT word stride for 32-byte blocks: 32 / 4 = 8 words.
-    // Lands at words 0, 8, 16, 24 (overwrites B's sentinel at word 0).
+    // Grid A: the correct word stride, 32 / 4 = 8. Overwrites B at word 0.
     v = 0;
     while v < 4 { words[v * 8] = 111; v = v + 1; }
 

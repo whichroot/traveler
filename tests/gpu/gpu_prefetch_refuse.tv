@@ -1,7 +1,5 @@
-// gpu_prefetch_refuse.tv — Stage-1d negative catalogue. Neither loop may
-// reach the device: loop 1 mixes accumulate and replacement assigns on one
-// let; loop 2 stores a carried-fetch value (the deadness rule is what makes
-// the last-iteration guard output-invisible). The gate asserts ZERO kernels.
+// gpu_prefetch_refuse.tv — prefetch negatives: a mixed-assign let and a
+// stored carried fetch. The gate asserts zero kernels.
 
 fn main() -> i32 {
     let w: *i64 = alloc(257);

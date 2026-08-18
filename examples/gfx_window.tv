@@ -40,10 +40,8 @@ fn main() -> i32 {
         Result::Err(e) => { print(404); return 1; }
     }
     print(1);
-    // print is libc printf. stdout is a pipe under the test gate, so the "1"
-    // sits in the block buffer. The render loop below never exits on its
-    // own; the gate kills the process and the buffer is lost. Flush the
-    // open-witness explicitly.
+    // The render loop never exits on its own. Flush the open-witness.
+    // @internal-note: known-issues #8.
     fflush(null);
     var t: i32 = 0;
     var run: i32 = 1;

@@ -1,9 +1,5 @@
-// gpu_capacity_cliffs.tv - silent-refusal regression pin for the raised
-// admission limits. 26 captures (> the old MAX_PFOR_CAP=24) and 51 lets
-// (> the old MAX_PFOR_LETS=48 and the old 48-name device bound). Under
-// the old limits this body silently refused (no kernel, no diagnostic);
-// the gate asserts an amdgpu_kernel EXISTS. Totals stay under the new
-// limits: 64 lets, 32 captures, 32 distinct read forms.
+// gpu_capacity_cliffs.tv - 51 lets / 26 captures must emit a kernel.
+// The old limits refused silently. @internal-design: stage1-dot.
 
 fn main() -> i32 {
     let out: *i64 = alloc(64);

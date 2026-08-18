@@ -15261,9 +15261,8 @@ fn pfor_admit_gpu_dot_body(pf: *PForState, body: i32, outer_var: i32,
             if pfor_is_loop_let(pf, g_nodes[s].name0) == 0 { ok = 0; break; }
             if pfor_gpu_dot_accum_rhs(pf, g_nodes[s].child0,
                                       g_nodes[s].name0, outer_var) == 0 {
-                // Stage-1d carried-fetch replacement: a pure RHS assigned
-                // to a private let (the #43 fresh-cell rule); the device
-                // shape check enforces the strict prefetch grammar.
+                // Carried-fetch replacement: pure RHS to a private let
+                // (the #43 fresh-cell rule). @internal-design: stage1-dot.
                 if depth != 1 { ok = 0; break; }
                 if pfor_walk_expr(pf, g_nodes[s].child0, outer_var) == 0 {
                     ok = 0; break;
@@ -18532,11 +18531,8 @@ fn codegen_stmt(stmt: i32) {
                 "closure variable cannot be reassigned (each closure has a unique identity; no dyn Fn). Use a generic <C> parameter to abstract over closures.");
             exit(1);
         }
-        // Stage-1d carried-fetch replacement (flags bit2, set by
-        // pfor_body_gpu_dot): skip the reassign on the final rolled
-        // iteration so the b+1 prefetch load stays in bounds. The shape
-        // proves the value is dead after the loop, so the skip is
-        // output-invisible; name1 = rolled loop var, int_val = N1-1.
+        // Guarded carried fetch (flags bit2): skip the reassign on the
+        // final rolled iteration. @internal-design: stage1-dot.
         var pfg_end: i32 = 0 - 1;
         if (g_nodes[stmt].flags & 4) != 0 {
             let pfg_vsi: i32 = sym_find(g_nodes[stmt].name1);
@@ -20454,10 +20450,8 @@ fn emit_pfor_workers() {
             wty = str_intern("i64");
             emit_pfor_runtime64();  // lazy: the i64 dispatch runtime pair
         }
-        // Stage-1d: run the blocked-dot shape check for its marking side
-        // effect (carried-fetch replacement assigns get the last-iteration
-        // guard) so CPU-only builds predicate the b+1 prefetch load too.
-        // Idempotent; a non-matching body is untouched.
+        // Shape check for its marking side effect: CPU-only builds guard
+        // carried fetches too. Idempotent on non-matching bodies.
         pfor_body_gpu_dot(body_node);
 
         // Restore the generic substitution context captured at record
@@ -23535,8 +23529,7 @@ fn gpu_dot_accum_name(stmt: i32) -> i32 {
     return g_nodes[stmt].name0;
 }
 
-// Does the pure expression reference any of names[0..n)? Used to keep
-// carried-fetch values out of prefetch RHS and store expressions.
+// Does the pure expression reference any of names[0..n)?
 fn gpu_dot_expr_refs(node: i32, names: *i32, n: i32) -> i32 {
     if node < 0 || node == 0 { return 0; }
     let kind: i32 = g_nodes[node].kind;
@@ -23576,10 +23569,8 @@ fn gpu_dot_expr_refs(node: i32, names: *i32, n: i32) -> i32 {
 // of a K=32 wave-map candidate: its top-level accumulate targets must be
 // lets declared in the enclosing frame (index >= wave_frame) with a 32-bit
 // integer type (the butterfly reduces one i32 per accumulator).
-// nlead/letflags: the pfor body's leading lets. letflags bit0 = accumulate
-// assign seen, bit1 = replacement (carried-fetch) assign seen. Replacement
-// assigns (`name = <pure>`, RHS free of every leading name) are admitted
-// only in the rolled loop's direct body (depth 1, outside any wave map).
+// letflags: bit0 = accumulate assign seen, bit1 = replacement assign seen.
+// A replacement let carries the next block's fetch. @internal-design: stage1-dot.
 fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
                    depth: i32, wave_frame: i32, nlead: i32,
                    letflags: *i32) -> i32 {
@@ -23602,9 +23593,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
         } else if sk == AST_ASSIGN {
             let tn: i32 = gpu_dot_accum_name(s);
             if tn == 0 {
-                // Stage-1d carried-fetch replacement: `name = <pure>` where
-                // name is a leading let and the RHS references no leading
-                // name. Rolled-loop direct body only.
+                // Carried-fetch replacement assign. Rolled-loop direct body only.
                 if depth != 1 || wave_frame >= 0 { return 0; }
                 var pfound: i32 = 0 - 1;
                 var pi: i32 = 0;
@@ -23661,8 +23650,8 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
     if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs < 3 { return 0; }
     let base: i32 = g_nodes[body].args_start;
     let nstmts: i32 = g_nodes[body].nargs;
-    // Stage-1c/1d: leading lets (accumulators + carried-fetch prefetch,
-    // L <= 16), then the rolled loop, then one index-assign per ACCUMULATOR.
+    // Blocked-dot shape: leading lets (L <= 16), rolled loop, one
+    // index-assign per accumulator.
     var r: i32 = 0;
     while r < nstmts - 2 && r < 16 {
         let lt: i32 = g_args[base + r];
@@ -23693,8 +23682,7 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
     nnames[0] = r;
     if gpu_dot_body_ok(lbody, &names[0], &ntypes[0], &nnames[0], 1, 0 - 1,
                        r, &letflags[0]) == 0 { return 0; }
-    // Classify: bit0-only or untouched = accumulator (stored), bit1-only =
-    // carried-fetch (never stored, dead after the loop). Mixed refuses.
+    // Classify each leading let. Mixed accumulate+replacement refuses.
     var nacc: i32 = 0;
     var npre: i32 = 0;
     var ci: i32 = 0;
@@ -23736,11 +23724,8 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         }
         oi = oi + 1;
     }
-    // Mark the replacement assigns for the last-iteration guard. The shape
-    // proves the prefetch value is dead after the loop (scoped to the pfor
-    // body, unreferenced by any store), so skipping the final reassign is
-    // output-invisible on every path; the guard exists to keep the b+1 load
-    // in bounds. name1 = rolled loop var, int_val = N1-1, flags bit2 = mark.
+    // Mark replacement assigns for the last-iteration guard: flags bit2,
+    // name1 = loop var, int_val = N1-1. @internal-design: stage1-dot.
     if npre > 0 {
         let msbase: i32 = g_nodes[lbody].args_start;
         var mi: i32 = 0;
@@ -23867,10 +23852,8 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
             let tsi: i32 = sym_find(g_nodes[s].name0);
             let tt: i32 = resolve_type_sub(g_syms[tsi].type_off);
             if (g_nodes[s].flags & 4) != 0 {
-                // Stage-1d carried-fetch replacement: skip the reassign on
-                // the final rolled iteration so the b+1 load stays in
-                // bounds. The rolled loop var is uniform, so the branch is
-                // convergent; the join phi passes the old value through.
+                // Guarded carried fetch: skip the reassign on the final
+                // iteration. The join phi passes the old value through.
                 let pfg_old: i32 = g_syms[tsi].reg;
                 let pfg_vsi: i32 = sym_find(g_nodes[s].name1);
                 let lbl_g: i32 = ir_label();
@@ -23954,10 +23937,8 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
 fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let base: i32 = g_nodes[body].args_start;
     let nstmts: i32 = g_nodes[body].nargs;
-    // L leading lets (accumulators + carried-fetch prefetch, L <= 16), then
-    // the loop, then one store per ACCUMULATOR (nstores = nstmts - L - 1).
-    // Every leading let is phi-carried identically; prefetch lets simply
-    // have no trailing store.
+    // L leading lets, the loop, one store per accumulator. Every leading
+    // let is phi-carried; carried-fetch lets have no trailing store.
     var nrows: i32 = 0;
     while nrows < nstmts - 2 && nrows < 16 {
         if g_nodes[g_args[base + nrows]].kind != AST_LET { break; }

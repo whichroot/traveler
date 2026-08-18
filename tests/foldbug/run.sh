@@ -49,9 +49,8 @@ esac
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
 
-# llvm-link ships beside llc. Resolve LLC to an absolute path first: env.sh
-# may leave a bare PATH-discovered name, and dirname of that is "." — the
-# safe-path build then silently fails and reports an empty (wrong) output.
+# llvm-link ships beside llc. A bare LLC name breaks the dirname
+# derivation, so resolve it first.
 LLC="$(command -v "$LLC")"
 LLVM_LINK="${LLVM_LINK:-$(dirname "$LLC")/llvm-link}"
 TVC_SELF="$REPO_DIR/src/bootstrap/out/stage1"
