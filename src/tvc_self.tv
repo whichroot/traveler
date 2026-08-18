@@ -12962,6 +12962,18 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             if resolve_struct_type(elem_type) >= 0 || type_is_array(elem_type) == 1 {
                 return IRValue { reg: gep, type_off: elem_type };
             }
+            // Pipelined wave loads use their loop-carried phi.
+            // @internal-design: stage1-dot.
+            if g_wpipe_cnt > 0 {
+                var wp: i32 = 0;
+                while wp < g_wpipe_cnt {
+                    if g_wpipe_node[wp] == node {
+                        return IRValue { reg: g_wpipe_reg[wp],
+                                         type_off: elem_type };
+                    }
+                    wp = wp + 1;
+                }
+            }
             let val: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(val); ir_wr(" = load ");
             ir_wr_type(elem_type); ir_wr(", ptr "); ir_wr_reg(gep); ir_wr("\n");
@@ -23564,6 +23576,115 @@ fn gpu_dot_expr_refs(node: i32, names: *i32, n: i32) -> i32 {
     return 0;
 }
 
+// Emitter software pipelining: wave-map loads that reference the rolled
+// loop var are hoisted into loop-carried phis (depth 1). The prologue
+// loads block 0, the body head reloads block b+1 under a uniform guard,
+// and the body's load sites use the phis. @internal-design: stage1-dot.
+var g_wpipe_cnt: i32 = 0;
+var g_wpipe_node: *i32 = null;
+var g_wpipe_reg: *i32 = null;
+
+fn wpipe_init() {
+    if g_wpipe_node == null {
+        g_wpipe_node = alloc(8);
+        g_wpipe_reg = alloc(8);
+    }
+}
+
+// Collect eligible load nodes into out (<= 8). Only INDEX nodes on a
+// pointer symbol whose scalar element type loads a value. Returns count.
+fn dot_wave_loads_expr(node: i32, loop_var: i32, out: *i32, n: i32) -> i32 {
+    if node < 0 || node == 0 { return n; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_INDEX {
+        let obj_node: i32 = g_nodes[node].child0;
+        if g_nodes[obj_node].kind == AST_IDENT && n < 8 {
+            if gpu_dot_expr_refs(g_nodes[node].child1, &loop_var, 1) == 1 {
+                let si: i32 = sym_find(g_nodes[obj_node].name0);
+                if si >= 0 && type_is_ptr(g_syms[si].type_off) == 1 {
+                    let et: i32 = type_pointee(g_syms[si].type_off);
+                    if resolve_struct_type(et) < 0
+                        && type_is_array(et) == 0 {
+                        var dup: i32 = 0;
+                        var i: i32 = 0;
+                        while i < n {
+                            if out[i] == node { dup = 1; break; }
+                            i = i + 1;
+                        }
+                        if dup == 0 { out[n] = node; n = n + 1; }
+                    }
+                }
+            }
+        }
+        n = dot_wave_loads_expr(g_nodes[node].child1, loop_var, out, n);
+        return n;
+    }
+    if kind == AST_CAST || kind == AST_UNARY {
+        return dot_wave_loads_expr(g_nodes[node].child0, loop_var, out, n);
+    }
+    if kind == AST_BINARY {
+        n = dot_wave_loads_expr(g_nodes[node].child0, loop_var, out, n);
+        return dot_wave_loads_expr(g_nodes[node].child1, loop_var, out, n);
+    }
+    if kind == AST_CALL {
+        let rbase: i32 = g_nodes[node].args_start;
+        var ri: i32 = 0;
+        while ri < g_nodes[node].nargs {
+            n = dot_wave_loads_expr(g_args[rbase + ri], loop_var, out, n);
+            ri = ri + 1;
+        }
+        return n;
+    }
+    return n;
+}
+
+// Walk one rolled body; mirror codegen_gpu_dot_body's wave-map trigger
+// (top-level inner FOR with literal 32 trip count) and collect the wave
+// loads plus the wave var names (the reload scope binds them to lane).
+fn dot_wave_loads_collect(lbody: i32, loop_var: i32, out: *i32,
+                         wvars: *i32, wnvars: *i32) -> i32 {
+    let nstmts: i32 = g_nodes[lbody].nargs;
+    let sbase: i32 = g_nodes[lbody].args_start;
+    var n: i32 = 0;
+    var si: i32 = 0;
+    while si < nstmts {
+        let s: i32 = g_args[sbase + si];
+        let sk: i32 = g_nodes[s].kind;
+        if sk == AST_FOR {
+            let n2: i32 = g_nodes[g_nodes[s].child1].int_val as i32;
+            if n2 == 32 {
+                var dup: i32 = 0;
+                var vi: i32 = 0;
+                while vi < wnvars[0] {
+                    if wvars[vi] == g_nodes[s].name0 { dup = 1; break; }
+                    vi = vi + 1;
+                }
+                if dup == 0 && wnvars[0] < 8 {
+                    wvars[wnvars[0]] = g_nodes[s].name0;
+                    wnvars[0] = wnvars[0] + 1;
+                }
+                let ibody: i32 = g_nodes[s].child2;
+                let ibase: i32 = g_nodes[ibody].args_start;
+                var wi: i32 = 0;
+                while wi < g_nodes[ibody].nargs {
+                    let w: i32 = g_args[ibase + wi];
+                    let wk: i32 = g_nodes[w].kind;
+                    if wk == AST_LET || wk == AST_ASSIGN {
+                        n = dot_wave_loads_expr(g_nodes[w].child0,
+                                                loop_var, out, n);
+                    } else if wk == AST_INDEX_ASSIGN {
+                        n = dot_wave_loads_expr(g_nodes[w].child2,
+                                                loop_var, out, n);
+                    }
+                    wi = wi + 1;
+                }
+            }
+        }
+        si = si + 1;
+    }
+    return n;
+}
+
 // names/ntypes are parallel declaration stacks (name intern, resolved type
 // intern); wave_frame >= 0 means the body being validated is the DIRECT body
 // of a K=32 wave-map candidate: its top-level accumulate targets must be
@@ -23950,6 +24071,16 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     let loop_var: i32 = g_nodes[loop].name0;
     let lbody: i32 = g_nodes[loop].child2;
 
+    // Collect the wave-map loads to pipeline (wave-mapped kernels only).
+    var wpipe_loads: [i32; 8] = 0;
+    var wpipe_vars: [i32; 8] = 0;
+    var wpipe_nvars: [i32; 1] = 0;
+    var nwpipe: i32 = 0;
+    if wave_mapped == 1 {
+        nwpipe = dot_wave_loads_collect(lbody, loop_var, &wpipe_loads[0],
+                                       &wpipe_vars[0], &wpipe_nvars[0]);
+    }
+
     // Pre-reserve the loop-carried registers and the block labels so the
     // header phis can name the latch values before the latch is emitted.
     let v_phi: i32 = ir_tmp();
@@ -23965,11 +24096,25 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         acc_next[ri] = ir_tmp();
         ri = ri + 1;
     }
+    var wpre: [i32; 8] = 0;
+    var wphi: [i32; 8] = 0;
+    var wre: [i32; 8] = 0;
+    var wjoin: [i32; 8] = 0;
+    ri = 0;
+    while ri < nwpipe {
+        wpre[ri] = ir_tmp();
+        wphi[ri] = ir_tmp();
+        wre[ri] = ir_tmp();
+        wjoin[ri] = ir_tmp();
+        ri = ri + 1;
+    }
     let lbl_ph: i32 = ir_label();
     let lbl_hdr: i32 = ir_label();
     let lbl_body: i32 = ir_label();
     let lbl_latch: i32 = ir_label();
     let lbl_exit: i32 = ir_label();
+    let lbl_rl: i32 = ir_label();
+    let lbl_join: i32 = ir_label();
 
     sym_push_scope();
     ri = 0;
@@ -23993,6 +24138,28 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     // which block the init expression happened to end in.
     ir_wr("  br label %"); ir_wr_label(lbl_ph); ir_wr("\n");
     ir_wr_label_def(lbl_ph);
+    if nwpipe > 0 {
+        // Prologue: load block 0's wave values (loop var bound to 0,
+        // wave vars bound to the lane).
+        let zreg: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(zreg); ir_wr(" = add i32 0, 0\n");
+        sym_push_scope();
+        sym_add(loop_var, str_intern("i32"), zreg, 0);
+        ri = 0;
+        while ri < wpipe_nvars[0] {
+            sym_add(wpipe_vars[ri], str_intern("i32"), lane_reg, 0);
+            ri = ri + 1;
+        }
+        ri = 0;
+        while ri < nwpipe {
+            let pv: IRValue = codegen_expr(wpipe_loads[ri], NULL_STR);
+            ir_wr("  "); ir_wr_reg(wpre[ri]); ir_wr(" = add ");
+            ir_wr_type(pv.type_off); ir_wr(" "); ir_wr_reg(pv.reg);
+            ir_wr(", 0\n");
+            ri = ri + 1;
+        }
+        sym_pop_scope();
+    }
     ir_wr("  br label %"); ir_wr_label(lbl_hdr); ir_wr("\n");
     ir_wr_label_def(lbl_hdr);
     ir_wr("  "); ir_wr_reg(v_phi);
@@ -24008,6 +24175,18 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         ir_wr_label(lbl_latch); ir_wr(" ]\n");
         ri = ri + 1;
     }
+    ri = 0;
+    while ri < nwpipe {
+        let wobj: i32 = g_nodes[wpipe_loads[ri]].child0;
+        let wsi: i32 = sym_find(g_nodes[wobj].name0);
+        let wt: i32 = type_pointee(g_syms[wsi].type_off);
+        ir_wr("  "); ir_wr_reg(wphi[ri]); ir_wr(" = phi ");
+        ir_wr_type(wt);
+        ir_wr(" [ "); ir_wr_reg(wpre[ri]); ir_wr(", %"); ir_wr_label(lbl_ph);
+        ir_wr(" ], [ "); ir_wr_reg(wjoin[ri]); ir_wr(", %");
+        ir_wr_label(lbl_latch); ir_wr(" ]\n");
+        ri = ri + 1;
+    }
     let cond: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(cond); ir_wr(" = icmp slt i32 ");
     ir_wr_reg(v_phi); ir_wr(", "); ir_wr_int(n1); ir_wr("\n");
@@ -24018,10 +24197,66 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     ir_wr_label_def(lbl_body);
     sym_push_scope();
     sym_add(loop_var, str_intern("i32"), v_phi, 0);
+    let lv_si: i32 = g_sym_count - 1;
+    if nwpipe > 0 {
+        // Reload block b+1 at the body head under a uniform guard; the
+        // join phi keeps the old value on the final iteration (dead by
+        // shape, so the guard is output-invisible).
+        let rl_c: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(rl_c); ir_wr(" = icmp slt i32 ");
+        ir_wr_reg(v_phi); ir_wr(", "); ir_wr_int(n1 - 1); ir_wr("\n");
+        ir_wr("  br i1 "); ir_wr_reg(rl_c); ir_wr(", label %");
+        ir_wr_label(lbl_rl); ir_wr(", label %"); ir_wr_label(lbl_join);
+        ir_wr("\n");
+        ir_wr_label_def(lbl_rl);
+        let bp1: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(bp1); ir_wr(" = add i32 ");
+        ir_wr_reg(v_phi); ir_wr(", 1\n");
+        g_syms[lv_si].reg = bp1;
+        sym_push_scope();
+        ri = 0;
+        while ri < wpipe_nvars[0] {
+            sym_add(wpipe_vars[ri], str_intern("i32"), lane_reg, 0);
+            ri = ri + 1;
+        }
+        ri = 0;
+        while ri < nwpipe {
+            let rv: IRValue = codegen_expr(wpipe_loads[ri], NULL_STR);
+            ir_wr("  "); ir_wr_reg(wre[ri]); ir_wr(" = add ");
+            ir_wr_type(rv.type_off); ir_wr(" "); ir_wr_reg(rv.reg);
+            ir_wr(", 0\n");
+            ri = ri + 1;
+        }
+        sym_pop_scope();
+        g_syms[lv_si].reg = v_phi;
+        ir_wr("  br label %"); ir_wr_label(lbl_join); ir_wr("\n");
+        ir_wr_label_def(lbl_join);
+        ri = 0;
+        while ri < nwpipe {
+            let wobj: i32 = g_nodes[wpipe_loads[ri]].child0;
+            let wsi: i32 = sym_find(g_nodes[wobj].name0);
+            let wt: i32 = type_pointee(g_syms[wsi].type_off);
+            ir_wr("  "); ir_wr_reg(wjoin[ri]); ir_wr(" = phi ");
+            ir_wr_type(wt); ir_wr(" [ "); ir_wr_reg(wre[ri]);
+            ir_wr(", %"); ir_wr_label(lbl_rl); ir_wr(" ], [ ");
+            ir_wr_reg(wphi[ri]); ir_wr(", %"); ir_wr_label(lbl_body);
+            ir_wr(" ]\n");
+            ri = ri + 1;
+        }
+        wpipe_init();
+        ri = 0;
+        while ri < nwpipe {
+            g_wpipe_node[ri] = wpipe_loads[ri];
+            g_wpipe_reg[ri] = wphi[ri];
+            ri = ri + 1;
+        }
+        g_wpipe_cnt = nwpipe;
+    }
     var wave_tgts: [i32; 16] = 0;
     var wave_ntgts: [i32; 1] = 0;
     codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
                          &wave_tgts[0], &wave_ntgts[0]);
+    g_wpipe_cnt = 0;
     sym_pop_scope();
     ir_wr("  br label %"); ir_wr_label(lbl_latch); ir_wr("\n");
     ir_wr_label_def(lbl_latch);

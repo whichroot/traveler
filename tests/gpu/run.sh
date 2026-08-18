@@ -2022,6 +2022,29 @@ elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
 else
     echo "  ok   68-block rolled loop admitted: emits, guarded, gfx1100-lowered"
 fi
+
+# A15. Emitter software pipelining: the wave loads are phi-carried, so the
+# module holds exactly 4 i64 loads (2 prologue + 2 guarded reload) and the
+# body consumes the phis. @internal-design: stage1-dot.
+WP_SRC="$SCRIPT_DIR/gpu_wavepipe_dot.tv"
+WP_DEV="$TMP/gpu_wavepipe_dot_amd.ll"
+WP_OBJ="$TMP/gpu_wavepipe_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$WP_SRC" -o "$WP_DEV" 2>/dev/null; then
+    echo "  FAIL: wave-pipeline dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$WP_DEV"; then
+    echo "  FAIL: wave-pipeline dot emitted no kernel"; fail=1
+elif [ "$(grep -c ' = load i64' "$WP_DEV")" -ne 4 ]; then
+    echo "  FAIL: wave-pipeline dot lost its load phis (want 4 i64 loads)"; fail=1
+elif ! grep -q "icmp slt i32 .*, 3$" "$WP_DEV"; then
+    echo "  FAIL: wave-pipeline dot lost the reload guard"; fail=1
+elif [ "$(grep -c 'llvm.amdgcn.ds.swizzle' "$WP_DEV")" -lt 5 ]; then
+    echo "  FAIL: wave-pipeline dot lost its butterfly"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$WP_DEV" -o "$WP_OBJ" 2>"$TMP/wp-llc.err"; then
+    echo "  FAIL: wave-pipeline dot did not lower for gfx1100"; fail=1
+else
+    echo "  ok   wave-map loads pipelined: phi-carried, guarded, gfx1100-lowered"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2137,6 +2160,23 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX prefetch dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX carried-fetch prefetch: guarded carried-fetch, sm_90-lowered"
+fi
+
+# N9. The wave-load pipeline stays target-neutral.
+WP_NVDEV="$TMP/gpu_wavepipe_dot_nv.ll"
+WP_PTX="$TMP/gpu_wavepipe_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_wavepipe_dot.tv" \
+        -o "$WP_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX wave-pipeline dot did not produce a module"; fail=1
+elif [ "$(grep -c ' = load i64' "$WP_NVDEV")" -ne 4 ]; then
+    echo "  FAIL: NVPTX wave-pipeline dot lost its load phis"; fail=1
+elif ! grep -q "icmp slt i32 .*, 3$" "$WP_NVDEV"; then
+    echo "  FAIL: NVPTX wave-pipeline dot lost the reload guard"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$WP_NVDEV" -o "$WP_PTX" 2>"$TMP/wp-llcnv.err"; then
+    echo "  FAIL: NVPTX wave-pipeline dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX wave-map loads pipelined: guarded, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.
