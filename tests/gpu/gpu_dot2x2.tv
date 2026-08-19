@@ -1,0 +1,27 @@
+// gpu_dot2x2.tv — blocked-dot admission with TWO reduction rows and TWO
+// residue-disjoint stride-2 stores: two wave-mapped column dots per pfor
+// iteration. Pins the registration repair (bounds precede the walk).
+// @internal-design: stage1-dot.
+
+fn main() -> i32 {
+    let x: *i32 = alloc(4 * 2 * 32);
+    let out: *i64 = alloc(8);
+    for i in 0..2 {
+        var acc: i64 = 0;
+        var accb: i64 = 0;
+        for b in 0..2 {
+            var p: i32 = 0;
+            var pb: i32 = 0;
+            for lane in 0..32 {
+                p = p + x[(i * 4 + b) * 32 + lane] + lane + b;
+                pb = pb + x[((i * 2 + 1) * 2 + b) * 32 + lane];
+            }
+            acc = acc + (p as i64);
+            accb = accb + (pb as i64);
+        }
+        out[i * 2] = acc;
+        out[i * 2 + 1] = accb;
+    }
+    free(out); free(x);
+    return 0;
+}

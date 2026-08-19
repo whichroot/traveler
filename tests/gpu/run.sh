@@ -2124,6 +2124,25 @@ elif ! grep -q " = and i32 .*, 31$" "$WAVE_DEV"; then
 else
     echo "  ok   wave2 pairs two lanes per thread: 4-level tree, opt-in pinned"
 fi
+
+# A19. Blocked-dot admission with two reduction rows and two
+# residue-disjoint stride-2 stores emits a kernel.
+# @internal-design: plane-k8-boundary.
+D2_SRC="$SCRIPT_DIR/gpu_dot2x2.tv"
+D2_DEV="$TMP/gpu_dot2x2_amd.ll"
+D2_OBJ="$TMP/gpu_dot2x2_amd.o"
+if ! "$STAGE1" --emit-gpu "$D2_SRC" -o "$D2_DEV" 2>/dev/null; then
+    echo "  FAIL: dot2x2 did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$D2_DEV"; then
+    echo "  FAIL: dot2x2 emitted no kernel (registration regressed)"; fail=1
+elif [ "$(grep -c ' = call i32 @llvm.amdgcn.ds.swizzle' "$D2_DEV")" -ne 10 ]; then
+    echo "  FAIL: dot2x2 lost a butterfly (want 10 swizzles)"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$D2_DEV" -o "$D2_OBJ" 2>"$TMP/d2-llc.err"; then
+    echo "  FAIL: dot2x2 did not lower for gfx1100"; fail=1
+else
+    echo "  ok   dot2x2: two reduction rows, two stride-2 stores, kernel emitted"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2303,6 +2322,21 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX wave2 dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX wave2 pairs two lanes per thread, sm_90-lowered"
+fi
+
+# N13. The two-row two-store admission stays target-neutral.
+D2_NVDEV="$TMP/gpu_dot2x2_nv.ll"
+D2_PTX="$TMP/gpu_dot2x2_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_dot2x2.tv" \
+        -o "$D2_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX dot2x2 did not produce a module"; fail=1
+elif ! grep -q "ptx_kernel" "$D2_NVDEV"; then
+    echo "  FAIL: NVPTX dot2x2 emitted no kernel"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$D2_NVDEV" -o "$D2_PTX" 2>"$TMP/d2-llcnv.err"; then
+    echo "  FAIL: NVPTX dot2x2 did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX dot2x2: two rows, two stores, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.

@@ -1,0 +1,28 @@
+// pfor_ok_dot2x2.tv — POSITIVE CONTROL: two body-local reduction rows,
+// two stride-2 stores (even/odd split, literal trip).
+//
+// acc/accb are declared inside the loop body, so each iteration owns a
+// fresh cell (#43); out[2i] and out[2i+1] are residue-disjoint mod
+// gcd(2, 2^32). Admitted once the record-time injectivity guard reads
+// the literal trip bounds (extracted before the walk).
+//
+// MUST PARALLELIZE.  Expected workers: 1.  Output deterministic.
+
+fn main() -> i32 {
+    var out: [i64; 16] = 0;
+    for i in 0..8 {
+        var acc: i64 = 0;
+        var accb: i64 = 0;
+        for b in 0..4 {
+            acc = acc + ((i * 4 + b) as i64);
+            accb = accb + (((i * 4 + b) * 2) as i64);
+        }
+        out[2 * i] = acc;
+        out[2 * i + 1] = accb;
+    }
+    print(out[0]);        // 6
+    print(out[1]);        // 12
+    print(out[14]);       // 118
+    print(out[15]);       // 236
+    return 0;
+}

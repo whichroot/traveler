@@ -14848,10 +14848,9 @@ fn pfor_record_call_read(pf: *PForState, name: i32) -> i32 {
     return 1;
 }
 
-// Final hazard check after the body walk: write-write disjointness and
-// read-after-write safety.  Returns 1 if safe.
-fn pfor_check_hazards(pf: *PForState, start_node: i32, end_node: i32) -> i32 {
-    // Extract loop bound facts
+// Extract loop bound facts. Called before the body walk too: the
+// record-time injectivity guard reads them.
+fn pfor_note_bounds(pf: *PForState, start_node: i32, end_node: i32) {
     pf.pfb_start_lit_ok = 0;
     pf.pfb_end_lit_ok = 0;
     pf.pfb_end_key = 0 - 1;
@@ -14868,6 +14867,12 @@ fn pfor_check_hazards(pf: *PForState, start_node: i32, end_node: i32) -> i32 {
         }
         pf.pfb_end_key = pfor_expr_key(pf, end_node);
     }
+}
+
+// Final hazard check after the body walk: write-write disjointness and
+// read-after-write safety.  Returns 1 if safe.
+fn pfor_check_hazards(pf: *PForState, start_node: i32, end_node: i32) -> i32 {
+    pfor_note_bounds(pf, start_node, end_node);
 
     let writes: *i64 = pf.writes;
     let reads: *i64 = pf.reads;
@@ -18102,6 +18107,9 @@ fn pfor_analyze_body(pf: *PForState, body: i32, loop_var: i32, start_node: i32, 
     // Fresh refusal ledger for this loop (--pfor-report; inert in normal mode).
     g_pf_reason = 0;
     g_pf_reason_ctx = 1;
+    // Bound facts precede the walk: even-stride writes prove injectivity
+    // against the literal trip at record time.
+    pfor_note_bounds(pf, start_node, end_node);
 
     if g_nodes[body].kind != AST_BLOCK {
         pfor_refuse(PFR_NONBLOCK);

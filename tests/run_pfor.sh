@@ -652,6 +652,7 @@ if [ -x "$STAGE1" ]; then
         "pfor_ok_local_array:3"
         "pfor_ok_stride_evenodd:1"
         "pfor_ok_stride_reverse:1"
+        "pfor_ok_dot2x2:1"
     )
     for entry in "${PRIV_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"
