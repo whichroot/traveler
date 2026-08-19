@@ -1585,8 +1585,8 @@ let MAX_CLO_CAPS: i32 = 64;             // max captures per closure
 //   [13..15]=pad. Affine part starts at offset 2; cells are i64 to match
 //   tvc.c's int64_t (dual-compiler parity).
 let MAX_PFOR_WRITES: i32 = 8;
-let MAX_PFOR_READS: i32 = 32;
-let MAX_PFOR_LETS: i32 = 64;
+let MAX_PFOR_READS: i32 = 64;
+let MAX_PFOR_LETS: i32 = 128;
 
 struct PForState {
     independent: i32,    // final verdict, read by the dispatch site
@@ -23788,7 +23788,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
         if sk == AST_LET {
             if (g_nodes[s].flags & 1) == 0
                 || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
-            if nnames[0] >= 64 { return 0; }
+            if nnames[0] >= 128 { return 0; }
             names[nnames[0]] = g_nodes[s].name0;
             ntypes[nnames[0]] = resolve_type_sub(g_nodes[s].name1);
             nnames[0] = nnames[0] + 1;
@@ -23871,8 +23871,8 @@ fn pfor_body_gpu_dot(body: i32) -> i32 {
         || g_nodes[g_nodes[loop].child1].int_val < 1
         || g_nodes[g_nodes[loop].child1].int_val > 128 { return 0; }
     let lbody: i32 = g_nodes[loop].child2;
-    var names: [i32; 64] = 0;
-    var ntypes: [i32; 64] = 0;
+    var names: [i32; 128] = 0;
+    var ntypes: [i32; 128] = 0;
     var nnames: [i32; 1] = 0;
     var letflags: [i32; 16] = 0;
     var ai: i32 = 0;
@@ -24110,7 +24110,7 @@ fn codegen_gpu_dot_body(lbody: i32, depth: i32, in_wave: i32,
             }
             g_syms[tsi].reg = ar;
             if in_wave == 1 && depth == wave_tdepth
-                && wave_ntgts[0] < 16 {
+                && wave_ntgts[0] < 64 {
                 var dup: i32 = 0;
                 var wi: i32 = 0;
                 while wi < wave_ntgts[0] {
@@ -24357,7 +24357,8 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         }
         g_wpipe_cnt = nwpipe;
     }
-    var wave_tgts: [i32; 16] = 0;
+    // Row-batched dots carry 8 wave accumulators per row (R <= 8).
+    var wave_tgts: [i32; 64] = 0;
     var wave_ntgts: [i32; 1] = 0;
     if do_u2 == 1 {
         // Carried accs chain through both halves in source order, so the

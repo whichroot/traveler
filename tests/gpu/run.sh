@@ -2143,6 +2143,24 @@ elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
 else
     echo "  ok   dot2x2: two reduction rows, two stride-2 stores, kernel emitted"
 fi
+
+# A20. Row-batched blocked dot: 3 rows x 8 wave accumulators (24 > the
+# old 16 cap), 3 trip-separated stores. @internal-design: plane-k8-boundary.
+RB_SRC="$SCRIPT_DIR/gpu_rowbatch_dot.tv"
+RB_DEV="$TMP/gpu_rowbatch_dot_amd.ll"
+RB_OBJ="$TMP/gpu_rowbatch_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$RB_SRC" -o "$RB_DEV" 2>/dev/null; then
+    echo "  FAIL: rowbatch dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$RB_DEV"; then
+    echo "  FAIL: rowbatch dot emitted no kernel (capacity regressed)"; fail=1
+elif [ "$(grep -c ' = call i32 @llvm.amdgcn.ds.swizzle' "$RB_DEV")" -ne 120 ]; then
+    echo "  FAIL: rowbatch dot lost butterflies (want 120 swizzles)"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$RB_DEV" -o "$RB_OBJ" 2>"$TMP/rb-llc.err"; then
+    echo "  FAIL: rowbatch dot did not lower for gfx1100"; fail=1
+else
+    echo "  ok   rowbatch dot: 3 rows x 8 wave accs, kernel emitted"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2337,6 +2355,21 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX dot2x2 did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX dot2x2: two rows, two stores, sm_90-lowered"
+fi
+
+# N14. The row-batch capacity stays target-neutral.
+RB_NVDEV="$TMP/gpu_rowbatch_dot_nv.ll"
+RB_PTX="$TMP/gpu_rowbatch_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_rowbatch_dot.tv" \
+        -o "$RB_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX rowbatch dot did not produce a module"; fail=1
+elif ! grep -q "ptx_kernel" "$RB_NVDEV"; then
+    echo "  FAIL: NVPTX rowbatch dot emitted no kernel"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$RB_NVDEV" -o "$RB_PTX" 2>"$TMP/rb-llcnv.err"; then
+    echo "  FAIL: NVPTX rowbatch dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX rowbatch dot: 3 rows x 8 wave accs, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.
