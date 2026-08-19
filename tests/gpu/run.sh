@@ -2162,8 +2162,8 @@ else
     echo "  ok   rowbatch dot: 3 rows x 8 wave accs, kernel emitted"
 fi
 
-# A21. Serial i64 reductions in the rolled loop: two carried rows,
-# branchless max, no wave map. @internal-design: plane-k8-boundary.
+# A21. Two carried i64 rows, one rolled loop, accumulate assigns only.
+# (design-notes/e9-pool-review.md "Shape discipline")
 SR_SRC="$SCRIPT_DIR/gpu_serial_reduce.tv"
 SR_DEV="$TMP/gpu_serial_reduce_amd.ll"
 SR_OBJ="$TMP/gpu_serial_reduce_amd.o"

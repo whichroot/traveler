@@ -1,7 +1,5 @@
-// gpu_serial_reduce.tv — serial i64 reductions in the rolled loop: two
-// carried rows (sum + branchless max), flat inner unroll (no nested
-// FOR), trip-separated stores. The E9 glue-kernel reduction shape.
-// @internal-design: plane-k8-boundary.
+// Two carried i64 rows, one rolled loop, flat unroll, disjoint stores.
+// (design-notes/e9-pool-review.md "Shape discipline")
 
 fn main() -> i32 {
     let x: *i64 = alloc(5120);
