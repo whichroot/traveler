@@ -2076,6 +2076,28 @@ else
         echo "  ok   fits_i32 narrows mul operands: v_mad_i64_i32, opt-in pinned"
     fi
 fi
+
+# A17. #[unroll2] doubles the rolled body: the bound halves (2 -> 1) and
+# the butterfly count doubles. @internal-design: plane-k8-boundary.
+U2_SRC="$SCRIPT_DIR/gpu_unroll2_dot.tv"
+U2_DEV="$TMP/gpu_unroll2_dot_amd.ll"
+U2_OBJ="$TMP/gpu_unroll2_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$U2_SRC" -o "$U2_DEV" 2>/dev/null; then
+    echo "  FAIL: unroll2 dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$U2_DEV"; then
+    echo "  FAIL: unroll2 dot emitted no kernel"; fail=1
+elif ! grep -q "icmp slt i32 .*, 1$" "$U2_DEV"; then
+    echo "  FAIL: unroll2 dot kept the unhalved bound"; fail=1
+elif [ "$(grep -c ' = call i32 @llvm.amdgcn.ds.swizzle' "$U2_DEV")" -ne 10 ]; then
+    echo "  FAIL: unroll2 dot did not double its body (want 10 swizzles)"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$U2_DEV" -o "$U2_OBJ" 2>"$TMP/u2-llc.err"; then
+    echo "  FAIL: unroll2 dot did not lower for gfx1100"; fail=1
+elif ! grep -q "icmp slt i32 .*, 2$" "$WAVE_DEV"; then
+    echo "  FAIL: unmarked wave dot got unrolled (opt-in regressed)"; fail=1
+else
+    echo "  ok   unroll2 doubles the rolled body: halved bound, opt-in pinned"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2223,6 +2245,21 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX fits_i32 dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX fits_i32 narrows mul operands, sm_90-lowered"
+fi
+
+# N11. The unroll2 doubling stays target-neutral.
+U2_NVDEV="$TMP/gpu_unroll2_dot_nv.ll"
+U2_PTX="$TMP/gpu_unroll2_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_unroll2_dot.tv" \
+        -o "$U2_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX unroll2 dot did not produce a module"; fail=1
+elif ! grep -q "icmp slt i32 .*, 1$" "$U2_NVDEV"; then
+    echo "  FAIL: NVPTX unroll2 dot kept the unhalved bound"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$U2_NVDEV" -o "$U2_PTX" 2>"$TMP/u2-llcnv.err"; then
+    echo "  FAIL: NVPTX unroll2 dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX unroll2 doubles the rolled body, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.

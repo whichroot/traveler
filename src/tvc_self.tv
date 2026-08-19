@@ -4173,6 +4173,7 @@ fn parse_program() -> i32 {
     var pending_zk: i32 = 0;      // set to 1 when #[zk] is parsed
     var pending_wpipe: i32 = 0;   // set to 1 when #[wave_pipe] is parsed
     var pending_fits: i32 = 0;    // set to 1 when #[fits_i32] is parsed
+    var pending_unroll2: i32 = 0; // set to 1 when #[unroll2] is parsed
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
@@ -4199,6 +4200,12 @@ fn parse_program() -> i32 {
                 // @internal-design: stage1-dot.
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 1024;
                 pending_fits = 0;
+            }
+            if pending_unroll2 == 1 {
+                // bit11 = unroll2: two source steps per rolled iteration.
+                // @internal-design: stage1-dot.
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 2048;
+                pending_unroll2 = 0;
             }
         } else if k == TOK_KW_EXTERN {
             decl_node = parse_extern_fn();
@@ -4371,6 +4378,9 @@ fn parse_program() -> i32 {
                     }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "fits_i32") == 1 {
                         pending_fits = 1;
+                    }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "unroll2") == 1 {
+                        pending_unroll2 = 1;
                     }
                 }
                 p_advance();
@@ -23630,6 +23640,9 @@ var g_wave_pipe_on: i32 = 0;
 // Set per worker from the owner fn's #[fits_i32] bit. Off by default:
 // narrowing is exact only under the source-asserted range invariant.
 var g_fits_i32_on: i32 = 0;
+// Set per worker from the owner fn's #[unroll2] bit. Off by default:
+// the doubled body trades loop overhead for scheduler freedom.
+var g_unroll2_on: i32 = 0;
 
 fn wpipe_init() {
     if g_wpipe_node == null {
@@ -24127,6 +24140,12 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         nwpipe = dot_wave_loads_collect(lbody, loop_var, &wpipe_loads[0],
                                        &wpipe_vars[0], &wpipe_nvars[0]);
     }
+    // #[unroll2]: two source steps per rolled iteration. Even bounds only;
+    // not combined with wave_pipe. @internal-design: plane-k8-boundary.
+    var do_u2: i32 = 0;
+    if g_unroll2_on == 1 && nwpipe == 0 && (n1 % 2) == 0 {
+        do_u2 = 1;
+    }
 
     // Pre-reserve the loop-carried registers and the block labels so the
     // header phis can name the latch values before the latch is emitted.
@@ -24236,7 +24255,9 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     }
     let cond: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(cond); ir_wr(" = icmp slt i32 ");
-    ir_wr_reg(v_phi); ir_wr(", "); ir_wr_int(n1); ir_wr("\n");
+    ir_wr_reg(v_phi); ir_wr(", ");
+    if do_u2 == 1 { ir_wr_int(n1 / 2); } else { ir_wr_int(n1); }
+    ir_wr("\n");
     ir_wr("  br i1 "); ir_wr_reg(cond); ir_wr(", label %");
     ir_wr_label(lbl_body); ir_wr(", label %"); ir_wr_label(lbl_exit);
     ir_wr("\n");
@@ -24301,8 +24322,25 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     }
     var wave_tgts: [i32; 16] = 0;
     var wave_ntgts: [i32; 1] = 0;
-    codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
-                         &wave_tgts[0], &wave_ntgts[0]);
+    if do_u2 == 1 {
+        // Carried accs chain through both halves in source order, so the
+        // unroll reorders instructions only. @internal-design: stage1-dot.
+        let vb0: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(vb0); ir_wr(" = shl i32 ");
+        ir_wr_reg(v_phi); ir_wr(", 1\n");
+        g_syms[lv_si].reg = vb0;
+        codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
+                             &wave_tgts[0], &wave_ntgts[0]);
+        let vb1: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(vb1); ir_wr(" = add i32 ");
+        ir_wr_reg(vb0); ir_wr(", 1\n");
+        g_syms[lv_si].reg = vb1;
+        codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
+                             &wave_tgts[0], &wave_ntgts[0]);
+    } else {
+        codegen_gpu_dot_body(lbody, 1, 0, 0 - 1, lane_reg,
+                             &wave_tgts[0], &wave_ntgts[0]);
+    }
     g_wpipe_cnt = 0;
     sym_pop_scope();
     ir_wr("  br label %"); ir_wr_label(lbl_latch); ir_wr("\n");
@@ -24444,9 +24482,11 @@ fn emit_gpu_module() {
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
-        // #[wave_pipe]/#[fits_i32] opt-ins travel via the worker's owner fn.
+        // #[wave_pipe]/#[fits_i32]/#[unroll2] travel via the worker's
+        // owner fn.
         g_wave_pipe_on = 0;
         g_fits_i32_on = 0;
+        g_unroll2_on = 0;
         let owner_fi: i32 = find_func_idx(owner_fn);
         if owner_fi >= 0 {
             if (g_nodes[g_funcs[owner_fi].node].flags & 512) != 0 {
@@ -24454,6 +24494,9 @@ fn emit_gpu_module() {
             }
             if (g_nodes[g_funcs[owner_fi].node].flags & 1024) != 0 {
                 g_fits_i32_on = 1;
+            }
+            if (g_nodes[g_funcs[owner_fi].node].flags & 2048) != 0 {
+                g_unroll2_on = 1;
             }
         }
         var ci: i32 = 0;

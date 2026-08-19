@@ -1,0 +1,22 @@
+// gpu_unroll2_dot.tv — #[unroll2] emits two source steps per rolled
+// iteration: the bound halves (2 -> 1), the doubled body keeps the
+// carried-acc chain in source order. @internal-design: stage1-dot.
+
+#[unroll2]
+fn main() -> i32 {
+    let x: *i32 = alloc(4 * 2 * 32);
+    let out: *i64 = alloc(4);
+    for i in 0..4 {
+        var acc: i64 = 0;
+        for b in 0..2 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + x[(i * 2 + b) * 32 + lane] + lane + b;
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+    free(out); free(x);
+    return 0;
+}
