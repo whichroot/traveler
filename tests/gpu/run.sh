@@ -2098,6 +2098,32 @@ elif ! grep -q "icmp slt i32 .*, 2$" "$WAVE_DEV"; then
 else
     echo "  ok   unroll2 doubles the rolled body: halved bound, opt-in pinned"
 fi
+
+# A18. #[wave2] pairs two source lanes per thread: lane mask 15, column
+# divide 16, butterfly from offset 8. @internal-design: stage1-dot.
+W2_SRC="$SCRIPT_DIR/gpu_wave2_dot.tv"
+W2_DEV="$TMP/gpu_wave2_dot_amd.ll"
+W2_OBJ="$TMP/gpu_wave2_dot_amd.o"
+if ! "$STAGE1" --emit-gpu "$W2_SRC" -o "$W2_DEV" 2>/dev/null; then
+    echo "  FAIL: wave2 dot did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$W2_DEV"; then
+    echo "  FAIL: wave2 dot emitted no kernel"; fail=1
+elif ! grep -q " = and i32 .*, 15$" "$W2_DEV"; then
+    echo "  FAIL: wave2 dot kept the 5-bit lane mask"; fail=1
+elif ! grep -q " = lshr i32 .*, 4$" "$W2_DEV"; then
+    echo "  FAIL: wave2 dot kept the wave32 column divide"; fail=1
+elif ! grep -q " = add i32 .*, 16$" "$W2_DEV"; then
+    echo "  FAIL: wave2 dot lost the lane-pair rebind"; fail=1
+elif [ "$(grep -c ' = call i32 @llvm.amdgcn.ds.swizzle' "$W2_DEV")" -ne 4 ]; then
+    echo "  FAIL: wave2 dot butterfly is not 4 levels"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$W2_DEV" -o "$W2_OBJ" 2>"$TMP/w2-llc.err"; then
+    echo "  FAIL: wave2 dot did not lower for gfx1100"; fail=1
+elif ! grep -q " = and i32 .*, 31$" "$WAVE_DEV"; then
+    echo "  FAIL: unmarked wave dot got lane-paired (opt-in regressed)"; fail=1
+else
+    echo "  ok   wave2 pairs two lanes per thread: 4-level tree, opt-in pinned"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2260,6 +2286,23 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX unroll2 dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX unroll2 doubles the rolled body, sm_90-lowered"
+fi
+
+# N12. The wave2 lane pairing stays target-neutral (shfl bfly is xor too).
+W2_NVDEV="$TMP/gpu_wave2_dot_nv.ll"
+W2_PTX="$TMP/gpu_wave2_dot_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_wave2_dot.tv" \
+        -o "$W2_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX wave2 dot did not produce a module"; fail=1
+elif ! grep -q " = and i32 .*, 15$" "$W2_NVDEV"; then
+    echo "  FAIL: NVPTX wave2 dot kept the 5-bit lane mask"; fail=1
+elif [ "$(grep -c 'llvm.nvvm.shfl.sync.i32' "$W2_NVDEV")" -lt 5 ]; then
+    echo "  FAIL: NVPTX wave2 dot lost its butterfly"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$W2_NVDEV" -o "$W2_PTX" 2>"$TMP/w2-llcnv.err"; then
+    echo "  FAIL: NVPTX wave2 dot did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX wave2 pairs two lanes per thread, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.

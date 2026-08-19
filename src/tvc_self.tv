@@ -4174,6 +4174,7 @@ fn parse_program() -> i32 {
     var pending_wpipe: i32 = 0;   // set to 1 when #[wave_pipe] is parsed
     var pending_fits: i32 = 0;    // set to 1 when #[fits_i32] is parsed
     var pending_unroll2: i32 = 0; // set to 1 when #[unroll2] is parsed
+    var pending_wave2: i32 = 0;   // set to 1 when #[wave2] is parsed
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
@@ -4206,6 +4207,12 @@ fn parse_program() -> i32 {
                 // @internal-design: stage1-dot.
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 2048;
                 pending_unroll2 = 0;
+            }
+            if pending_wave2 == 1 {
+                // bit12 = wave2: two source lanes per wave thread.
+                // @internal-design: stage1-dot.
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 4096;
+                pending_wave2 = 0;
             }
         } else if k == TOK_KW_EXTERN {
             decl_node = parse_extern_fn();
@@ -4381,6 +4388,9 @@ fn parse_program() -> i32 {
                     }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "unroll2") == 1 {
                         pending_unroll2 = 1;
+                    }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "wave2") == 1 {
+                        pending_wave2 = 1;
                     }
                 }
                 p_advance();
@@ -23643,6 +23653,9 @@ var g_fits_i32_on: i32 = 0;
 // Set per worker from the owner fn's #[unroll2] bit. Off by default:
 // the doubled body trades loop overhead for scheduler freedom.
 var g_unroll2_on: i32 = 0;
+// Set per worker from the owner fn's #[wave2] bit. Off by default: the
+// 4-level butterfly halves wave count at twice the lane-local state.
+var g_wave2_on: i32 = 0;
 
 fn wpipe_init() {
     if g_wpipe_node == null {
@@ -23958,9 +23971,9 @@ fn gpu_dot_uses_wave(node: i32, depth: i32) -> i32 {
 // steps; integer sums, so the reorder is bit-identical to the serial sum).
 // NVPTX lowers the same reduction through shfl.sync.bfly (emission gate).
 
-fn gpu_emit_butterfly_i32(reg: i32) -> i32 {
+fn gpu_emit_butterfly_i32(reg: i32, start: i64) -> i32 {
     var cur: i32 = reg;
-    var off: i64 = 16;
+    var off: i64 = start;
     while off > 0 {
         let sw: i32 = ir_tmp();
         if g_gpu_target == 1 {
@@ -23996,13 +24009,27 @@ fn emit_wave_mapped_for(stmt: i32, depth: i32, lane_reg: i32,
     let ivar: i32 = g_nodes[stmt].name0;
     sym_push_scope();
     sym_add(ivar, str_intern("i32"), lane_reg, 0);
+    let lane_si: i32 = g_sym_count - 1;
     wave_ntgts[0] = 0;
     codegen_gpu_dot_body(ibody, depth + 1, 1, depth + 1, lane_reg,
                          wave_tgts, wave_ntgts);
+    var bfly: i64 = 16;
+    if g_wave2_on == 1 {
+        // #[wave2]: run the body again for lane+16; the accumulators
+        // chain, so the tree loses a level. @internal-design: stage1-dot.
+        let lp: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(lp); ir_wr(" = add i32 ");
+        ir_wr_reg(lane_reg); ir_wr(", 16\n");
+        g_syms[lane_si].reg = lp;
+        wave_ntgts[0] = 0;
+        codegen_gpu_dot_body(ibody, depth + 1, 1, depth + 1, lane_reg,
+                             wave_tgts, wave_ntgts);
+        bfly = 8;
+    }
     var t: i32 = 0;
     while t < wave_ntgts[0] {
         let tsi: i32 = wave_tgts[t];
-        g_syms[tsi].reg = gpu_emit_butterfly_i32(g_syms[tsi].reg);
+        g_syms[tsi].reg = gpu_emit_butterfly_i32(g_syms[tsi].reg, bfly);
         t = t + 1;
     }
     sym_pop_scope();
@@ -24136,7 +24163,9 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     var wpipe_vars: [i32; 8] = 0;
     var wpipe_nvars: [i32; 1] = 0;
     var nwpipe: i32 = 0;
-    if wave_mapped == 1 && g_wave_pipe_on == 1 {
+    // wave_pipe assumes one lane per thread; wave2 pairs two, so the
+    // phis would carry the wrong lane's values. Refuse the combination.
+    if wave_mapped == 1 && g_wave_pipe_on == 1 && g_wave2_on == 0 {
         nwpipe = dot_wave_loads_collect(lbody, loop_var, &wpipe_loads[0],
                                        &wpipe_vars[0], &wpipe_nvars[0]);
     }
@@ -24482,11 +24511,12 @@ fn emit_gpu_module() {
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
-        // #[wave_pipe]/#[fits_i32]/#[unroll2] travel via the worker's
-        // owner fn.
+        // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2] travel via the
+        // worker's owner fn.
         g_wave_pipe_on = 0;
         g_fits_i32_on = 0;
         g_unroll2_on = 0;
+        g_wave2_on = 0;
         let owner_fi: i32 = find_func_idx(owner_fn);
         if owner_fi >= 0 {
             if (g_nodes[g_funcs[owner_fi].node].flags & 512) != 0 {
@@ -24497,6 +24527,9 @@ fn emit_gpu_module() {
             }
             if (g_nodes[g_funcs[owner_fi].node].flags & 2048) != 0 {
                 g_unroll2_on = 1;
+            }
+            if (g_nodes[g_funcs[owner_fi].node].flags & 4096) != 0 {
+                g_wave2_on = 1;
             }
         }
         var ci: i32 = 0;
@@ -24594,13 +24627,20 @@ fn emit_gpu_module() {
             if wave_mapped == 1 {
                 lane_reg = ir_tmp();
                 ir_wr("  "); ir_wr_reg(lane_reg); ir_wr(" = and i32 ");
-                ir_wr_reg(widr); ir_wr(", 31\n");
+                ir_wr_reg(widr);
+                // #[wave2]: the lane pair (t, t|16) shares a wave32.
+                if g_wave2_on == 1 { ir_wr(", 15\n"); } else {
+                    ir_wr(", 31\n");
+                }
             }
             var idxr: i32 = 0;
             if wave_mapped == 1 {
                 let wvr: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(wvr); ir_wr(" = lshr i32 ");
-                ir_wr_reg(offr); ir_wr(", 5\n");
+                ir_wr_reg(offr);
+                if g_wave2_on == 1 { ir_wr(", 4\n"); } else {
+                    ir_wr(", 5\n");
+                }
                 idxr = ir_tmp();
                 ir_wr("  "); ir_wr_reg(idxr); ir_wr(" = add i32 ");
                 ir_wr_reg(wvr); ir_wr(", "); ir_wr_reg(lo_reg); ir_wr("\n");

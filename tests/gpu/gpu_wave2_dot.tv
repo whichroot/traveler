@@ -1,0 +1,23 @@
+// gpu_wave2_dot.tv — #[wave2] runs two source lanes per wave thread:
+// the lane id masks to 4 bits, the column index divides by 16, and the
+// butterfly starts at offset 8 (4 levels, halves stay within a wave32).
+// @internal-design: stage1-dot.
+
+#[wave2]
+fn main() -> i32 {
+    let x: *i32 = alloc(4 * 2 * 32);
+    let out: *i64 = alloc(4);
+    for i in 0..4 {
+        var acc: i64 = 0;
+        for b in 0..2 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + x[(i * 2 + b) * 32 + lane] + lane + b;
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+    free(out); free(x);
+    return 0;
+}
