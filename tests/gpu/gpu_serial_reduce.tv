@@ -1,0 +1,31 @@
+// gpu_serial_reduce.tv — serial i64 reductions in the rolled loop: two
+// carried rows (sum + branchless max), flat inner unroll (no nested
+// FOR), trip-separated stores. The E9 glue-kernel reduction shape.
+// @internal-design: plane-k8-boundary.
+
+fn main() -> i32 {
+    let x: *i64 = alloc(5120);
+    let out: *i64 = alloc(80);
+    for part in 0..40 {
+        var acc: i64 = 0;
+        var mx: i64 = 0;
+        for j in 0..32 {
+            acc = acc + x[part * 128 + j * 4] * x[part * 128 + j * 4];
+            acc = acc + x[part * 128 + j * 4 + 1] * x[part * 128 + j * 4 + 1];
+            acc = acc + x[part * 128 + j * 4 + 2] * x[part * 128 + j * 4 + 2];
+            acc = acc + x[part * 128 + j * 4 + 3] * x[part * 128 + j * 4 + 3];
+            mx = mx + (((x[part * 128 + j * 4] - mx) >> 63) + 1)
+                * (x[part * 128 + j * 4] - mx);
+            mx = mx + (((x[part * 128 + j * 4 + 1] - mx) >> 63) + 1)
+                * (x[part * 128 + j * 4 + 1] - mx);
+            mx = mx + (((x[part * 128 + j * 4 + 2] - mx) >> 63) + 1)
+                * (x[part * 128 + j * 4 + 2] - mx);
+            mx = mx + (((x[part * 128 + j * 4 + 3] - mx) >> 63) + 1)
+                * (x[part * 128 + j * 4 + 3] - mx);
+        }
+        out[part] = acc;
+        out[40 + part] = mx;
+    }
+    free(out); free(x);
+    return 0;
+}

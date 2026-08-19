@@ -2161,6 +2161,24 @@ elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
 else
     echo "  ok   rowbatch dot: 3 rows x 8 wave accs, kernel emitted"
 fi
+
+# A21. Serial i64 reductions in the rolled loop: two carried rows,
+# branchless max, no wave map. @internal-design: plane-k8-boundary.
+SR_SRC="$SCRIPT_DIR/gpu_serial_reduce.tv"
+SR_DEV="$TMP/gpu_serial_reduce_amd.ll"
+SR_OBJ="$TMP/gpu_serial_reduce_amd.o"
+if ! "$STAGE1" --emit-gpu "$SR_SRC" -o "$SR_DEV" 2>/dev/null; then
+    echo "  FAIL: serial-reduce did not produce a module"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$SR_DEV"; then
+    echo "  FAIL: serial-reduce emitted no kernel"; fail=1
+elif grep -q "ds.swizzle" "$SR_DEV"; then
+    echo "  FAIL: serial-reduce picked up a wave map"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$SR_DEV" -o "$SR_OBJ" 2>"$TMP/sr-llc.err"; then
+    echo "  FAIL: serial-reduce did not lower for gfx1100"; fail=1
+else
+    echo "  ok   serial-reduce: i64 carried rows, no wave map, lowers"
+fi
 else
     echo "  SKIP: no amdgcn target in this llc (AMDGCN leg)"
 fi
@@ -2370,6 +2388,21 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX rowbatch dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX rowbatch dot: 3 rows x 8 wave accs, sm_90-lowered"
+fi
+
+# N15. The serial i64 reduction stays target-neutral.
+SR_NVDEV="$TMP/gpu_serial_reduce_nv.ll"
+SR_PTX="$TMP/gpu_serial_reduce_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_serial_reduce.tv" \
+        -o "$SR_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX serial-reduce did not produce a module"; fail=1
+elif ! grep -q "ptx_kernel" "$SR_NVDEV"; then
+    echo "  FAIL: NVPTX serial-reduce emitted no kernel"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$SR_NVDEV" -o "$SR_PTX" 2>"$TMP/sr-llcnv.err"; then
+    echo "  FAIL: NVPTX serial-reduce did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX serial-reduce: i64 carried rows, sm_90-lowered"
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.
