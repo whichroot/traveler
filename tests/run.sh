@@ -613,7 +613,7 @@ run_test collide "$TIMEOUT_SINGLE"
 # Surface ergonomics (@internal-note: plan-syntax-modernization, Phase 1) — additive aliases that
 # lower to existing AST nodes, so both compilers must agree (dual-parity) and the
 # IR must match the old spelling (proven by the codegen-diff twin).
-test_single syntax_var        # `var` == `let mut`
+test_single syntax_var        # mutable binding syntax
 test_single syntax_type       # `type N = <FieldTy>;` == field/binfield/extfield
 test_single syntax_print      # `print` de-reserved: usable as an identifier
 test_single syntax_shadow     # strict-`let` shadowing (same/nested scope, let->var)

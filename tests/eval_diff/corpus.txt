@@ -14,7 +14,7 @@ examples/pointer_index.tv       # ptr memory: alloc/index/store
 examples/alloc_ptr_table.tv     # **i64 multi-level pointers (the #19 shape)
 examples/extern_fn.tv           # host-extern whitelist (write/puts/...)
 examples/builtin_shadow.tv      # builtin-vs-user-fn precedence
-examples/syntax_var.tv          # var == let mut equivalence twin
+examples/syntax_var.tv          # mutable binding syntax
 examples/syntax_shadow.tv       # shadowing (the slot model)
 examples/syntax_print.tv        # print de-reserved as identifier
 examples/str_compare.tv         # string literals + user fns

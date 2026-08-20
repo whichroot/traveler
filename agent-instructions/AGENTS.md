@@ -115,7 +115,7 @@ type F = Field<251>;               // field type alias (the prime is part of the
 
 fn main() {                        // or: fn main() -> i32 { ...; return 0; }
     let a: F = 200;                // let is immutable
-    var total: i32 = 0;            // var is mutable (== "let mut")
+    var total: i32 = 0;            // var is mutable
     total = total + 1;
     print(a + a);                  // print takes one value, writes it as an integer
 }

@@ -987,7 +987,7 @@ length-aware operations use the standard library `Str`:
 **Building strings at runtime**: accumulate into a `Str`:
 
 ```
-let mut buf: Str = str_new();
+var buf: Str = str_new();
 str_push(&buf, 72);   // 'H'
 str_push(&buf, 105);  // 'i'
 // buf.data / buf.len now hold "Hi"
@@ -1070,7 +1070,7 @@ Field arithmetic in constant expressions follows the same modular rules as runti
 ```
 let x: F = 42              // immutable binding with type annotation
 let x = 42                 // type inferred from context
-let mut y: F = 0           // mutable binding
+var y: F = 0               // mutable binding
 ```
 
 `let` bindings are immutable by default. `mut` permits reassignment.
@@ -1252,7 +1252,7 @@ polynomial of degree at most `max_degree`.
 > **NOT YET IMPLEMENTED (v0.1.0 — planned).** `if`/`else` and `match` are
 > **statements**, not value-producing expressions — `parse_expr` does not admit
 > them, so `let x = if c { a } else { b };` does not parse. Assign inside each
-> branch instead (`let mut x; if c { x = a; } else { x = b; }`). The
+> branch instead (`var x; if c { x = a; } else { x = b; }`). The
 > expression forms below are the intended surface.
 
 ```
@@ -1356,7 +1356,7 @@ See `examples/qmark_basics.tv`.
 ```
 let x = expr
 let x: Type = expr
-let mut x = expr
+var x = expr
 let (a, b) = tuple_expr       // destructuring  [planned; not implemented]
 ```
 
@@ -1920,7 +1920,7 @@ accumulating the contribution of each Newton coefficient one at a time:
 ```
 fn newton_to_standard(N: &[F; d + 1]) -> [F; d + 1] {
     // Start with the zero polynomial in standard form
-    let mut S: [F; d + 1] = [F::ZERO; d + 1]
+    var S: [F; d + 1] = [F::ZERO; d + 1]
 
     // Process Newton coefficients from highest degree down.
     // Maintain a running polynomial in standard form that represents
@@ -1999,10 +1999,10 @@ evaluated at consecutive integers starting from 0.
 ```
 fn standard_to_newton(S: &[F; d + 1]) -> [F; d + 1] {
     // Evaluate the standard-form polynomial at t = 0, 1, ..., d
-    let mut vals: [F; d + 1]
+    var vals: [F; d + 1]
     for t in 0..d + 1 {
-        let mut v: F = F::ZERO
-        let mut t_pow: F = F::ONE
+        var v: F = F::ZERO
+        var t_pow: F = F::ONE
         let t_field: F = F::from(t)
         for k in 0..d + 1 {
             v = v + S[k] * t_pow
@@ -2013,7 +2013,7 @@ fn standard_to_newton(S: &[F; d + 1]) -> [F; d + 1] {
 
     // Compute iterated forward differences: vals[0] is N[0],
     // first differences give N[1], second differences give N[2], etc.
-    let mut N: [F; d + 1]
+    var N: [F; d + 1]
     for level in 0..d + 1 {
         N[level] = vals[0]
         for i in 0..d - level {
@@ -2070,8 +2070,8 @@ scalar `eval` and the (planned) vector form share, and exactly what the
 ```
 // decode a range via forward summation (the planned vector form of eval):
 fn decode(poly: Poly<F, d>, n: usize) -> [F; n] {
-    let mut reg: [F; d + 1] = poly.newton_coefficients()
-    let mut out: [F; n]
+    var reg: [F; d + 1] = poly.newton_coefficients()
+    var out: [F; n]
     out[0] = reg[0]
     for i in 1..n {
         for k in 0..d {
@@ -2090,9 +2090,9 @@ fn decode(poly: Poly<F, d>, n: usize) -> [F; n] {
 ```
 fn analyze(data: &[F], max_deg: usize) -> Option<DynPoly<F>> {
     let diff = data.copy()
-    let mut remaining = data.len()
-    let mut prev_nz = remaining
-    let mut newton: [F; max_deg + 1]
+    var remaining = data.len()
+    var prev_nz = remaining
+    var newton: [F; max_deg + 1]
 
     for level in 0..=max_deg {
         newton[level] = diff[0]
@@ -2202,7 +2202,7 @@ fn karatsuba(A: &[F], B: &[F]) -> Vec<F> {
 
     // Base case: fall back to schoolbook for small polynomials
     if n <= 32 {
-        let mut result = Vec::with_cap(na + nb - 1)
+        var result = Vec::with_cap(na + nb - 1)
         for i in 0..na + nb - 1 {
             result.push(F::ZERO)
         }
@@ -2236,7 +2236,7 @@ fn karatsuba(A: &[F], B: &[F]) -> Vec<F> {
 
     // sum_a = A_lo + A_hi (element-wise, zero-pad shorter to length max(a_lo_len, a_hi_len))
     let sum_a_len = max(a_lo_len, a_hi_len)
-    let mut sum_a = Vec::with_cap(sum_a_len)
+    var sum_a = Vec::with_cap(sum_a_len)
     for i in 0..sum_a_len {
         let a_lo_i = if i < a_lo_len { A[i] } else { F::ZERO }
         let a_hi_i = if i < a_hi_len { A[m + i] } else { F::ZERO }
@@ -2245,7 +2245,7 @@ fn karatsuba(A: &[F], B: &[F]) -> Vec<F> {
 
     // sum_b = B_lo + B_hi
     let sum_b_len = max(b_lo_len, b_hi_len)
-    let mut sum_b = Vec::with_cap(sum_b_len)
+    var sum_b = Vec::with_cap(sum_b_len)
     for i in 0..sum_b_len {
         let b_lo_i = if i < b_lo_len { B[i] } else { F::ZERO }
         let b_hi_i = if i < b_hi_len { B[m + i] } else { F::ZERO }
@@ -2257,7 +2257,7 @@ fn karatsuba(A: &[F], B: &[F]) -> Vec<F> {
 
     // z1 = z1_full - z0 - z2
     let z1_len = z1_full.len()
-    let mut z1 = Vec::with_cap(z1_len)
+    var z1 = Vec::with_cap(z1_len)
     for i in 0..z1_len {
         let z0_i = if i < z0.len() { z0[i] } else { F::ZERO }
         let z2_i = if i < z2.len() { z2[i] } else { F::ZERO }
@@ -2266,7 +2266,7 @@ fn karatsuba(A: &[F], B: &[F]) -> Vec<F> {
 
     // Combine: result = z0 + z1 * t^m + z2 * t^{2m}
     let result_len = na + nb - 1
-    let mut result = Vec::with_cap(result_len)
+    var result = Vec::with_cap(result_len)
     for i in 0..result_len {
         result.push(F::ZERO)
     }
@@ -2364,12 +2364,12 @@ fn ntt_inplace(a: &mut [F; n], omega: F) {
     bit_reverse(a)
 
     // Butterfly layers: log2(n) stages, bounded by 64 (max NTT size = 2^64)
-    let mut len = 2
+    var len = 2
     for _stage in 0..64 {
         if len > n { break }
         let w = omega.pow((n / len) as u64)
         for start in (0..n).step_by(len) {
-            let mut wk = F::ONE
+            var wk = F::ONE
             for k in 0..len/2 {
                 let u = a[start + k]
                 let v = a[start + k + len/2] * wk
@@ -2423,8 +2423,8 @@ fn bit_reverse(a: &mut [F], n: usize) {
 }
 
 fn reverse_bits(x: usize, bits: usize) -> usize {
-    let mut r: usize = 0
-    let mut v = x
+    var r: usize = 0
+    var v = x
     for _b in 0..bits {
         r = (r << 1) | (v & 1)
         v = v >> 1
@@ -2434,8 +2434,8 @@ fn reverse_bits(x: usize, bits: usize) -> usize {
 
 fn log2(n: usize) -> usize {
     // Precondition: n is a power of 2
-    let mut k: usize = 0
-    let mut v = n
+    var k: usize = 0
+    var v = n
     for _i in 0..64 {
         if v <= 1 { break }
         v = v >> 1
@@ -2467,7 +2467,7 @@ fn find_generator(p: u64) -> F {
     // Trial search starting from 2
     for g_val in 2..p {
         let g: F = F::from(g_val)
-        let mut is_gen = true
+        var is_gen = true
         for _idx in 0..factors.len() {
             let q = factors[_idx]
             let exp = pm1 / q
@@ -2496,9 +2496,9 @@ use, a simple trial division suffices:
 
 ```
 fn prime_factors(m: u64) -> Vec<u64> {
-    let mut factors = Vec::new()
-    let mut n = m
-    let mut d: u64 = 2
+    var factors = Vec::new()
+    var n = m
+    var d: u64 = 2
     for _trial in 0..64 {
         if d * d > n { break }
         if n % d == 0 {
@@ -2564,7 +2564,7 @@ storage representation grows.
 ```
 fn pad_to(coeffs: &[F; d + 1], n: usize) -> [F; n] {
     // Precondition: n >= d + 1
-    let mut padded: [F; n] = [F::ZERO; n]
+    var padded: [F; n] = [F::ZERO; n]
     for i in 0..d + 1 {
         padded[i] = coeffs[i]
     }
@@ -2576,7 +2576,7 @@ For NTT multiplication, the target `n` is `next_power_of_2(deg_a + deg_b + 1)`:
 
 ```
 fn next_power_of_2(x: usize) -> usize {
-    let mut n: usize = 1
+    var n: usize = 1
     for _i in 0..64 {
         if n >= x { break }
         n = n * 2
@@ -2625,7 +2625,7 @@ let reading = poly<Field<4294967291>>(1200000, 500, 4294967290)
 fn poly_from_scaled<F: Field, const D: usize>(
     coeffs: [i64; D + 1]
 ) -> Poly<F, D> {
-    let mut fc: [F; D + 1]
+    var fc: [F; D + 1]
     for i in 0..=D {
         if coeffs[i] >= 0 {
             fc[i] = F::from(coeffs[i] as u64)
@@ -2729,8 +2729,8 @@ work and no field arithmetic.
 
 ```
 fn constant_runs(data: &[F]) -> Vec<Segment> {
-    let mut segs = []
-    let mut i = 0
+    var segs = []
+    var i = 0
     for _step in 0..data.len() {
         if i >= data.len() { break }
         let val = data[i]
@@ -2817,7 +2817,7 @@ continuation:
 ```
 fn check_continuation(state: &Stream<F>, data: &[F]) -> bool {
     if !state.active: return false
-    let mut reg = state.reg.clone()
+    var reg = state.reg.clone()
     for i in 0..data.len() {
         for k in 0..state.degree {
             reg[k] = reg[k] + reg[k + 1]
@@ -4309,7 +4309,7 @@ MANY threads.
 **Lambda lifting.** The loop body is extracted into a standalone worker
 function. Free variables from the enclosing scope are collected into a
 context struct, filled at the dispatch site, and unpacked in the worker.
-The distinction between alloca-stored (`let mut`) and register-stored
+The distinction between alloca-stored (`var`) and register-stored
 (`let`) bindings must be preserved: alloca captures need a load before
 store to context; register captures are stored directly.
 
@@ -5078,7 +5078,7 @@ manually.
 Method call syntax is supported as syntactic sugar:
 
 ```traveler
-let mut reg: Register<F, 2> = register(10, 4, 2);
+var reg: Register<F, 2> = register(10, 4, 2);
 let v: F = reg.advance();   // desugars to advance(&reg)
 ```
 

@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
-// syntax_var.tv — `var` is a surface alias of `let mut`: same AST_LET (flags
-// bit0=1), byte-identical IR to the `let mut` twin (tests/codegen_diff).
-// @internal-design: examples (syntax twins).
+// var creates mutable bindings with AST_LET flags bit0=1.
 //
 // Expected output:
 //   15
 //   6
 //   42
 
-var g_counter: i32 = 40;    // top-level `var` == mutable global (let mut)
+var g_counter: i32 = 40;    // mutable global
 
 fn main() -> i32 {
-    var x: i32 = 5;         // local `var` == let mut
-    x = x + 10;             // mutate — proves the binding is mutable
+    var x: i32 = 5;         // mutable local
+    x = x + 10;             // mutation proves the binding is mutable
 
     var sum: i32 = 0;
     var i: i32 = 0;

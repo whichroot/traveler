@@ -117,12 +117,8 @@ for name in field_basics edge_cases bitwise_ops enum_basics int_match poly_class
     fi
 done
 
-# --- --migrate codemod gate (syntax-modernization Phase 2) ---
-# The codemod's four contracts: (1) rewrite matches the hand-written golden
-# byte-for-byte; (2) the golden is a fixed point (idempotence); (3) the golden
-# passes `--migrate --check` (already migrated + formatted); (4) input and
-# golden compile to BYTE-IDENTICAL IR (the Phase-1 alias output-neutrality
-# proof applied to the codemod's own fixture).
+# The codemod output matches its golden, is idempotent, and passes --check.
+# The migrated output must compile after legacy syntax retirement.
 echo ""
 echo "=== tvfmt --migrate (let mut -> var; field/binfield/extfield -> type) ==="
 MIG_IN="$REPO_DIR/tests/fmt/migrate_input.tv"
@@ -147,13 +143,11 @@ else
     FAIL=$((FAIL + 1)); FAILURES="$FAILURES migrate-check"
     echo "  --migrate --check FAILED on golden"
 fi
-"$TVC_SELF" "$MIG_IN" -o "$TMPDIR/mig_a.ll" >/dev/null 2>&1
-"$TVC_SELF" "$MIG_GOLD" -o "$TMPDIR/mig_b.ll" >/dev/null 2>&1
-if diff -q "$TMPDIR/mig_a.ll" "$TMPDIR/mig_b.ll" >/dev/null 2>&1; then
+if "$TVC_SELF" "$TMPDIR/mig_out.tv" -o "$TMPDIR/mig.ll" >/dev/null 2>&1; then
     PASS=$((PASS + 1))
 else
-    FAIL=$((FAIL + 1)); FAILURES="$FAILURES migrate-ir"
-    echo "  MIGRATED IR != ORIGINAL IR"
+    FAIL=$((FAIL + 1)); FAILURES="$FAILURES migrate-compile"
+    echo "  MIGRATED OUTPUT DID NOT COMPILE"
 fi
 
 # --- --check exit-code sanity ---
