@@ -1,0 +1,7 @@
+let mut global: i32 = 0;
+
+fn main() -> i32 {
+    let mut local: i32 = 1;
+    local = local + global;
+    return local;
+}

@@ -158,7 +158,7 @@ let TOK_TY_U128: i32 = 88;
 let TOK_TY_I256: i32 = 89;
 let TOK_TY_U256: i32 = 90;
 // Surface-ergonomics aliases. @internal-note: plan-syntax-modernization (Phase 1).
-let TOK_KW_VAR: i32 = 91;    // `var` == `let mut` (mutable binding alias)
+let TOK_KW_VAR: i32 = 91;    // mutable binding
 let TOK_KW_TYPE: i32 = 92;   // `type N = <FieldTy>;` == field/binfield/extfield decl
 // Compound assignment `x op= e` (+= .. >>=): one token kind, binary OP code in
 // int_val; the parser desugars to `x = x op e` (byte-identical IR).
@@ -374,7 +374,7 @@ fn keyword_kind(text: *u8) -> i32 {
     if str_eq(text, "fn") == 1 { return 5; }
     if str_eq(text, "let") == 1 { return 6; }
     if str_eq(text, "mut") == 1 { return 7; }
-    if str_eq(text, "var") == 1 { return TOK_KW_VAR; }  // == `let mut`
+    if str_eq(text, "var") == 1 { return TOK_KW_VAR; }
     if str_eq(text, "type") == 1 { return TOK_KW_TYPE; }  // field-alias decl
     if str_eq(text, "if") == 1 { return 8; }
     if str_eq(text, "else") == 1 { return 9; }
@@ -3563,11 +3563,15 @@ fn parse_stmt() -> i32 {
         return idx;
     }
 
-    // let [mut] name[: Type] = expr ; — `var` is an alias of `let mut` (same
-    // AST_LET, flags bit0=1, byte-identical IR).
+    // let creates an immutable binding; var creates a mutable binding.
     if k == TOK_KW_LET || k == TOK_KW_VAR {
         p_advance();
-        var is_mut: i32 = p_eat(TOK_KW_MUT);
+        var is_mut: i32 = 0;
+        if k == TOK_KW_LET && p_peek() == TOK_KW_MUT {
+            diag_error("'let mut' is retired; use 'var'");
+            p_advance();
+            is_mut = 1;
+        }
         if k == TOK_KW_VAR { is_mut = 1; }
         let idx: i32 = node_alloc(AST_LET, ln, cl);
         // name
@@ -4136,16 +4140,19 @@ fn parse_struct_decl() -> i32 {
     return idx;
 }
 
-// let [mut] name: Type = expr ;   (global)
+// Global let and var bindings.
 fn parse_global_let() -> i32 {
     let ln: i32 = p_cur_line();
     let cl: i32 = p_cur_col();
-    // `var` alias (@internal-note: plan-syntax-modernization, Phase 1): a top-level `var` is
-    // `let mut` (mutable global) — same AST_LET, flags bit0=1.
     var is_var: i32 = 0;
     if p_peek() == TOK_KW_VAR { is_var = 1; }
     p_advance(); // consume 'let' or 'var'
-    var is_mut: i32 = p_eat(TOK_KW_MUT);
+    var is_mut: i32 = 0;
+    if is_var == 0 && p_peek() == TOK_KW_MUT {
+        diag_error("'let mut' is retired; use 'var'");
+        p_advance();
+        is_mut = 1;
+    }
     if is_var == 1 { is_mut = 1; }
     let idx: i32 = node_alloc(AST_LET, ln, cl);
     g_nodes[idx].flags = is_mut;
@@ -13257,7 +13264,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                         diag_begin(g_nodes[node].line, g_nodes[node].col);
                         derr("cannot take address of immutable binding '");
                         derr(&g_strings[aname]);
-                        derr("' (declare with 'var' or 'let mut')");
+                        derr("' (declare with 'var')");
                         diag_end();
                         exit(1);
                     }
@@ -18469,7 +18476,7 @@ fn codegen_stmt(stmt: i32) {
                     node_ptr_provenance(init_node, 0);
             }
         }
-        // Scalar let: immutable unless `let mut`/`var` (flags bit0); aggregates
+        // Scalar let is immutable; var is mutable (flags bit0). Aggregates
         // returned earlier keep the permissive default (seed parity).
         g_syms[g_sym_count - 1].is_mut = g_nodes[stmt].flags & 1;
         return;
@@ -18600,7 +18607,7 @@ fn codegen_stmt(stmt: i32) {
             diag_begin(g_nodes[stmt].line, g_nodes[stmt].col);
             derr("cannot assign to immutable binding '");
             derr(&g_strings[asgn_name]);
-            derr("' (declare with 'var' or 'let mut')");
+            derr("' (declare with 'var')");
             diag_end();
             exit(1);
         }
@@ -27141,7 +27148,7 @@ fn codegen_program(prog: i32) {
             ir_wr("\n");
             // is_alloca=2 sentinel: load/store via @name
             sym_add(gname, gtype, 0, 2);
-            // A non-mut global is immutable; `let mut`/`var` globals are mutable.
+            // A let global is immutable; a var global is mutable.
             // Mirrors the seed (is_alloca == is_mut for globals).
             g_syms[g_sym_count - 1].is_mut = g_nodes[gd].flags & 1;
         }
