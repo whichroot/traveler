@@ -11,10 +11,10 @@ fn helper(a: i32, b: i32) -> i32 {
 fn main() {
     let x: i32 = 10;        // outer x  (line 12)
     let y: i32 = 20;
-    let mut acc: i32 = 0;
+    var acc: i32 = 0;
 
     // Loop variable i is scoped to the body only.
-    let mut i: i32 = 0;
+    var i: i32 = 0;
     while i < 3 {
         let x: i32 = 100;   // inner x shadows outer (line 19)
         acc = acc + x;      // resolves to inner x (line 19), NOT line 12

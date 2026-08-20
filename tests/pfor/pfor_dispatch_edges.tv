@@ -32,7 +32,7 @@ fn main() -> i32 {
     let out3: *F = alloc(4099);
     let out4: *F = alloc(4099);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < 1030 { out1[w] = 0; w = w + 1; }
     w = 0;
     while w < 1025 { out2[w] = 0; w = w + 1; }
@@ -56,22 +56,22 @@ fn main() -> i32 {
         out4[i] = (i + 1) as F;
     }
 
-    let mut s1: F = 0;
+    var s1: F = 0;
     w = 0;
     while w < 1030 { s1 = s1 + out1[w]; w = w + 1; }
     print(s1);
 
-    let mut s2: F = 0;
+    var s2: F = 0;
     w = 0;
     while w < 1025 { s2 = s2 + out2[w]; w = w + 1; }
     print(s2);
 
-    let mut s3: F = 0;
+    var s3: F = 0;
     w = 0;
     while w < 4099 { s3 = s3 + out3[w]; w = w + 1; }
     print(s3);
 
-    let mut s4: F = 0;
+    var s4: F = 0;
     w = 0;
     while w < 4099 { s4 = s4 + out4[w]; w = w + 1; }
     print(s4);

@@ -16,7 +16,7 @@ fn main() -> i32 {
     let b: *F = alloc(2048);
     let out: *F = alloc(4096);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < 2048 {
         a[w] = (w % 11 + 1) as F;
         b[w] = (w % 13 + 1) as F;
@@ -29,7 +29,7 @@ fn main() -> i32 {
         out[i + 2048] = b[i];
     }
 
-    let mut s: F = 0;
+    var s: F = 0;
     w = 0;
     while w < 4096 {
         s = s + out[w];

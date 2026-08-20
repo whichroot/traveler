@@ -14,8 +14,8 @@ extern "C" fn malloc(n: usize) -> *u8;
 
 // Pure busy-work that returns its input untouched.
 fn slow(x: F) -> F {
-    let mut a: F = x;
-    let mut k: i32 = 0;
+    var a: F = x;
+    var k: i32 = 0;
     while k < 4000 {
         a = a + 0;
         k = k + 1;

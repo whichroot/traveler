@@ -14,7 +14,7 @@ fn main() -> i32 {
     let out: *i64 = alloc(n);
     let k: i64 = 1103515245;
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = (w as i64) * 7 - 3;
         out[w] = 0;
@@ -27,7 +27,7 @@ fn main() -> i32 {
     }
 
     // Serial checksum (order-independent; no wrap at these magnitudes).
-    let mut s: i64 = 0;
+    var s: i64 = 0;
     w = 0;
     while w < n {
         s = s + out[w];

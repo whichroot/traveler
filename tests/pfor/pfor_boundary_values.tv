@@ -34,7 +34,7 @@ fn main() -> i32 {
     let d8: *F8 = alloc(n);
     let q8: *F8 = alloc(n);
     let g8: *F8 = alloc(n);
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         let m: i32 = w % 4;
         if m == 0 { a8[w] = 250; }
@@ -52,9 +52,9 @@ fn main() -> i32 {
     for i in 0..4096 {
         g8[i] = 0 - a8[i];
     }
-    let mut s1: F8 = 0;
-    let mut s2: F8 = 0;
-    let mut s3: F8 = 0;
+    var s1: F8 = 0;
+    var s2: F8 = 0;
+    var s3: F8 = 0;
     w = 0;
     while w < n {
         s1 = s1 + d8[w];
@@ -87,9 +87,9 @@ fn main() -> i32 {
     for i in 0..4096 {
         g16[i] = 0 - a16[i];
     }
-    let mut t1: F16 = 0;
-    let mut t2: F16 = 0;
-    let mut t3: F16 = 0;
+    var t1: F16 = 0;
+    var t2: F16 = 0;
+    var t3: F16 = 0;
     w = 0;
     while w < n {
         t1 = t1 + d16[w];
@@ -122,9 +122,9 @@ fn main() -> i32 {
     for i in 0..4096 {
         g31[i] = 0 - a31[i];
     }
-    let mut u1: F31 = 0;
-    let mut u2: F31 = 0;
-    let mut u3: F31 = 0;
+    var u1: F31 = 0;
+    var u2: F31 = 0;
+    var u3: F31 = 0;
     w = 0;
     while w < n {
         u1 = u1 + d31[w];

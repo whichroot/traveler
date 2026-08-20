@@ -26,7 +26,7 @@ fn main() -> i32 {
     let b: *i64 = alloc(4096);
     let out: *i64 = alloc(4096);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = 60000 + w % 7;
         b[w] = 60000;

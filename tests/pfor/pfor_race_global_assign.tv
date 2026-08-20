@@ -10,11 +10,11 @@
 
 field F = Field<2013265921>;
 
-let mut g_acc: i32 = 0;
+var g_acc: i32 = 0;
 
 fn slow(x: F) -> F {
-    let mut a: F = x;
-    let mut k: i32 = 0;
+    var a: F = x;
+    var k: i32 = 0;
     while k < 2000 {
         a = a + 0;
         k = k + 1;
@@ -33,7 +33,7 @@ fn main() -> i32 {
     let a: *F = alloc(n);
     let out: *F = alloc(n);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = 1;
         w = w + 1;

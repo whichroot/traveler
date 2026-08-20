@@ -13,7 +13,7 @@ fn main() -> i32 {
     let a: *i64 = alloc(n);
     let out: *i64 = alloc(n + 1);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = 1;
         w = w + 1;
@@ -29,7 +29,7 @@ fn main() -> i32 {
         out[i] = out[i + 1] + a[i];
     }
 
-    let mut s: i64 = 0;
+    var s: i64 = 0;
     w = 0;
     while w < 8 {
         s = s + out[w];

@@ -105,7 +105,7 @@ async function main() {
       [
         "fn main() {",                 // 1
         "    let x: i32 = 1;",         // 2 (outer x)
-        "    let mut i: i32 = 0;",     // 3
+        "    var i: i32 = 0;",         // 3
         "    while i < 1 {",           // 4
         "        let x: i32 = 2;",     // 5 (inner x)
         "        print(x);",           // 6 use -> inner (line 5)

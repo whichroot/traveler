@@ -8,8 +8,8 @@
 // MUST NOT PARALLELIZE. Expected workers: 0 (stage1).
 // Serial ground truth: total mass conserved: sum = n = 50000.
 fn slow(x: i64) -> i64 {
-    let mut acc: i64 = x;
-    let mut k: i32 = 0;
+    var acc: i64 = x;
+    var k: i32 = 0;
     while k < 2000 {
         acc = acc + 0;
         k = k + 1;
@@ -22,7 +22,7 @@ fn main() -> i32 {
     let a: *i64 = alloc(n);
     let out: *i64 = alloc(n);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = 1;
         out[w] = 0;
@@ -34,7 +34,7 @@ fn main() -> i32 {
         out[i / 2] = out[i / 2] + slow(a[i]);
     }
 
-    let mut s: i64 = 0;
+    var s: i64 = 0;
     w = 0;
     while w < n {
         s = s + out[w];

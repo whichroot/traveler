@@ -8,7 +8,7 @@ field Goldilocks = Field<18446744069414584321>;
 
 #[export zk]
 fn bad(x: Goldilocks) -> Goldilocks {
-    let mut y: Goldilocks = x;
+    var y: Goldilocks = x;
     while y > 0 {
         y = y - 1;
     }

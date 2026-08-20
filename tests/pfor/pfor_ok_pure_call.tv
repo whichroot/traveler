@@ -17,7 +17,7 @@ fn main() -> i32 {
     let a: *F = alloc(n);
     let out: *F = alloc(n);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = (w % 7 + 1) as F;
         w = w + 1;
@@ -28,7 +28,7 @@ fn main() -> i32 {
         out[i] = cube(a[i]);
     }
 
-    let mut s: F = 0;
+    var s: F = 0;
     w = 0;
     while w < 16 {
         s = s + out[w];

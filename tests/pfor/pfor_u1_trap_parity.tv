@@ -20,7 +20,7 @@ fn main() -> i32 {
     let b: *i64 = alloc(n);
     let q: *i64 = alloc(n);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         a[w] = (w as i64) * 1000003;
         b[w] = ((w as i64) % 97) + 1;   // nonzero...
@@ -34,7 +34,7 @@ fn main() -> i32 {
         q[i] = a[i] / b[i];
     }
 
-    let mut s: i64 = 0;
+    var s: i64 = 0;
     w = 0;
     while w < n {
         s = s + q[w];

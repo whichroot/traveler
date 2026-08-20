@@ -21,8 +21,8 @@
 field F = Field<2013265921>;
 
 fn slow(x: F) -> F {
-    let mut a: F = x;
-    let mut k: i32 = 0;
+    var a: F = x;
+    var k: i32 = 0;
     while k < 2000 {
         a = a + 0;
         k = k + 1;
@@ -41,11 +41,11 @@ fn main() -> i32 {
 
     // Aliased call: src == dst — guard must force the serial path
     let buf: *F = alloc(n + 1);
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n + 1 { buf[w] = w as F; w = w + 1; }
     shift_sum(buf, buf, n);
     // Serial semantics: buf[i] = (i+1) + 1 = i+2 for i < n
-    let mut s1: F = 0;
+    var s1: F = 0;
     w = 0;
     while w < n { s1 = s1 + buf[w]; w = w + 1; }
     print(s1);
@@ -57,7 +57,7 @@ fn main() -> i32 {
     w = 0;
     while w < n + 1 { src2[w] = w as F; w = w + 1; }
     shift_sum(src2, dst2, n);
-    let mut s2: F = 0;
+    var s2: F = 0;
     w = 0;
     while w < n { s2 = s2 + dst2[w]; w = w + 1; }
     print(s2);

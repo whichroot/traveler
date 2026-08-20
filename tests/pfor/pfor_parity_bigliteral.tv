@@ -21,7 +21,7 @@
 
 field F = Field<2013265921>;
 
-let mut g_never: i32 = 0;
+var g_never: i32 = 0;
 
 fn cube(x: F) -> F {
     return x * x * x;
@@ -32,7 +32,7 @@ fn main() -> i32 {
     let a: *F = alloc(n);
     let out: *F = alloc(2 * n);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n { a[w] = 2; w = w + 1; }
     w = 0;
     while w < 2 * n { out[w] = 0; w = w + 1; }
@@ -41,7 +41,7 @@ fn main() -> i32 {
     for i in 0..4096 {
         out[i] = cube(a[i]);
     }
-    let mut s0: F = 0;
+    var s0: F = 0;
     w = 0;
     while w < n { s0 = s0 + out[w]; w = w + 1; }
     print(s0);
@@ -65,7 +65,7 @@ fn main() -> i32 {
         outb[i] = one;
         outb[i + 4096] = two;
     }
-    let mut s1: F = 0;
+    var s1: F = 0;
     w = 0;
     while w < 2 * n { s1 = s1 + outb[w]; w = w + 1; }
     print(s1);
@@ -79,7 +79,7 @@ fn main() -> i32 {
         outc[i] = one;
         outc[i + 4095] = two;
     }
-    let mut s2: F = 0;
+    var s2: F = 0;
     w = 0;
     while w < 2 * n { s2 = s2 + outc[w]; w = w + 1; }
     print(s2);

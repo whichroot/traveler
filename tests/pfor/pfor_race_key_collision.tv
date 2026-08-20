@@ -33,7 +33,7 @@ fn main() -> i32 {
     let a: i32 = 64;
     let c: i32 = 1;
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n {
         inp[w] = 1;
         w = w + 1;

@@ -18,7 +18,7 @@ fn main() -> i32 {
     let data: *F = alloc(half * 2);
     let tw: *F = alloc(half);
 
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < half * 2 {
         data[w] = (w % 251 + 1) as F;
         w = w + 1;
@@ -37,7 +37,7 @@ fn main() -> i32 {
         data[j + half] = u - v;
     }
 
-    let mut s: F = 0;
+    var s: F = 0;
     w = 0;
     while w < half * 2 {
         s = s + data[w];

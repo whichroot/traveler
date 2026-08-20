@@ -24,7 +24,7 @@ fn main() -> i32 {
     let n: i32 = 50000;
     let arr: *F = alloc(n);
     let acc: *F = alloc(1);
-    let mut w: i32 = 0;
+    var w: i32 = 0;
     while w < n { arr[w] = 1; w = w + 1; }
     acc[0] = 0;
     for i in 0..n { a(acc, arr[i]); }
