@@ -20362,10 +20362,8 @@ fn emit_pfor_runtime() {
     ir_wr("  %nt = icmp sgt i32 %t4, 1\n");
     ir_wr("  %nthr = select i1 %nt, i32 %t4, i32 1\n");
     ir_wr("  %nthr64 = sext i32 %nthr to i64\n");
-    ir_wr("  %tid_sz = mul i64 %nthr64, 8\n");
-    ir_wr("  %tids = call ptr @malloc(i64 %tid_sz)\n");
-    ir_wr("  %arg_sz = mul i64 %nthr64, 24\n");
-    ir_wr("  %args = call ptr @malloc(i64 %arg_sz)\n");
+    ir_wr("  %tids = alloca [32 x ptr], align 8\n");
+    ir_wr("  %args = alloca [1024 x i8], align 8\n");
     ir_wr("  %chunk = sdiv i32 %rng, %nthr\n");
     ir_wr("  br label %spawn\n");
     ir_wr("spawn:\n");
@@ -20379,7 +20377,7 @@ fn emit_pfor_runtime() {
     ir_wr("  %is_last = icmp eq i32 %st1, %nthr\n");
     ir_wr("  %tent = add i32 %s_off, %chunk\n");
     ir_wr("  %s_end = select i1 %is_last, i32 %hi, i32 %tent\n");
-    ir_wr("  %aoff = mul i32 %st, 24\n");
+    ir_wr("  %aoff = mul i32 %st, 32\n");
     ir_wr("  %aoff64 = sext i32 %aoff to i64\n");
     ir_wr("  %aptr = getelementptr i8, ptr %args, i64 %aoff64\n");
     ir_wr("  store ptr %fn, ptr %aptr\n");
@@ -20392,7 +20390,14 @@ fn emit_pfor_runtime() {
     ir_wr("  %toff = mul i32 %st, 8\n");
     ir_wr("  %toff64 = sext i32 %toff to i64\n");
     ir_wr("  %tptr = getelementptr i8, ptr %tids, i64 %toff64\n");
-    ir_wr("  call i32 @pthread_create(ptr %tptr, ptr null, ptr @__pfor_entry, ptr %aptr)\n");
+    ir_wr("  %crc = call i32 @pthread_create(ptr %tptr, ptr null, ptr @__pfor_entry, ptr %aptr)\n");
+    ir_wr("  %created = icmp eq i32 %crc, 0\n");
+    ir_wr("  %created_i32 = zext i1 %created to i32\n");
+    ir_wr("  %a4 = getelementptr i8, ptr %aptr, i64 24\n");
+    ir_wr("  store i32 %created_i32, ptr %a4\n");
+    ir_wr("  br i1 %created, label %spawn_cont, label %spawn_serial\n");
+    ir_wr("spawn_serial:\n");
+    ir_wr("  call void %fn(ptr %ctx, i32 %s_off, i32 %s_end)\n");
     ir_wr("  br label %spawn_cont\n");
     ir_wr("spawn_cont:\n");
     ir_wr("  %st_nxt = add i32 %st, 1\n");
@@ -20400,20 +20405,30 @@ fn emit_pfor_runtime() {
     ir_wr("join:\n");
     ir_wr("  %jt = phi i32 [0, %spawn], [%jt_nxt, %join_cont]\n");
     ir_wr("  %jd = icmp sge i32 %jt, %nthr\n");
-    ir_wr("  br i1 %jd, label %cleanup, label %do_join\n");
+    ir_wr("  br i1 %jd, label %cleanup, label %join_check\n");
+    ir_wr("join_check:\n");
+    ir_wr("  %jaoff = mul i32 %jt, 32\n");
+    ir_wr("  %jaoff64 = sext i32 %jaoff to i64\n");
+    ir_wr("  %japtr = getelementptr i8, ptr %args, i64 %jaoff64\n");
+    ir_wr("  %jsp = getelementptr i8, ptr %japtr, i64 24\n");
+    ir_wr("  %started = load i32, ptr %jsp\n");
+    ir_wr("  %was_started = icmp ne i32 %started, 0\n");
+    ir_wr("  br i1 %was_started, label %do_join, label %join_cont\n");
     ir_wr("do_join:\n");
     ir_wr("  %jtoff = mul i32 %jt, 8\n");
     ir_wr("  %jtoff64 = sext i32 %jtoff to i64\n");
     ir_wr("  %jtptr = getelementptr i8, ptr %tids, i64 %jtoff64\n");
     ir_wr("  %tid = load ptr, ptr %jtptr\n");
-    ir_wr("  call i32 @pthread_join(ptr %tid, ptr null)\n");
-    ir_wr("  br label %join_cont\n");
+    ir_wr("  %jrc = call i32 @pthread_join(ptr %tid, ptr null)\n");
+    ir_wr("  %joined = icmp eq i32 %jrc, 0\n");
+    ir_wr("  br i1 %joined, label %join_cont, label %join_fail\n");
+    ir_wr("join_fail:\n");
+    ir_wr("  call void @abort()\n");
+    ir_wr("  unreachable\n");
     ir_wr("join_cont:\n");
     ir_wr("  %jt_nxt = add i32 %jt, 1\n");
     ir_wr("  br label %join\n");
     ir_wr("cleanup:\n");
-    ir_wr("  call void @free(ptr %tids)\n");
-    ir_wr("  call void @free(ptr %args)\n");
     ir_wr("  ret void\n");
     ir_wr("}\n\n");
 }
@@ -20421,7 +20436,7 @@ fn emit_pfor_runtime() {
 // #54: the i64-wide dispatch runtime pair — a clone of __pfor_entry /
 // __parallel_for for loops whose iterator adopted the i64 space. LAZY: emitted
 // only when a wide worker dispatches, so existing modules stay byte-identical.
-// Arg block: {fn 0, ctx 8, start 16 (i64), end 24 (i64)} = 32 bytes. Thread
+// Arg block: {fn 0, ctx 8, start 16 (i64), end 24 (i64), started 32} = 40 bytes. Thread
 // COUNT stays i32-derived (cores/32-cap); range/chunk math is i64.
 fn emit_pfor_runtime64() {
     if g_pfor64_emitted == 1 { return; }
@@ -20463,10 +20478,8 @@ fn emit_pfor_runtime64() {
     ir_wr("  %t4 = select i1 %t3, i64 %t2, i64 32\n");
     ir_wr("  %nt = icmp sgt i64 %t4, 1\n");
     ir_wr("  %nthr64 = select i1 %nt, i64 %t4, i64 1\n");
-    ir_wr("  %tid_sz = mul i64 %nthr64, 8\n");
-    ir_wr("  %tids = call ptr @malloc(i64 %tid_sz)\n");
-    ir_wr("  %arg_sz = mul i64 %nthr64, 32\n");
-    ir_wr("  %args = call ptr @malloc(i64 %arg_sz)\n");
+    ir_wr("  %tids = alloca [32 x ptr], align 8\n");
+    ir_wr("  %args = alloca [1280 x i8], align 8\n");
     ir_wr("  %chunk = sdiv i64 %rng, %nthr64\n");
     ir_wr("  br label %spawn\n");
     ir_wr("spawn:\n");
@@ -20480,7 +20493,7 @@ fn emit_pfor_runtime64() {
     ir_wr("  %is_last = icmp eq i64 %st1, %nthr64\n");
     ir_wr("  %tent = add i64 %s_off, %chunk\n");
     ir_wr("  %s_end = select i1 %is_last, i64 %hi, i64 %tent\n");
-    ir_wr("  %aoff = mul i64 %st, 32\n");
+    ir_wr("  %aoff = mul i64 %st, 40\n");
     ir_wr("  %aptr = getelementptr i8, ptr %args, i64 %aoff\n");
     ir_wr("  store ptr %fn, ptr %aptr\n");
     ir_wr("  %a1 = getelementptr i8, ptr %aptr, i64 8\n");
@@ -20491,7 +20504,14 @@ fn emit_pfor_runtime64() {
     ir_wr("  store i64 %s_end, ptr %a3\n");
     ir_wr("  %toff = mul i64 %st, 8\n");
     ir_wr("  %tptr = getelementptr i8, ptr %tids, i64 %toff\n");
-    ir_wr("  call i32 @pthread_create(ptr %tptr, ptr null, ptr @__pfor_entry_i64, ptr %aptr)\n");
+    ir_wr("  %crc = call i32 @pthread_create(ptr %tptr, ptr null, ptr @__pfor_entry_i64, ptr %aptr)\n");
+    ir_wr("  %created = icmp eq i32 %crc, 0\n");
+    ir_wr("  %created_i32 = zext i1 %created to i32\n");
+    ir_wr("  %a4 = getelementptr i8, ptr %aptr, i64 32\n");
+    ir_wr("  store i32 %created_i32, ptr %a4\n");
+    ir_wr("  br i1 %created, label %spawn_cont, label %spawn_serial\n");
+    ir_wr("spawn_serial:\n");
+    ir_wr("  call void %fn(ptr %ctx, i64 %s_off, i64 %s_end)\n");
     ir_wr("  br label %spawn_cont\n");
     ir_wr("spawn_cont:\n");
     ir_wr("  %st_nxt = add i64 %st, 1\n");
@@ -20499,19 +20519,28 @@ fn emit_pfor_runtime64() {
     ir_wr("join:\n");
     ir_wr("  %jt = phi i64 [0, %spawn], [%jt_nxt, %join_cont]\n");
     ir_wr("  %jd = icmp sge i64 %jt, %nthr64\n");
-    ir_wr("  br i1 %jd, label %cleanup, label %do_join\n");
+    ir_wr("  br i1 %jd, label %cleanup, label %join_check\n");
+    ir_wr("join_check:\n");
+    ir_wr("  %jaoff = mul i64 %jt, 40\n");
+    ir_wr("  %japtr = getelementptr i8, ptr %args, i64 %jaoff\n");
+    ir_wr("  %jsp = getelementptr i8, ptr %japtr, i64 32\n");
+    ir_wr("  %started = load i32, ptr %jsp\n");
+    ir_wr("  %was_started = icmp ne i32 %started, 0\n");
+    ir_wr("  br i1 %was_started, label %do_join, label %join_cont\n");
     ir_wr("do_join:\n");
     ir_wr("  %jtoff = mul i64 %jt, 8\n");
     ir_wr("  %jtptr = getelementptr i8, ptr %tids, i64 %jtoff\n");
     ir_wr("  %tid = load ptr, ptr %jtptr\n");
-    ir_wr("  call i32 @pthread_join(ptr %tid, ptr null)\n");
-    ir_wr("  br label %join_cont\n");
+    ir_wr("  %jrc = call i32 @pthread_join(ptr %tid, ptr null)\n");
+    ir_wr("  %joined = icmp eq i32 %jrc, 0\n");
+    ir_wr("  br i1 %joined, label %join_cont, label %join_fail\n");
+    ir_wr("join_fail:\n");
+    ir_wr("  call void @abort()\n");
+    ir_wr("  unreachable\n");
     ir_wr("join_cont:\n");
     ir_wr("  %jt_nxt = add i64 %jt, 1\n");
     ir_wr("  br label %join\n");
     ir_wr("cleanup:\n");
-    ir_wr("  call void @free(ptr %tids)\n");
-    ir_wr("  call void @free(ptr %args)\n");
     ir_wr("  ret void\n");
     ir_wr("}\n\n");
 }

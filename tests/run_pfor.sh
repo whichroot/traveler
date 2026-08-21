@@ -300,8 +300,13 @@ if [ -x "$STAGE1" ]; then
         if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_pointer_input" ]; then
             forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
             wide_mul=$(grep -c 'mul i256' "$TMPDIR/${name}.ll" || true)
+            stack_tids=$(grep -c 'alloca \[32 x ptr\]' "$TMPDIR/${name}.ll" || true)
+            create_fallback=$(grep -c '^spawn_serial:' "$TMPDIR/${name}.ll" || true)
+            join_fail=$(grep -c '^join_fail:' "$TMPDIR/${name}.ll" || true)
             [ "$forced" = "0" ] && [ "$wide_mul" -ge 1 ] \
-                || { status="FAIL"; detail="fresh-output dispatch or native i256 multiply missing"; }
+                && [ "$stack_tids" -ge 1 ] && [ "$create_fallback" -ge 1 ] \
+                && [ "$join_fail" -ge 1 ] \
+                || { status="FAIL"; detail="fresh dispatch or hardened pfor runtime missing"; }
         fi
         if [ "$status" = "PASS" ] && [ "$name" = "pfor_fresh_origin_alias" ]; then
             forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
@@ -708,6 +713,13 @@ if [ -x "$STAGE1" ]; then
     if [ "$status" = "PASS" ]; then
         gd=$(grep -c "call void @__parallel_for_i64(" "$TMPDIR/${name}.ll" || true)
         [ "$gd" -ge 1 ] || { status="FAIL"; detail="__parallel_for_i64 dispatch missing"; }
+    fi
+    if [ "$status" = "PASS" ]; then
+        stack_args=$(grep -c 'alloca \[1280 x i8\]' "$TMPDIR/${name}.ll" || true)
+        stride=$(grep -c 'mul i64 %st, 40' "$TMPDIR/${name}.ll" || true)
+        status_slot=$(grep -c 'getelementptr i8, ptr %aptr, i64 32' "$TMPDIR/${name}.ll" || true)
+        [ "$stack_args" -ge 1 ] && [ "$stride" -ge 1 ] && [ "$status_slot" -ge 1 ] \
+            || { status="FAIL"; detail="hardened i64 pfor layout missing"; }
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
