@@ -4301,6 +4301,12 @@ sequential loop. The runtime:
    lowered from 1024 so large-reduction/low-output-count matmuls cross it),
    runs sequentially
 
+Per-dispatch thread identifiers and argument records use fixed stack storage at
+the 32-thread ceiling. If `pthread_create` refuses a worker, the caller executes
+that worker's disjoint chunk synchronously before joining the workers that did
+start. A failed join aborts rather than returning before worker publication is
+synchronized.
+
 This threshold is a **performance** heuristic only — soundness was decided at
 compile time, so changing it can never introduce a race, only trade dispatch
 overhead for parallelism. Compile time proves WHAT is safe; runtime decides HOW
