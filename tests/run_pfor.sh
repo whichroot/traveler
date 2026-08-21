@@ -715,7 +715,7 @@ if [ -x "$STAGE1" ]; then
         [ "$gd" -ge 1 ] || { status="FAIL"; detail="__parallel_for_i64 dispatch missing"; }
     fi
     if [ "$status" = "PASS" ]; then
-        stack_args=$(grep -c 'alloca \[1280 x i8\]' "$TMPDIR/${name}.ll" || true)
+        stack_args=$(grep -c 'alloca \[160 x i64\]' "$TMPDIR/${name}.ll" || true)
         stride=$(grep -c 'mul i64 %st, 40' "$TMPDIR/${name}.ll" || true)
         status_slot=$(grep -c 'getelementptr i8, ptr %aptr, i64 32' "$TMPDIR/${name}.ll" || true)
         [ "$stack_args" -ge 1 ] && [ "$stride" -ge 1 ] && [ "$status_slot" -ge 1 ] \
