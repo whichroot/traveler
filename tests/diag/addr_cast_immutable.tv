@@ -1,0 +1,6 @@
+// Diagnostics: the &x-as-*T rewrite must still hit the mutability check.
+fn main() {
+    let x: i64 = 5;
+    let p = &x as *i64;
+    return;
+}

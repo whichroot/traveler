@@ -3506,11 +3506,33 @@ fn parse_unary() -> i32 {
 
     if k == TOK_AMPERSAND {
         p_advance();
-        let operand: i32 = parse_unary();
+        var operand: i32 = parse_unary();
+        // `as` sits in the postfix loop, so `&x as T` arrives as &(x as T).
+        // Rewrite to (&x) as T, unrolling a cast chain: the address-of then
+        // applies to the lvalue (mutability check included) and the casts
+        // reinterpret the pointer outward. The old shape never compiled —
+        // codegen refused address-of a cast — so no program changes meaning.
+        var chain: *i32 = alloc(64);
+        var nchain: i32 = 0;
+        while g_nodes[operand].kind == AST_CAST && nchain < 64 {
+            chain[nchain] = operand;
+            nchain = nchain + 1;
+            operand = g_nodes[operand].child0;
+        }
         let idx: i32 = node_alloc(AST_UNARY, ln, cl);
         g_nodes[idx].op = OP_ADDR;
         g_nodes[idx].child0 = operand;
-        return idx;
+        var result: i32 = idx;
+        while nchain > 0 {
+            nchain = nchain - 1;
+            let cn: i32 = chain[nchain];
+            let cidx: i32 = node_alloc(AST_CAST, g_nodes[cn].line, g_nodes[cn].col);
+            g_nodes[cidx].child0 = result;
+            g_nodes[cidx].name0 = g_nodes[cn].name0;
+            result = cidx;
+        }
+        free(chain);
+        return result;
     }
 
     return parse_postfix();

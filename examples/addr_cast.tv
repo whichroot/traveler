@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// addr_cast.tv -- address-of with a trailing cast: `&x as *T` groups as
+// `(&x) as *T`. The cast reinterprets the pointer after the address-of
+// applies to the lvalue (mutability check included). Self-hosted only:
+// the C seed parser keeps the old grouping and refuses the form.
+
+fn read_as_i64(p: *i64) -> i64 {
+    return p[0];
+}
+
+fn main() -> i32 {
+    // &local as *i64: no parens needed.
+    var x: i32 = 41;
+    let p: *i64 = &x as *i64 as *i64;    // chained: ((&x) as *i64) as *i64
+    print(read_as_i64(p));               // 41
+
+    // &arr[i] as *T: the typed-kernel idiom.
+    var arr: [i64; 3] = 0;
+    arr[0] = 7; arr[1] = 8; arr[2] = 9;
+    let q: *i64 = &arr[1] as *i64;
+    print(q[0]);                         // 8
+
+    // &global as *i64.
+    print(read_as_i64(&g_val as *i64));  // 100
+    return 0;
+}
+
+var g_val: i64 = 100;

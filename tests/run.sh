@@ -1339,6 +1339,10 @@ run_test exp_scale "$TIMEOUT_SINGLE"
 compile_obj_self fix_scale
 link_objs fix_scale fix_scale
 run_test fix_scale "$TIMEOUT_SINGLE"
+# `&x as *T` groups as `(&x) as *T`; self-hosted only (seed parser refuses).
+compile_obj_self addr_cast
+link_objs addr_cast addr_cast
+run_test addr_cast "$TIMEOUT_SINGLE"
 
 # DOT1 examples: local, explicit integer reductions before any library/API
 # promotion. The narrow specimen is seed-compatible; the wide accumulator
