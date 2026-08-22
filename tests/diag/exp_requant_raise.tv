@@ -1,0 +1,6 @@
+// Diagnostics: requant to a higher scale must fail (use << instead).
+fn main() {
+    let x: Exp<8> = 100;
+    let y: Exp<16> = requant(x);
+    return;
+}

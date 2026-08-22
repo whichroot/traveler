@@ -1,0 +1,7 @@
+// Diagnostics: shift amount on an Exp value must be a literal.
+fn main() {
+    let x: Exp<16> = 65536;
+    let k: i32 = 4;
+    let y: Exp<20> = x << k;
+    return;
+}

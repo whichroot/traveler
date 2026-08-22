@@ -1,0 +1,7 @@
+// Diagnostics: Exp division with a larger divisor scale must fail.
+fn main() {
+    let a: Exp<8> = 100;
+    let b: Exp<16> = 50;
+    let c = a / b;
+    return;
+}

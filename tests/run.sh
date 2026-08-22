@@ -1328,6 +1328,15 @@ compile_obj_self wide_print
 link_objs wide_print wide_print
 run_test wide_print "$TIMEOUT_SINGLE"
 
+# B1: magnitude-bounded and scale-typed integers (Int<B>, Exp<E>) —
+# self-hosted only; the C seed does not parse the type syntax.
+compile_obj_self bounded_int
+link_objs bounded_int bounded_int
+run_test bounded_int "$TIMEOUT_SINGLE"
+compile_obj_self exp_scale
+link_objs exp_scale exp_scale
+run_test exp_scale "$TIMEOUT_SINGLE"
+
 # DOT1 examples: local, explicit integer reductions before any library/API
 # promotion. The narrow specimen is seed-compatible; the wide accumulator
 # boundary requires the self-hosted i128/i256 surface.

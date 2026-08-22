@@ -1,7 +1,7 @@
-// Negative test: adding Exp values at different scales should error.
+// Diagnostics: adding Exp values at different scales must fail.
 fn main() {
     let a: Exp<16> = 100;
     let b: Exp<8> = 50;
     let c: Exp<16> = a + b;
-    print(c as i64);
+    return;
 }
