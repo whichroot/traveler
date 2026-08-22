@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+// fix_scale.tv -- test Fix<B,E> bound-and-scale integers.
+// Q16 inputs with magnitude bounds; products land at Q32 with multiplied
+// bounds; requant returns to Q16 with the rounding-aware bound.
+
+fn dot_fix2<const B1, const B2, const E>(x: *Fix<B1,E>, w: *Fix<B2,E>) -> Fix<2*B1*B2, E*2> {
+    let p0: Fix<B1*B2, E*2> = x[0] * w[0];
+    let p1: Fix<B1*B2, E*2> = x[1] * w[1];
+    let sum: Fix<2*B1*B2, E*2> = p0 + p1;
+    return sum;
+}
+
+fn main() -> i32 {
+    // Q16 values: 1.5 = 98304, 0.5 = 32768, with bound 2^17.
+    let a: Fix<131072, 16> = 98304;
+    let b: Fix<131072, 16> = 32768;
+
+    // Add at equal scale: 1.5 + 0.5 = 2.0, bound 262144.
+    let sum: Fix<262144, 16> = a + b;
+    print(sum as i64);                    // 131072 = 2.0 * 2^16
+
+    // Mul: bound and scale both propagate. 1.5 * 0.5 = 0.75 at Q32.
+    let prod: Fix<17179869184, 32> = a * b;
+    print(prod as i64);                   // 3221225472 = 0.75 * 2^32
+
+    // Requant Q32 -> Q16 with rounding-aware bound.
+    // bound: (17179869184 + 32768) >> 16 = 262144 (exactly).
+    let rq: Fix<262144, 16> = requant(prod);
+    print(rq as i64);                     // 49152 = 0.75 * 2^16
+
+    // Typed left shift: Fix<B,E> << 4 -> Fix<B<<4, E+4>.
+    let up: Fix<2097152, 20> = a << 4;
+    print(up as i64);                     // 1572864 = 1.5 * 2^20
+
+    // Typed right shift back: bound and scale both drop.
+    let down: Fix<131072, 16> = up >> 4;
+    print(down as i64);                   // 98304 = 1.5 * 2^16
+
+    // Doubling via addition: same scale, bounds add.
+    let dbl: Fix<262144, 16> = a + a;
+    print(dbl as i64);                    // 196608 = 3.0 * 2^16
+
+    // Generic dot through arrays, inference of B1, B2, E.
+    // NB: `&xa[0] as *T` needs parens — `as` binds tighter than `&`.
+    var xa: [i64; 2] = 0;
+    var wa: [i64; 2] = 0;
+    xa[0] = 98304; xa[1] = 32768;         // 1.5, 0.5 at Q16
+    wa[0] = 32768; wa[1] = 65536;         // 0.5, 1.0 at Q16
+    let d: Fix<34359738368, 32> = dot_fix2((&xa[0]) as *Fix<131072,16>, (&wa[0]) as *Fix<131072,16>);
+    print(d as i64);                      // 1.5*0.5 + 0.5*1.0 = 1.25 -> 1.25*2^32 = 5368709120
+
+    // Const-expr type args: Fix<2*8, 2*16> normalizes to Fix<16,32>.
+    let ce: Fix<2*8, 2*16> = 10;
+    print(ce as i64);                     // 10
+
+    // Negative mantissa.
+    let neg: Fix<131072, 16> = 0 - a;
+    print(neg as i64);                    // -98304
+
+    return 0;
+}

@@ -1,1 +1,1 @@
-cannot mix Int<B> and Exp<E>
+cannot mix Int<B> with

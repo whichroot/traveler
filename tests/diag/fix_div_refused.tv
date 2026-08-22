@@ -1,0 +1,7 @@
+// Diagnostics: division is refused on Fix values.
+fn main() {
+    let a: Fix<100, 16> = 50;
+    let b: Fix<100, 16> = 25;
+    let c = a / b;
+    return;
+}

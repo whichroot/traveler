@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+// bounded/fixq.tv -- bound-and-scale fixed-point helpers.
+// Fix<B,E> tracks |raw| <= B and raw/2^E at the type level.
+// (design-notes/bounded-int-plan.md "fix-composition")
+
+// Multiply-accumulate step: acc + x*w at double scale.
+// The declared accumulator bound must cover the final sum.
+fn mac_fix<const ACCB, const B1, const B2, const E>(
+    acc: Fix<ACCB, E*2>, x: Fix<B1, E>, w: Fix<B2, E>
+) -> Fix<ACCB + B1*B2, E*2> {
+    let p: Fix<B1*B2, E*2> = x * w;
+    return acc + p;
+}
+
+// Dot product of K pairs, result at scale 2E with the exact bound.
+// Callers requant down to E with a rounding-aware bound.
+fn dot_fix<const K, const B1, const B2, const E>(x: *Fix<B1,E>, w: *Fix<B2,E>) -> Fix<K*B1*B2, E*2> {
+    var acc: i64 = 0;
+    var i: i32 = 0;
+    while i < K {
+        acc = acc + (x[i] as i64) * (w[i] as i64);
+        i = i + 1;
+    }
+    return acc as Fix<K*B1*B2, E*2>;
+}
+
+// Add a same-scale bias, then requant to the target scale in context.
+//   let y: Fix<YB, 16> = bias_requant(acc2E, bias);
+// The result bound must cover (ACCB+BISB + half) >> E.
+fn bias_requant<const ACCB, const BISB, const E>(acc: Fix<ACCB, E*2>, bias: Fix<BISB, E*2>) -> Fix<ACCB+BISB, E*2> {
+    return acc + bias;
+}

@@ -1336,6 +1336,9 @@ run_test bounded_int "$TIMEOUT_SINGLE"
 compile_obj_self exp_scale
 link_objs exp_scale exp_scale
 run_test exp_scale "$TIMEOUT_SINGLE"
+compile_obj_self fix_scale
+link_objs fix_scale fix_scale
+run_test fix_scale "$TIMEOUT_SINGLE"
 
 # DOT1 examples: local, explicit integer reductions before any library/API
 # promotion. The narrow specimen is seed-compatible; the wide accumulator

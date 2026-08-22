@@ -39,7 +39,7 @@
 #define MAX_AST      131072
 #define MAX_SYMBOLS  4096
 #define MAX_FIELDS   64
-#define MAX_FUNCS    1024       /* bumped from 512 as tvc_self.tv grew (420 source fns); guarded by cap_overflow */
+#define MAX_FUNCS    1280       /* bumped from 1024 for the Int/Exp/Fix type-family helpers; guarded by cap_overflow */
 #define MAX_PARAMS   64
 #define MAX_VARIANT_FIELDS 16   /* max payload fields per enum variant / match bindings */
 #define MAX_IR       (1 << 24)  /* 16 MB IR buffer (bumped from 4 MB as tvc_self.tv grew; guarded by cap_overflow) */

@@ -1,0 +1,7 @@
+// Diagnostics: a Fix bound product past i64 capacity must fail.
+fn main() {
+    let a: Fix<4000000000, 16> = 1000000000;
+    let b: Fix<4000000000, 16> = 1000000000;
+    let c = a * b;
+    return;
+}

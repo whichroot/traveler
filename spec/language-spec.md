@@ -439,6 +439,49 @@ refused; cast it with `val as Exp<E>`.
 not defined on `Exp<E>`. Non-literal shift amounts are refused (the
 result scale cannot be computed).
 
+### 3.1.3 Bound-and-Scale Integers (Fix<B,E>)
+
+```
+Fix<B, E>   signed 64-bit integer with |raw| <= B representing raw / 2^E
+```
+
+`Fix<B,E>` composes the two contracts: the magnitude bound of `Int<B>` and
+the binary scale of `Exp<E>`. It is the full fixed-point type: the value is
+`raw / 2^E`, the compiler tracks both invariants, and every `Fix<B,E>`
+lowers to `i64`. Bounds and scales are erased at codegen.
+
+**Propagation:**
+
+| Operation              | Result type              | Constraint                |
+|------------------------|--------------------------|---------------------------|
+| `Fix<a,e> + Fix<c,e>`  | `Fix<a+c, e>`            | equal scales              |
+| `Fix<a,e> - Fix<c,e>`  | `Fix<a+c, e>`            | equal scales              |
+| `Fix<a,e1> * Fix<c,e2>`| `Fix<a*c, e1+e2>`        | a*c fits i64; e1+e2 <= 62 |
+| `x << k`               | `Fix<B<<k, E+k>`         | k literal; E+k <= 62      |
+| `x >> k`               | `Fix<B>>k, E-k>`         | k literal, k <= E         |
+| compare                | `i1`                     | equal scales              |
+
+**Division, modulo, and bitwise operators are refused on `Fix`.** Integer
+division has no SIMD lowering and lowers to a slow sequence on GPU; scale
+changes go through shifts and `requant`. This is a deliberate contract, not
+an omission.
+
+**Literals are raw mantissas with tight bounds:** `let q: Fix<131072,16> =
+98304` types the literal as `Fix<98304,16>`. A literal exceeding the
+context bound is a compile error.
+
+**Requantization** computes the exact post-rounding bound: `requant(x)` on
+`x: Fix<B,E>` in a `Fix<?,D>` context (s = E - D > 0) yields
+`Fix<(B + 2^(s-1)) >> s, D>`.
+
+**Disjointness.** `Fix<B,E>` is NOT implicitly interchangeable with
+`Int<B>` (even at E=0) or `Exp<E>`. Crossing requires an explicit `as`
+cast. `Fix as i64` frees the raw mantissa; `i64 as Fix<B,E>` is the
+unchecked entry door.
+
+**Address-of cast note.** `&arr[i] as *Fix<B,E>` parses the cast tighter
+than the address-of; write `(&arr[i]) as *Fix<B,E>`.
+
 ### 3.2 Field Types
 
 #### 3.2.1 Prime Fields

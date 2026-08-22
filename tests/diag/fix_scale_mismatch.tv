@@ -1,0 +1,7 @@
+// Diagnostics: adding Fix values at different scales must fail.
+fn main() {
+    let a: Fix<100, 16> = 50;
+    let b: Fix<100, 8> = 25;
+    let c = a + b;
+    return;
+}

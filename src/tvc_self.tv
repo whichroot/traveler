@@ -167,6 +167,7 @@ let TOK_QMARK: i32 = 94;     // `expr?` — Result early-return propagation
 let TOK_KW_DEFER: i32 = 95;  // `defer <stmt>;` — function-scoped exit cleanup (memory model)
 let TOK_TY_BINT: i32 = 96;   // `Int<B>` — magnitude-bounded integer
 let TOK_TY_EXP: i32 = 97;    // `Exp<E>` — scale-typed integer (Q-format)
+let TOK_TY_FIX: i32 = 98;    // `Fix<B,E>` — bound-and-scale integer
 
 // Field kind constants
 let FIELD_KIND_PRIME: i32 = 0;
@@ -427,6 +428,7 @@ fn keyword_kind(text: *u8) -> i32 {
     if str_eq(text, "Register") == 1 { return TOK_TY_REGISTER; }
     if str_eq(text, "Int") == 1 { return TOK_TY_BINT; }
     if str_eq(text, "Exp") == 1 { return TOK_TY_EXP; }
+    if str_eq(text, "Fix") == 1 { return TOK_TY_FIX; }
     return 3; // TOK_IDENT
 }
 
@@ -1420,7 +1422,7 @@ let MAX_NAV_SYMS: i32 = 8192;
 // Function registry
 var g_funcs: *FuncEntry = null;
 var g_nfuncs: i32 = 0;
-let MAX_FUNCS: i32 = 1024;  // bumped from 512 as tvc_self.tv grew (420 source fns); guarded via arena_overflow
+let MAX_FUNCS: i32 = 1280;  // bumped from 1024 for the Int/Exp/Fix type-family helpers; guarded via arena_overflow
 
 // Generic parameter storage (parallel: name, bound, is-const). A const generic
 // (<const N>) substitutes a numeric literal string into array-size/int positions.
@@ -2910,6 +2912,56 @@ fn parse_type_str() {
             if exok == 1 {
                 g_type_pos = exstart;
                 tbuf_push_u64(exeval as u64);
+            }
+        }
+        g_type_buf[g_type_pos] = 62; // '>'
+        g_type_pos = g_type_pos + 1;
+        p_expect_gt_generic();
+        return;
+    }
+
+    // Fix<B,E> — bound-and-scale integer. Both args are const expressions.
+    if p_peek() == TOK_TY_FIX {
+        p_advance();
+        tbuf_push_str("Fix<");
+        p_expect(TOK_LT);
+        let fxbstart: i32 = g_type_pos;
+        var fxb_var: i32 = 0;
+        parse_tcx_add(&fxb_var);
+        if fxb_var == 0 {
+            g_type_buf[g_type_pos] = 0;
+            var fxbeval: i64 = 0;
+            let fxbok: i32 = constexpr_eval_str(&g_type_buf[fxbstart], &fxbeval);
+            if fxbok == 1 && fxbeval < 0 {
+                diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+                derr("Fix bound expression must be non-negative");
+                diag_end();
+                fxbeval = 0;
+            }
+            if fxbok == 1 {
+                g_type_pos = fxbstart;
+                tbuf_push_u64(fxbeval as u64);
+            }
+        }
+        g_type_buf[g_type_pos] = 44; // ','
+        g_type_pos = g_type_pos + 1;
+        p_expect(TOK_COMMA);
+        let fxestart: i32 = g_type_pos;
+        var fxe_var: i32 = 0;
+        parse_tcx_add(&fxe_var);
+        if fxe_var == 0 {
+            g_type_buf[g_type_pos] = 0;
+            var fxeeval: i64 = 0;
+            let fxeok: i32 = constexpr_eval_str(&g_type_buf[fxestart], &fxeeval);
+            if fxeok == 1 && (fxeeval < 0 || fxeeval > 62) {
+                diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+                derr("Fix scale must be in 0..62");
+                diag_end();
+                fxeeval = 0;
+            }
+            if fxeok == 1 {
+                g_type_pos = fxestart;
+                tbuf_push_u64(fxeeval as u64);
             }
         }
         g_type_buf[g_type_pos] = 62; // '>'
@@ -7988,6 +8040,8 @@ fn type_to_ir(type_off: i32) -> i32 {
     if type_is_bounded_int(type_off) == 1 { return str_intern("i64"); }
     // Exp<E> scale-typed integer -> i64 (scales are erased at IR level)
     if type_is_exp(type_off) == 1 { return str_intern("i64"); }
+    // Fix<B,E> bound-and-scale integer -> i64 (both erased at IR level)
+    if type_is_fix(type_off) == 1 { return str_intern("i64"); }
     // Pointer types: *T -> ptr
     if s[0] == 42 { return str_intern("ptr"); }
     // Fn-pointer types: "fn(...)..." -> ptr. The signature lives in the type
@@ -8278,6 +8332,8 @@ fn type_is_signed(type_off: i32) -> i32 {
     if type_is_bounded_int(type_off) == 1 { return 1; }
     // Exp<E> is signed (fixed-point mantissa)
     if type_is_exp(type_off) == 1 { return 1; }
+    // Fix<B,E> is signed (fixed-point mantissa)
+    if type_is_fix(type_off) == 1 { return 1; }
     return 0;
 }
 
@@ -8502,11 +8558,12 @@ fn make_exp_type(scale: i64) -> i32 {
 
 // Validate both operands of an Int<B> binop after codegen. Literals arrive
 // family-typed via the binop ctx; a plain integer means a variable/call,
-// which carries no bound — refuse. Mixing with Exp is a distinct diag.
+// which carries no bound — refuse. Mixing with Exp/Fix is a distinct diag.
 fn bint_check_operands(lt: i32, rt: i32, ln: i32, cl: i32) {
-    if type_is_exp(lt) == 1 || type_is_exp(rt) == 1 {
+    if type_is_exp(lt) == 1 || type_is_exp(rt) == 1
+    || type_is_fix(lt) == 1 || type_is_fix(rt) == 1 {
         diag_error_at(ln, cl,
-            "cannot mix Int<B> and Exp<E> operands; cast explicitly with `as`");
+            "cannot mix Int<B> with Exp<E>/Fix<B,E> operands; cast explicitly with `as`");
         return;
     }
     if type_is_bounded_int(lt) == 0 || type_is_bounded_int(rt) == 0 {
@@ -8518,9 +8575,10 @@ fn bint_check_operands(lt: i32, rt: i32, ln: i32, cl: i32) {
 // Validate an Exp binop operand pair after codegen. dimless_ok=1 for mul/div
 // (a plain integer is a dimensionless scalar); add/sub/compare pass 0.
 fn exp_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
-    if type_is_bounded_int(lt) == 1 || type_is_bounded_int(rt) == 1 {
+    if type_is_bounded_int(lt) == 1 || type_is_bounded_int(rt) == 1
+    || type_is_fix(lt) == 1 || type_is_fix(rt) == 1 {
         diag_error_at(ln, cl,
-            "cannot mix Int<B> and Exp<E> operands; cast explicitly with `as`");
+            "cannot mix Exp<E> with Int<B>/Fix<B,E> operands; cast explicitly with `as`");
         return;
     }
     if dimless_ok == 0 {
@@ -8533,9 +8591,34 @@ fn exp_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
     }
 }
 
-// Coercion coherence for Int<B>/Exp<E> destinations (let, assign, return,
-// call args). Same family: Int requires value bound <= dest bound; Exp
-// requires equal scales. Plain-integer or cross-family sources need an
+// Validate a Fix binop operand pair after codegen. Mixing with Int/Exp is
+// always refused. dimless_ok=1 (mul only) permits a plain-integer operand;
+// the caller further requires it to be a literal (unknown magnitudes break
+// the bound).
+fn fix_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
+    if type_is_bounded_int(lt) == 1 || type_is_bounded_int(rt) == 1
+    || type_is_exp(lt) == 1 || type_is_exp(rt) == 1 {
+        let lf: i32 = type_is_fix(lt);
+        let rf: i32 = type_is_fix(rt);
+        if (lf == 1 && rf == 0) || (lf == 0 && rf == 1) {
+            diag_error_at(ln, cl,
+                "cannot mix Fix<B,E> with Int<B>/Exp<E> operands; cast explicitly with `as`");
+            return;
+        }
+    }
+    if dimless_ok == 0 {
+        let lf2: i32 = type_is_fix(lt);
+        let rf2: i32 = type_is_fix(rt);
+        if lf2 != rf2 {
+            diag_error_at(ln, cl,
+                "cannot combine a Fix value with a plain integer; cast with `as Fix<B,E>`");
+        }
+    }
+}
+
+// Coercion coherence for Int<B>/Exp<E>/Fix<B,E> destinations (let, assign,
+// return, call args). Same family: Int/Fix require value bound <= dest bound;
+// Exp/Fix require equal scales. Plain-integer or cross-family sources need an
 // explicit `as` cast. Open (generic-param) bounds skip — digits unparseable.
 fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
     if val_type == NULL_STR || dst_type == NULL_STR { return; }
@@ -8548,12 +8631,15 @@ fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
     }
     let d_int: i32 = type_is_bounded_int(d2);
     let d_exp: i32 = type_is_exp(d2);
-    if d_int == 0 && d_exp == 0 { return; }
+    let d_fix: i32 = type_is_fix(d2);
+    if d_int == 0 && d_exp == 0 && d_fix == 0 { return; }
     let v_int: i32 = type_is_bounded_int(v2);
     let v_exp: i32 = type_is_exp(v2);
-    if (d_int == 1 && v_int == 0) || (d_exp == 1 && v_exp == 0) {
+    let v_fix: i32 = type_is_fix(v2);
+    if (d_int == 1 && v_int == 0) || (d_exp == 1 && v_exp == 0)
+    || (d_fix == 1 && v_fix == 0) {
         diag_error_at(ln, cl,
-            "cannot convert a value to Int<B>/Exp<E> without an explicit `as` cast");
+            "cannot convert a value to Int<B>/Exp<E>/Fix<B,E> without an explicit `as` cast");
         return;
     }
     // Open types: bound/scale text is a param, not digits — skip.
@@ -8573,6 +8659,83 @@ fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
                 "Exp scale of the value differs from the destination scale; use requant");
         }
     }
+    if d_fix == 1 {
+        if fix_scale(v2) != fix_scale(d2) {
+            diag_error_at(ln, cl,
+                "Fix scale of the value differs from the destination scale; use requant");
+            return;
+        }
+        if fix_bound(v2) > fix_bound(d2) {
+            diag_error_at(ln, cl,
+                "Fix bound of the value exceeds the destination bound");
+        }
+    }
+}
+
+// Check if a source type is Fix<B,E> (bound-and-scale integer).
+// Matches "Fix<" prefix: 'F'=70 'i'=105 'x'=120 '<'=60.
+fn type_is_fix(type_off: i32) -> i32 {
+    if type_off == NULL_STR { return 0; }
+    let s: *u8 = &g_strings[type_off];
+    if s[0] == 70 && s[1] == 105 && s[2] == 120 && s[3] == 60 { return 1; }
+    return 0;
+}
+
+// Any of the proof-annotation families (Int/Exp/Fix). Used by statement
+// positions (match/for/index) where family values must be cast to i64.
+fn type_is_family(type_off: i32) -> i32 {
+    if type_is_bounded_int(type_off) == 1 { return 1; }
+    if type_is_exp(type_off) == 1 { return 1; }
+    if type_is_fix(type_off) == 1 { return 1; }
+    return 0;
+}
+
+// Extract the bound from "Fix<B,E>" (digits at offset 4). 0 if open.
+fn fix_bound(type_off: i32) -> i64 {
+    let s: *u8 = &g_strings[type_off];
+    var pi: i32 = 4;
+    var val: i64 = 0;
+    while s[pi] >= 48 && s[pi] <= 57 {
+        val = val * 10 + (s[pi] as i64 - 48);
+        pi = pi + 1;
+    }
+    return val;
+}
+
+// Extract the scale from "Fix<B,E>" (digits after the top-level comma).
+// 0 if open.
+fn fix_scale(type_off: i32) -> i64 {
+    let s: *u8 = &g_strings[type_off];
+    var pi: i32 = 4;
+    var depth: i32 = 0;
+    // Walk to the top-level comma (const-expr args carry no top-level comma,
+    // but parens are tracked for safety).
+    while s[pi] != 0 {
+        if s[pi] == 40 { depth = depth + 1; }
+        if s[pi] == 41 { depth = depth - 1; }
+        if s[pi] == 44 && depth == 0 { pi = pi + 1; break; }
+        pi = pi + 1;
+    }
+    var val: i64 = 0;
+    while s[pi] >= 48 && s[pi] <= 57 {
+        val = val * 10 + (s[pi] as i64 - 48);
+        pi = pi + 1;
+    }
+    return val;
+}
+
+// Build "Fix<b,e>" and intern it.
+fn make_fix_type(bound: i64, scale: i64) -> i32 {
+    g_type_pos = 0;
+    tbuf_push_str("Fix<");
+    tbuf_push_u64(bound as u64);
+    g_type_buf[g_type_pos] = 44; // ','
+    g_type_pos = g_type_pos + 1;
+    tbuf_push_u64(scale as u64);
+    g_type_buf[g_type_pos] = 62; // '>'
+    g_type_pos = g_type_pos + 1;
+    g_type_buf[g_type_pos] = 0;
+    return str_intern(g_type_buf);
 }
 
 // Check if a source type is the bare Field carrier type ("Field" exactly,
@@ -11249,6 +11412,23 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             ir_wr_int(val as i64); ir_wr("\n");
             return IRValue { reg: r, type_off: eff_type };
         }
+        // Fix<B,E> context: raw mantissa, tight bound Fix<|val|, E>.
+        if type_is_fix(eff_type) == 1 {
+            var fabs_val: i64 = val as i64;
+            if fabs_val < 0 { fabs_val = 0 - fabs_val; }
+            let fctx_str: *u8 = &g_strings[eff_type];
+            if fctx_str[4] >= 48 && fctx_str[4] <= 57 {
+                if fabs_val > fix_bound(eff_type) {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "integer literal exceeds the Fix<B,E> bound of its context");
+                }
+            }
+            let lit_type: i32 = make_fix_type(fabs_val, fix_scale(eff_type));
+            let r: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(r); ir_wr(" = add i64 0, ");
+            ir_wr_int(val as i64); ir_wr("\n");
+            return IRValue { reg: r, type_off: lit_type };
+        }
         // If context is a field type, apply safe modulation
         let fi: i32 = find_field_by_alias(eff_type);
         if fi >= 0 {
@@ -11721,6 +11901,175 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let poison: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(poison); ir_wr(" = add i64 0, 0\n");
             return IRValue { reg: poison, type_off: exp_ctx };
+        }
+        // Fix<B,E> bound-and-scale arithmetic: both contracts at once.
+        let fix_lpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
+        let fix_rpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child1));
+        if type_is_fix(ctx_type) == 1 || type_is_fix(fix_lpeek) == 1
+        || type_is_fix(fix_rpeek) == 1 {
+            var fix_ctx: i32 = ctx_type;
+            if type_is_fix(fix_ctx) == 0 { fix_ctx = fix_lpeek; }
+            if type_is_fix(fix_ctx) == 0 { fix_ctx = fix_rpeek; }
+            let FIX_I64_MAX: i64 = 9223372036854775807;
+            // Comparisons: both Fix, equal scales, signed icmp -> i1.
+            if op >= OP_EQ && op <= OP_GE {
+                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
+                let fr: IRValue = codegen_expr(g_nodes[node].child1, fix_ctx);
+                fix_check_operands(fl.type_off, fr.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 0);
+                if fix_scale(fl.type_off) != fix_scale(fr.type_off) {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "scale mismatch in Fix comparison; requant one side to match");
+                }
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = icmp ");
+                if op == OP_EQ  { ir_wr("eq "); }
+                if op == OP_NEQ { ir_wr("ne "); }
+                if op == OP_LT  { ir_wr("slt "); }
+                if op == OP_GT  { ir_wr("sgt "); }
+                if op == OP_LE  { ir_wr("sle "); }
+                if op == OP_GE  { ir_wr("sge "); }
+                ir_wr("i64 "); ir_wr_reg(fl.reg);
+                ir_wr(", "); ir_wr_reg(fr.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: str_intern("i1") };
+            }
+            // Add/sub: both Fix, equal scales -> bounds add.
+            if op == OP_ADD || op == OP_SUB {
+                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
+                let fr: IRValue = codegen_expr(g_nodes[node].child1, fix_ctx);
+                fix_check_operands(fl.type_off, fr.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 0);
+                if fix_scale(fl.type_off) != fix_scale(fr.type_off) {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "scale mismatch in Fix addition; requant one side to match");
+                }
+                let fb: i64 = fix_bound(fl.type_off);
+                let gb: i64 = fix_bound(fr.type_off);
+                if fb > FIX_I64_MAX - gb {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "Fix bound exceeds i64 capacity; narrow the operands");
+                }
+                let res_type: i32 = make_fix_type(fb + gb, fix_scale(fl.type_off));
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr);
+                if op == OP_ADD { ir_wr(" = add i64 "); }
+                else { ir_wr(" = sub i64 "); }
+                ir_wr_reg(fl.reg); ir_wr(", "); ir_wr_reg(fr.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Mul: Fix x Fix -> bounds and scales both multiply/add.
+            if op == OP_MUL {
+                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
+                let fr: IRValue = codegen_expr(g_nodes[node].child1, fix_ctx);
+                fix_check_operands(fl.type_off, fr.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 1);
+                let fl_is_fix: i32 = type_is_fix(fl.type_off);
+                let fr_is_fix: i32 = type_is_fix(fr.type_off);
+                var res_type: i32 = fl.type_off;
+                if fl_is_fix == 1 && fr_is_fix == 1 {
+                    let fb: i64 = fix_bound(fl.type_off);
+                    let gb: i64 = fix_bound(fr.type_off);
+                    if gb > 0 && fb > FIX_I64_MAX / gb {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "Fix bound exceeds i64 capacity; requant before multiplying");
+                    }
+                    let esum: i64 = fix_scale(fl.type_off) + fix_scale(fr.type_off);
+                    if esum > 62 {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "combined Fix scale exceeds 62; requant before multiplying");
+                    }
+                    res_type = make_fix_type(fb * gb, esum);
+                } else {
+                    // Dimensionless literal scales the bound; a variable of
+                    // unknown magnitude is refused by fix_check_operands.
+                    let lit_node: i32 = g_nodes[node].child1;
+                    var dim_mag: i64 = 1;
+                    var dim_on_rhs: i32 = 1;
+                    if fl_is_fix == 0 {
+                        dim_on_rhs = 0;
+                    }
+                    var dim_node: i32 = g_nodes[node].child1;
+                    if dim_on_rhs == 0 { dim_node = g_nodes[node].child0; }
+                    if g_nodes[dim_node].kind == AST_LIT_INT {
+                        dim_mag = g_nodes[dim_node].int_val as i64;
+                        if dim_mag < 0 { dim_mag = 0 - dim_mag; }
+                    } else {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "Fix scaled by a plain integer must be a literal; cast the integer with `as Fix<B,E>`");
+                        dim_mag = 1;
+                    }
+                    var fx_t: i32 = fl.type_off;
+                    if fl_is_fix == 0 { fx_t = fr.type_off; }
+                    let fb2: i64 = fix_bound(fx_t);
+                    if dim_mag > 0 && fb2 > FIX_I64_MAX / dim_mag {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "Fix bound exceeds i64 capacity after scaling");
+                    }
+                    res_type = make_fix_type(fb2 * dim_mag, fix_scale(fx_t));
+                }
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = mul i64 ");
+                ir_wr_reg(fl.reg); ir_wr(", "); ir_wr_reg(fr.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Shifts: literal amount only; bound and scale both shift.
+            if op == OP_SHL || op == OP_SHR {
+                let rhs_node: i32 = g_nodes[node].child1;
+                if g_nodes[rhs_node].kind != AST_LIT_INT {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "shift amount on a Fix value must be a compile-time literal");
+                }
+                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
+                fix_check_operands(fl.type_off, fl.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 1);
+                let shift_k: i64 = g_nodes[rhs_node].int_val as i64;
+                if shift_k < 0 || shift_k > 62 {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "shift amount on a Fix value must be in 0..62");
+                }
+                let fb: i64 = fix_bound(fl.type_off);
+                let cur_e: i64 = fix_scale(fl.type_off);
+                var new_e: i64 = cur_e;
+                var new_b: i64 = fb;
+                if op == OP_SHL {
+                    new_e = cur_e + shift_k;
+                    if new_e > 62 {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "left shift would exceed the Fix scale ceiling (62)");
+                    }
+                    if shift_k > 0 && fb > (FIX_I64_MAX >> shift_k) {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "Fix bound exceeds i64 capacity after the shift");
+                    }
+                    new_b = fb << shift_k;
+                }
+                if op == OP_SHR {
+                    if shift_k > cur_e {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "right shift exceeds the Fix scale (would produce negative exponent)");
+                    }
+                    new_e = cur_e - shift_k;
+                    new_b = fb >> shift_k;
+                }
+                let res_type: i32 = make_fix_type(new_b, new_e);
+                let kr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(kr); ir_wr(" = add i64 0, ");
+                ir_wr_int(shift_k); ir_wr("\n");
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr);
+                if op == OP_SHL { ir_wr(" = shl i64 "); }
+                else { ir_wr(" = ashr i64 "); }
+                ir_wr_reg(fl.reg); ir_wr(", "); ir_wr_reg(kr); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Division, modulo, bitwise: refused. i64 sdiv has no SIMD/GPU
+            // lowering worth the contract; scale changes go through shifts
+            // and requant.
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "this operator is not defined on Fix<B,E> values (use shifts or requant)");
+            let fpoison: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(fpoison); ir_wr(" = add i64 0, 0\n");
+            return IRValue { reg: fpoison, type_off: fix_ctx };
         }
         // Pow: RHS is exponent type (i32 or i64), not field element type
         var rhs_ctx: i32 = ctx_type;
@@ -13225,11 +13574,62 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             ir_wr_reg(rq_biased); ir_wr(", "); ir_wr_reg(rq_shift); ir_wr("\n");
             return IRValue { reg: rq_r, type_off: resolve_type_sub(ctx_type) };
         }
+        // requant(x) for Fix: rescale Fix<B,E> -> Fix<B',D>, D from ctx.
+        // B' = (B + 2^(s-1)) >> s — the exact post-rounding bound.
+        if str_eq(&g_strings[call_name], "requant") == 1
+        && g_nodes[node].nargs >= 1
+        && type_is_fix(resolve_type_sub(ctx_type)) == 1 {
+            let fx_arg: IRValue = codegen_expr(g_args[g_nodes[node].args_start], NULL_STR);
+            let fx_ctx: i32 = resolve_type_sub(ctx_type);
+            if type_is_fix(fx_arg.type_off) == 0 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "requant argument must be a Fix<B,E> value");
+                return IRValue { reg: fx_arg.reg, type_off: fx_ctx };
+            }
+            let fx_src_e: i64 = fix_scale(fx_arg.type_off);
+            let fx_dst_d: i64 = fix_scale(fx_ctx);
+            if fx_dst_d > fx_src_e {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "requant cannot raise scale; use << k instead");
+                return IRValue { reg: fx_arg.reg, type_off: fx_ctx };
+            }
+            if fx_dst_d == fx_src_e {
+                return IRValue { reg: fx_arg.reg, type_off: fx_ctx };
+            }
+            let fx_s: i64 = fx_src_e - fx_dst_d;
+            if fx_src_e > 62 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "requant source scale exceeds 62");
+                return IRValue { reg: fx_arg.reg, type_off: fx_ctx };
+            }
+            let fx_half: i64 = 1 << (fx_s - 1);
+            let fx_srcb: i64 = fix_bound(fx_arg.type_off);
+            let FX_I64_MAX: i64 = 9223372036854775807;
+            if fx_srcb > FX_I64_MAX - fx_half {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "Fix bound exceeds i64 capacity after requant rounding");
+            }
+            let fx_newb: i64 = (fx_srcb + fx_half) >> fx_s;
+            let fxh: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(fxh); ir_wr(" = add i64 0, ");
+            ir_wr_int(fx_half); ir_wr("\n");
+            let fxb2: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(fxb2); ir_wr(" = add i64 ");
+            ir_wr_reg(fx_arg.reg); ir_wr(", "); ir_wr_reg(fxh); ir_wr("\n");
+            let fxs2: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(fxs2); ir_wr(" = add i64 0, ");
+            ir_wr_int(fx_s); ir_wr("\n");
+            let fxr: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(fxr); ir_wr(" = ashr i64 ");
+            ir_wr_reg(fxb2); ir_wr(", "); ir_wr_reg(fxs2); ir_wr("\n");
+            return IRValue { reg: fxr, type_off: make_fix_type(fx_newb, fx_dst_d) };
+        }
         // requant without an Exp/Fix-typed destination: the target scale is
         // unreadable. A named diagnostic, not a bare "undefined function".
         if str_eq(&g_strings[call_name], "requant") == 1
         && g_nodes[node].nargs >= 1
-        && type_is_exp(resolve_type_sub(ctx_type)) == 0 {
+        && type_is_exp(resolve_type_sub(ctx_type)) == 0
+        && type_is_fix(resolve_type_sub(ctx_type)) == 0 {
             diag_error_at(g_nodes[node].line, g_nodes[node].col,
                 "requant needs a typed destination (e.g. `let y: Exp<16> = requant(x)`)");
             let rqa: IRValue = codegen_expr(g_args[g_nodes[node].args_start], str_intern("i64"));
@@ -13851,10 +14251,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         let idx_val: IRValue = codegen_expr(idx_node, str_intern("i32"));
         // A bounded/scale-typed index silently decays to a raw integer here;
         // require the caller to state the decay explicitly.
-        if type_is_bounded_int(idx_val.type_off) == 1
-        || type_is_exp(idx_val.type_off) == 1 {
+        if type_is_family(idx_val.type_off) == 1 {
             diag_error_at(g_nodes[node].line, g_nodes[node].col,
-                "cannot index with an Int<B>/Exp<E> value; cast with `as i64` first");
+                "cannot index with an Int<B>/Exp<E>/Fix<B,E> value; cast with `as i64` first");
         }
         let idx64: i32 = emit_index_to_i64(idx_val);
         // Resolve object — try symbol table first, fallback to codegen_expr
@@ -14181,7 +14580,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     return IRValue { reg: gep, type_off: str_intern("ptr") };
                 }
             }
-            wr(2, "error: unhandled address-of target\n");
+            wr(2, "error: unhandled address-of target (kind ");
+            wr_int(2, addr_kind as i64);
+            wr(2, ")\n");
             exit(1);
         }
         wr(2, "error: unhandled unary op ");
@@ -19776,12 +20177,10 @@ fn codegen_stmt(stmt: i32) {
         let start_val: IRValue = codegen_expr(start_node, bound_ctx);
         let end_val: IRValue = codegen_expr(end_node, bound_ctx);
         // Bounded/scale-typed bounds carry a contract a counter doesn't honor.
-        if type_is_bounded_int(start_val.type_off) == 1
-        || type_is_bounded_int(end_val.type_off) == 1
-        || type_is_exp(start_val.type_off) == 1
-        || type_is_exp(end_val.type_off) == 1 {
+        if type_is_family(start_val.type_off) == 1
+        || type_is_family(end_val.type_off) == 1 {
             diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
-                "for-loop bounds must be plain integers; cast Int/Exp values with `as i64`");
+                "for-loop bounds must be plain integers; cast Int/Exp/Fix values with `as i64`");
         }
         let ws: i32 = for_bound_width_checked(start_val.type_off,
             g_nodes[stmt].line, g_nodes[stmt].col);
@@ -20276,10 +20675,9 @@ fn codegen_stmt(stmt: i32) {
         let scrutinee: IRValue = codegen_expr(g_nodes[stmt].child0, scrut_ctx);
         // A match on a bounded/scale-typed value inspects it as a plain
         // integer, dropping the contract; require an explicit cast.
-        if type_is_bounded_int(scrutinee.type_off) == 1
-        || type_is_exp(scrutinee.type_off) == 1 {
+        if type_is_family(scrutinee.type_off) == 1 {
             diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
-                "cannot match on an Int<B>/Exp<E> value; cast with `as i64` first");
+                "cannot match on an Int<B>/Exp<E>/Fix<B,E> value; cast with `as i64` first");
         }
         // A generic-enum arm names the TEMPLATE (Option::Some) but the scrutinee
         // is the concrete instance — resolve_enum_type maps both to it.
@@ -29855,8 +30253,7 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
         let idx_node: i32 = g_nodes[node].child1;
         let idx_raw: LowVal = lower_expr(idx_node, str_intern("i32"));
         // Codegen parity: family-typed indices are refused there; refuse here.
-        if type_is_bounded_int(idx_raw.type_off) == 1
-        || type_is_exp(idx_raw.type_off) == 1 {
+        if type_is_family(idx_raw.type_off) == 1 {
             ev_refuse("bounded-index", ln, cl);
         }
         let idx64: LowVal = lw_index_to_i64(idx_raw, ln, cl);
@@ -30983,8 +31380,7 @@ fn lower_stmt(stmt: i32) -> i32 {
         if is_enum_match == 1 { scrut_ctx = match_enum_name; }
         let scrut: LowVal = lower_expr(g_nodes[stmt].child0, scrut_ctx);
         // Codegen parity: matching on a family-typed value is refused there.
-        if type_is_bounded_int(scrut.type_off) == 1
-        || type_is_exp(scrut.type_off) == 1 {
+        if type_is_family(scrut.type_off) == 1 {
             ev_refuse("bounded-match", ln, cl);
         }
         var mei: i32 = 0 - 1;
@@ -31130,10 +31526,8 @@ fn lower_stmt(stmt: i32) -> i32 {
         let lo: LowVal = lower_expr(g_nodes[stmt].child0, lctx);
         let hi: LowVal = lower_expr(g_nodes[stmt].child1, lctx);
         // Codegen parity: family-typed loop bounds are refused there.
-        if type_is_bounded_int(lo.type_off) == 1
-        || type_is_bounded_int(hi.type_off) == 1
-        || type_is_exp(lo.type_off) == 1
-        || type_is_exp(hi.type_off) == 1 {
+        if type_is_family(lo.type_off) == 1
+        || type_is_family(hi.type_off) == 1 {
             ev_refuse("bounded-for-bound", ln, cl);
         }
         let lws: i32 = for_bound_type_width(lo.type_off);
