@@ -399,6 +399,46 @@ expressions (`K*B1*B2`) appear only where all parameters are already bound.
 **Conversions.** `Int<B>` converts freely to `i64` via `as i64`. The
 reverse (`i64 as Int<B>`) is an unchecked cast.
 
+### 3.1.2 Scale-Typed Integers (Exp<E>)
+
+```
+Exp<E>      signed 64-bit integer with binary scale 2^E (Q-format)
+```
+
+`Exp<E>` is the dual of `Int<B>`: where `Int` tracks magnitude under
+addition, `Exp` tracks scale under multiplication. The raw `i64`
+represents the real value `raw / 2^E`. Every `Exp<E>` lowers to `i64`;
+scales are erased at codegen.
+
+**Scale propagation:**
+
+| Operation            | Result type          | Constraint          |
+|----------------------|----------------------|---------------------|
+| `Exp<e1> * Exp<e2>`  | `Exp<e1+e2>`         |                     |
+| `Exp<e1> / Exp<e2>`  | `Exp<e1-e2>`         | e1 >= e2            |
+| `Exp<e1> + Exp<e2>`  | `Exp<e1>` (= e2)     | e1 == e2 (else err) |
+| `Exp<e1> - Exp<e2>`  | `Exp<e1>` (= e2)     | e1 == e2 (else err) |
+| `Exp<E> * k`         | `Exp<E>`             | k is plain integer  |
+| `Exp<E> / k`         | `Exp<E>`             | k is plain integer  |
+| `x << k`             | `Exp<E+k>`           | k is a literal      |
+| `x >> k`             | `Exp<E-k>`           | k literal, k <= E   |
+| compare              | `i1`                 | equal scales        |
+
+**Dimensionless operands.** Multiplying or dividing `Exp<E>` by a plain
+integer preserves the scale. Adding or subtracting a plain integer is
+refused; cast it with `val as Exp<E>`.
+
+**Literals.** An integer literal in `Exp<E>` context is the raw mantissa:
+`let one: Exp<16> = 65536` represents 1.0 at scale 2^16.
+
+**Requantization.** `requant(x)` rescales an `Exp<E>` value to a target
+`Exp<D>` inferred from context. It emits round-to-nearest arithmetic:
+`(x + (1 << (E-D-1))) >> (E-D)`. The target scale must satisfy `D <= E`.
+
+**Refused operations.** Modulo, bitwise, and exponentiation operators are
+not defined on `Exp<E>`. Non-literal shift amounts are refused (the
+result scale cannot be computed).
+
 ### 3.2 Field Types
 
 #### 3.2.1 Prime Fields

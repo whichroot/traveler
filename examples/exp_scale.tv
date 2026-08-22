@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+// exp_scale.tv -- test Exp<E> scale-typed integers (Q-format).
+// Verifies scale propagation, typed shifts, requant, and inference.
+
+fn mul_q<const E1, const E2>(a: Exp<E1>, b: Exp<E2>) -> Exp<E1+E2> {
+    return (a as i64 * b as i64) as Exp<E1+E2>;
+}
+
+fn main() -> i32 {
+    // Q16 representation: 1.0 = 65536, 0.5 = 32768.
+    let one: Exp<16> = 65536;
+    let half: Exp<16> = 32768;
+
+    // Add at same scale.
+    let sum: Exp<16> = one + half;
+    print(sum as i64);                // 98304 = 1.5 * 2^16
+
+    // Multiply two Q16: result is Q32.
+    let prod: Exp<32> = one * half;
+    print(prod as i64);               // 65536 * 32768 = 2147483648
+
+    // Requant Q32 back to Q16: (2147483648 + 32768) >> 16 = 32768.
+    let rq: Exp<16> = requant(prod);
+    print(rq as i64);                 // 32768
+
+    // Dimensionless scalar multiply: 3 * Q16 stays Q16.
+    let three: i64 = 3;
+    let scaled: Exp<16> = one * three;
+    print(scaled as i64);             // 196608 = 3.0 * 2^16
+
+    // Typed shift: Q16 << 4 -> Q20.
+    let shifted: Exp<20> = one << 4;
+    print(shifted as i64);            // 1048576 = 2^20
+
+    // Typed shift: Q20 >> 4 -> Q16.
+    let back: Exp<16> = shifted >> 4;
+    print(back as i64);               // 65536 = 2^16
+
+    // Generic mul: Q8 * Q8 -> Q16.
+    let a8: Exp<8> = 256;             // 1.0 at Q8
+    let b8: Exp<8> = 128;             // 0.5 at Q8
+    let g_prod: Exp<16> = mul_q(a8, b8);
+    print(g_prod as i64);             // 32768 = 0.5 * 2^16
+
+    // Division by dimensionless: Exp<16> / 2 stays Exp<16>.
+    let halved: Exp<16> = one / 2;
+    print(halved as i64);             // 32768
+
+    // Subtraction at same scale.
+    let diff: Exp<16> = one - half;
+    print(diff as i64);               // 32768 = 0.5 * 2^16
+
+    // Negative value.
+    let neg: Exp<16> = 0 - one;
+    print(neg as i64);                // -65536
+
+    return 0;
+}

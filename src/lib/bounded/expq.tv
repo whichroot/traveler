@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// bounded/expq.tv -- scale-typed fixed-point helpers.
+// Exp<E> tracks a binary scale at the type level: raw/2^E.
+// (design-notes/bounded-int-plan.md "exp-scale")
+
+// Multiply two Q-format values, producing the full-precision product.
+fn mul_q<const E1, const E2>(a: Exp<E1>, b: Exp<E2>) -> Exp<E1+E2> {
+    return (a as i64 * b as i64) as Exp<E1+E2>;
+}
+
+// Multiply then requant back to one of the source scales.
+// mul_rq(a, b) in Exp<E1> context: a*b at Exp<E1+E2>, then >> E2.
+fn mul_rq<const E1, const E2>(a: Exp<E1>, b: Exp<E2>) -> Exp<E1+E2> {
+    return (a as i64 * b as i64) as Exp<E1+E2>;
+}
+
+// Round-to-nearest right shift (the typed twin of rshift_round).
+// Caller declares the result scale via context:
+//   let y: Exp<16> = rshift_q(x);   // x: Exp<32> -> requant to Q16
+fn rshift_q<const E>(x: Exp<E>, bits: i64) -> i64 {
+    let half: i64 = 1 << (bits - 1);
+    return (x as i64 + half) >> bits;
+}
