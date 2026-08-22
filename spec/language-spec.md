@@ -415,18 +415,22 @@ scales are erased at codegen.
 | Operation            | Result type          | Constraint          |
 |----------------------|----------------------|---------------------|
 | `Exp<e1> * Exp<e2>`  | `Exp<e1+e2>`         |                     |
-| `Exp<e1> / Exp<e2>`  | `Exp<e1-e2>`         | e1 >= e2            |
 | `Exp<e1> + Exp<e2>`  | `Exp<e1>` (= e2)     | e1 == e2 (else err) |
 | `Exp<e1> - Exp<e2>`  | `Exp<e1>` (= e2)     | e1 == e2 (else err) |
 | `Exp<E> * k`         | `Exp<E>`             | k is plain integer  |
-| `Exp<E> / k`         | `Exp<E>`             | k is plain integer  |
 | `x << k`             | `Exp<E+k>`           | k is a literal      |
 | `x >> k`             | `Exp<E-k>`           | k literal, k <= E   |
 | compare              | `i1`                 | equal scales        |
 
-**Dimensionless operands.** Multiplying or dividing `Exp<E>` by a plain
-integer preserves the scale. Adding or subtracting a plain integer is
-refused; cast it with `val as Exp<E>`.
+**Dimensionless operands.** Multiplying `Exp<E>` by a plain integer
+preserves the scale. Adding or subtracting a plain integer is refused;
+cast it with `val as Exp<E>`.
+
+**Division is refused on `Exp<E>`** (both `Exp/Exp` and `Exp/k`). Integer
+division has no SIMD lowering and runs as a slow microcoded sequence on
+GPU; the type system would hide a costly op. Halving and its kin are
+shifts or `requant`; anything else takes the explicit cast door:
+`((x as i64) / 2) as Exp<16>`.
 
 **Literals.** An integer literal in `Exp<E>` context is the raw mantissa:
 `let one: Exp<16> = 65536` represents 1.0 at scale 2^16.

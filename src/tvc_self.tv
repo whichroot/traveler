@@ -11787,31 +11787,16 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
                 return IRValue { reg: cr, type_off: res_type };
             }
-            // Division: Exp/Exp -> subtract scales; Exp/dimless -> keep.
+            // Division on Exp is refused (both forms). i64 sdiv has no SIMD
+            // lowering and runs as a slow sequence on GPU; the Fix audit found
+            // zero real uses of either form. Halving and friends are shifts
+            // or requant; anything else casts to i64 explicitly.
             if op == OP_DIV {
-                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
-                let er: IRValue = codegen_expr(g_nodes[node].child1, i64_type);
-                exp_check_operands(el.type_off, er.type_off,
-                    g_nodes[node].line, g_nodes[node].col, 1);
-                let l_is_exp: i32 = type_is_exp(el.type_off);
-                let r_is_exp: i32 = type_is_exp(er.type_off);
-                var res_type: i32 = el.type_off;
-                if l_is_exp == 1 && r_is_exp == 1 {
-                    let le: i64 = exp_scale(el.type_off);
-                    let re: i64 = exp_scale(er.type_off);
-                    if le < re {
-                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
-                            "Exp division would produce a negative scale; requant the numerator first");
-                    }
-                    res_type = make_exp_type(le - re);
-                } else if r_is_exp == 1 && l_is_exp == 0 {
-                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
-                        "cannot divide a plain integer by an Exp value");
-                }
-                let cr: i32 = ir_tmp();
-                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = sdiv i64 ");
-                ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
-                return IRValue { reg: cr, type_off: res_type };
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "division is not defined on Exp<E> values (use shifts, requant, or cast with `as i64`)");
+                let exp_div_p: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(exp_div_p); ir_wr(" = add i64 0, 0\n");
+                return IRValue { reg: exp_div_p, type_off: exp_ctx };
             }
             // Add/sub: require equal scales.
             if op == OP_ADD || op == OP_SUB {

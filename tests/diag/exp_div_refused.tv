@@ -1,0 +1,7 @@
+// Diagnostics: division is refused on Exp values (both forms).
+fn main() {
+    let a: Exp<16> = 65536;
+    let b: Exp<16> = 32768;
+    let c = a / b;
+    return;
+}

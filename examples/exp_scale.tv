@@ -42,8 +42,9 @@ fn main() -> i32 {
     let g_prod: Exp<16> = mul_q(a8, b8);
     print(g_prod as i64);             // 32768 = 0.5 * 2^16
 
-    // Division by dimensionless: Exp<16> / 2 stays Exp<16>.
-    let halved: Exp<16> = one / 2;
+    // Division is refused on Exp (no SIMD lowering); halve via the
+    // explicit cast door, which keeps the costly op visible.
+    let halved: Exp<16> = ((one as i64) / 2) as Exp<16>;
     print(halved as i64);             // 32768
 
     // Subtraction at same scale.
