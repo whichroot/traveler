@@ -165,6 +165,7 @@ let TOK_KW_TYPE: i32 = 92;   // `type N = <FieldTy>;` == field/binfield/extfield
 let TOK_OP_ASSIGN: i32 = 93;
 let TOK_QMARK: i32 = 94;     // `expr?` — Result early-return propagation
 let TOK_KW_DEFER: i32 = 95;  // `defer <stmt>;` — function-scoped exit cleanup (memory model)
+let TOK_TY_BINT: i32 = 96;   // `Int<B>` — magnitude-bounded integer
 
 // Field kind constants
 let FIELD_KIND_PRIME: i32 = 0;
@@ -423,6 +424,7 @@ fn keyword_kind(text: *u8) -> i32 {
     if str_eq(text, "ExtField") == 1 { return TOK_TY_EXTFIELD; }
     if str_eq(text, "Poly") == 1 { return 41; }
     if str_eq(text, "Register") == 1 { return TOK_TY_REGISTER; }
+    if str_eq(text, "Int") == 1 { return TOK_TY_BINT; }
     return 3; // TOK_IDENT
 }
 
@@ -2510,6 +2512,156 @@ fn tbuf_push_u64(n: u64) {
     g_type_pos = g_type_pos + 1;
 }
 
+// Const-expr in type position: writes the expression text into g_type_buf.
+// Grammar (precedence low→high): add (+,-), mul (*), shift (<<,>>), atom.
+// Atom = integer literal | identifier (const param) | '(' expr ')'.
+// Sets *has_var to 1 when any identifier appears (open expression).
+fn parse_tcx_atom(has_var: *i32) {
+    if p_peek() == TOK_INT_LIT {
+        tbuf_push_u64(g_tokens[g_tok_pos].int_val);
+        p_advance();
+        return;
+    }
+    if p_peek() == TOK_IDENT {
+        tbuf_push_str(&g_tokens[g_tok_pos].text[0]);
+        has_var[0] = 1;
+        p_advance();
+        return;
+    }
+    if p_peek() == TOK_LPAREN {
+        g_type_buf[g_type_pos] = 40; // '('
+        g_type_pos = g_type_pos + 1;
+        p_advance();
+        parse_tcx_add(has_var);
+        g_type_buf[g_type_pos] = 41; // ')'
+        g_type_pos = g_type_pos + 1;
+        p_expect(TOK_RPAREN);
+        return;
+    }
+    diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+    derr("expected integer literal or const param in type expression");
+    diag_end();
+    p_advance();
+}
+
+fn parse_tcx_shift(has_var: *i32) {
+    parse_tcx_atom(has_var);
+    while p_peek() == TOK_SHL || p_peek() == TOK_SHR {
+        if p_peek() == TOK_SHL {
+            tbuf_push_str("<<");
+        } else {
+            tbuf_push_str(">>");
+        }
+        p_advance();
+        parse_tcx_atom(has_var);
+    }
+}
+
+fn parse_tcx_mul(has_var: *i32) {
+    parse_tcx_shift(has_var);
+    while p_peek() == TOK_STAR {
+        g_type_buf[g_type_pos] = 42; // '*'
+        g_type_pos = g_type_pos + 1;
+        p_advance();
+        parse_tcx_shift(has_var);
+    }
+}
+
+fn parse_tcx_add(has_var: *i32) {
+    parse_tcx_mul(has_var);
+    while p_peek() == TOK_PLUS || p_peek() == TOK_MINUS {
+        if p_peek() == TOK_PLUS {
+            g_type_buf[g_type_pos] = 43; // '+'
+        } else {
+            g_type_buf[g_type_pos] = 45; // '-'
+        }
+        g_type_pos = g_type_pos + 1;
+        p_advance();
+        parse_tcx_mul(has_var);
+    }
+}
+
+// Evaluate a closed (no variable) const-expr string to i64. Returns the
+// result in *out. Returns 1 on success, 0 on parse/overflow failure.
+// Uses i64 arithmetic (sufficient for bounds that must fit i64).
+fn constexpr_eval_str(s: *u8, out: *i64) -> i32 {
+    let pos: *i32 = alloc(1);
+    pos[0] = 0;
+    let ok: i32 = ceval_add(s, pos, out);
+    free(pos);
+    return ok;
+}
+
+fn ceval_atom(s: *u8, pos: *i32, out: *i64) -> i32 {
+    // Skip whitespace
+    while s[pos[0]] == 32 { pos[0] = pos[0] + 1; }
+    // Parenthesized expression
+    if s[pos[0]] == 40 { // '('
+        pos[0] = pos[0] + 1;
+        let ok: i32 = ceval_add(s, pos, out);
+        if ok == 0 { return 0; }
+        while s[pos[0]] == 32 { pos[0] = pos[0] + 1; }
+        if s[pos[0]] == 41 { pos[0] = pos[0] + 1; } // ')'
+        return 1;
+    }
+    // Digit: parse decimal
+    if s[pos[0]] >= 48 && s[pos[0]] <= 57 {
+        var v: i64 = 0;
+        while s[pos[0]] >= 48 && s[pos[0]] <= 57 {
+            v = v * 10 + (s[pos[0]] as i64 - 48);
+            pos[0] = pos[0] + 1;
+        }
+        out[0] = v;
+        return 1;
+    }
+    // Not a closed expression (identifier found)
+    return 0;
+}
+
+fn ceval_shift(s: *u8, pos: *i32, out: *i64) -> i32 {
+    let ok: i32 = ceval_atom(s, pos, out);
+    if ok == 0 { return 0; }
+    while s[pos[0]] == 60 && s[pos[0] + 1] == 60
+       || s[pos[0]] == 62 && s[pos[0] + 1] == 62 {
+        let is_shl: i32 = s[pos[0]] == 60;
+        pos[0] = pos[0] + 2;
+        var rhs: i64 = 0;
+        let ok2: i32 = ceval_atom(s, pos, &rhs);
+        if ok2 == 0 { return 0; }
+        if is_shl == 1 { out[0] = out[0] << rhs; }
+        else { out[0] = out[0] >> rhs; }
+    }
+    return 1;
+}
+
+fn ceval_mul(s: *u8, pos: *i32, out: *i64) -> i32 {
+    let ok: i32 = ceval_shift(s, pos, out);
+    if ok == 0 { return 0; }
+    while s[pos[0]] == 42 { // '*'
+        pos[0] = pos[0] + 1;
+        var rhs: i64 = 0;
+        let ok2: i32 = ceval_shift(s, pos, &rhs);
+        if ok2 == 0 { return 0; }
+        out[0] = out[0] * rhs;
+    }
+    return 1;
+}
+
+fn ceval_add(s: *u8, pos: *i32, out: *i64) -> i32 {
+    let ok: i32 = ceval_mul(s, pos, out);
+    if ok == 0 { return 0; }
+    while s[pos[0]] == 43 || s[pos[0]] == 45 { // '+' or '-'
+        let is_add: i32 = s[pos[0]] == 43;
+        pos[0] = pos[0] + 1;
+        var rhs: i64 = 0;
+        let ok2: i32 = ceval_mul(s, pos, &rhs);
+        if ok2 == 0 { return 0; }
+        if is_add == 1 { out[0] = out[0] + rhs; }
+        else { out[0] = out[0] - rhs; }
+    }
+    return 1;
+}
+
 // Parse one type annotation, appending its text into g_type_buf at g_type_pos.
 // NOT NUL-terminated on return — caller writes the NUL.
 fn parse_type_str() {
@@ -2573,13 +2725,18 @@ fn parse_type_str() {
         g_type_pos = g_type_pos + 1;
         g_type_buf[g_type_pos] = 32; // ' '
         g_type_pos = g_type_pos + 1;
-        if p_peek() == TOK_IDENT {
-            // Const-generic size: keep the identifier name.
-            tbuf_push_str(&g_tokens[g_tok_pos].text[0]);
-            p_advance();
-        } else {
-            let n: u64 = p_take_int_u64("array size");
-            tbuf_push_u64(n);
+        // Array size: const expression (literal, ident, or arithmetic).
+        let axstart: i32 = g_type_pos;
+        var ahas_var: i32 = 0;
+        parse_tcx_add(&ahas_var);
+        if ahas_var == 0 {
+            g_type_buf[g_type_pos] = 0;
+            var aeval: i64 = 0;
+            let aok: i32 = constexpr_eval_str(&g_type_buf[axstart], &aeval);
+            if aok == 1 {
+                g_type_pos = axstart;
+                tbuf_push_u64(aeval as u64);
+            }
         }
         p_expect(TOK_RBRACKET);
         g_type_buf[g_type_pos] = 93; // ']'
@@ -2679,6 +2836,31 @@ fn parse_type_str() {
         g_type_buf[g_type_pos] = 62; // '>'
         g_type_pos = g_type_pos + 1;
         p_expect(TOK_GT);
+        return;
+    }
+
+    // Int<B> — magnitude-bounded integer. B is a const expression.
+    if p_peek() == TOK_TY_BINT {
+        p_advance();
+        tbuf_push_str("Int<");
+        p_expect(TOK_LT);
+        // Save start position to try closed-form evaluation.
+        let cxstart: i32 = g_type_pos;
+        var has_var: i32 = 0;
+        parse_tcx_add(&has_var);
+        if has_var == 0 {
+            // Closed expression: evaluate and rewrite as a decimal literal.
+            g_type_buf[g_type_pos] = 0;
+            var eval_result: i64 = 0;
+            let evok: i32 = constexpr_eval_str(&g_type_buf[cxstart], &eval_result);
+            if evok == 1 {
+                g_type_pos = cxstart;
+                tbuf_push_u64(eval_result as u64);
+            }
+        }
+        g_type_buf[g_type_pos] = 62; // '>'
+        g_type_pos = g_type_pos + 1;
+        p_expect_gt_generic();
         return;
     }
 
@@ -7748,6 +7930,8 @@ fn type_to_ir(type_off: i32) -> i32 {
     if str_eq(s, "u128") == 1 { return str_intern("i128"); }
     if str_eq(s, "i256") == 1 { return str_intern("i256"); }
     if str_eq(s, "u256") == 1 { return str_intern("i256"); }
+    // Int<B> bounded integer -> i64 (bounds are erased at IR level)
+    if type_is_bounded_int(type_off) == 1 { return str_intern("i64"); }
     // Pointer types: *T -> ptr
     if s[0] == 42 { return str_intern("ptr"); }
     // Fn-pointer types: "fn(...)..." -> ptr. The signature lives in the type
@@ -8034,6 +8218,8 @@ fn type_is_signed(type_off: i32) -> i32 {
     // sext i1 true -> 0xFFFF... (-1), corrupting `let b: i32 = (x == y);`.
     if s[0] == 105 && s[1] == 49 && s[2] == 0 { return 0; }  // "i1"
     if s[0] == 105 { return 1; }  // 'i' prefix: i8, i16, i32, i64
+    // Int<B> is signed (magnitude symmetric around zero)
+    if type_is_bounded_int(type_off) == 1 { return 1; }
     return 0;
 }
 
@@ -8186,6 +8372,41 @@ fn type_is_dyn(type_off: i32) -> i32 {
     // 'd'=100 'y'=121 'n'=110
     if s[0] == 100 && s[1] == 121 && s[2] == 110 && s[3] == 0 { return 1; }
     return 0;
+}
+
+// Check if a source type is Int<B> (magnitude-bounded integer).
+// Matches "Int<" prefix: 'I'=73 'n'=110 't'=116 '<'=60.
+fn type_is_bounded_int(type_off: i32) -> i32 {
+    if type_off == NULL_STR { return 0; }
+    let s: *u8 = &g_strings[type_off];
+    if s[0] == 73 && s[1] == 110 && s[2] == 116 && s[3] == 60 { return 1; }
+    return 0;
+}
+
+// Extract the bound from "Int<B>" as i64. The bound string starts at
+// offset 4 and ends before '>'. Returns 0 on parse failure.
+fn bounded_int_bound(type_off: i32) -> i64 {
+    let s: *u8 = &g_strings[type_off];
+    // Find content between '<' (pos 3) and '>'.
+    var pi: i32 = 4;
+    while s[pi] == 32 { pi = pi + 1; }
+    var val: i64 = 0;
+    while s[pi] >= 48 && s[pi] <= 57 {
+        val = val * 10 + (s[pi] as i64 - 48);
+        pi = pi + 1;
+    }
+    return val;
+}
+
+// Build "Int<N>" type string from a bound value and intern it.
+fn make_bounded_int_type(bound: i64) -> i32 {
+    g_type_pos = 0;
+    tbuf_push_str("Int<");
+    tbuf_push_u64(bound as u64);
+    g_type_buf[g_type_pos] = 62; // '>'
+    g_type_pos = g_type_pos + 1;
+    g_type_buf[g_type_pos] = 0;
+    return str_intern(g_type_buf);
 }
 
 // Check if a source type is the bare Field carrier type ("Field" exactly,
@@ -8572,6 +8793,7 @@ fn resolve_type_sub(type_off: i32) -> i32 {
             // Substitute both halves.
             let elem_sub: i32 = resolve_type_sub(elem_raw);
             var size_sub: i32 = size_raw;
+            // Direct name match first, then const-expr substitution.
             var cj: i32 = 0;
             while cj < g_gen_nsub {
                 if str_eq(&g_strings[g_gen_sub_names[cj]], &g_strings[size_raw]) == 1 {
@@ -8580,6 +8802,9 @@ fn resolve_type_sub(type_off: i32) -> i32 {
                 } else {
                     cj = cj + 1;
                 }
+            }
+            if size_sub == size_raw {
+                size_sub = resolve_constexpr_sub(size_raw);
             }
             // Rebuild only if either half changed.
             if elem_sub != elem_raw || size_sub != size_raw {
@@ -8603,11 +8828,95 @@ fn resolve_type_sub(type_off: i32) -> i32 {
             }
         }
     }
+    // Const-expression substitution: a string with operator chars and param
+    // names (e.g. "K*B1*B2") gets textual identifier replacement, then eval.
+    let cexpr_r: i32 = resolve_constexpr_sub(type_off);
+    if cexpr_r != type_off { return cexpr_r; }
     // Generic-application match: "Vec<T>" -> "Vec<i32>", "Pair<K,V>" ->
     // "Pair<i32,u8>".  Delegated to resolve_type_sub_genapp (B1a Slice 1).
     let genapp: i32 = resolve_type_sub_genapp(type_off);
     if genapp != type_off { return genapp; }
     return type_off;
+}
+
+// Substitute const-param names inside a const-expression string. Scans for
+// identifiers, replaces those matching active gen_sub params with their
+// concrete values, then evaluates the result if fully closed.
+fn resolve_constexpr_sub(type_off: i32) -> i32 {
+    if g_gen_nsub == 0 { return type_off; }
+    let s: *u8 = &g_strings[type_off];
+    // Quick check: does the string contain an operator char? If not, skip.
+    var has_op: i32 = 0;
+    var qi: i32 = 0;
+    while s[qi] != 0 {
+        if s[qi] == 42 || s[qi] == 43 || s[qi] == 45
+        || s[qi] == 60 || s[qi] == 62 { has_op = 1; }
+        qi = qi + 1;
+    }
+    if has_op == 0 { return type_off; }
+    // Build a substituted copy in g_type_buf.
+    let slen: i32 = qi;
+    var changed: i32 = 0;
+    var si: i32 = 0;
+    var di: i32 = 0;
+    while si < slen {
+        // Identifier: [A-Za-z_][A-Za-z0-9_]*
+        if (s[si] >= 65 && s[si] <= 90) || (s[si] >= 97 && s[si] <= 122)
+        || s[si] == 95 {
+            var ie: i32 = si + 1;
+            while ie < slen && ((s[ie] >= 65 && s[ie] <= 90)
+                || (s[ie] >= 97 && s[ie] <= 122)
+                || (s[ie] >= 48 && s[ie] <= 57) || s[ie] == 95) {
+                ie = ie + 1;
+            }
+            // Try to match this identifier against substitution params.
+            let save: u8 = s[ie];
+            g_strings[type_off + ie] = 0;
+            let id_off: i32 = str_intern(&g_strings[type_off + si]);
+            g_strings[type_off + ie] = save;
+            var matched: i32 = 0;
+            var mi: i32 = 0;
+            while mi < g_gen_nsub {
+                if str_eq(&g_strings[g_gen_sub_names[mi]], &g_strings[id_off]) == 1 {
+                    // Copy the concrete value into the output.
+                    let rep: *u8 = &g_strings[g_gen_sub_types[mi]];
+                    var ri: i32 = 0;
+                    while rep[ri] != 0 {
+                        g_type_buf[di] = rep[ri];
+                        di = di + 1; ri = ri + 1;
+                    }
+                    matched = 1;
+                    changed = 1;
+                    mi = g_gen_nsub;
+                } else {
+                    mi = mi + 1;
+                }
+            }
+            if matched == 0 {
+                // Copy the identifier unchanged.
+                var ci: i32 = si;
+                while ci < ie { g_type_buf[di] = s[ci]; di = di + 1; ci = ci + 1; }
+            }
+            si = ie;
+        } else {
+            g_type_buf[di] = s[si];
+            di = di + 1; si = si + 1;
+        }
+    }
+    g_type_buf[di] = 0;
+    if changed == 0 { return type_off; }
+    // Try to evaluate the fully substituted expression.
+    var eval_val: i64 = 0;
+    let evok: i32 = constexpr_eval_str(g_type_buf, &eval_val);
+    if evok == 1 {
+        // Closed: intern the decimal result.
+        g_type_pos = 0;
+        tbuf_push_u64(eval_val as u64);
+        g_type_buf[g_type_pos] = 0;
+        return str_intern(g_type_buf);
+    }
+    // Partially substituted: intern as-is.
+    return str_intern(g_type_buf);
 }
 
 // Substitute generic params into a "Base<args>" application type. Without this
@@ -9523,6 +9832,44 @@ fn unify_gen_param(decl_off: i32, actual_off: i32, gp_name: i32) -> i32 {
     let gp: *u8 = &g_strings[gp_name];
     if str_eq(&d[di], gp) == 1 {
         return str_intern(&a[aj]);
+    }
+    // Array match: "[T; N]" vs "[T2; M]" — unify element and size.
+    if d[di] == 91 && a[aj] == 91 {
+        let dd: i32 = str_intern(&d[di]);
+        let aa: i32 = str_intern(&a[aj]);
+        let d_elem: i32 = type_array_elem(dd);
+        let a_elem: i32 = type_array_elem(aa);
+        // Try element type first.
+        let ef: i32 = unify_gen_param(d_elem, a_elem, gp_name);
+        if ef != NULL_STR { return ef; }
+        // Try array size: extract size strings after "; ".
+        let ds: *u8 = &g_strings[dd];
+        var dsi: i32 = 1;
+        while ds[dsi] != 59 && ds[dsi] != 0 { dsi = dsi + 1; }
+        dsi = dsi + 1;
+        while ds[dsi] == 32 { dsi = dsi + 1; }
+        var dse: i32 = dsi;
+        while ds[dse] != 93 && ds[dse] != 0 { dse = dse + 1; }
+        let dsave: u8 = g_strings[dd + dse];
+        g_strings[dd + dse] = 0;
+        let d_size: i32 = str_intern(&g_strings[dd + dsi]);
+        g_strings[dd + dse] = dsave;
+        let as2: *u8 = &g_strings[aa];
+        var asi: i32 = 1;
+        while as2[asi] != 59 && as2[asi] != 0 { asi = asi + 1; }
+        asi = asi + 1;
+        while as2[asi] == 32 { asi = asi + 1; }
+        var ase: i32 = asi;
+        while as2[ase] != 93 && as2[ase] != 0 { ase = ase + 1; }
+        let asave: u8 = g_strings[aa + ase];
+        g_strings[aa + ase] = 0;
+        let a_size: i32 = str_intern(&g_strings[aa + asi]);
+        g_strings[aa + ase] = asave;
+        // If declared size is exactly gp_name, bind it.
+        if str_eq(&g_strings[d_size], gp) == 1 {
+            return a_size;
+        }
+        return NULL_STR;
     }
     // Both must be generic applications "Base<...>" to recurse.
     let d_decl: i32 = str_intern(&d[di]);
@@ -10680,6 +11027,16 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             return IRValue { reg: r, type_off: eff_type };
         }
+        // Int<B> context: emit i64 literal, type as Int<|val|>.
+        if type_is_bounded_int(eff_type) == 1 {
+            var abs_val: i64 = val as i64;
+            if abs_val < 0 { abs_val = 0 - abs_val; }
+            let lit_type: i32 = make_bounded_int_type(abs_val);
+            let r: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(r); ir_wr(" = add i64 0, ");
+            ir_wr_int(val as i64); ir_wr("\n");
+            return IRValue { reg: r, type_off: lit_type };
+        }
         // If context is a field type, apply safe modulation
         let fi: i32 = find_field_by_alias(eff_type);
         if fi >= 0 {
@@ -10920,6 +11277,49 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             g_last_repr = REPR_STANDARD;
             return IRValue { reg: res_r, type_off: ctx_type };
+        }
+        // Int<B> bounded-integer arithmetic: propagate bounds, emit i64 ops.
+        if type_is_bounded_int(ctx_type) == 1
+        || type_is_bounded_int(resolve_type_sub(peek_operand_type(g_nodes[node].child0))) == 1 {
+            var bint_ctx: i32 = ctx_type;
+            if type_is_bounded_int(bint_ctx) == 0 {
+                bint_ctx = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
+            }
+            // Comparisons: emit i64 icmp, return i1.
+            if op >= OP_EQ && op <= OP_GE {
+                let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
+                let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = icmp ");
+                if op == OP_EQ  { ir_wr("eq "); }
+                if op == OP_NEQ { ir_wr("ne "); }
+                if op == OP_LT  { ir_wr("slt "); }
+                if op == OP_GT  { ir_wr("sgt "); }
+                if op == OP_LE  { ir_wr("sle "); }
+                if op == OP_GE  { ir_wr("sge "); }
+                ir_wr("i64 "); ir_wr_reg(bl.reg);
+                ir_wr(", "); ir_wr_reg(br.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: str_intern("i1") };
+            }
+            // Arithmetic with bound propagation (+,-,*).
+            if op == OP_ADD || op == OP_SUB || op == OP_MUL {
+                let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
+                let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                let lb: i64 = bounded_int_bound(bl.type_off);
+                let rb: i64 = bounded_int_bound(br.type_off);
+                var new_bound: i64 = 0;
+                if op == OP_ADD || op == OP_SUB { new_bound = lb + rb; }
+                if op == OP_MUL { new_bound = lb * rb; }
+                let res_type: i32 = make_bounded_int_type(new_bound);
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr);
+                if op == OP_ADD { ir_wr(" = add i64 "); }
+                if op == OP_SUB { ir_wr(" = sub i64 "); }
+                if op == OP_MUL { ir_wr(" = mul i64 "); }
+                ir_wr_reg(bl.reg); ir_wr(", "); ir_wr_reg(br.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Other ops (shift, div, mod, bitwise): fall through to i64 path.
         }
         // Pow: RHS is exponent type (i32 or i64), not field element type
         var rhs_ctx: i32 = ctx_type;
