@@ -9,8 +9,9 @@ fn read_as_i64(p: *i64) -> i64 {
 }
 
 fn main() -> i32 {
-    // &local as *i64: no parens needed.
-    var x: i32 = 41;
+    // &local as *i64: no parens needed. (x is i64: the pointer type and
+    // the pointee's storage width must agree.)
+    var x: i64 = 41;
     let p: *i64 = &x as *i64 as *i64;    // chained: ((&x) as *i64) as *i64
     print(read_as_i64(p));               // 41
 
