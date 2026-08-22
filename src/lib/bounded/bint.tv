@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0
+// bounded/bint.tv -- magnitude-bounded integer operations.
+// Int<B> tracks |x| <= B at the type level. All ops lower to i64.
+// Bound propagation: add/sub -> b1+b2, mul -> b1*b2,
+// dot(K terms) -> K*b1*b2.
+// (design-notes/bounded-int-plan.md "goal")
+
+// Dot product: sum of element-wise products, K terms.
+// Result bound: each product <= B1*B2, K terms -> K*B1*B2.
+fn dot<const K, const B1, const B2>(x: *Int<B1>, w: *Int<B2>) -> Int<K*B1*B2> {
+    var acc: i64 = 0;
+    var i: i32 = 0;
+    while i < K {
+        acc = acc + (x[i] as i64) * (w[i] as i64);
+        i = i + 1;
+    }
+    return acc as Int<K*B1*B2>;
+}
+
+// Sum of K bounded values.
+fn sum<const K, const B>(x: *Int<B>) -> Int<K*B> {
+    var acc: i64 = 0;
+    var i: i32 = 0;
+    while i < K {
+        acc = acc + x[i] as i64;
+        i = i + 1;
+    }
+    return acc as Int<K*B>;
+}
+
+// Scale by a bounded constant.
+fn scale<const B1, const B2>(x: Int<B1>, c: Int<B2>) -> Int<B1*B2> {
+    return (x as i64 * c as i64) as Int<B1*B2>;
+}

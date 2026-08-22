@@ -361,6 +361,44 @@ emit a `__udivti3`/`__udivei4`-class libcall, which the C-free trust chain does
 not admit. The value carriers used by the wide-field path (§16.16, §17.10) are
 built on these types.
 
+### 3.1.1 Magnitude-Bounded Integers
+
+```
+Int<B>      signed 64-bit integer with |x| <= B at the type level
+```
+
+`Int<B>` is a refinement type over `i64`. The bound `B` is a compile-time
+constant expression (literals, `const` generic params, and `+ - * << >>`).
+Every `Int<B>` lowers to `i64`; bounds are erased at codegen.
+
+**Bound propagation.** Arithmetic on bounded integers computes the result
+bound at the type level:
+
+| Operation       | Result type     |
+|-----------------|-----------------|
+| `Int<a> + Int<b>` | `Int<a+b>`    |
+| `Int<a> - Int<b>` | `Int<a+b>`    |
+| `Int<a> * Int<b>` | `Int<a*b>`    |
+| unary `-Int<a>`   | `Int<a>`      |
+
+Comparisons return `i1`. Other operators (shift, div, bitwise) fall through
+to `i64` semantics.
+
+**Subsumption.** `Int<a>` is implicitly usable where `Int<b>` is expected
+when `a <= b`. Both sides are `i64`; no runtime cost.
+
+**Const expressions in type arguments.** Type argument positions (inside
+`Int<...>`, array sizes `[T; ...]`) accept arithmetic expressions over
+literals and `const` generic parameters. Closed expressions evaluate at
+parse time: `Int<3*4>` interns as `Int<12>`.
+
+**Generic inference.** A bare `const` parameter in `Int<B>` or array size
+`[T; K]` position binds from the concrete argument type. Compound
+expressions (`K*B1*B2`) appear only where all parameters are already bound.
+
+**Conversions.** `Int<B>` converts freely to `i64` via `as i64`. The
+reverse (`i64 as Int<B>`) is an unchecked cast.
+
 ### 3.2 Field Types
 
 #### 3.2.1 Prime Fields

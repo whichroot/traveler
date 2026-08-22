@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// bounded_int.tv -- test Int<B> magnitude-bounded integers.
+// Verifies type parsing, bound propagation, and codegen.
+
+fn add_bounded<const A, const B>(x: Int<A>, y: Int<B>) -> Int<A+B> {
+    return (x as i64 + y as i64) as Int<A+B>;
+}
+
+fn mul_bounded<const A, const B>(x: Int<A>, y: Int<B>) -> Int<A*B> {
+    return (x as i64 * y as i64) as Int<A*B>;
+}
+
+fn scale_ten(x: Int<10>) -> Int<100> {
+    let ten: Int<10> = 10;
+    return (x as i64 * ten as i64) as Int<100>;
+}
+
+fn main() -> i32 {
+    // Basic Int<B> arithmetic: add.
+    let a: Int<10> = 3;
+    let b: Int<20> = 7;
+    let c: Int<30> = a + b;
+    print(c as i64);
+
+    // Multiplication propagates bound.
+    let d: Int<200> = a * b;
+    print(d as i64);
+
+    // Subtraction propagates bound.
+    let e: Int<30> = a - b;
+    print(e as i64);
+
+    // Const-expr evaluation: Int<3*4> normalizes to Int<12>.
+    let g: Int<3*4> = 11;
+    print(g as i64);
+
+    // Implicit widening: Int<5> -> Int<100>.
+    let small: Int<5> = 3;
+    let big: Int<100> = small;
+    print(big as i64);
+
+    // Concrete function with bounded args.
+    let s: Int<100> = scale_ten(a);
+    print(s as i64);
+
+    // Generic add.
+    let h: Int<10> = 4;
+    let j: Int<20> = 6;
+    let sum_r: Int<30> = add_bounded(h, j);
+    print(sum_r as i64);
+
+    // Generic mul.
+    let prod_r: Int<200> = mul_bounded(h, j);
+    print(prod_r as i64);
+
+    return 0;
+}
