@@ -1,0 +1,5 @@
+// Diagnostics: top-level shifts in type expressions must be parenthesized.
+fn main() {
+    let a: Int<1<<4> = 15;
+    return;
+}

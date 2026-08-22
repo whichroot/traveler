@@ -1,0 +1,6 @@
+// Diagnostics: assigning a wider Int into a narrower one must fail.
+fn main() {
+    let wide: Int<100> = 50;
+    let narrow: Int<5> = wide;
+    return;
+}

@@ -1,0 +1,1 @@
+parenthesize shift expressions in type position

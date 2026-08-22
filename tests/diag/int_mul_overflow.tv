@@ -1,0 +1,7 @@
+// Diagnostics: a propagated bound past i64 capacity must fail.
+fn main() {
+    let a: Int<4000000000> = 1000000000;
+    let b: Int<4000000000> = 1000000000;
+    let c = a * b;
+    return;
+}

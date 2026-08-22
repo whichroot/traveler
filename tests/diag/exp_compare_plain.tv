@@ -1,0 +1,7 @@
+// Diagnostics: comparing an Exp value with a plain integer must fail.
+fn main() {
+    let x: Exp<16> = 65536;
+    var k: i64 = 5;
+    if x == k { print(1); }
+    return;
+}

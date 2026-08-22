@@ -1,0 +1,6 @@
+// Diagnostics: a plain integer needs an explicit cast to become Int.
+fn main() {
+    var k: i64 = 3;
+    let x: Int<5> = k;
+    return;
+}

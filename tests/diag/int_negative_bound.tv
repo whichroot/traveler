@@ -1,0 +1,5 @@
+// Diagnostics: a negative type-level bound must fail.
+fn main() {
+    let z: Int<3-8> = 0;
+    return;
+}

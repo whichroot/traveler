@@ -2496,6 +2496,10 @@ var g_type_pos: i32 = 0;
 // When set, parse_type_str does NOT consume a trailing `<...>` as generics —
 // the `as` cast target: `x as i64 < y` leaves `<` as less-than. Cleared per cast.
 var g_type_no_generic: i32 = 0;
+// Paren depth during const-expr parsing in type position. Top-level shifts
+// are refused: "<<" / ">>" inside a stored type string must sit inside
+// parens, else the generic splitter cannot tell them from angle brackets.
+var g_tcx_depth: i32 = 0;
 
 fn tbuf_push_str(s: *u8) {
     var i: i32 = 0;
@@ -2534,7 +2538,9 @@ fn parse_tcx_atom(has_var: *i32) {
         g_type_buf[g_type_pos] = 40; // '('
         g_type_pos = g_type_pos + 1;
         p_advance();
+        g_tcx_depth = g_tcx_depth + 1;
         parse_tcx_add(has_var);
+        g_tcx_depth = g_tcx_depth - 1;
         g_type_buf[g_type_pos] = 41; // ')'
         g_type_pos = g_type_pos + 1;
         p_expect(TOK_RPAREN);
@@ -2549,6 +2555,11 @@ fn parse_tcx_atom(has_var: *i32) {
 fn parse_tcx_shift(has_var: *i32) {
     parse_tcx_atom(has_var);
     while p_peek() == TOK_SHL || p_peek() == TOK_SHR {
+        if g_tcx_depth == 0 {
+            diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+            derr("parenthesize shift expressions in type position (e.g. Int<(N<<2)>)");
+            diag_end();
+        }
         if p_peek() == TOK_SHL {
             tbuf_push_str("<<");
         } else {
@@ -2735,6 +2746,12 @@ fn parse_type_str() {
             g_type_buf[g_type_pos] = 0;
             var aeval: i64 = 0;
             let aok: i32 = constexpr_eval_str(&g_type_buf[axstart], &aeval);
+            if aok == 1 && aeval < 0 {
+                diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+                derr("array size expression must be non-negative");
+                diag_end();
+                aeval = 0;
+            }
             if aok == 1 {
                 g_type_pos = axstart;
                 tbuf_push_u64(aeval as u64);
@@ -2855,6 +2872,12 @@ fn parse_type_str() {
             g_type_buf[g_type_pos] = 0;
             var eval_result: i64 = 0;
             let evok: i32 = constexpr_eval_str(&g_type_buf[cxstart], &eval_result);
+            if evok == 1 && eval_result < 0 {
+                diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+                derr("Int bound expression must be non-negative");
+                diag_end();
+                eval_result = 0;
+            }
             if evok == 1 {
                 g_type_pos = cxstart;
                 tbuf_push_u64(eval_result as u64);
@@ -2878,6 +2901,12 @@ fn parse_type_str() {
             g_type_buf[g_type_pos] = 0;
             var exeval: i64 = 0;
             let exok: i32 = constexpr_eval_str(&g_type_buf[exstart], &exeval);
+            if exok == 1 && (exeval < 0 || exeval > 62) {
+                diag_begin(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col);
+                derr("Exp scale must be in 0..62");
+                diag_end();
+                exeval = 0;
+            }
             if exok == 1 {
                 g_type_pos = exstart;
                 tbuf_push_u64(exeval as u64);
@@ -8471,6 +8500,81 @@ fn make_exp_type(scale: i64) -> i32 {
     return str_intern(g_type_buf);
 }
 
+// Validate both operands of an Int<B> binop after codegen. Literals arrive
+// family-typed via the binop ctx; a plain integer means a variable/call,
+// which carries no bound — refuse. Mixing with Exp is a distinct diag.
+fn bint_check_operands(lt: i32, rt: i32, ln: i32, cl: i32) {
+    if type_is_exp(lt) == 1 || type_is_exp(rt) == 1 {
+        diag_error_at(ln, cl,
+            "cannot mix Int<B> and Exp<E> operands; cast explicitly with `as`");
+        return;
+    }
+    if type_is_bounded_int(lt) == 0 || type_is_bounded_int(rt) == 0 {
+        diag_error_at(ln, cl,
+            "cannot combine Int<B> with a plain integer; cast with `as Int<B>`");
+    }
+}
+
+// Validate an Exp binop operand pair after codegen. dimless_ok=1 for mul/div
+// (a plain integer is a dimensionless scalar); add/sub/compare pass 0.
+fn exp_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
+    if type_is_bounded_int(lt) == 1 || type_is_bounded_int(rt) == 1 {
+        diag_error_at(ln, cl,
+            "cannot mix Int<B> and Exp<E> operands; cast explicitly with `as`");
+        return;
+    }
+    if dimless_ok == 0 {
+        let le: i32 = type_is_exp(lt);
+        let re: i32 = type_is_exp(rt);
+        if le != re {
+            diag_error_at(ln, cl,
+                "cannot combine an Exp value with a plain integer; cast with `as Exp<E>`");
+        }
+    }
+}
+
+// Coercion coherence for Int<B>/Exp<E> destinations (let, assign, return,
+// call args). Same family: Int requires value bound <= dest bound; Exp
+// requires equal scales. Plain-integer or cross-family sources need an
+// explicit `as` cast. Open (generic-param) bounds skip — digits unparseable.
+fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
+    if val_type == NULL_STR || dst_type == NULL_STR { return; }
+    var v2: i32 = resolve_type_sub(val_type);
+    var d2: i32 = resolve_type_sub(dst_type);
+    // Strip one matching pointer star (call params are often *Int<B>).
+    if type_is_ptr(v2) == 1 && type_is_ptr(d2) == 1 {
+        v2 = type_pointee(v2);
+        d2 = type_pointee(d2);
+    }
+    let d_int: i32 = type_is_bounded_int(d2);
+    let d_exp: i32 = type_is_exp(d2);
+    if d_int == 0 && d_exp == 0 { return; }
+    let v_int: i32 = type_is_bounded_int(v2);
+    let v_exp: i32 = type_is_exp(v2);
+    if (d_int == 1 && v_int == 0) || (d_exp == 1 && v_exp == 0) {
+        diag_error_at(ln, cl,
+            "cannot convert a value to Int<B>/Exp<E> without an explicit `as` cast");
+        return;
+    }
+    // Open types: bound/scale text is a param, not digits — skip.
+    let dstr: *u8 = &g_strings[d2];
+    let vstr: *u8 = &g_strings[v2];
+    if dstr[4] < 48 || dstr[4] > 57 { return; }
+    if vstr[4] < 48 || vstr[4] > 57 { return; }
+    if d_int == 1 {
+        if bounded_int_bound(v2) > bounded_int_bound(d2) {
+            diag_error_at(ln, cl,
+                "Int bound of the value exceeds the destination bound");
+        }
+    }
+    if d_exp == 1 {
+        if exp_scale(v2) != exp_scale(d2) {
+            diag_error_at(ln, cl,
+                "Exp scale of the value differs from the destination scale; use requant");
+        }
+    }
+}
+
 // Check if a source type is the bare Field carrier type ("Field" exactly,
 // no '<'). The runtime Field object, ptr to %__Field.
 fn type_is_field_value(type_off: i32) -> i32 {
@@ -8908,13 +9012,25 @@ fn resolve_constexpr_sub(type_off: i32) -> i32 {
     if g_gen_nsub == 0 { return type_off; }
     let s: *u8 = &g_strings[type_off];
     // Quick check: does the string contain an operator char? If not, skip.
+    // A lone '<' or '>' is TYPE syntax ("Exp<E1+E2>") — the genapp recursion
+    // handles those; this pass only applies to bare expr strings. Paired
+    // "<<"/">>" inside parens are shift operators and stay.
     var has_op: i32 = 0;
     var qi: i32 = 0;
-    while s[qi] != 0 {
-        if s[qi] == 42 || s[qi] == 43 || s[qi] == 45
-        || s[qi] == 60 || s[qi] == 62 { has_op = 1; }
+    var bail: i32 = 0;
+    while s[qi] != 0 && bail == 0 {
+        if s[qi] == 42 || s[qi] == 43 || s[qi] == 45 { has_op = 1; }
+        if s[qi] == 60 {
+            if s[qi + 1] == 60 { has_op = 1; qi = qi + 1; }
+            else { bail = 1; }
+        }
+        if s[qi] == 62 {
+            if s[qi + 1] == 62 { has_op = 1; qi = qi + 1; }
+            else { bail = 1; }
+        }
         qi = qi + 1;
     }
+    if bail == 1 { return type_off; }
     if has_op == 0 { return type_off; }
     // Build a substituted copy in g_type_buf.
     let slen: i32 = qi;
@@ -8971,6 +9087,12 @@ fn resolve_constexpr_sub(type_off: i32) -> i32 {
     var eval_val: i64 = 0;
     let evok: i32 = constexpr_eval_str(g_type_buf, &eval_val);
     if evok == 1 {
+        if eval_val < 0 {
+            diag_begin(0, 0);
+            derr("type-level expression evaluated to a negative value");
+            diag_end();
+            exit(1);
+        }
         // Closed: intern the decimal result.
         g_type_pos = 0;
         tbuf_push_u64(eval_val as u64);
@@ -9154,20 +9276,28 @@ fn monomorphize_n(fci: i32, conc_types: *i32, nconc: i32) -> i32 {
     // Register as a concrete function in g_funcs
     let mangled: i32 = g_mono[mi].mangled_name;
     let fn_node: i32 = g_funcs[fci].node;
-    // Return type with per-param substitution: a declared return naming param
-    // gi resolves to that param's concrete type.
+    // Return type with full per-param substitution. The old exact-name match
+    // left compound const-expr returns ("Exp<E1+E2>") as template strings;
+    // run the real subst over a temporary param->concrete context instead.
     let orig_ret: i32 = g_funcs[fci].ret_type;
     var mono_ret: i32 = orig_ret;
     let gen_s: i32 = g_funcs[fci].gen_start;
     let ngen: i32 = g_funcs[fci].ngen;
-    var gi: i32 = 0;
-    while gi < ngen {
-        if orig_ret != NULL_STR && gi < nconc {
-            if str_eq(&g_strings[g_gen_names[gen_s + gi]], &g_strings[orig_ret]) == 1 {
-                mono_ret = conc_types[gi];
+    if orig_ret != NULL_STR && ngen > 0 {
+        let saved_nsub: i32 = g_gen_nsub;
+        g_gen_nsub = ngen;
+        var gi: i32 = 0;
+        while gi < ngen {
+            g_gen_sub_names[gi] = g_gen_names[gen_s + gi];
+            if gi < nconc {
+                g_gen_sub_types[gi] = conc_types[gi];
+            } else {
+                g_gen_sub_types[gi] = conc_types[0];
             }
+            gi = gi + 1;
         }
-        gi = gi + 1;
+        mono_ret = resolve_type_sub(orig_ret);
+        g_gen_nsub = saved_nsub;
     }
     g_funcs[g_nfuncs].name = mangled;
     g_funcs[g_nfuncs].ret_type = mono_ret;
@@ -9478,17 +9608,22 @@ fn struct_split_generic(type_off: i32, base_out: *i32, conc_out: *i32) -> i32 {
     let base_name: i32 = str_intern(&g_strings[type_off]);
     g_strings[type_off + i] = save;
     base_out[0] = base_name;
-    // Parse arguments between the outer < >.
+    // Parse arguments between the outer < >. Paren depth shields the angle
+    // counter from shift operators inside const-expr args ("(N<<2)") and
+    // the comma splitter from fn-pointer arg lists ("fn(i32,i32)->R").
     var nconc: i32 = 0;
     var j: i32 = i + 1;       // first char after '<'
     var arg_start: i32 = j;
     var depth: i32 = 0;
+    var pdepth: i32 = 0;
     var done: i32 = 0;
     while done == 0 {
         let c: u8 = s[j];
         if c == 0 { done = 1; }
-        else if c == 60 { depth = depth + 1; j = j + 1; }
-        else if c == 62 {
+        else if c == 40 { pdepth = pdepth + 1; j = j + 1; }
+        else if c == 41 { pdepth = pdepth - 1; j = j + 1; }
+        else if c == 60 && pdepth == 0 { depth = depth + 1; j = j + 1; }
+        else if c == 62 && pdepth == 0 {
             if depth == 0 {
                 // Closing outer '>': finish the current arg.
                 let asave: u8 = s[j];
@@ -9502,7 +9637,7 @@ fn struct_split_generic(type_off: i32, base_out: *i32, conc_out: *i32) -> i32 {
                 j = j + 1;
             }
         }
-        else if c == 44 && depth == 0 {
+        else if c == 44 && depth == 0 && pdepth == 0 {
             // Top-level comma: finish current arg, start next.
             let asave: u8 = s[j];
             g_strings[type_off + j] = 0;
@@ -11093,6 +11228,14 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         if type_is_bounded_int(eff_type) == 1 {
             var abs_val: i64 = val as i64;
             if abs_val < 0 { abs_val = 0 - abs_val; }
+            // The literal must fit the context bound; the bound itself is
+            // unchecked for open (param) types, whose digits don't parse.
+            let ctx_bound: i64 = bounded_int_bound(eff_type);
+            let ctx_str: *u8 = &g_strings[eff_type];
+            if ctx_str[4] >= 48 && ctx_str[4] <= 57 && abs_val > ctx_bound {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "integer literal exceeds the Int<B> bound of its context");
+            }
             let lit_type: i32 = make_bounded_int_type(abs_val);
             let r: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(r); ir_wr(" = add i64 0, ");
@@ -11348,16 +11491,22 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             return IRValue { reg: res_r, type_off: ctx_type };
         }
         // Int<B> bounded-integer arithmetic: propagate bounds, emit i64 ops.
+        // Trigger on ctx or EITHER operand peek (rhs-only Int with null ctx
+        // otherwise falls into width harmonization and mis-types).
+        let int_lpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
+        let int_rpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child1));
         if type_is_bounded_int(ctx_type) == 1
-        || type_is_bounded_int(resolve_type_sub(peek_operand_type(g_nodes[node].child0))) == 1 {
+        || type_is_bounded_int(int_lpeek) == 1
+        || type_is_bounded_int(int_rpeek) == 1 {
             var bint_ctx: i32 = ctx_type;
-            if type_is_bounded_int(bint_ctx) == 0 {
-                bint_ctx = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
-            }
+            if type_is_bounded_int(bint_ctx) == 0 { bint_ctx = int_lpeek; }
+            if type_is_bounded_int(bint_ctx) == 0 { bint_ctx = int_rpeek; }
             // Comparisons: emit i64 icmp, return i1.
             if op >= OP_EQ && op <= OP_GE {
                 let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
                 let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                bint_check_operands(bl.type_off, br.type_off,
+                    g_nodes[node].line, g_nodes[node].col);
                 let cr: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(cr); ir_wr(" = icmp ");
                 if op == OP_EQ  { ir_wr("eq "); }
@@ -11374,8 +11523,22 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             if op == OP_ADD || op == OP_SUB || op == OP_MUL {
                 let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
                 let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                bint_check_operands(bl.type_off, br.type_off,
+                    g_nodes[node].line, g_nodes[node].col);
                 let lb: i64 = bounded_int_bound(bl.type_off);
                 let rb: i64 = bounded_int_bound(br.type_off);
+                // The bound product/sum must fit i64. Bounds are non-negative,
+                // so the guards are division/subtraction identities; the C
+                // seed maps i128 to void, so no wide intermediate here.
+                let I64_MAX: i64 = 9223372036854775807;
+                if (op == OP_ADD || op == OP_SUB) && lb > I64_MAX - rb {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "Int bound exceeds i64 capacity; narrow the operands");
+                }
+                if op == OP_MUL && rb > 0 && lb > I64_MAX / rb {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "Int bound exceeds i64 capacity; narrow the operands");
+                }
                 var new_bound: i64 = 0;
                 if op == OP_ADD || op == OP_SUB { new_bound = lb + rb; }
                 if op == OP_MUL { new_bound = lb * rb; }
@@ -11388,23 +11551,52 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr_reg(bl.reg); ir_wr(", "); ir_wr_reg(br.reg); ir_wr("\n");
                 return IRValue { reg: cr, type_off: res_type };
             }
-            // Other ops (shift, div, mod, bitwise): fall through to i64 path.
+            // Division and arithmetic right-shift cannot grow magnitude:
+            // the result keeps the LHS bound. Both still need family operands.
+            if op == OP_DIV || op == OP_SHR {
+                let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
+                let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                bint_check_operands(bl.type_off, br.type_off,
+                    g_nodes[node].line, g_nodes[node].col);
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr);
+                if op == OP_DIV { ir_wr(" = sdiv i64 "); }
+                else { ir_wr(" = ashr i64 "); }
+                ir_wr_reg(bl.reg); ir_wr(", "); ir_wr_reg(br.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: bl.type_off };
+            }
+            // <<, %, bitwise on Int: refused (bound would be wrong or meaningless).
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "this operator is not defined on Int<B> values");
+            let bint_poison: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(bint_poison); ir_wr(" = add i64 0, 0\n");
+            return IRValue { reg: bint_poison, type_off: bint_ctx };
         }
         // Exp<E> scale-typed arithmetic: propagate/enforce scales.
-        let exp_lhs_ty: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
-        if type_is_exp(ctx_type) == 1 || type_is_exp(exp_lhs_ty) == 1 {
+        let exp_lpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
+        let exp_rpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child1));
+        if type_is_exp(ctx_type) == 1 || type_is_exp(exp_lpeek) == 1
+        || type_is_exp(exp_rpeek) == 1 {
             var exp_ctx: i32 = ctx_type;
-            if type_is_exp(exp_ctx) == 0 { exp_ctx = exp_lhs_ty; }
+            if type_is_exp(exp_ctx) == 0 { exp_ctx = exp_lpeek; }
+            if type_is_exp(exp_ctx) == 0 { exp_ctx = exp_rpeek; }
             let i64_type: i32 = str_intern("i64");
             // Multiplication: both Exp -> add scales; Exp * dimless -> keep.
             if op == OP_MUL {
                 let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
                 let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                exp_check_operands(el.type_off, er.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 1);
                 let l_is_exp: i32 = type_is_exp(el.type_off);
                 let r_is_exp: i32 = type_is_exp(er.type_off);
                 var res_type: i32 = el.type_off;
                 if l_is_exp == 1 && r_is_exp == 1 {
-                    res_type = make_exp_type(exp_scale(el.type_off) + exp_scale(er.type_off));
+                    let esum: i64 = exp_scale(el.type_off) + exp_scale(er.type_off);
+                    if esum > 62 {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "combined Exp scale exceeds 62; requant before multiplying");
+                    }
+                    res_type = make_exp_type(esum);
                 } else if l_is_exp == 1 {
                     res_type = el.type_off;
                 } else {
@@ -11419,6 +11611,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             if op == OP_DIV {
                 let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
                 let er: IRValue = codegen_expr(g_nodes[node].child1, i64_type);
+                exp_check_operands(el.type_off, er.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 1);
                 let l_is_exp: i32 = type_is_exp(el.type_off);
                 let r_is_exp: i32 = type_is_exp(er.type_off);
                 var res_type: i32 = el.type_off;
@@ -11443,6 +11637,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             if op == OP_ADD || op == OP_SUB {
                 let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
                 let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                exp_check_operands(el.type_off, er.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 0);
                 let l_is_exp: i32 = type_is_exp(el.type_off);
                 let r_is_exp: i32 = type_is_exp(er.type_off);
                 if l_is_exp == 1 && r_is_exp == 1 {
@@ -11461,10 +11657,12 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
                 return IRValue { reg: cr, type_off: el.type_off };
             }
-            // Comparisons: require equal scales.
+            // Comparisons: require equal scales, both sides Exp.
             if op >= OP_EQ && op <= OP_GE {
                 let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
                 let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                exp_check_operands(el.type_off, er.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 0);
                 if type_is_exp(el.type_off) == 1 && type_is_exp(er.type_off) == 1 {
                     if exp_scale(el.type_off) != exp_scale(er.type_off) {
                         diag_error_at(g_nodes[node].line, g_nodes[node].col,
@@ -11492,6 +11690,10 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 }
                 let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
                 let shift_k: i64 = g_nodes[rhs_node].int_val as i64;
+                if shift_k < 0 || shift_k > 62 {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "shift amount on an Exp value must be in 0..62");
+                }
                 let cur_e: i64 = exp_scale(el.type_off);
                 var new_e: i64 = cur_e;
                 if op == OP_SHL { new_e = cur_e + shift_k; }
@@ -13000,6 +13202,11 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 return IRValue { reg: rq_arg.reg, type_off: resolve_type_sub(ctx_type) };
             }
             let shift_amt: i64 = src_e - dst_d;
+            if src_e > 62 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "requant source scale exceeds 62");
+                return IRValue { reg: rq_arg.reg, type_off: resolve_type_sub(ctx_type) };
+            }
             // half = 1 << (shift_amt - 1)
             let half_val: i64 = 1 << (shift_amt - 1);
             let rq_half: i32 = ir_tmp();
@@ -13017,6 +13224,16 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             ir_wr("  "); ir_wr_reg(rq_r); ir_wr(" = ashr i64 ");
             ir_wr_reg(rq_biased); ir_wr(", "); ir_wr_reg(rq_shift); ir_wr("\n");
             return IRValue { reg: rq_r, type_off: resolve_type_sub(ctx_type) };
+        }
+        // requant without an Exp/Fix-typed destination: the target scale is
+        // unreadable. A named diagnostic, not a bare "undefined function".
+        if str_eq(&g_strings[call_name], "requant") == 1
+        && g_nodes[node].nargs >= 1
+        && type_is_exp(resolve_type_sub(ctx_type)) == 0 {
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "requant needs a typed destination (e.g. `let y: Exp<16> = requant(x)`)");
+            let rqa: IRValue = codegen_expr(g_args[g_nodes[node].args_start], str_intern("i64"));
+            return IRValue { reg: rqa.reg, type_off: rqa.type_off };
         }
         // alloc(n) builtin -> malloc + memset
         if str_eq(&g_strings[call_name], "alloc") == 1 {
@@ -13414,6 +13631,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     // carrier ptr — no convert
                 } else if type_is_ptr(a_ctx) == 0 && resolve_struct_type(a_ctx) < 0 && resolve_enum_type(a_ctx) < 0 {
                     if a_ctx != NULL_STR && a_ctx != arg_types[ai] {
+                        check_family_coercion(arg_types[ai], a_ctx,
+                            g_nodes[node].line, g_nodes[node].col);
                         let cvt: i32 = emit_implicit_convert(arg_regs[ai], arg_types[ai], a_ctx);
                         arg_regs[ai] = cvt;
                         arg_types[ai] = a_ctx;
@@ -13630,6 +13849,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         let idx_node: i32 = g_nodes[node].child1;
         // Evaluate the index, widened to i64 (i64/usize indexes pass through)
         let idx_val: IRValue = codegen_expr(idx_node, str_intern("i32"));
+        // A bounded/scale-typed index silently decays to a raw integer here;
+        // require the caller to state the decay explicitly.
+        if type_is_bounded_int(idx_val.type_off) == 1
+        || type_is_exp(idx_val.type_off) == 1 {
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "cannot index with an Int<B>/Exp<E> value; cast with `as i64` first");
+        }
         let idx64: i32 = emit_index_to_i64(idx_val);
         // Resolve object — try symbol table first, fallback to codegen_expr
         var obj_type: i32 = 0;
@@ -19097,6 +19323,8 @@ fn codegen_stmt(stmt: i32) {
                 ir_wr_reg(lwide); ir_wr(", "); ir_wr_reg(lp); ir_wr("\n");
             }
         } else if actual_type != NULL_STR && val.type_off != NULL_STR {
+            check_family_coercion(val.type_off, actual_type,
+                g_nodes[stmt].line, g_nodes[stmt].col);
             store_reg = emit_implicit_convert(val.reg, val.type_off, actual_type);
         }
         // Alloca + store
@@ -19159,6 +19387,8 @@ fn codegen_stmt(stmt: i32) {
                 // Coerce to the DECLARED return type ONLY on IR-width mismatch —
                 // the #34 return-path sibling (`-> bool` fn returning an i1 icmp).
                 if rv.type_off != NULL_STR && g_fn_ret_type != NULL_STR {
+                    check_family_coercion(rv.type_off, g_fn_ret_type,
+                        g_nodes[stmt].line, g_nodes[stmt].col);
                     if type_to_ir(rv.type_off) != type_to_ir(g_fn_ret_type) {
                         ret_reg = emit_implicit_convert(rv.reg, rv.type_off, g_fn_ret_type);
                         ret_type = g_fn_ret_type;
@@ -19291,6 +19521,8 @@ fn codegen_stmt(stmt: i32) {
         // (`c = buf[p]` into i32) — mirrors member/index assign; no-op on match.
         var asgn_store: i32 = asgn_val.reg;
         if s_type != NULL_STR && asgn_val.type_off != NULL_STR {
+            check_family_coercion(asgn_val.type_off, s_type,
+                g_nodes[stmt].line, g_nodes[stmt].col);
             asgn_store = emit_implicit_convert(asgn_val.reg, asgn_val.type_off, s_type);
         }
         // #51: aggregate reassignment. codegen_expr returns a struct/enum BY
@@ -19543,6 +19775,14 @@ fn codegen_stmt(stmt: i32) {
         if bw == 64 { bound_ctx = str_intern("i64"); }
         let start_val: IRValue = codegen_expr(start_node, bound_ctx);
         let end_val: IRValue = codegen_expr(end_node, bound_ctx);
+        // Bounded/scale-typed bounds carry a contract a counter doesn't honor.
+        if type_is_bounded_int(start_val.type_off) == 1
+        || type_is_bounded_int(end_val.type_off) == 1
+        || type_is_exp(start_val.type_off) == 1
+        || type_is_exp(end_val.type_off) == 1 {
+            diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
+                "for-loop bounds must be plain integers; cast Int/Exp values with `as i64`");
+        }
         let ws: i32 = for_bound_width_checked(start_val.type_off,
             g_nodes[stmt].line, g_nodes[stmt].col);
         let we: i32 = for_bound_width_checked(end_val.type_off,
@@ -20034,6 +20274,13 @@ fn codegen_stmt(stmt: i32) {
         var scrut_ctx: i32 = str_intern("i32");
         if is_enum_match == 1 { scrut_ctx = match_enum_name; }
         let scrutinee: IRValue = codegen_expr(g_nodes[stmt].child0, scrut_ctx);
+        // A match on a bounded/scale-typed value inspects it as a plain
+        // integer, dropping the contract; require an explicit cast.
+        if type_is_bounded_int(scrutinee.type_off) == 1
+        || type_is_exp(scrutinee.type_off) == 1 {
+            diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
+                "cannot match on an Int<B>/Exp<E> value; cast with `as i64` first");
+        }
         // A generic-enum arm names the TEMPLATE (Option::Some) but the scrutinee
         // is the concrete instance — resolve_enum_type maps both to it.
         if is_enum_match == 1 {
@@ -27811,6 +28058,19 @@ fn codegen_program(prog: i32) {
                 } else {
                     let gfi: i32 = find_field_by_alias(gtype);
                     if gfi >= 0 { gval = gval % g_fields[gfi].prime; }
+                    // Int<B> global: the constant must respect the bound.
+                    if type_is_bounded_int(gtype) == 1 {
+                        var gabs: i64 = gval as i64;
+                        if gabs < 0 { gabs = 0 - gabs; }
+                        let gbs: *u8 = &g_strings[gtype];
+                        if gbs[4] >= 48 && gbs[4] <= 57 {
+                            if gabs > bounded_int_bound(gtype) {
+                                diag_error_at(g_nodes[gd].line, g_nodes[gd].col,
+                                    "global initializer exceeds the Int<B> bound");
+                                exit(1);
+                            }
+                        }
+                    }
                     ir_wr_int(gval as i64);
                 }
             }
@@ -29594,6 +29854,11 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
         let obj_node: i32 = g_nodes[node].child0;
         let idx_node: i32 = g_nodes[node].child1;
         let idx_raw: LowVal = lower_expr(idx_node, str_intern("i32"));
+        // Codegen parity: family-typed indices are refused there; refuse here.
+        if type_is_bounded_int(idx_raw.type_off) == 1
+        || type_is_exp(idx_raw.type_off) == 1 {
+            ev_refuse("bounded-index", ln, cl);
+        }
         let idx64: LowVal = lw_index_to_i64(idx_raw, ln, cl);
         let obj: LowVal = lower_expr(obj_node, NULL_STR);
         var elem_type: i32 = NULL_STR;
@@ -30717,6 +30982,11 @@ fn lower_stmt(stmt: i32) -> i32 {
         var scrut_ctx: i32 = str_intern("i32");
         if is_enum_match == 1 { scrut_ctx = match_enum_name; }
         let scrut: LowVal = lower_expr(g_nodes[stmt].child0, scrut_ctx);
+        // Codegen parity: matching on a family-typed value is refused there.
+        if type_is_bounded_int(scrut.type_off) == 1
+        || type_is_exp(scrut.type_off) == 1 {
+            ev_refuse("bounded-match", ln, cl);
+        }
         var mei: i32 = 0 - 1;
         if is_enum_match == 1 {
             // Template arm names resolve against the concrete scrutinee
@@ -30859,6 +31129,13 @@ fn lower_stmt(stmt: i32) -> i32 {
         if lbw == 64 { lctx = str_intern("i64"); }
         let lo: LowVal = lower_expr(g_nodes[stmt].child0, lctx);
         let hi: LowVal = lower_expr(g_nodes[stmt].child1, lctx);
+        // Codegen parity: family-typed loop bounds are refused there.
+        if type_is_bounded_int(lo.type_off) == 1
+        || type_is_bounded_int(hi.type_off) == 1
+        || type_is_exp(lo.type_off) == 1
+        || type_is_exp(hi.type_off) == 1 {
+            ev_refuse("bounded-for-bound", ln, cl);
+        }
         let lws: i32 = for_bound_type_width(lo.type_off);
         let lwe: i32 = for_bound_type_width(hi.type_off);
         if lws > lbw { lbw = lws; }

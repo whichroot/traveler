@@ -1,0 +1,6 @@
+// Diagnostics: requant without a typed destination must fail clearly.
+fn main() {
+    let x: Exp<32> = 100;
+    print(requant(x) as i64);
+    return;
+}

@@ -1,0 +1,5 @@
+// Diagnostics: a literal larger than the Int bound must fail.
+fn main() {
+    let x: Int<5> = 10;
+    return;
+}

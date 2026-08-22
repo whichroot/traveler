@@ -1,0 +1,9 @@
+// Diagnostics: for-loop bounds of family type must fail without a cast.
+fn main() {
+    let lo: Exp<4> = 0;
+    let hi: Exp<4> = 48;
+    for i in lo..hi {
+        print(i);
+    }
+    return;
+}

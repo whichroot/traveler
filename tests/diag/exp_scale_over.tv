@@ -1,0 +1,7 @@
+// Diagnostics: a combined scale past 62 must fail.
+fn main() {
+    let a: Exp<40> = 1;
+    let b: Exp<40> = 1;
+    let c = a * b;
+    return;
+}

@@ -1,0 +1,1 @@
+cannot combine Int<B> with a plain integer

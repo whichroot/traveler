@@ -1,0 +1,7 @@
+// Diagnostics: Int combined with a plain integer variable must fail.
+fn main() {
+    let a: Int<10> = 3;
+    var k: i64 = 7;
+    let b = a + k;
+    return;
+}

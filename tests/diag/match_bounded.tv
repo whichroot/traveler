@@ -1,0 +1,9 @@
+// Diagnostics: match on an Int value must fail without a cast.
+fn main() {
+    let x: Int<5> = 3;
+    match x {
+        3 => { print(1); }
+        _ => { print(0); }
+    }
+    return;
+}

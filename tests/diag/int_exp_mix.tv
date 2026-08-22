@@ -1,0 +1,7 @@
+// Diagnostics: Int and Exp operands in one binop must fail.
+fn main() {
+    let a: Int<10> = 3;
+    let b: Exp<16> = 100;
+    let c = a + b;
+    return;
+}
