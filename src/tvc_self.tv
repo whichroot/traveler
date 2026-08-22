@@ -166,6 +166,7 @@ let TOK_OP_ASSIGN: i32 = 93;
 let TOK_QMARK: i32 = 94;     // `expr?` — Result early-return propagation
 let TOK_KW_DEFER: i32 = 95;  // `defer <stmt>;` — function-scoped exit cleanup (memory model)
 let TOK_TY_BINT: i32 = 96;   // `Int<B>` — magnitude-bounded integer
+let TOK_TY_EXP: i32 = 97;    // `Exp<E>` — scale-typed integer (Q-format)
 
 // Field kind constants
 let FIELD_KIND_PRIME: i32 = 0;
@@ -425,6 +426,7 @@ fn keyword_kind(text: *u8) -> i32 {
     if str_eq(text, "Poly") == 1 { return 41; }
     if str_eq(text, "Register") == 1 { return TOK_TY_REGISTER; }
     if str_eq(text, "Int") == 1 { return TOK_TY_BINT; }
+    if str_eq(text, "Exp") == 1 { return TOK_TY_EXP; }
     return 3; // TOK_IDENT
 }
 
@@ -2856,6 +2858,29 @@ fn parse_type_str() {
             if evok == 1 {
                 g_type_pos = cxstart;
                 tbuf_push_u64(eval_result as u64);
+            }
+        }
+        g_type_buf[g_type_pos] = 62; // '>'
+        g_type_pos = g_type_pos + 1;
+        p_expect_gt_generic();
+        return;
+    }
+
+    // Exp<E> — scale-typed integer (Q-format). E is a const expression.
+    if p_peek() == TOK_TY_EXP {
+        p_advance();
+        tbuf_push_str("Exp<");
+        p_expect(TOK_LT);
+        let exstart: i32 = g_type_pos;
+        var exhas_var: i32 = 0;
+        parse_tcx_add(&exhas_var);
+        if exhas_var == 0 {
+            g_type_buf[g_type_pos] = 0;
+            var exeval: i64 = 0;
+            let exok: i32 = constexpr_eval_str(&g_type_buf[exstart], &exeval);
+            if exok == 1 {
+                g_type_pos = exstart;
+                tbuf_push_u64(exeval as u64);
             }
         }
         g_type_buf[g_type_pos] = 62; // '>'
@@ -7932,6 +7957,8 @@ fn type_to_ir(type_off: i32) -> i32 {
     if str_eq(s, "u256") == 1 { return str_intern("i256"); }
     // Int<B> bounded integer -> i64 (bounds are erased at IR level)
     if type_is_bounded_int(type_off) == 1 { return str_intern("i64"); }
+    // Exp<E> scale-typed integer -> i64 (scales are erased at IR level)
+    if type_is_exp(type_off) == 1 { return str_intern("i64"); }
     // Pointer types: *T -> ptr
     if s[0] == 42 { return str_intern("ptr"); }
     // Fn-pointer types: "fn(...)..." -> ptr. The signature lives in the type
@@ -8220,6 +8247,8 @@ fn type_is_signed(type_off: i32) -> i32 {
     if s[0] == 105 { return 1; }  // 'i' prefix: i8, i16, i32, i64
     // Int<B> is signed (magnitude symmetric around zero)
     if type_is_bounded_int(type_off) == 1 { return 1; }
+    // Exp<E> is signed (fixed-point mantissa)
+    if type_is_exp(type_off) == 1 { return 1; }
     return 0;
 }
 
@@ -8403,6 +8432,39 @@ fn make_bounded_int_type(bound: i64) -> i32 {
     g_type_pos = 0;
     tbuf_push_str("Int<");
     tbuf_push_u64(bound as u64);
+    g_type_buf[g_type_pos] = 62; // '>'
+    g_type_pos = g_type_pos + 1;
+    g_type_buf[g_type_pos] = 0;
+    return str_intern(g_type_buf);
+}
+
+// Check if a source type is Exp<E> (scale-typed integer).
+// Matches "Exp<" prefix: 'E'=69 'x'=120 'p'=112 '<'=60.
+fn type_is_exp(type_off: i32) -> i32 {
+    if type_off == NULL_STR { return 0; }
+    let s: *u8 = &g_strings[type_off];
+    if s[0] == 69 && s[1] == 120 && s[2] == 112 && s[3] == 60 { return 1; }
+    return 0;
+}
+
+// Extract the scale from "Exp<E>" as i64. Decimal scan after "Exp<".
+fn exp_scale(type_off: i32) -> i64 {
+    let s: *u8 = &g_strings[type_off];
+    var pi: i32 = 4;
+    while s[pi] == 32 { pi = pi + 1; }
+    var val: i64 = 0;
+    while s[pi] >= 48 && s[pi] <= 57 {
+        val = val * 10 + (s[pi] as i64 - 48);
+        pi = pi + 1;
+    }
+    return val;
+}
+
+// Build "Exp<N>" type string from a scale value and intern it.
+fn make_exp_type(scale: i64) -> i32 {
+    g_type_pos = 0;
+    tbuf_push_str("Exp<");
+    tbuf_push_u64(scale as u64);
     g_type_buf[g_type_pos] = 62; // '>'
     g_type_pos = g_type_pos + 1;
     g_type_buf[g_type_pos] = 0;
@@ -11037,6 +11099,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             ir_wr_int(val as i64); ir_wr("\n");
             return IRValue { reg: r, type_off: lit_type };
         }
+        // Exp<E> context: emit i64 literal as raw mantissa, type Exp<E>.
+        if type_is_exp(eff_type) == 1 {
+            let r: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(r); ir_wr(" = add i64 0, ");
+            ir_wr_int(val as i64); ir_wr("\n");
+            return IRValue { reg: r, type_off: eff_type };
+        }
         // If context is a field type, apply safe modulation
         let fi: i32 = find_field_by_alias(eff_type);
         if fi >= 0 {
@@ -11320,6 +11389,136 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 return IRValue { reg: cr, type_off: res_type };
             }
             // Other ops (shift, div, mod, bitwise): fall through to i64 path.
+        }
+        // Exp<E> scale-typed arithmetic: propagate/enforce scales.
+        let exp_lhs_ty: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
+        if type_is_exp(ctx_type) == 1 || type_is_exp(exp_lhs_ty) == 1 {
+            var exp_ctx: i32 = ctx_type;
+            if type_is_exp(exp_ctx) == 0 { exp_ctx = exp_lhs_ty; }
+            let i64_type: i32 = str_intern("i64");
+            // Multiplication: both Exp -> add scales; Exp * dimless -> keep.
+            if op == OP_MUL {
+                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
+                let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                let l_is_exp: i32 = type_is_exp(el.type_off);
+                let r_is_exp: i32 = type_is_exp(er.type_off);
+                var res_type: i32 = el.type_off;
+                if l_is_exp == 1 && r_is_exp == 1 {
+                    res_type = make_exp_type(exp_scale(el.type_off) + exp_scale(er.type_off));
+                } else if l_is_exp == 1 {
+                    res_type = el.type_off;
+                } else {
+                    res_type = er.type_off;
+                }
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = mul i64 ");
+                ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Division: Exp/Exp -> subtract scales; Exp/dimless -> keep.
+            if op == OP_DIV {
+                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
+                let er: IRValue = codegen_expr(g_nodes[node].child1, i64_type);
+                let l_is_exp: i32 = type_is_exp(el.type_off);
+                let r_is_exp: i32 = type_is_exp(er.type_off);
+                var res_type: i32 = el.type_off;
+                if l_is_exp == 1 && r_is_exp == 1 {
+                    let le: i64 = exp_scale(el.type_off);
+                    let re: i64 = exp_scale(er.type_off);
+                    if le < re {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "Exp division would produce a negative scale; requant the numerator first");
+                    }
+                    res_type = make_exp_type(le - re);
+                } else if r_is_exp == 1 && l_is_exp == 0 {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "cannot divide a plain integer by an Exp value");
+                }
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = sdiv i64 ");
+                ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Add/sub: require equal scales.
+            if op == OP_ADD || op == OP_SUB {
+                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
+                let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                let l_is_exp: i32 = type_is_exp(el.type_off);
+                let r_is_exp: i32 = type_is_exp(er.type_off);
+                if l_is_exp == 1 && r_is_exp == 1 {
+                    if exp_scale(el.type_off) != exp_scale(er.type_off) {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "scale mismatch in Exp addition; requant one side to match");
+                    }
+                } else if (l_is_exp == 1 && r_is_exp == 0) || (l_is_exp == 0 && r_is_exp == 1) {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "cannot add/subtract a plain integer and an Exp value; cast with `as Exp<E>`");
+                }
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr);
+                if op == OP_ADD { ir_wr(" = add i64 "); }
+                else { ir_wr(" = sub i64 "); }
+                ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: el.type_off };
+            }
+            // Comparisons: require equal scales.
+            if op >= OP_EQ && op <= OP_GE {
+                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
+                let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                if type_is_exp(el.type_off) == 1 && type_is_exp(er.type_off) == 1 {
+                    if exp_scale(el.type_off) != exp_scale(er.type_off) {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "scale mismatch in Exp comparison; requant one side to match");
+                    }
+                }
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr); ir_wr(" = icmp ");
+                if op == OP_EQ  { ir_wr("eq "); }
+                if op == OP_NEQ { ir_wr("ne "); }
+                if op == OP_LT  { ir_wr("slt "); }
+                if op == OP_GT  { ir_wr("sgt "); }
+                if op == OP_LE  { ir_wr("sle "); }
+                if op == OP_GE  { ir_wr("sge "); }
+                ir_wr("i64 "); ir_wr_reg(el.reg);
+                ir_wr(", "); ir_wr_reg(er.reg); ir_wr("\n");
+                return IRValue { reg: cr, type_off: str_intern("i1") };
+            }
+            // Shifts: literal amount only; adjust scale.
+            if op == OP_SHL || op == OP_SHR {
+                let rhs_node: i32 = g_nodes[node].child1;
+                if g_nodes[rhs_node].kind != AST_LIT_INT {
+                    diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                        "shift amount on an Exp value must be a compile-time literal");
+                }
+                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
+                let shift_k: i64 = g_nodes[rhs_node].int_val as i64;
+                let cur_e: i64 = exp_scale(el.type_off);
+                var new_e: i64 = cur_e;
+                if op == OP_SHL { new_e = cur_e + shift_k; }
+                if op == OP_SHR {
+                    if shift_k > cur_e {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "right shift exceeds Exp scale (would produce negative exponent)");
+                    }
+                    new_e = cur_e - shift_k;
+                }
+                let res_type: i32 = make_exp_type(new_e);
+                let kr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(kr); ir_wr(" = add i64 0, ");
+                ir_wr_int(shift_k); ir_wr("\n");
+                let cr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(cr);
+                if op == OP_SHL { ir_wr(" = shl i64 "); }
+                else { ir_wr(" = ashr i64 "); }
+                ir_wr_reg(el.reg); ir_wr(", "); ir_wr_reg(kr); ir_wr("\n");
+                return IRValue { reg: cr, type_off: res_type };
+            }
+            // Refuse modulo, bitwise on Exp (no scale semantics).
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "this operator is not defined on Exp<E> values");
+            let poison: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(poison); ir_wr(" = add i64 0, 0\n");
+            return IRValue { reg: poison, type_off: exp_ctx };
         }
         // Pow: RHS is exponent type (i32 or i64), not field element type
         var rhs_ctx: i32 = ctx_type;
@@ -12777,6 +12976,47 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             ir_wr(", ptr "); ir_wr_reg(r0_gep); ir_wr("\n");
             let field_alias: i32 = g_fields[pfi].alias;
             return IRValue { reg: r0_v, type_off: field_alias };
+        }
+        // requant(x) builtin: rescale Exp<E> -> Exp<D>, D from ctx_type.
+        // Emits round-to-nearest: (x + (1 << (E-D-1))) >> (E-D).
+        if str_eq(&g_strings[call_name], "requant") == 1
+        && g_nodes[node].nargs >= 1
+        && type_is_exp(resolve_type_sub(ctx_type)) == 1 {
+            let rq_arg: IRValue = codegen_expr(g_args[g_nodes[node].args_start], NULL_STR);
+            if type_is_exp(rq_arg.type_off) == 0 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "requant argument must be an Exp<E> value");
+                return IRValue { reg: rq_arg.reg, type_off: resolve_type_sub(ctx_type) };
+            }
+            let src_e: i64 = exp_scale(rq_arg.type_off);
+            let dst_d: i64 = exp_scale(resolve_type_sub(ctx_type));
+            if dst_d > src_e {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "requant cannot raise scale; use << k instead");
+                return IRValue { reg: rq_arg.reg, type_off: resolve_type_sub(ctx_type) };
+            }
+            if dst_d == src_e {
+                // No-op: same scale.
+                return IRValue { reg: rq_arg.reg, type_off: resolve_type_sub(ctx_type) };
+            }
+            let shift_amt: i64 = src_e - dst_d;
+            // half = 1 << (shift_amt - 1)
+            let half_val: i64 = 1 << (shift_amt - 1);
+            let rq_half: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_half); ir_wr(" = add i64 0, ");
+            ir_wr_int(half_val); ir_wr("\n");
+            // biased = x + half
+            let rq_biased: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_biased); ir_wr(" = add i64 ");
+            ir_wr_reg(rq_arg.reg); ir_wr(", "); ir_wr_reg(rq_half); ir_wr("\n");
+            // result = biased >> shift_amt
+            let rq_shift: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_shift); ir_wr(" = add i64 0, ");
+            ir_wr_int(shift_amt); ir_wr("\n");
+            let rq_r: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_r); ir_wr(" = ashr i64 ");
+            ir_wr_reg(rq_biased); ir_wr(", "); ir_wr_reg(rq_shift); ir_wr("\n");
+            return IRValue { reg: rq_r, type_off: resolve_type_sub(ctx_type) };
         }
         // alloc(n) builtin -> malloc + memset
         if str_eq(&g_strings[call_name], "alloc") == 1 {
