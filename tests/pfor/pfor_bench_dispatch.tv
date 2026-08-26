@@ -1,0 +1,81 @@
+// pfor_bench_dispatch.tv — pfor dispatch-latency micro-bench
+//
+// K sequential dispatches of one parallel loop just over the 512 threshold
+// (rng = 1536; nthr = min(cores, 24, 32)). Each dispatch overwrites out[i]
+// with the same values, so the checksum is thread-count invariant.
+//
+// Output lines:
+//   1: checksum (determinism + anti-DCE)
+//   2: first dispatch, ns   (pool init post-fix; first spawn pre-fix)
+//   3: steady-state total, ns
+//   4: steady-state ns per dispatch
+//
+// Driven by bench_latency.sh. Not part of the run_pfor.sh manifest.
+
+extern "C" fn clock_gettime(clk: i32, ts: *i64) -> i32;
+extern "C" fn uname(buf: *u8) -> i32;
+
+field F = Field<2013265921>;
+
+var g_clk: i32 = -1;
+
+// CLOCK_MONOTONIC: id 1 on Linux, 6 on Darwin; detected once via uname.
+fn mono_ns() -> i64 {
+    if g_clk < 0 {
+        let buf: *u8 = alloc(2048);
+        var c: i32 = 1;
+        if uname(buf) == 0 {
+            if buf[0] == 68 { c = 6; }
+        }
+        free(buf);
+        g_clk = c;
+    }
+    var ts: [i64; 2] = 0;
+    clock_gettime(g_clk, &ts[0]);
+    return ts[0] * 1000000000 + ts[1];
+}
+
+fn main() -> i32 {
+    let n: i32 = 1536;
+    let a: *F = alloc(n);
+    let out: *F = alloc(n);
+    var w: i32 = 0;
+    while w < n { a[w] = (w % 7 + 1) as F; w = w + 1; }
+
+    // First dispatch, timed alone: carries pool init after the pool fix.
+    let tf0: i64 = mono_ns();
+    for i in 0..n {
+        out[i] = a[i] * a[i] + a[i];
+    }
+    let t_first: i64 = mono_ns() - tf0;
+
+    // Warmup.
+    var k: i32 = 0;
+    while k < 16 {
+        for i in 0..n {
+            out[i] = a[i] * a[i] + a[i];
+        }
+        k = k + 1;
+    }
+
+    // Steady state.
+    let iters: i32 = 20000;
+    let t1: i64 = mono_ns();
+    k = 0;
+    while k < iters {
+        for i in 0..n {
+            out[i] = a[i] * a[i] + a[i];
+        }
+        k = k + 1;
+    }
+    let dt: i64 = mono_ns() - t1;
+
+    var s: F = 0;
+    w = 0;
+    while w < n { s = s + out[w]; w = w + 1; }
+    print(s);
+    print(t_first);
+    print(dt);
+    print(dt / (iters as i64));
+    return 0;
+}

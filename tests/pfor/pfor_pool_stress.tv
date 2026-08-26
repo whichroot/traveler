@@ -1,0 +1,45 @@
+// pfor_pool_stress.tv — POOL REGRESSION: many sequential dispatches.
+//
+// The pre-pool runtime spawned+joined a fresh thread set on EVERY dispatch
+// (~9 us/thread). 4096 sequential dispatches of the same loop pin the
+// persistent-pool protocol: generation counter, ack barrier, and per-worker
+// slice recompute must stay exact across reuse.
+//
+// Loop 1 (n=1025, just over threshold) x 4096 dispatches.
+// Loop 2 (n=4099, prime trip count, different nthr) x 1024 dispatches.
+// Both overwrite the same cells each pass: checksums are fixed.
+//
+// MUST PARALLELIZE.  Expected workers: 2.  Deterministic at any thread count.
+// Expected output: 525825 then 8402950 (sum 1..n over each written range).
+
+fn main() -> i32 {
+    let n1: i32 = 1025;
+    let n2: i32 = 4099;
+    var out1: [i64; 1025] = 0;
+    var out2: [i64; 4099] = 0;
+
+    var k: i32 = 0;
+    while k < 4096 {
+        for i in 0..n1 {
+            out1[i] = (i as i64) + 1;
+        }
+        k = k + 1;
+    }
+    k = 0;
+    while k < 1024 {
+        for i in 0..n2 {
+            out2[i] = (i as i64) + 1;
+        }
+        k = k + 1;
+    }
+
+    var s1: i64 = 0;
+    var s2: i64 = 0;
+    var w: i32 = 0;
+    while w < n1 { s1 = s1 + out1[w]; w = w + 1; }
+    w = 0;
+    while w < n2 { s2 = s2 + out2[w]; w = w + 1; }
+    print(s1);
+    print(s2);
+    return 0;
+}

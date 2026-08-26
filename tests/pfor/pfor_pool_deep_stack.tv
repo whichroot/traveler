@@ -1,0 +1,44 @@
+// pfor_pool_deep_stack.tv — POOL REGRESSION: deep worker call stacks.
+//
+// deep() recurses 2500 frames with 24 scalar locals per frame (~1 MB of
+// stack). Pre-pool workers ran on default pthread stacks (512 KB on macOS):
+// a deep body overflowed the guard page — the true cause of the hangs and
+// crashes seen from the paper/ repo. Pool workers get 8 MiB stacks.
+//
+// deep(x, d) = deep(x+1, d-1) - 1, deep(x, 0) = x  =>  deep(x, d) = x.
+// The locals cancel exactly (sum - 24*d == 0) and exist only to size the
+// frame.
+//
+// MUST PARALLELIZE.  Expected workers: 1.  out[i] = i.
+// Expected output: 1024 (out[1024]) then 524800 (sum i, i=0..1024).
+
+fn deep(x: i64, d: i32) -> i64 {
+    if d == 0 { return x; }
+    let y: i64 = deep(x + 1, d - 1);
+    let dl: i64 = d as i64;
+    var p0: i64 = dl;   var p1: i64 = dl;   var p2: i64 = dl;
+    var p3: i64 = dl;   var p4: i64 = dl;   var p5: i64 = dl;
+    var p6: i64 = dl;   var p7: i64 = dl;   var p8: i64 = dl;
+    var p9: i64 = dl;   var p10: i64 = dl;  var p11: i64 = dl;
+    var p12: i64 = dl;  var p13: i64 = dl;  var p14: i64 = dl;
+    var p15: i64 = dl;  var p16: i64 = dl;  var p17: i64 = dl;
+    var p18: i64 = dl;  var p19: i64 = dl;  var p20: i64 = dl;
+    var p21: i64 = dl;  var p22: i64 = dl;  var p23: i64 = dl;
+    let pad: i64 = p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7
+        + p8 + p9 + p10 + p11 + p12 + p13 + p14 + p15
+        + p16 + p17 + p18 + p19 + p20 + p21 + p22 + p23;
+    return y - 1 + pad - 24 * dl;
+}
+
+fn main() -> i32 {
+    var out: [i64; 1025] = 0;
+    for i in 0..1025 {
+        out[i] = deep(i as i64, 2500);
+    }
+    var s: i64 = 0;
+    var w: i32 = 0;
+    while w < 1025 { s = s + out[w]; w = w + 1; }
+    print(out[1024]);
+    print(s);
+    return 0;
+}

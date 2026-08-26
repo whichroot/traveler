@@ -300,13 +300,16 @@ if [ -x "$STAGE1" ]; then
         if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_pointer_input" ]; then
             forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
             wide_mul=$(grep -c 'mul i256' "$TMPDIR/${name}.ll" || true)
-            stack_tids=$(grep -c 'alloca \[32 x ptr\]' "$TMPDIR/${name}.ll" || true)
-            create_fallback=$(grep -c '^spawn_serial:' "$TMPDIR/${name}.ll" || true)
-            join_fail=$(grep -c '^join_fail:' "$TMPDIR/${name}.ll" || true)
+            # Pool layout: lazy init once, 8 MiB worker stacks, one
+            # pthread_create site (init), serial fallback on busy/failed.
+            pool_init=$(grep -c 'define internal void @__pfor_pool_init_once' "$TMPDIR/${name}.ll" || true)
+            stack_8m=$(grep -c 'pthread_attr_setstacksize(ptr %attr, i64 8388608)' "$TMPDIR/${name}.ll" || true)
+            creates=$(grep -c 'call i32 @pthread_create' "$TMPDIR/${name}.ll" || true)
+            busy_fb=$(grep -c '^busy_serial:' "$TMPDIR/${name}.ll" || true)
             [ "$forced" = "0" ] && [ "$wide_mul" -ge 1 ] \
-                && [ "$stack_tids" -ge 1 ] && [ "$create_fallback" -ge 1 ] \
-                && [ "$join_fail" -ge 1 ] \
-                || { status="FAIL"; detail="fresh dispatch or hardened pfor runtime missing"; }
+                && [ "$pool_init" = "1" ] && [ "$stack_8m" -ge 1 ] \
+                && [ "$creates" = "1" ] && [ "$busy_fb" -ge 1 ] \
+                || { status="FAIL"; detail="fresh dispatch or pool pfor runtime missing"; }
         fi
         if [ "$status" = "PASS" ] && [ "$name" = "pfor_fresh_origin_alias" ]; then
             forced=$(grep -c 'icmp eq i1 0, 0' "$TMPDIR/${name}.ll" || true)
@@ -694,6 +697,56 @@ if [ -x "$STAGE1" ]; then
     done
 
     # ------------------------------------------------------------
+    #  Pool regression (stage1-only): the persistent-pool protocol.
+    #    - stress: thousands of sequential dispatches reuse the pool;
+    #      generation/ack bookkeeping must stay exact at every thread count
+    #    - deep_stack: a ~1 MB worker call stack; passes only on the pool's
+    #      8 MiB worker stacks (default pthread stacks are 512 KB on macOS)
+    #  The frozen seed predates the pool (and refuses the deep_stack shape),
+    #  so both are asserted against stage1 only, at T=1/7/32.
+    # ------------------------------------------------------------
+    POOL_TESTS=(
+        "pfor_pool_stress:2"
+        "pfor_pool_deep_stack:1"
+    )
+    for entry in "${POOL_TESTS[@]}"; do
+        name="${entry%%:*}"; want_workers="${entry##*:}"
+        TOTAL=$((TOTAL + 1)); status="PASS"; detail=""
+        if ! "$STAGE1" "$PFOR_DIR/${name}.tv" -o "$TMPDIR/${name}.ll" >/dev/null 2>&1; then
+            status="FAIL"; detail="compile (stage1)"
+        fi
+        if [ "$status" = "PASS" ]; then
+            got_workers=$(grep -c "define internal void @__pfor_worker" "$TMPDIR/${name}.ll" || true)
+            if [ "$got_workers" != "$want_workers" ]; then
+                status="FAIL"; detail="workers: want $want_workers, got $got_workers"
+            fi
+        fi
+        if [ "$status" = "PASS" ]; then
+            "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
+            "$LINKER" $LINK_PIE "$TMPDIR/${name}.o" -o "$TMPDIR/${name}" 2>/dev/null || { status="FAIL"; detail="link"; }
+        fi
+        if [ "$status" = "PASS" ]; then
+            baseline=$(cat "$EXPECTED/${name}.txt")
+            s1=$(TRAVELER_THREADS=1 "$TMPDIR/${name}" 2>/dev/null); rc1=$?
+            s7=$(TRAVELER_THREADS=7 "$TMPDIR/${name}" 2>/dev/null); rc7=$?
+            s32=$(TRAVELER_THREADS=32 "$TMPDIR/${name}" 2>/dev/null); rc32=$?
+            if [ "$rc1" != "0" ] || [ "$rc7" != "0" ] || [ "$rc32" != "0" ]; then
+                status="FAIL"; detail="non-zero exit at T=1/7/32 ($rc1/$rc7/$rc32)"
+            elif [ "$s1" != "$baseline" ]; then
+                status="FAIL"; detail="serial output != baseline"
+            elif [ "$s7" != "$baseline" ] || [ "$s32" != "$baseline" ]; then
+                status="FAIL"; detail="parallel output != baseline"
+            fi
+        fi
+        if [ "$status" = "PASS" ]; then
+            printf "  [%2d] %-32s PASS (stage1)\n" "$TOTAL" "$name"; PASS=$((PASS + 1))
+        else
+            printf "  [%2d] %-32s FAIL (%s)\n" "$TOTAL" "$name" "$detail"
+            FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"
+        fi
+    done
+
+    # ------------------------------------------------------------
     #  #54 (bound width adoption): stage1-only —
     #    - pfor_i64_bounds: an i64-bound field loop MUST dispatch through the
     #      i64 ABI (__parallel_for_i64 + (ptr, i64, i64) worker) and stay
@@ -715,11 +768,12 @@ if [ -x "$STAGE1" ]; then
         [ "$gd" -ge 1 ] || { status="FAIL"; detail="__parallel_for_i64 dispatch missing"; }
     fi
     if [ "$status" = "PASS" ]; then
-        stack_args=$(grep -c 'alloca \[160 x i64\]' "$TMPDIR/${name}.ll" || true)
-        stride=$(grep -c 'mul i64 %st, 40' "$TMPDIR/${name}.ll" || true)
-        status_slot=$(grep -c 'getelementptr i8, ptr %aptr, i64 32' "$TMPDIR/${name}.ll" || true)
-        [ "$stack_args" -ge 1 ] && [ "$stride" -ge 1 ] && [ "$status_slot" -ge 1 ] \
-            || { status="FAIL"; detail="hardened i64 pfor layout missing"; }
+        # Pool i64 handoff: wide flag set, i64 chunk math in the pool worker.
+        wide_flag=$(grep -c 'call void @__pfor_dispatch(ptr %fn, ptr %ctx, i64 %lo, i64 %hi, i32 %nthr, i32 1)' "$TMPDIR/${name}.ll" || true)
+        wide_math=$(grep -c 'sdiv i64 %rng, %nthr64' "$TMPDIR/${name}.ll" || true)
+        wide_call=$(grep -c 'call void %fn(ptr %ctx, i64 %start, i64 %end)' "$TMPDIR/${name}.ll" || true)
+        [ "$wide_flag" -ge 1 ] && [ "$wide_math" -ge 1 ] && [ "$wide_call" -ge 1 ] \
+            || { status="FAIL"; detail="pooled i64 pfor layout missing"; }
     fi
     if [ "$status" = "PASS" ]; then
         "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/${name}.ll" -o "$TMPDIR/${name}.o" 2>/dev/null && \
