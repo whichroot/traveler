@@ -209,7 +209,7 @@ park:
   store i32 1, ptr %wsp
   br label %park_chk
 park_chk:
-  %g2 = load atomic i64, ptr @__pfor_gen monotonic, align 8
+  %g2 = load atomic i64, ptr @__pfor_gen acquire, align 8
   %new2 = icmp ne i64 %g2, %last
   br i1 %new2, label %unpark, label %park_wait
 park_wait:
@@ -114653,7 +114653,7 @@ L8:
   call void @ir_wr(ptr %t138)
   %t139 = getelementptr [11 x i8], ptr @.str.5046, i32 0, i32 0
   call void @ir_wr(ptr %t139)
-  %t140 = getelementptr [61 x i8], ptr @.str.5047, i32 0, i32 0
+  %t140 = getelementptr [59 x i8], ptr @.str.5047, i32 0, i32 0
   call void @ir_wr(ptr %t140)
   %t141 = getelementptr [34 x i8], ptr @.str.5048, i32 0, i32 0
   call void @ir_wr(ptr %t141)
@@ -242233,7 +242233,7 @@ L371:
 @.str.5044 = private unnamed_addr constant [25 x i8] c"\20\20\73\74\6F\72\65\20\69\33\32\20\31\2C\20\70\74\72\20\25\77\73\70\0A\00"
 @.str.5045 = private unnamed_addr constant [22 x i8] c"\20\20\62\72\20\6C\61\62\65\6C\20\25\70\61\72\6B\5F\63\68\6B\0A\00"
 @.str.5046 = private unnamed_addr constant [11 x i8] c"\70\61\72\6B\5F\63\68\6B\3A\0A\00"
-@.str.5047 = private unnamed_addr constant [61 x i8] c"\20\20\25\67\32\20\3D\20\6C\6F\61\64\20\61\74\6F\6D\69\63\20\69\36\34\2C\20\70\74\72\20\40\5F\5F\70\66\6F\72\5F\67\65\6E\20\6D\6F\6E\6F\74\6F\6E\69\63\2C\20\61\6C\69\67\6E\20\38\0A\00"
+@.str.5047 = private unnamed_addr constant [59 x i8] c"\20\20\25\67\32\20\3D\20\6C\6F\61\64\20\61\74\6F\6D\69\63\20\69\36\34\2C\20\70\74\72\20\40\5F\5F\70\66\6F\72\5F\67\65\6E\20\61\63\71\75\69\72\65\2C\20\61\6C\69\67\6E\20\38\0A\00"
 @.str.5048 = private unnamed_addr constant [34 x i8] c"\20\20\25\6E\65\77\32\20\3D\20\69\63\6D\70\20\6E\65\20\69\36\34\20\25\67\32\2C\20\25\6C\61\73\74\0A\00"
 @.str.5049 = private unnamed_addr constant [48 x i8] c"\20\20\62\72\20\69\31\20\25\6E\65\77\32\2C\20\6C\61\62\65\6C\20\25\75\6E\70\61\72\6B\2C\20\6C\61\62\65\6C\20\25\70\61\72\6B\5F\77\61\69\74\0A\00"
 @.str.5050 = private unnamed_addr constant [12 x i8] c"\70\61\72\6B\5F\77\61\69\74\3A\0A\00"

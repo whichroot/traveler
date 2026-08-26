@@ -700,6 +700,8 @@ if [ -x "$STAGE1" ]; then
     #  Pool regression (stage1-only): the persistent-pool protocol.
     #    - stress: thousands of sequential dispatches reuse the pool;
     #      generation/ack bookkeeping must stay exact at every thread count
+    #    - idle: 2 ms gaps between dispatches park the workers; the parked
+    #      wake must snapshot the CURRENT job record at every thread count
     #    - deep_stack: a ~1 MB worker call stack; passes only on the pool's
     #      8 MiB worker stacks (default pthread stacks are 512 KB on macOS)
     #  The frozen seed predates the pool (and refuses the deep_stack shape),
@@ -708,6 +710,7 @@ if [ -x "$STAGE1" ]; then
     POOL_TESTS=(
         "pfor_pool_stress:2"
         "pfor_pool_deep_stack:1"
+        "pfor_pool_idle:2"
     )
     for entry in "${POOL_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"
