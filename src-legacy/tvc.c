@@ -8513,10 +8513,12 @@ static void codegen_stmt(ASTNode *n, Type fn_ret_type) {
 /* ============================================================
  * Parallel dispatch runtime emission
  *
- * Emits three LLVM IR functions into the module:
- *   __get_num_cores  — env var override, sysconf detection, fallback
- *   __pfor_entry     — pthread entry: unpack {fn,ctx,start,end}, call worker
- *   __parallel_for   — threshold check, spawn threads, join
+ * Emits the persistent-pool runtime into the module:
+ *   __get_num_cores        — cached env/sysconf core count
+ *   __pfor_pool_init_once  — lazy pool bring-up, 8 MiB worker stacks
+ *   __pfor_worker          — generation wait, slice recompute, ack
+ *   __pfor_dispatch        — publish, run slice 0, barrier
+ *   __parallel_for         — threshold check, hand off to the pool
  *
  * These are emitted once, after field arithmetic functions,
  * before user function codegen.
@@ -8750,21 +8752,49 @@ static void emit_parallel_runtime(void) {
     if (g_pfor_emitted) return;
     g_pfor_emitted = true;
 
-    /* __get_num_cores: env var → sysconf → fallback 8.
+    /* Lazy persistent pool: workers spawn once with 8 MiB stacks, dispatch
+     * is a generation barrier over a shared job record. Slice 0 runs on the
+     * dispatcher. Chunk math unchanged (threshold 1024, grain 256, cap 32).
+     * Mirrors the tvc_self pool (design-notes/pfor-pool.md "lazy-pool"). */
+    ir_emit("\n; --- parallel dispatch runtime (persistent pool) ---\n");
+    ir_emit("@__pfor_cores = internal global i32 0\n");
+    ir_emit("@__pfor_pool_state = internal global i32 0\n");
+    ir_emit("@__pfor_pool_n = internal global i32 0\n");
+    ir_emit("@__pfor_busy = internal global i32 0\n");
+    ir_emit("@__pfor_mu = internal global [8 x i64] zeroinitializer\n");
+    ir_emit("@__pfor_cv_go = internal global [8 x i64] zeroinitializer\n");
+    ir_emit("@__pfor_cv_done = internal global [8 x i64] zeroinitializer\n");
+    ir_emit("@__pfor_once = internal global [4 x i64] zeroinitializer\n");
+    ir_emit("@__pfor_job_fn = internal global ptr null\n");
+    ir_emit("@__pfor_job_ctx = internal global ptr null\n");
+    ir_emit("@__pfor_job_lo = internal global i32 0\n");
+    ir_emit("@__pfor_job_hi = internal global i32 0\n");
+    ir_emit("@__pfor_job_nthr = internal global i32 0\n");
+    ir_emit("@__pfor_gen = internal global [32 x i64] zeroinitializer\n");
+    ir_emit("@__pfor_ack = internal global [64 x i32] zeroinitializer\n");
+    ir_emit("@__pfor_wstate = internal global [32 x i32] zeroinitializer\n");
+    ir_emit("@__pfor_dwait = internal global i32 0\n");
+    ir_emit("@__pfor_tids = internal global [32 x i64] zeroinitializer\n");
+    ir_emit("@__pfor_widx = internal global [32 x i32] zeroinitializer\n");
+
+    /* __get_num_cores: cached; env var → sysconf → fallback 8.
      * sysconf constant derived from -target flag at compile time:
      * macOS (darwin) = 58, Linux = 84, unknown = skip sysconf. */
-    ir_emit("\n; --- parallel dispatch runtime ---\n");
-    ir_emit("define internal i32 @__get_num_cores() alwaysinline {\n");
+    ir_emit("define internal i32 @__get_num_cores() {\n");
     ir_emit("entry:\n");
+    ir_emit("  %%c = load i32, ptr @__pfor_cores\n");
+    ir_emit("  %%hit = icmp sgt i32 %%c, 0\n");
+    ir_emit("  br i1 %%hit, label %%ret_c, label %%read\n");
+    ir_emit("ret_c:\n");
+    ir_emit("  ret i32 %%c\n");
+    ir_emit("read:\n");
     ir_emit("  %%env = call ptr @getenv(ptr @.__tv_threads)\n");
     ir_emit("  %%has = icmp ne ptr %%env, null\n");
     ir_emit("  br i1 %%has, label %%parse, label %%detect\n");
     ir_emit("parse:\n");
     ir_emit("  %%n = call i32 @atoi(ptr %%env)\n");
     ir_emit("  %%ok = icmp sgt i32 %%n, 0\n");
-    ir_emit("  br i1 %%ok, label %%ret_env, label %%detect\n");
-    ir_emit("ret_env:\n");
-    ir_emit("  ret i32 %%n\n");
+    ir_emit("  br i1 %%ok, label %%save, label %%detect\n");
     ir_emit("detect:\n");
     if (g_sysconf_nproc > 0) {
         ir_emit("  %%sc = call i64 @sysconf(i32 %d)\n", g_sysconf_nproc);
@@ -8772,33 +8802,250 @@ static void emit_parallel_runtime(void) {
         ir_emit("  br i1 %%sc_ok, label %%ret_sc, label %%fb\n");
         ir_emit("ret_sc:\n");
         ir_emit("  %%nc = trunc i64 %%sc to i32\n");
-        ir_emit("  ret i32 %%nc\n");
+        ir_emit("  br label %%save\n");
     } else {
         /* Unknown platform: skip sysconf, go straight to fallback */
         ir_emit("  br label %%fb\n");
     }
     ir_emit("fb:\n");
-    ir_emit("  ret i32 8\n");
+    ir_emit("  br label %%save\n");
+    ir_emit("save:\n");
+    if (g_sysconf_nproc > 0) {
+        ir_emit("  %%v = phi i32 [%%n, %%parse], [%%nc, %%ret_sc], [8, %%fb]\n");
+    } else {
+        ir_emit("  %%v = phi i32 [%%n, %%parse], [8, %%fb]\n");
+    }
+    ir_emit("  store i32 %%v, ptr @__pfor_cores\n");
+    ir_emit("  ret i32 %%v\n");
     ir_emit("}\n\n");
 
-    /* __pfor_entry: pthread entry point.
-     * arg points to { ptr fn, ptr ctx, i32 start, i32 end }
-     * Calls fn(ctx, start, end) and returns null. */
-    ir_emit("define internal ptr @__pfor_entry(ptr %%raw) {\n");
+    /* __pfor_pool_init_once: pthread_once callback; 8 MiB worker stacks. */
+    ir_emit("define internal void @__pfor_pool_init_once() {\n");
     ir_emit("entry:\n");
-    ir_emit("  %%fn_pp = getelementptr i8, ptr %%raw, i64 0\n");
-    ir_emit("  %%fn = load ptr, ptr %%fn_pp\n");
-    ir_emit("  %%ctx_pp = getelementptr i8, ptr %%raw, i64 8\n");
-    ir_emit("  %%ctx = load ptr, ptr %%ctx_pp\n");
-    ir_emit("  %%start_pp = getelementptr i8, ptr %%raw, i64 16\n");
-    ir_emit("  %%start = load i32, ptr %%start_pp\n");
-    ir_emit("  %%end_pp = getelementptr i8, ptr %%raw, i64 20\n");
-    ir_emit("  %%end = load i32, ptr %%end_pp\n");
-    ir_emit("  call void %%fn(ptr %%ctx, i32 %%start, i32 %%end)\n");
-    ir_emit("  ret ptr null\n");
+    ir_emit("  %%mrc = call i32 @pthread_mutex_init(ptr @__pfor_mu, ptr null)\n");
+    ir_emit("  %%grc = call i32 @pthread_cond_init(ptr @__pfor_cv_go, ptr null)\n");
+    ir_emit("  %%drc = call i32 @pthread_cond_init(ptr @__pfor_cv_done, ptr null)\n");
+    ir_emit("  %%e1 = or i32 %%mrc, %%grc\n");
+    ir_emit("  %%e2 = or i32 %%e1, %%drc\n");
+    ir_emit("  %%bad0 = icmp ne i32 %%e2, 0\n");
+    ir_emit("  br i1 %%bad0, label %%fail, label %%cores\n");
+    ir_emit("cores:\n");
+    ir_emit("  %%c = call i32 @__get_num_cores()\n");
+    ir_emit("  %%cap = icmp slt i32 %%c, 32\n");
+    ir_emit("  %%p = select i1 %%cap, i32 %%c, i32 32\n");
+    ir_emit("  store i32 %%p, ptr @__pfor_pool_n\n");
+    ir_emit("  %%attr = alloca [8 x i64]\n");
+    ir_emit("  %%arc = call i32 @pthread_attr_init(ptr %%attr)\n");
+    ir_emit("  %%abad = icmp ne i32 %%arc, 0\n");
+    ir_emit("  br i1 %%abad, label %%fail, label %%ssz\n");
+    ir_emit("ssz:\n");
+    ir_emit("  %%src = call i32 @pthread_attr_setstacksize(ptr %%attr, i64 8388608)\n");
+    ir_emit("  %%sbad = icmp ne i32 %%src, 0\n");
+    ir_emit("  br i1 %%sbad, label %%fail, label %%spawn\n");
+    ir_emit("spawn:\n");
+    ir_emit("  %%i = phi i32 [0, %%ssz], [%%inxt, %%spawn_cont]\n");
+    ir_emit("  %%done = icmp sge i32 %%i, %%p\n");
+    ir_emit("  br i1 %%done, label %%fin, label %%mk\n");
+    ir_emit("mk:\n");
+    ir_emit("  %%i64v = sext i32 %%i to i64\n");
+    ir_emit("  %%ip = getelementptr i32, ptr @__pfor_widx, i64 %%i64v\n");
+    ir_emit("  store i32 %%i, ptr %%ip\n");
+    ir_emit("  %%tp = getelementptr i64, ptr @__pfor_tids, i64 %%i64v\n");
+    ir_emit("  %%crc = call i32 @pthread_create(ptr %%tp, ptr %%attr, ptr @__pfor_worker, ptr %%ip)\n");
+    ir_emit("  %%cok = icmp eq i32 %%crc, 0\n");
+    ir_emit("  br i1 %%cok, label %%spawn_cont, label %%fail\n");
+    ir_emit("spawn_cont:\n");
+    ir_emit("  %%inxt = add i32 %%i, 1\n");
+    ir_emit("  br label %%spawn\n");
+    ir_emit("fin:\n");
+    ir_emit("  %%drc2 = call i32 @pthread_attr_destroy(ptr %%attr)\n");
+    ir_emit("  store i32 1, ptr @__pfor_pool_state\n");
+    ir_emit("  ret void\n");
+    ir_emit("fail:\n");
+    ir_emit("  store i32 2, ptr @__pfor_pool_state\n");
+    ir_emit("  ret void\n");
     ir_emit("}\n\n");
 
-    /* __parallel_for(fn, ctx, start, end): threshold → serial or spawn threads.
+    /* __pfor_worker: bounded spin on the generation, then park. Seqlock
+     * re-read after the job snapshot; slice bounds recompute per worker.
+     * Slice 0 belongs to the dispatcher: worker 0 never participates. */
+    ir_emit("define internal ptr @__pfor_worker(ptr %%idxp) {\n");
+    ir_emit("entry:\n");
+    ir_emit("  %%idx = load i32, ptr %%idxp\n");
+    ir_emit("  %%idx64p = sext i32 %%idx to i64\n");
+    ir_emit("  br label %%loop\n");
+    ir_emit("loop:\n");
+    ir_emit("  %%last = phi i64 [0, %%entry], [%%gw, %%ackd], [%%gw, %%retry]\n");
+    ir_emit("  br label %%spin\n");
+    ir_emit("spin:\n");
+    ir_emit("  %%sp = phi i32 [0, %%loop], [%%spn, %%spin_chk]\n");
+    ir_emit("  %%g = load atomic i64, ptr @__pfor_gen acquire, align 8\n");
+    ir_emit("  %%new = icmp ne i64 %%g, %%last\n");
+    ir_emit("  br i1 %%new, label %%got, label %%spin_more\n");
+    ir_emit("spin_more:\n");
+    ir_emit("  %%spn = add i32 %%sp, 1\n");
+    ir_emit("  %%yq = and i32 %%spn, 8191\n");
+    ir_emit("  %%yz = icmp eq i32 %%yq, 0\n");
+    ir_emit("  br i1 %%yz, label %%spin_yield, label %%spin_chk\n");
+    ir_emit("spin_yield:\n");
+    ir_emit("  %%yrc = call i32 @sched_yield()\n");
+    ir_emit("  br label %%spin_chk\n");
+    ir_emit("spin_chk:\n");
+    ir_emit("  %%exp = icmp slt i32 %%spn, 262144\n");
+    ir_emit("  br i1 %%exp, label %%spin, label %%park\n");
+    ir_emit("park:\n");
+    ir_emit("  %%lrc = call i32 @pthread_mutex_lock(ptr @__pfor_mu)\n");
+    ir_emit("  %%wsp = getelementptr i32, ptr @__pfor_wstate, i64 %%idx64p\n");
+    ir_emit("  store i32 1, ptr %%wsp\n");
+    ir_emit("  br label %%park_chk\n");
+    ir_emit("park_chk:\n");
+    ir_emit("  %%g2 = load atomic i64, ptr @__pfor_gen monotonic, align 8\n");
+    ir_emit("  %%new2 = icmp ne i64 %%g2, %%last\n");
+    ir_emit("  br i1 %%new2, label %%unpark, label %%park_wait\n");
+    ir_emit("park_wait:\n");
+    ir_emit("  %%wrc = call i32 @pthread_cond_wait(ptr @__pfor_cv_go, ptr @__pfor_mu)\n");
+    ir_emit("  br label %%park_chk\n");
+    ir_emit("unpark:\n");
+    ir_emit("  store i32 0, ptr %%wsp\n");
+    ir_emit("  %%urc = call i32 @pthread_mutex_unlock(ptr @__pfor_mu)\n");
+    ir_emit("  br label %%got2\n");
+    ir_emit("got:\n");
+    ir_emit("  br label %%got2\n");
+    ir_emit("got2:\n");
+    ir_emit("  %%gw = phi i64 [%%g, %%got], [%%g2, %%unpark]\n");
+    ir_emit("  %%fn = load ptr, ptr @__pfor_job_fn\n");
+    ir_emit("  %%ctx = load ptr, ptr @__pfor_job_ctx\n");
+    ir_emit("  %%lo = load i32, ptr @__pfor_job_lo\n");
+    ir_emit("  %%hi = load i32, ptr @__pfor_job_hi\n");
+    ir_emit("  %%nthr = load i32, ptr @__pfor_job_nthr\n");
+    ir_emit("  %%gv = load atomic i64, ptr @__pfor_gen acquire, align 8\n");
+    ir_emit("  %%stable = icmp eq i64 %%gv, %%gw\n");
+    ir_emit("  br i1 %%stable, label %%steady, label %%retry\n");
+    ir_emit("retry:\n");
+    ir_emit("  br label %%loop\n");
+    ir_emit("steady:\n");
+    ir_emit("  %%ge1 = icmp sgt i32 %%idx, 0\n");
+    ir_emit("  %%lt = icmp slt i32 %%idx, %%nthr\n");
+    ir_emit("  %%part = and i1 %%ge1, %%lt\n");
+    ir_emit("  br i1 %%part, label %%work, label %%ackd\n");
+    ir_emit("work:\n");
+    ir_emit("  %%rng = sub i32 %%hi, %%lo\n");
+    ir_emit("  %%chunk = sdiv i32 %%rng, %%nthr\n");
+    ir_emit("  %%off = mul i32 %%idx, %%chunk\n");
+    ir_emit("  %%start = add i32 %%lo, %%off\n");
+    ir_emit("  %%i1 = add i32 %%idx, 1\n");
+    ir_emit("  %%is_last = icmp eq i32 %%i1, %%nthr\n");
+    ir_emit("  %%tent = add i32 %%start, %%chunk\n");
+    ir_emit("  %%end = select i1 %%is_last, i32 %%hi, i32 %%tent\n");
+    ir_emit("  call void %%fn(ptr %%ctx, i32 %%start, i32 %%end)\n");
+    ir_emit("  br label %%ack\n");
+    ir_emit("ack:\n");
+    ir_emit("  %%olda = atomicrmw add ptr @__pfor_ack, i32 1 acq_rel, align 4\n");
+    ir_emit("  %%lastw = sub i32 %%nthr, 2\n");
+    ir_emit("  %%islast = icmp eq i32 %%olda, %%lastw\n");
+    ir_emit("  br i1 %%islast, label %%sig, label %%ackd\n");
+    ir_emit("sig:\n");
+    ir_emit("  %%lrc2 = call i32 @pthread_mutex_lock(ptr @__pfor_mu)\n");
+    ir_emit("  %%dw = load i32, ptr @__pfor_dwait\n");
+    ir_emit("  %%dwset = icmp ne i32 %%dw, 0\n");
+    ir_emit("  br i1 %%dwset, label %%dosig, label %%sig_done\n");
+    ir_emit("dosig:\n");
+    ir_emit("  %%src2 = call i32 @pthread_cond_signal(ptr @__pfor_cv_done)\n");
+    ir_emit("  br label %%sig_done\n");
+    ir_emit("sig_done:\n");
+    ir_emit("  %%urc2 = call i32 @pthread_mutex_unlock(ptr @__pfor_mu)\n");
+    ir_emit("  br label %%ackd\n");
+    ir_emit("ackd:\n");
+    ir_emit("  br label %%loop\n");
+    ir_emit("}\n\n");
+
+    /* __pfor_dispatch: publish the job, run slice 0 locally, wait for acks. */
+    ir_emit("define internal void @__pfor_dispatch(ptr %%fn, ptr %%ctx, i32 %%lo, i32 %%hi, i32 %%nthr) {\n");
+    ir_emit("entry:\n");
+    ir_emit("  %%lrc = call i32 @pthread_mutex_lock(ptr @__pfor_mu)\n");
+    ir_emit("  %%bz = load atomic i32, ptr @__pfor_busy monotonic, align 4\n");
+    ir_emit("  %%free = icmp eq i32 %%bz, 0\n");
+    ir_emit("  br i1 %%free, label %%take, label %%busy_serial\n");
+    ir_emit("busy_serial:\n");
+    ir_emit("  %%urc0 = call i32 @pthread_mutex_unlock(ptr @__pfor_mu)\n");
+    ir_emit("  call void %%fn(ptr %%ctx, i32 %%lo, i32 %%hi)\n");
+    ir_emit("  ret void\n");
+    ir_emit("take:\n");
+    ir_emit("  store atomic i32 1, ptr @__pfor_busy monotonic, align 4\n");
+    ir_emit("  store ptr %%fn, ptr @__pfor_job_fn\n");
+    ir_emit("  store ptr %%ctx, ptr @__pfor_job_ctx\n");
+    ir_emit("  store i32 %%lo, ptr @__pfor_job_lo\n");
+    ir_emit("  store i32 %%hi, ptr @__pfor_job_hi\n");
+    ir_emit("  store i32 %%nthr, ptr @__pfor_job_nthr\n");
+    ir_emit("  store atomic i32 0, ptr @__pfor_ack monotonic, align 4\n");
+    ir_emit("  %%g = load atomic i64, ptr @__pfor_gen monotonic, align 8\n");
+    ir_emit("  %%g1 = add i64 %%g, 1\n");
+    ir_emit("  store atomic i64 %%g1, ptr @__pfor_gen release, align 8\n");
+    ir_emit("  br label %%scan\n");
+    ir_emit("scan:\n");
+    ir_emit("  %%si = phi i32 [1, %%take], [%%sin, %%scan_cont]\n");
+    ir_emit("  %%sdone = icmp sge i32 %%si, %%nthr\n");
+    ir_emit("  br i1 %%sdone, label %%go, label %%scan_one\n");
+    ir_emit("scan_one:\n");
+    ir_emit("  %%si64 = sext i32 %%si to i64\n");
+    ir_emit("  %%sip = getelementptr i32, ptr @__pfor_wstate, i64 %%si64\n");
+    ir_emit("  %%ws = load i32, ptr %%sip\n");
+    ir_emit("  %%isparked = icmp eq i32 %%ws, 1\n");
+    ir_emit("  br i1 %%isparked, label %%wake, label %%scan_cont\n");
+    ir_emit("scan_cont:\n");
+    ir_emit("  %%sin = add i32 %%si, 1\n");
+    ir_emit("  br label %%scan\n");
+    ir_emit("wake:\n");
+    ir_emit("  %%brc = call i32 @pthread_cond_broadcast(ptr @__pfor_cv_go)\n");
+    ir_emit("  br label %%go\n");
+    ir_emit("go:\n");
+    ir_emit("  %%urc = call i32 @pthread_mutex_unlock(ptr @__pfor_mu)\n");
+    ir_emit("  br label %%slice0\n");
+    ir_emit("slice0:\n");
+    ir_emit("  %%rng0 = sub i32 %%hi, %%lo\n");
+    ir_emit("  %%chunk0 = sdiv i32 %%rng0, %%nthr\n");
+    ir_emit("  %%end0 = add i32 %%lo, %%chunk0\n");
+    ir_emit("  call void %%fn(ptr %%ctx, i32 %%lo, i32 %%end0)\n");
+    ir_emit("  br label %%spin\n");
+    ir_emit("spin:\n");
+    ir_emit("  %%sp = phi i32 [0, %%slice0], [%%spn, %%spin_chk]\n");
+    ir_emit("  %%a = load atomic i32, ptr @__pfor_ack acquire, align 4\n");
+    ir_emit("  %%tgt = sub i32 %%nthr, 1\n");
+    ir_emit("  %%all = icmp sge i32 %%a, %%tgt\n");
+    ir_emit("  br i1 %%all, label %%fin, label %%spin_more\n");
+    ir_emit("spin_more:\n");
+    ir_emit("  %%spn = add i32 %%sp, 1\n");
+    ir_emit("  %%yq = and i32 %%spn, 1023\n");
+    ir_emit("  %%yz = icmp eq i32 %%yq, 0\n");
+    ir_emit("  br i1 %%yz, label %%spin_yield, label %%spin_chk\n");
+    ir_emit("spin_yield:\n");
+    ir_emit("  %%yrc = call i32 @sched_yield()\n");
+    ir_emit("  br label %%spin_chk\n");
+    ir_emit("spin_chk:\n");
+    ir_emit("  %%exp = icmp slt i32 %%spn, 4096\n");
+    ir_emit("  br i1 %%exp, label %%spin, label %%park\n");
+    ir_emit("park:\n");
+    ir_emit("  %%lrc2 = call i32 @pthread_mutex_lock(ptr @__pfor_mu)\n");
+    ir_emit("  store i32 1, ptr @__pfor_dwait\n");
+    ir_emit("  br label %%park_chk\n");
+    ir_emit("park_chk:\n");
+    ir_emit("  %%a2 = load atomic i32, ptr @__pfor_ack acquire, align 4\n");
+    ir_emit("  %%tgt2 = sub i32 %%nthr, 1\n");
+    ir_emit("  %%all2 = icmp sge i32 %%a2, %%tgt2\n");
+    ir_emit("  br i1 %%all2, label %%unpark, label %%park_wait\n");
+    ir_emit("park_wait:\n");
+    ir_emit("  %%wrc = call i32 @pthread_cond_wait(ptr @__pfor_cv_done, ptr @__pfor_mu)\n");
+    ir_emit("  br label %%park_chk\n");
+    ir_emit("unpark:\n");
+    ir_emit("  store i32 0, ptr @__pfor_dwait\n");
+    ir_emit("  %%urc2 = call i32 @pthread_mutex_unlock(ptr @__pfor_mu)\n");
+    ir_emit("  br label %%fin\n");
+    ir_emit("fin:\n");
+    ir_emit("  store atomic i32 0, ptr @__pfor_busy monotonic, align 4\n");
+    ir_emit("  ret void\n");
+    ir_emit("}\n\n");
+
+    /* __parallel_for(fn, ctx, start, end): threshold → serial or pool dispatch.
      * fn has signature void(ptr ctx, i32 start, i32 end). */
     ir_emit("define internal void @__parallel_for(ptr %%fn, ptr %%ctx, i32 %%lo, i32 %%hi) {\n");
     ir_emit("entry:\n");
@@ -8809,13 +9056,21 @@ static void emit_parallel_runtime(void) {
     ir_emit("par_check:\n");
     ir_emit("  %%cores = call i32 @__get_num_cores()\n");
     ir_emit("  %%multi = icmp sgt i32 %%cores, 1\n");
-    ir_emit("  br i1 %%multi, label %%setup, label %%serial\n");
+    ir_emit("  br i1 %%multi, label %%pool_check, label %%serial\n");
 
-    ir_emit("serial:\n");
-    ir_emit("  call void %%fn(ptr %%ctx, i32 %%lo, i32 %%hi)\n");
-    ir_emit("  ret void\n");
+    ir_emit("pool_check:\n");
+    ir_emit("  %%st = load i32, ptr @__pfor_pool_state\n");
+    ir_emit("  %%un = icmp eq i32 %%st, 0\n");
+    ir_emit("  br i1 %%un, label %%doinit, label %%st_chk\n");
+    ir_emit("doinit:\n");
+    ir_emit("  %%orc = call i32 @pthread_once(ptr @__pfor_once, ptr @__pfor_pool_init_once)\n");
+    ir_emit("  br label %%st_chk\n");
+    ir_emit("st_chk:\n");
+    ir_emit("  %%st2 = load i32, ptr @__pfor_pool_state\n");
+    ir_emit("  %%rdy = icmp eq i32 %%st2, 1\n");
+    ir_emit("  br i1 %%rdy, label %%setup, label %%serial\n");
 
-    /* Thread setup: clamp threads to min(cores, range/256, 32) */
+    /* Thread setup: clamp threads to min(cores, range/256, 32) — unchanged. */
     ir_emit("setup:\n");
     ir_emit("  %%max_t = sdiv i32 %%rng, 256\n");
     ir_emit("  %%t1 = icmp slt i32 %%cores, %%max_t\n");
@@ -8824,71 +9079,14 @@ static void emit_parallel_runtime(void) {
     ir_emit("  %%t4 = select i1 %%t3, i32 %%t2, i32 32\n");
     ir_emit("  %%nt = icmp sgt i32 %%t4, 1\n");
     ir_emit("  %%nthr = select i1 %%nt, i32 %%t4, i32 1\n");
-    /* Allocate thread handles (ptr each on macOS) and arg structs (24 bytes each) */
-    ir_emit("  %%nthr64 = sext i32 %%nthr to i64\n");
-    ir_emit("  %%tid_sz = mul i64 %%nthr64, 8\n");
-    ir_emit("  %%tids = call ptr @malloc(i64 %%tid_sz)\n");
-    ir_emit("  %%arg_sz = mul i64 %%nthr64, 24\n");
-    ir_emit("  %%args = call ptr @malloc(i64 %%arg_sz)\n");
-    ir_emit("  %%chunk = sdiv i32 %%rng, %%nthr\n");
-    ir_emit("  br label %%spawn\n");
+    ir_emit("  %%one = icmp eq i32 %%nthr, 1\n");
+    ir_emit("  br i1 %%one, label %%serial, label %%go\n");
+    ir_emit("go:\n");
+    ir_emit("  call void @__pfor_dispatch(ptr %%fn, ptr %%ctx, i32 %%lo, i32 %%hi, i32 %%nthr)\n");
+    ir_emit("  ret void\n");
 
-    /* Spawn loop */
-    ir_emit("spawn:\n");
-    ir_emit("  %%st = phi i32 [0, %%setup], [%%st_nxt, %%spawn_cont]\n");
-    ir_emit("  %%sd = icmp sge i32 %%st, %%nthr\n");
-    ir_emit("  br i1 %%sd, label %%join, label %%do_spawn\n");
-
-    ir_emit("do_spawn:\n");
-    ir_emit("  %%s_start = mul i32 %%st, %%chunk\n");
-    ir_emit("  %%s_off = add i32 %%s_start, %%lo\n");
-    ir_emit("  %%st1 = add i32 %%st, 1\n");
-    ir_emit("  %%is_last = icmp eq i32 %%st1, %%nthr\n");
-    ir_emit("  %%tent = add i32 %%s_off, %%chunk\n");
-    ir_emit("  %%s_end = select i1 %%is_last, i32 %%hi, i32 %%tent\n");
-    /* Fill arg struct: {fn, ctx, start, end} at args + st*24 */
-    ir_emit("  %%aoff = mul i32 %%st, 24\n");
-    ir_emit("  %%aoff64 = sext i32 %%aoff to i64\n");
-    ir_emit("  %%aptr = getelementptr i8, ptr %%args, i64 %%aoff64\n");
-    ir_emit("  store ptr %%fn, ptr %%aptr\n");
-    ir_emit("  %%a1 = getelementptr i8, ptr %%aptr, i64 8\n");
-    ir_emit("  store ptr %%ctx, ptr %%a1\n");
-    ir_emit("  %%a2 = getelementptr i8, ptr %%aptr, i64 16\n");
-    ir_emit("  store i32 %%s_off, ptr %%a2\n");
-    ir_emit("  %%a3 = getelementptr i8, ptr %%aptr, i64 20\n");
-    ir_emit("  store i32 %%s_end, ptr %%a3\n");
-    /* pthread_create */
-    ir_emit("  %%toff = mul i32 %%st, 8\n");
-    ir_emit("  %%toff64 = sext i32 %%toff to i64\n");
-    ir_emit("  %%tptr = getelementptr i8, ptr %%tids, i64 %%toff64\n");
-    ir_emit("  call i32 @pthread_create(ptr %%tptr, ptr null, ptr @__pfor_entry, ptr %%aptr)\n");
-    ir_emit("  br label %%spawn_cont\n");
-
-    ir_emit("spawn_cont:\n");
-    ir_emit("  %%st_nxt = add i32 %%st, 1\n");
-    ir_emit("  br label %%spawn\n");
-
-    /* Join loop */
-    ir_emit("join:\n");
-    ir_emit("  %%jt = phi i32 [0, %%spawn], [%%jt_nxt, %%join_cont]\n");
-    ir_emit("  %%jd = icmp sge i32 %%jt, %%nthr\n");
-    ir_emit("  br i1 %%jd, label %%cleanup, label %%do_join\n");
-
-    ir_emit("do_join:\n");
-    ir_emit("  %%jtoff = mul i32 %%jt, 8\n");
-    ir_emit("  %%jtoff64 = sext i32 %%jtoff to i64\n");
-    ir_emit("  %%jtptr = getelementptr i8, ptr %%tids, i64 %%jtoff64\n");
-    ir_emit("  %%tid = load ptr, ptr %%jtptr\n");
-    ir_emit("  call i32 @pthread_join(ptr %%tid, ptr null)\n");
-    ir_emit("  br label %%join_cont\n");
-
-    ir_emit("join_cont:\n");
-    ir_emit("  %%jt_nxt = add i32 %%jt, 1\n");
-    ir_emit("  br label %%join\n");
-
-    ir_emit("cleanup:\n");
-    ir_emit("  call void @free(ptr %%tids)\n");
-    ir_emit("  call void @free(ptr %%args)\n");
+    ir_emit("serial:\n");
+    ir_emit("  call void %%fn(ptr %%ctx, i32 %%lo, i32 %%hi)\n");
     ir_emit("  ret void\n");
     ir_emit("}\n\n");
 }
@@ -10660,6 +10858,18 @@ static void codegen_program(ASTNode *prog) {
     /* Parallel dispatch runtime declarations */
     ir_emit("declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n");
     ir_emit("declare i32 @pthread_join(ptr, ptr)\n");
+    ir_emit("declare i32 @pthread_once(ptr, ptr)\n");
+    ir_emit("declare i32 @pthread_mutex_init(ptr, ptr)\n");
+    ir_emit("declare i32 @pthread_mutex_lock(ptr)\n");
+    ir_emit("declare i32 @pthread_mutex_unlock(ptr)\n");
+    ir_emit("declare i32 @pthread_cond_init(ptr, ptr)\n");
+    ir_emit("declare i32 @pthread_cond_wait(ptr, ptr)\n");
+    ir_emit("declare i32 @pthread_cond_signal(ptr)\n");
+    ir_emit("declare i32 @pthread_cond_broadcast(ptr)\n");
+    ir_emit("declare i32 @pthread_attr_init(ptr)\n");
+    ir_emit("declare i32 @pthread_attr_setstacksize(ptr, i64)\n");
+    ir_emit("declare i32 @pthread_attr_destroy(ptr)\n");
+    ir_emit("declare i32 @sched_yield()\n");
     ir_emit("declare i64 @sysconf(i32)\n");
     ir_emit("declare ptr @getenv(ptr)\n");
     ir_emit("declare i32 @atoi(ptr)\n");
