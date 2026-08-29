@@ -1,0 +1,255 @@
+// SPDX-License-Identifier: Apache-2.0
+// Piecewise wire capacity and malformed-input regression gate.
+
+extern "C" fn pc_encode_layered(samples: *i32, n: i32, n_layers: i32,
+    out: *u8, max_out: i32) -> i32;
+extern "C" fn pc_encode_layered_stream(samples: *i32, n: i32, n_layers: i32,
+    initial_state: *i32, final_state: *i32,
+    out: *u8, max_out: i32) -> i32;
+extern "C" fn pc_decode_layered(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32) -> i32;
+extern "C" fn pc_decode(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32, p: i32) -> i32;
+
+fn read_i32_le(buf: *u8, pos: i32) -> i32 {
+    return buf[pos] as i32 + (buf[pos + 1] as i32) * 256
+        + (buf[pos + 2] as i32) * 65536
+        + (buf[pos + 3] as i32) * 16777216;
+}
+
+fn write_i32_le(buf: *u8, pos: i32, value: i32) {
+    buf[pos] = (value & 255) as u8;
+    buf[pos + 1] = ((value >> 8) & 255) as u8;
+    buf[pos + 2] = ((value >> 16) & 255) as u8;
+    buf[pos + 3] = ((value >> 24) & 255) as u8;
+}
+
+fn fill_bytes(buf: *u8, n: i32, value: u8) {
+    var i: i32 = 0;
+    while i < n { buf[i] = value; i = i + 1; }
+}
+
+fn fill_i32(buf: *i32, n: i32, value: i32) {
+    var i: i32 = 0;
+    while i < n { buf[i] = value; i = i + 1; }
+}
+
+fn main() -> i32 {
+    let one: *i32 = alloc(1);
+    one[0] = 0;
+    let one_wire: *u8 = alloc(1024);
+    let one_out: *i32 = alloc(1);
+    let one_len: i32 = pc_encode_layered(one, 1, 2, one_wire, 1024);
+    let one_n: i32 = pc_decode_layered(one_wire, one_len, one_out, 1);
+    var small_ok: i32 = 0;
+    if one_len > 0 && one_n == 1 && one_out[0] == 0 { small_ok = 1; }
+
+    let header_guard: *u8 = alloc(32);
+    fill_bytes(header_guard, 32, 165 as u8);
+    let header_rc: i32 = pc_encode_layered(one, 1, 2, header_guard, 11);
+    var header_ok: i32 = 1;
+    if header_rc >= 0 { header_ok = 0; }
+    var i: i32 = 0;
+    while i < 32 {
+        if header_guard[i] != 165 { header_ok = 0; }
+        i = i + 1;
+    }
+
+    let n: i32 = 32;
+    let samples: *i32 = alloc(n);
+    i = 0;
+    while i < n {
+        samples[i] = (i * 997) % 60000 - 30000;
+        i = i + 1;
+    }
+    let wire: *u8 = alloc(8192);
+    let wire_len: i32 = pc_encode_layered(samples, n, 2, wire, 8192);
+
+    let exact: *u8 = alloc(wire_len + 1);
+    fill_bytes(exact, wire_len + 1, 90 as u8);
+    let exact_len: i32 = pc_encode_layered(samples, n, 2, exact, wire_len);
+    let exact_out: *i32 = alloc(n);
+    let exact_n: i32 = pc_decode_layered(exact, exact_len, exact_out, n);
+    var exact_ok: i32 = 1;
+    if exact_len != wire_len || exact_n != n || exact[wire_len] != 90 {
+        exact_ok = 0;
+    }
+    i = 0;
+    while i < n {
+        if exact_out[i] != samples[i] { exact_ok = 0; }
+        i = i + 1;
+    }
+
+    let short: *u8 = alloc(wire_len + 1);
+    fill_bytes(short, wire_len + 1, 60 as u8);
+    let short_len: i32 = pc_encode_layered(samples, n, 2, short, wire_len - 1);
+    var short_ok: i32 = 1;
+    if short_len >= 0 || short[wire_len - 1] != 60 || short[wire_len] != 60 {
+        short_ok = 0;
+    }
+
+    var range_ok: i32 = 1;
+    if pc_encode_layered(samples, n, 4, wire, 8192) >= 0 { range_ok = 0; }
+    one[0] = 32768;
+    if pc_encode_layered(one, 1, 2, wire, 8192) >= 0 { range_ok = 0; }
+    one[0] = 8388607;
+    let three_len: i32 = pc_encode_layered(one, 1, 3, one_wire, 1024);
+    if pc_decode_layered(one_wire, three_len, one_out, 1) != 1
+        || one_out[0] != 8388607 {
+        range_ok = 0;
+    }
+    one[0] = 8388608;
+    if pc_encode_layered(one, 1, 3, one_wire, 1024) >= 0 { range_ok = 0; }
+    one[0] = 0;
+
+    let malformed_out: *i32 = alloc(n);
+    fill_i32(malformed_out, n, 777);
+    var malformed_ok: i32 = 1;
+
+    let saved_magic: u8 = wire[0];
+    wire[0] = 0;
+    if pc_decode_layered(wire, wire_len, malformed_out, n) >= 0 { malformed_ok = 0; }
+    wire[0] = saved_magic;
+
+    if pc_decode_layered(wire, wire_len - 1, malformed_out, n) >= 0 {
+        malformed_ok = 0;
+    }
+    if pc_decode_layered(wire, wire_len + 1, malformed_out, n) >= 0 {
+        malformed_ok = 0;
+    }
+
+    let saved_bps0: u8 = wire[6];
+    let saved_bps1: u8 = wire[7];
+    wire[6] = 8; wire[7] = 0;
+    if pc_decode_layered(wire, wire_len, malformed_out, n) >= 0 { malformed_ok = 0; }
+    wire[6] = saved_bps0; wire[7] = saved_bps1;
+
+    let saved_prime: i32 = read_i32_le(wire, 12);
+    write_i32_le(wire, 12, 4);
+    if pc_decode_layered(wire, wire_len, malformed_out, n) >= 0 { malformed_ok = 0; }
+    write_i32_le(wire, 12, saved_prime);
+
+    let first_pcpw: i32 = 20;
+    let saved_inner_magic: u8 = wire[first_pcpw];
+    wire[first_pcpw] = 0;
+    let first_pcpw_size: i32 = read_i32_le(wire, 16);
+    if pc_decode(&wire[first_pcpw], first_pcpw_size,
+        malformed_out, n, saved_prime) >= 0 {
+        malformed_ok = 0;
+    }
+    if pc_decode_layered(wire, wire_len, malformed_out, n) >= 0 { malformed_ok = 0; }
+    wire[first_pcpw] = saved_inner_magic;
+    if pc_decode(&wire[first_pcpw], first_pcpw_size - 1,
+        malformed_out, n, saved_prime) >= 0 {
+        malformed_ok = 0;
+    }
+
+    let saved_count: i32 = read_i32_le(wire, first_pcpw + 6);
+    write_i32_le(wire, first_pcpw + 6, n - 1);
+    if pc_decode_layered(wire, wire_len, malformed_out, n) >= 0 { malformed_ok = 0; }
+    write_i32_le(wire, first_pcpw + 6, saved_count);
+
+    i = 0;
+    while i < n {
+        if malformed_out[i] != 777 { malformed_ok = 0; }
+        i = i + 1;
+    }
+
+    fill_i32(malformed_out, n, 555);
+    let capacity_rc: i32 = pc_decode_layered(wire, wire_len, malformed_out, n - 1);
+    var decode_capacity_ok: i32 = 1;
+    if capacity_rc >= 0 { decode_capacity_ok = 0; }
+    i = 0;
+    while i < n {
+        if malformed_out[i] != 555 { decode_capacity_ok = 0; }
+        i = i + 1;
+    }
+
+    let initial_state: *i32 = alloc(18);
+    let final_state: *i32 = alloc(18);
+    fill_i32(initial_state, 18, 0);
+    fill_i32(final_state, 18, 0);
+    let v2_wire: *u8 = alloc(8192);
+    let v2_len: i32 = pc_encode_layered_stream(samples, n, 2,
+        initial_state, final_state, v2_wire, 8192);
+    let v2_out: *i32 = alloc(n);
+    var v2_ok: i32 = 1;
+    if pc_encode_layered_stream(samples, n, 2,
+        initial_state, initial_state, v2_wire, 8192) >= 0 {
+        v2_ok = 0;
+    }
+    if v2_len < 1 || v2_wire[4] != 2
+        || pc_decode_layered(v2_wire, v2_len, v2_out, n) != n {
+        v2_ok = 0;
+    }
+    i = 0;
+    while i < n {
+        if v2_out[i] != samples[i] { v2_ok = 0; }
+        i = i + 1;
+    }
+
+    fill_i32(v2_out, n, 333);
+    v2_wire[22] = 1;
+    if pc_decode_layered(v2_wire, v2_len, v2_out, n) >= 0 { v2_ok = 0; }
+    v2_wire[22] = 0;
+    write_i32_le(v2_wire, 24, 1);
+    if pc_decode_layered(v2_wire, v2_len, v2_out, n) >= 0 { v2_ok = 0; }
+    write_i32_le(v2_wire, 24, 0);
+    write_i32_le(v2_wire, 12, 251);
+    if pc_decode_layered(v2_wire, v2_len, v2_out, n) >= 0 { v2_ok = 0; }
+    i = 0;
+    while i < n {
+        if v2_out[i] != 333 { v2_ok = 0; }
+        i = i + 1;
+    }
+
+    let manual: *u8 = alloc(4110);
+    fill_bytes(manual, 4110, 0);
+    manual[0] = 80; manual[1] = 67; manual[2] = 80; manual[3] = 87;
+    manual[4] = 1; manual[5] = 8;
+    write_i32_le(manual, 6, 4097);
+    manual[10] = 0; manual[11] = 1; manual[12] = 16;
+    i = 0;
+    while i < 4097 { manual[13 + i] = 1; i = i + 1; }
+    let manual_out: *i32 = alloc(4097);
+    var pcpw_ok: i32 = 1;
+    if pc_decode(manual, 4110, manual_out, 4097, 257) != 4097 {
+        pcpw_ok = 0;
+    }
+    i = 0;
+    while i < 4097 {
+        if manual_out[i] != 1 { pcpw_ok = 0; }
+        manual_out[i] = 222;
+        i = i + 1;
+    }
+    manual[13] = 251;
+    if pc_decode(manual, 4110, manual_out, 4097, 251) >= 0 {
+        pcpw_ok = 0;
+    }
+    i = 0;
+    while i < 4097 {
+        if manual_out[i] != 222 { pcpw_ok = 0; }
+        i = i + 1;
+    }
+    write_i32_le(manual, 6, 1);
+    manual[10] = 4; manual[11] = 1; manual[12] = 0;
+    manual[13] = 1; manual[14] = 0;
+    if pc_decode(manual, 15, manual_out, 1, 251) >= 0 { pcpw_ok = 0; }
+
+    print(small_ok);
+    print(header_ok);
+    print(exact_ok);
+    print(short_ok);
+    print(range_ok);
+    print(malformed_ok);
+    print(decode_capacity_ok);
+    print(v2_ok);
+    print(pcpw_ok);
+
+    free(manual_out); free(manual);
+    free(v2_out); free(v2_wire); free(final_state); free(initial_state);
+    free(malformed_out); free(short); free(exact_out); free(exact);
+    free(wire); free(samples); free(header_guard);
+    free(one_out); free(one_wire); free(one);
+    return 0;
+}

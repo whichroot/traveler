@@ -110,11 +110,13 @@ fn particle_scan(samples: *i32, n: i32,
 // within each regime. Handles CONT, predictive gate, literal fallback.
 // Used by pc_segment_unified and pc_encode_layered.
 
-fn segment_greedy_bounded(samples: *i32, n: i32,
+fn segment_greedy_bounded_seeded(samples: *i32, n: i32,
     segments: *Segment, max_segments: i32,
     residuals_buf: *i32, max_residuals: i32,
     boundaries: *i32, n_bounds: i32,
-    f: Field) -> i32 {
+    f: Field,
+    initial_reg: *i32, initial_degree: i32, initial_active: i32,
+    final_reg: *i32, final_degree: *i32, final_active: *i32) -> i32 {
     let headers: *i32 = alloc(MAX_ORDER + 1);
     let tmp_res: *i32 = alloc(MAX_SEGMENT);
     var cursor: i32 = 0;
@@ -125,6 +127,15 @@ fn segment_greedy_bounded(samples: *i32, n: i32,
     let cont_reg: *i32 = alloc(MAX_ORDER + 1);
     var cont_degree: i32 = 0;
     var cont_active: i32 = 0;
+    if initial_active == 1 {
+        cont_degree = initial_degree;
+        cont_active = 1;
+        var initial_i: i32 = 0;
+        while initial_i <= initial_degree {
+            cont_reg[initial_i] = initial_reg[initial_i];
+            initial_i = initial_i + 1;
+        }
+    }
 
     var bi: i32 = 0;
     while bi < n_bounds {
@@ -153,6 +164,7 @@ fn segment_greedy_bounded(samples: *i32, n: i32,
                 }
                 res_offset = res_offset + remaining;
                 segments[seg_idx].encoded_bits = literal_cost(remaining, f);
+                cont_degree = 0;
                 cont_active = 0;
                 seg_idx = seg_idx + 1;
                 cursor = regime_end;
@@ -333,6 +345,7 @@ fn segment_greedy_bounded(samples: *i32, n: i32,
                 }
                 res_offset = res_offset + best_len;
                 segments[seg_idx].encoded_bits = literal_cost(best_len, f);
+                cont_degree = 0;
                 cont_active = 0;
             }
 
@@ -343,10 +356,41 @@ fn segment_greedy_bounded(samples: *i32, n: i32,
         bi = bi + 1;
     }
 
+    var final_i: i32 = 0;
+    while final_i <= MAX_ORDER {
+        final_reg[final_i] = 0;
+        if cont_active == 1 && final_i <= cont_degree {
+            final_reg[final_i] = cont_reg[final_i];
+        }
+        final_i = final_i + 1;
+    }
+    final_degree[0] = cont_degree;
+    final_active[0] = cont_active;
+
     free(cont_reg);
     free(tmp_res);
     free(headers);
     return seg_idx;
+}
+
+fn segment_greedy_bounded(samples: *i32, n: i32,
+    segments: *Segment, max_segments: i32,
+    residuals_buf: *i32, max_residuals: i32,
+    boundaries: *i32, n_bounds: i32,
+    f: Field) -> i32 {
+    let initial_reg: *i32 = alloc(MAX_ORDER + 1);
+    let final_reg: *i32 = alloc(MAX_ORDER + 1);
+    let final_degree: *i32 = alloc(1);
+    let final_active: *i32 = alloc(1);
+    let result: i32 = segment_greedy_bounded_seeded(samples, n,
+        segments, max_segments, residuals_buf, max_residuals,
+        boundaries, n_bounds, f,
+        initial_reg, 0, 0, final_reg, final_degree, final_active);
+    free(final_active);
+    free(final_degree);
+    free(final_reg);
+    free(initial_reg);
+    return result;
 }
 
 // ===== Unified segmenter =====

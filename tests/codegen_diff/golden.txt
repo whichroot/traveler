@@ -250,7 +250,7 @@ ba57673785def1d2e66781063173f7e5  examples/zk_loop_dyn_test.tv
 c26c9834ea7d6dc632ca9a8443c0ba32  examples/zk_loop_test_driver.tv
 fe47e8986980440e25b803e4b9449377  examples/zk_loop_test.tv
 eb75649941680f645bd674868d68df82  examples/zk_range_test.tv
-de972345485fdc5a74549af8e05e43af  src/lib/codec/piecewise_codec.tv
+24b0e37b9399646af0e7a39859e3d3f7  src/lib/codec/piecewise_codec.tv
 f1f803b11f8c63523cca3660e915feae  src/lib/core/poly_core.tv
 2c81e7af67c360c0db0b1d0ce940a31f  src/lib/crypto/mds_check.tv
 c30b109a71458c8df9e81c736b3b4316  src/lib/crypto/ntt.tv
