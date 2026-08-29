@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: Apache-2.0
+// Linked integration gate for the piecewise streaming protocol.
+
+extern "C" fn stream_init(n_layers: i32, max_regime: i32) -> *i32;
+extern "C" fn stream_free(state: *i32);
+extern "C" fn stream_push(state: *i32, sample: i32) -> i32;
+extern "C" fn stream_get_chunk(state: *i32, out: *u8, max_out: i32) -> i32;
+extern "C" fn stream_get_chunk_samples(state: *i32) -> i32;
+extern "C" fn stream_flush(state: *i32, out: *u8, max_out: i32) -> i32;
+extern "C" fn stream_keyframe(state: *i32, out: *u8, max_out: i32) -> i32;
+extern "C" fn stream_total_emitted(state: *i32) -> i32;
+extern "C" fn stream_total_chunks(state: *i32) -> i32;
+extern "C" fn stream_verify_errors(state: *i32) -> i32;
+extern "C" fn pc_decode_layered(data: *u8, data_len: i32,
+    out: *i32, max_samples: i32) -> i32;
+
+fn sample_at(i: i32) -> i32 {
+    return (i * 7919) % 60000 - 30000;
+}
+
+fn read_i32_le(data: *u8, pos: i32) -> i32 {
+    return (data[pos] as i32)
+        | ((data[pos + 1] as i32) << 8)
+        | ((data[pos + 2] as i32) << 16)
+        | ((data[pos + 3] as i32) << 24);
+}
+
+fn check_chunk(state: *i32, wire: *u8, decoded: *i32,
+    first_sample: i32, retry_small: i32) -> i32 {
+    if retry_small == 1 {
+        if stream_get_chunk(state, wire, 0) >= 0 { return 0; }
+    }
+    let wire_len: i32 = stream_get_chunk(state, wire, 8192);
+    let n_samples: i32 = stream_get_chunk_samples(state);
+    if wire_len < 1 || n_samples < 1 { return 0; }
+    let decoded_n: i32 = pc_decode_layered(wire, wire_len, decoded, n_samples);
+    if decoded_n != n_samples { return 0; }
+    var i: i32 = 0;
+    while i < n_samples {
+        if decoded[i] != sample_at(first_sample + i) { return 0; }
+        i = i + 1;
+    }
+    return n_samples;
+}
+
+fn main() -> i32 {
+    var init_ok: i32 = 1;
+    if stream_init(4, 256) != null { init_ok = 0; }
+
+    let state: *i32 = stream_init(2, 256);
+    if state == null { print(0); return 1; }
+    let wire: *u8 = alloc(8192);
+    let decoded: *i32 = alloc(512);
+
+    let total: i32 = 300;
+    var consumed: i32 = 0;
+    var chunks_seen: i32 = 0;
+    var push_ok: i32 = 1;
+    var retry_ok: i32 = 1;
+    var i: i32 = 0;
+    while i < total {
+        let status: i32 = stream_push(state, sample_at(i));
+        if status < 0 { push_ok = 0; break; }
+        if status == 1 {
+            let took: i32 = check_chunk(state, wire, decoded, consumed,
+                (chunks_seen == 0) as i32);
+            if took < 1 { push_ok = 0; }
+            if chunks_seen == 0 && took < 1 { retry_ok = 0; }
+            consumed = consumed + took;
+            chunks_seen = chunks_seen + 1;
+        }
+        i = i + 1;
+    }
+
+    let flush_len: i32 = stream_flush(state, wire, 8192);
+    if flush_len > 0 {
+        let n_samples: i32 = stream_get_chunk_samples(state);
+        let decoded_n: i32 = pc_decode_layered(wire, flush_len, decoded, n_samples);
+        if decoded_n != n_samples { push_ok = 0; }
+        i = 0;
+        while i < n_samples {
+            if decoded[i] != sample_at(consumed + i) { push_ok = 0; }
+            i = i + 1;
+        }
+        consumed = consumed + n_samples;
+        chunks_seen = chunks_seen + 1;
+    } else {
+        push_ok = 0;
+    }
+
+    var counters_ok: i32 = 1;
+    if consumed != total || stream_total_emitted(state) != total
+        || stream_total_chunks(state) != chunks_seen {
+        counters_ok = 0;
+    }
+    let keyframe_len: i32 = stream_keyframe(state, wire, 8192);
+    var keyframe_ok: i32 = 0;
+    if keyframe_len > 0 { keyframe_ok = 1; }
+    var verify_ok: i32 = 0;
+    if stream_verify_errors(state) == 0 { verify_ok = 1; }
+    stream_free(state);
+
+    let flush_state: *i32 = stream_init(2, 256);
+    var flush_retry_ok: i32 = 1;
+    i = 0;
+    while i < 276 {
+        let status: i32 = stream_push(flush_state, sample_at(1000 + i));
+        if i < 256 && status != 0 { flush_retry_ok = 0; }
+        if i == 256 && status != 1 { flush_retry_ok = 0; }
+        if i > 256 && status != 0 { flush_retry_ok = 0; }
+        i = i + 1;
+    }
+    if stream_flush(flush_state, wire, 0) >= 0 { flush_retry_ok = 0; }
+    if stream_total_emitted(flush_state) != 256 || stream_total_chunks(flush_state) != 1 {
+        flush_retry_ok = 0;
+    }
+    let prior_len: i32 = stream_get_chunk(flush_state, wire, 8192);
+    let prior_n: i32 = pc_decode_layered(wire, prior_len, decoded, 256);
+    if prior_n != 256 { flush_retry_ok = 0; }
+    i = 0;
+    while i < 256 {
+        if decoded[i] != sample_at(1000 + i) { flush_retry_ok = 0; }
+        i = i + 1;
+    }
+    let retry_len: i32 = stream_flush(flush_state, wire, 8192);
+    let retry_n: i32 = pc_decode_layered(wire, retry_len, decoded, 20);
+    if retry_n != 20 || stream_total_emitted(flush_state) != 276
+        || stream_total_chunks(flush_state) != 2 {
+        flush_retry_ok = 0;
+    }
+    i = 0;
+    while i < 20 {
+        if decoded[i] != sample_at(1256 + i) { flush_retry_ok = 0; }
+        i = i + 1;
+    }
+    stream_free(flush_state);
+
+    let cont_state: *i32 = stream_init(2, 256);
+    var continuation_ok: i32 = 1;
+    i = 0;
+    while i < 320 {
+        let status: i32 = stream_push(cont_state, 123);
+        if i < 256 && status != 0 { continuation_ok = 0; }
+        if i == 256 {
+            if status != 1 { continuation_ok = 0; }
+            let first_len: i32 = stream_get_chunk(cont_state, wire, 8192);
+            if first_len < 1 || wire[4] != 2 || wire[62] == 3 {
+                continuation_ok = 0;
+            }
+        }
+        if i > 256 && status != 0 { continuation_ok = 0; }
+        i = i + 1;
+    }
+    if stream_flush(cont_state, wire, 0) >= 0 { continuation_ok = 0; }
+    let cont_len: i32 = stream_flush(cont_state, wire, 8192);
+    let cont_n: i32 = pc_decode_layered(wire, cont_len, decoded, 64);
+    if cont_n != 64 || wire[4] != 2 || wire[20] != 1 || wire[62] != 3 {
+        continuation_ok = 0;
+    }
+    let layer1_pos: i32 = 52 + read_i32_le(wire, 16);
+    if wire[layer1_pos + 8] != 1 || wire[layer1_pos + 50] != 3 {
+        continuation_ok = 0;
+    }
+    i = 0;
+    while i < cont_n {
+        if decoded[i] != 123 { continuation_ok = 0; }
+        i = i + 1;
+    }
+
+    if stream_push(cont_state, 124) != 0 { continuation_ok = 0; }
+    let literal_len: i32 = stream_flush(cont_state, wire, 8192);
+    if pc_decode_layered(wire, literal_len, decoded, 1) != 1
+        || decoded[0] != 124 {
+        continuation_ok = 0;
+    }
+    i = 0;
+    while i < 257 {
+        let status: i32 = stream_push(cont_state, 124);
+        if i < 256 && status != 0 { continuation_ok = 0; }
+        if i == 256 {
+            if status != 1 { continuation_ok = 0; }
+            let reset_len: i32 = stream_get_chunk(cont_state, wire, 8192);
+            if pc_decode_layered(wire, reset_len, decoded, 256) != 256
+                || wire[20] != 0 || wire[62] == 3 {
+                continuation_ok = 0;
+            }
+        }
+        i = i + 1;
+    }
+    stream_free(cont_state);
+
+    let invalid_state: *i32 = stream_init(2, 256);
+    var invalid_sample_ok: i32 = 1;
+    if stream_push(invalid_state, 32768) >= 0 { invalid_sample_ok = 0; }
+    if stream_total_emitted(invalid_state) != 0 { invalid_sample_ok = 0; }
+    stream_free(invalid_state);
+
+    print(init_ok);
+    print(push_ok);
+    print(retry_ok);
+    print(counters_ok);
+    print(keyframe_ok);
+    print(verify_ok);
+    print(flush_retry_ok);
+    print(continuation_ok);
+    print(invalid_sample_ok);
+
+    free(decoded); free(wire);
+    return 0;
+}

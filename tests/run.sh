@@ -1248,6 +1248,17 @@ compile_obj pc_golden
 link_objs pc_golden piecewise_codec pc_golden
 run_test pc_golden "$TIMEOUT_MULTI"
 
+# Codec safety: exact capacity, short buffers, malformed PCLY/PCPW, layer range.
+compile_obj piecewise_wire_safety_test
+link_objs piecewise_wire_safety_test piecewise_codec piecewise_wire_safety_test
+run_test piecewise_wire_safety_test "$TIMEOUT_MULTI"
+
+# Actual stream protocol integration (driver + stream adapter + codec).
+compile_obj stream_protocol
+compile_obj stream_protocol_test
+link_objs stream_protocol_test piecewise_codec stream_protocol stream_protocol_test
+run_test stream_protocol_test "$TIMEOUT_MULTI"
+
 # Reed-Solomon erasure coding over GF(2^8) (2-file: reed_solomon + test)
 # Encode k data symbols -> n; recover from any k survivors (Lagrange interp).
 # reed_solomon.tv is a carrier header importing the carrier-free rs_core.tv
