@@ -1,0 +1,44 @@
+// pfor_pool_idle.tv — POOL REGRESSION: dispatches after idle gaps.
+//
+// Between rounds the workers burn their spin budget and PARK on cv_go, so
+// every round wakes the pool through the parked path. Parked-path wake must
+// snapshot the CURRENT job record: a stale (fn, ctx, lo, hi) read runs the
+// previous round's range and corrupts the checksum.
+//
+// Two loops with different ranges interleave round-by-round, so a stale
+// snapshot lands on the wrong range. 64 rounds x 2 ms idle per half-round.
+//
+// MUST PARALLELIZE.  Expected workers: 2.  Deterministic at any thread count.
+// Expected output: 525825 then 8402950 (sum 1..n over each written range).
+
+extern "C" fn usleep(usec: i32) -> i32;
+
+fn main() -> i32 {
+    let n1: i32 = 1025;
+    let n2: i32 = 4099;
+    var out1: [i64; 1025] = 0;
+    var out2: [i64; 4099] = 0;
+
+    var k: i32 = 0;
+    while k < 64 {
+        for i in 0..n1 {
+            out1[i] = (i as i64) + 1;
+        }
+        usleep(2000);
+        for j in 0..n2 {
+            out2[j] = (j as i64) + 1;
+        }
+        usleep(2000);
+        k = k + 1;
+    }
+
+    var s1: i64 = 0;
+    var s2: i64 = 0;
+    var w: i32 = 0;
+    while w < n1 { s1 = s1 + out1[w]; w = w + 1; }
+    w = 0;
+    while w < n2 { s2 = s2 + out2[w]; w = w + 1; }
+    print(s1);
+    print(s2);
+    return 0;
+}

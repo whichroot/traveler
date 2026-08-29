@@ -21754,7 +21754,9 @@ fn emit_pfor_runtime() {
     ir_wr("  store i32 1, ptr %wsp\n");
     ir_wr("  br label %park_chk\n");
     ir_wr("park_chk:\n");
-    ir_wr("  %g2 = load atomic i64, ptr @__pfor_gen monotonic, align 8\n");
+    // Acquire, not monotonic: arm64 orders neither the job-field reads nor
+    // the branch on %new2 after a weaker load (stale job snapshot risk).
+    ir_wr("  %g2 = load atomic i64, ptr @__pfor_gen acquire, align 8\n");
     ir_wr("  %new2 = icmp ne i64 %g2, %last\n");
     ir_wr("  br i1 %new2, label %unpark, label %park_wait\n");
     ir_wr("park_wait:\n");
