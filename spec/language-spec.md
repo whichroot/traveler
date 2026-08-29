@@ -736,6 +736,11 @@ Stream<F>
 A lazy, potentially unbounded sequence of field elements, backed by a polynomial
 evaluation state.
 
+This planned single-field abstraction is distinct from the shipped
+`StreamState` protocol adapter. `StreamState` accepts signed integer samples,
+decomposes them into byte layers, and maintains one continuation register per
+layer. It does not make `Stream<F>` a compiler-known type.
+
 **Representation**:
 ```
 struct Stream<F> {
@@ -2928,7 +2933,7 @@ A stream has three states:
 Transitions:
 ```
 Uninitialized --[encode polynomial block]--> Active
-Active --[next block matches continuation]--> Active (emit CONTINUE)
+Active --[next block matches continuation]--> Active (emit CONT)
 Active --[next block doesn't match]-------> Active (emit new polynomial, reset regs)
 Active --[non-polynomial block]-----------> Stale
 Stale --[polynomial block]----------------> Active
@@ -2961,7 +2966,7 @@ degrees (2-3) and block sizes (128-256), this is a few hundred field operations.
 ### 11.3 Continuation Encoding
 
 If continuation matches:
-- Emit a CONTINUE block: 2 bytes (8-bit) or 3 bytes (16/32-bit)
+- Emit a 3-byte PCPW CONT block: one type byte and a two-byte length
 - Update register state to reflect the additional n steps
 
 If continuation doesn't match:
@@ -2971,12 +2976,50 @@ If continuation doesn't match:
 
 ### 11.4 Register State Tracking
 
-The register state is tracked in the **original data space** (not offset-shifted).
-This ensures continuation predictions compare correctly against original values.
+The single-field operations in §11.2 track state in that field. The concrete
+layered stream adapter tracks each byte layer separately in `Field<257>` after
+signed offset and divmod decomposition. The field is fixed for the lifetime of
+the stream, so a register remains meaningful at every chunk boundary.
 
-For a polynomial block compressed with offset mode: the encoder re-analyzes the
-original (non-offset) data to derive the register state. This costs one extra
-`analyze()` call but ensures correctness.
+Each layer state has an active flag, a degree in `1..6` when active, and seven
+register slots. An inactive state has degree zero and all register slots zero.
+A polynomial block replaces the state, a CONT block advances it, and a literal
+block clears it.
+
+### 11.5 Layered Stream Wire Protocol
+
+The standalone layered codec uses PCLY v1. It selects a layer prime dynamically
+and encodes every chunk without an initial continuation state. Its existing wire
+bytes remain unchanged.
+
+`StreamState` emits PCLY v2. The common 12-byte PCLY header has version byte 2.
+Each layer then contains:
+
+```
+layer_prime:    i32 little-endian  // always 257
+pcpw_size:      i32 little-endian
+active:         u8
+degree:         u8
+reserved:       u16               // zero
+register[7]:    i32 little-endian
+pcpw_payload:   [u8; pcpw_size]    // PCPW version 1
+```
+
+The register is the layer state immediately before the chunk. Therefore a v2
+layer may begin with CONT while the PCLY chunk remains independently decodable.
+The decoder rejects a noncanonical state, a nonzero reserved field, a layer
+prime other than 257, or a register value outside `0..256`.
+
+Encoding requires distinct committed and candidate continuation buffers. The
+candidate state becomes committed only after encoding and lossless decode
+verification succeed and the caller's capacity check succeeds. An encoding,
+verification, or capacity failure leaves the prior state available for retry.
+The latest committed v2 chunk is also the late-join keyframe; no earlier chunk
+is required to decode it.
+
+Chunks are emitted at an interior particle-scan boundary or when the finite
+regime buffer reaches its configured capacity. A capacity split is a transport
+boundary, not a stale-state transition; its final registers seed the next chunk.
 
 ---
 
@@ -4156,15 +4199,21 @@ check.85pct:
 into a `Vec<Segment>`. The binary search for evaluation within a `Piecewise`
 is a standard sorted-array search on segment start offsets.
 
-### 15.14 Stream State Machine Codegen
+### 15.14 Planned Stream State Machine Codegen
 
-The `Stream<F>` state machine (Section 11) compiles to a struct containing
-the register array, degree, and active flag:
+> **NOT YET IMPLEMENTED (v0.1.0).** The compiler does not recognize or lower
+> `Stream<F>`. The standard-library implementation in §11 uses ordinary structs,
+> arrays, and calls to the shipped field primitives. The LLVM below describes a
+> possible zero-cost lowering for the planned language type, not current compiler
+> behavior.
+
+The planned `Stream<F>` state machine could lower to a struct containing the
+register array, degree, and active flag:
 
 ```llvm
 ; Stream<Field<251>>:
-; { reg: [256 x i8], degree: i32, active: i1 }
-%Stream251 = type { [256 x i8], i32, i1 }
+; { reg: [251 x i8], degree: i32, active: i1 }
+%Stream251 = type { [251 x i8], i32, i1 }
 ```
 
 **Continuation check**: predict the next block by advancing the registers,
@@ -4187,7 +4236,7 @@ check.element:
     br i1 %eq, label %check.next, label %no.match
 ```
 
-**State transition**: if continuation matches, emit a 2-byte CONT block and
+**State transition**: if continuation matches, emit a 3-byte CONT block and
 update the register state. If not, compress the block independently and
 reset the stream state from the new polynomial.
 
@@ -5121,35 +5170,39 @@ is needed.
 
 ### 17.5 Stream\<F\>
 
-A stream is an ordered sequence of segments with a continuation relation.
+A stream is a lazy ordered sequence with a continuation relation. This is the
+planned language surface from §3.5, not a container that retains every segment.
 
 ```traveler
 struct Stream<F: Field> {
-    segments: Vec<Segment<F, d>>,  // d varies per segment
+    reg: [F; MAX_DEGREE + 1],
+    degree: u16,
+    active: bool,
 }
 ```
 
 The continuation relation: when consecutive segments follow the same
 polynomial, the second segment can be encoded as a CONT block (3 bytes)
 instead of a full polynomial header + residuals. The check is exact
-field equality — does the register from the previous segment, advanced
-through the boundary, correctly predict the first `d+1` values of the
-next segment?
+field equality: the previous register must predict every value represented by
+the CONT block.
 
-**Streaming**: `Stream<F>` supports push semantics. Samples accumulate
-in a regime buffer. When `regime_detect` finds an interior boundary,
-everything before the boundary becomes a segment, encoded and emitted.
-The remainder carries forward. Late-joining clients wait for the next
-non-CONT segment, which contains full Newton coefficients — a keyframe
-by construction.
+**Streaming**: the shipped `StreamState` adapter provides push semantics today.
+Samples accumulate in a regime buffer. When `particle_scan` finds an interior
+boundary, everything before the boundary is encoded and emitted, and the
+remainder carries forward. A full regime buffer also forces a chunk without
+clearing continuation state. PCLY v2 embeds the initial per-layer register
+state, so every committed chunk is independently decodable even when its first
+PCPW block is CONT. `stream_keyframe` returns the latest committed chunk.
 
 **Progressive delivery**: N-layer encoding decomposes each sample into
 byte layers via divmod chain. Each layer is an independent
-`Stream<Field<p_k>>` where `p_k` is the smallest prime containing the
-layer's value range. Layers share boundaries (detected once on
-the full-resolution signal). Send layer 0 first for immediate low-
-resolution playback. Send subsequent layers to refine. The skeleton
-ratio converges on `1/n_layers` — bandwidth scaling is linear.
+continuation sequence. PCLY v1 selects the smallest valid dynamic prime per
+layer. PCLY v2 uses `Field<257>` for every layer to preserve state across chunks.
+Both versions share boundaries detected once on the full-resolution signal.
+Send layer 0 first for immediate low-resolution playback. Send subsequent
+layers to refine. The skeleton ratio converges on `1/n_layers`; bandwidth
+scaling is linear.
 
 ### 17.6 Composition and Multi-Domain Application
 
