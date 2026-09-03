@@ -418,7 +418,10 @@ GPU codegen is early-stage. AMD GCN (`--emit-gpu`) and NVIDIA
 `Field<2147483647>` map or one signed private-K=8 dot per worker; a standard
 GLSL assembler only encodes the compiler-owned source as SPIR-V.
 `src/lib/gpu/vulkan_runtime.tv` and `src/lib/gpu/hip_runtime.tv` are
-Traveler-owned compute runtimes linking only `libvulkan`/`libamdhip64`. AGX
+Traveler-owned compute runtimes linking only `libvulkan`/`libamdhip64`.
+`src/lib/gpu/cuda_runtime.tv` is the NVIDIA counterpart linking only
+`libcuda`; `cuModuleLoad` JIT-compiles the PTX for the local GPU, so no CUDA
+toolkit is in the chain. AGX
 (`--emit-gpu-agx`) directly emits measured G16X instructions for unary field
 maps over the proved narrow-prime profiles and canonical `2^64-59`, plus narrow
 two-input own-cell maps; arbitrary 64-bit primes remain refused. `src/lib/gpu/` contains the

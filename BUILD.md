@@ -265,12 +265,19 @@ semantics or admission. `src/lib/gpu/vulkan_runtime.tv` owns instance/device
 selection, coherent device-local input buffers, host-cached coherent output
 publication, descriptors, pipeline construction, submission, synchronization,
 and teardown through the public Vulkan C ABI. `src/lib/gpu/hip_runtime.tv`
-owns the corresponding HIP module path. Their executables link only Traveler
-objects plus `libvulkan`/`libamdhip64`, with no project C, C++, HIP, or
-shader-runtime shim.
+owns the corresponding HIP module path. `src/lib/gpu/cuda_runtime.tv` owns
+the NVIDIA CUDA driver path: it loads PTX text through `cuModuleLoad`, which
+JIT-compiles for the local GPU at module load, so no CUDA toolkit (`ptxas`/
+`nvcc`) is in the chain. Their executables link only Traveler
+objects plus `libvulkan`/`libamdhip64`/`libcuda`, with no project C, C++, HIP,
+CUDA, or shader-runtime shim.
 
 AMDGCN and NVPTX are LLVM device modules; `tests/gpu/run.sh` lowers them with
-`llc` to a gfx1100 object and sm_90 PTX. AGX is different: Traveler directly
+`llc` to a gfx1100 object and sm_90 PTX. With `libcuda` and an NVIDIA device
+present, the suite also lowers the NVPTX module for the local architecture
+(`sm_120` on Blackwell; PTX JITs forward from `sm_90` otherwise) and executes
+the same-source field-map gate and the exact Q8xQ4 projection through the
+CUDA runtime, comparing bytes against the CPU pfor oracle. AGX is different: Traveler directly
 emits measured G16X instruction bytes in canonical hex, with no Metal compiler
 or LLVM device backend. The unary path admits one-input/one-output field maps
 over `Field<2147483647>`, odd primes in `2^30 < p < 2^31`, or the canonical
@@ -459,7 +466,7 @@ Not every suite needs the full toolchain. Pick by environment:
 | `tests/run_diag.sh` / `run_fmt.sh` / `run_lsp.sh` / `run_doc.sh` | ✓ | ✓ | ✓ | ✓ | also run as `run.sh` sub-gates |
 | `tests/run_bootstrap.sh` (fixed point) | ✓ | ✓ | ✓ | — | rebuilds stage1/stage2 |
 | `tests/typedptr/run.sh` (`-target tpc`) | ✓ | ✓ | ✓ | — | also needs an LLVM-14-era `llvm-as` + `llc` pair |
-| `tests/gpu/run.sh` | ✓ | per leg | AGX leg | — | AMDGCN/NVPTX legs skip if `llc` lacks the target; AGX hardware legs need the measured M4 profile (macOS) |
+| `tests/gpu/run.sh` | ✓ | per leg | AGX/CUDA legs | — | AMDGCN/NVPTX legs skip if `llc` lacks the target; CUDA execution needs `libcuda` + device node; AGX hardware legs need the measured M4 profile (macOS) |
 | `tests/fuzz_diff.py` | ✓ | — | — | ✓ | dual-compiler IR fuzzing |
 | `tests/codegen_diff/run.sh` | ✓ | — | — | — | IR-hash manifest |
 | `tests/repl/run.sh` | ✓ | — | — | — | evaluator only |
