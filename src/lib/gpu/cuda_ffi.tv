@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Public CUDA driver ABI floor for Traveler-owned NVIDIA device submission.
+// Linux only. cuModuleLoad JIT-compiles PTX for the local GPU; no ptxas.
+
+extern "C" fn cuInit(flags: u32) -> i32;
+extern "C" fn cuDeviceGet(device_out: *i32, ordinal: i32) -> i32;
+extern "C" fn cuCtxCreate_v2(context_out: **u8, flags: u32, device: i32) -> i32;
+extern "C" fn cuCtxDestroy_v2(context: *u8) -> i32;
+extern "C" fn cuModuleLoad(module_out: **u8, path: *u8) -> i32;
+extern "C" fn cuModuleGetFunction(function_out: **u8, module: *u8,
+                                  name: *u8) -> i32;
+extern "C" fn cuModuleUnload(module: *u8) -> i32;
+extern "C" fn cuMemAlloc_v2(pointer_out: **u8, size: usize) -> i32;
+extern "C" fn cuMemFree_v2(pointer: *u8) -> i32;
+extern "C" fn cuMemcpyHtoD_v2(destination: *u8, source: *u8,
+                              size: usize) -> i32;
+extern "C" fn cuMemcpyDtoH_v2(destination: *u8, source: *u8,
+                              size: usize) -> i32;
+extern "C" fn cuLaunchKernel(function: *u8,
+                             grid_x: u32, grid_y: u32, grid_z: u32,
+                             block_x: u32, block_y: u32, block_z: u32,
+                             shared_bytes: u32, stream: *u8,
+                             kernel_params: **u8, extra: **u8) -> i32;
+extern "C" fn cuCtxSynchronize() -> i32;
