@@ -18271,7 +18271,9 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         var synthetic_receiver: i32 = 0 - 1;
         var closure_capture: i32 = NULL_STR;
         // udot4: pure packed-byte dot builtin — no effect; the three argument
-        // expressions are the whole footprint.
+        // expressions are the whole footprint. Return here: the common
+        // argument loop below would re-walk the same three subtrees, which
+        // grows as 2^depth on nested udot4 chains.
         if str_eq(&g_strings[call_name], "udot4") == 1
             && g_nodes[node].nargs == 3 {
             call_handled = 1;
@@ -18279,6 +18281,7 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
             proof0_expr(P, g_args[uab], depth + 1, control_depth);
             proof0_expr(P, g_args[uab + 1], depth + 1, control_depth);
             proof0_expr(P, g_args[uab + 2], depth + 1, control_depth);
+            return;
         }
         // Builtins execute before closure lookup. Classify their own effect,
         // never a same-named closure's body.

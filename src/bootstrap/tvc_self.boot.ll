@@ -98072,7 +98072,7 @@ L158:
   %t780 = add i32 %t778, %t779
   %t781 = load i32, ptr %t3
   call void @proof0_expr(ptr %t770, i32 %t777, i32 %t780, i32 %t781)
-  br label %L160
+  ret void
 L160:
   %t782 = load i32, ptr %t1
   %t783 = call i32 @call_may_use_builtin_precedence(i32 %t782)
