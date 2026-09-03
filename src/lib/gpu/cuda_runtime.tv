@@ -11,6 +11,7 @@ var g_cuda_dispatch_count: i32 = 0;
 
 struct CudaRuntime {
     context: *u8,
+    device: i32,
     module: *u8,
     function: *u8,
     input: *u8,
@@ -31,7 +32,7 @@ fn cuda_runtime_close(runtime: *CudaRuntime) {
     if runtime.input2 != null { cuMemFree_v2(runtime.input2); }
     if runtime.input != null { cuMemFree_v2(runtime.input); }
     if runtime.module != null { cuModuleUnload(runtime.module); }
-    if runtime.context != null { cuCtxDestroy_v2(runtime.context); }
+    if runtime.context != null { cuDevicePrimaryCtxRelease(runtime.device); }
     free(runtime);
 }
 
@@ -48,6 +49,7 @@ fn cuda_runtime_open(module_path: *u8, kernel_name: *u8,
 
     let runtime: *CudaRuntime = alloc(1);
     runtime.context = null;
+    runtime.device = 0;
     runtime.module = null;
     runtime.function = null;
     runtime.input = null;
@@ -62,16 +64,20 @@ fn cuda_runtime_open(module_path: *u8, kernel_name: *u8,
         cuda_runtime_close(runtime);
         return null;
     }
+    // Open runtimes share the device primary context: every module, buffer,
+    // and launch is then valid no matter which open most recently ran.
     let device_slot: *i32 = alloc(1);
     status = cuDeviceGet(device_slot, 0);
+    if status == 0 { runtime.device = device_slot[0]; }
+    free(device_slot);
     if status == 0 {
         let context_slot: **u8 = alloc(1);
         context_slot[0] = null;
-        status = cuCtxCreate_v2(context_slot, 0, device_slot[0]);
+        status = cuDevicePrimaryCtxRetain(context_slot, runtime.device);
         if status == 0 { runtime.context = context_slot[0]; }
         free(context_slot as *u8);
     }
-    free(device_slot);
+    if status == 0 { status = cuCtxSetCurrent(runtime.context); }
     if status != 0 || runtime.context == null {
         cuda_record_error(3, status);
         cuda_runtime_close(runtime);

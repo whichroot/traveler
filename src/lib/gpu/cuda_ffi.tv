@@ -4,8 +4,9 @@
 
 extern "C" fn cuInit(flags: u32) -> i32;
 extern "C" fn cuDeviceGet(device_out: *i32, ordinal: i32) -> i32;
-extern "C" fn cuCtxCreate_v2(context_out: **u8, flags: u32, device: i32) -> i32;
-extern "C" fn cuCtxDestroy_v2(context: *u8) -> i32;
+extern "C" fn cuDevicePrimaryCtxRetain(context_out: **u8, device: i32) -> i32;
+extern "C" fn cuDevicePrimaryCtxRelease(device: i32) -> i32;
+extern "C" fn cuCtxSetCurrent(context: *u8) -> i32;
 extern "C" fn cuModuleLoad(module_out: **u8, path: *u8) -> i32;
 extern "C" fn cuModuleGetFunction(function_out: **u8, module: *u8,
                                   name: *u8) -> i32;
