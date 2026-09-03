@@ -19,6 +19,8 @@ struct CudaRuntime {
     output: *u8,
     input_capacity: usize,
     output_capacity: usize,
+    caps: **u8,
+    cap_count: i32,
 }
 
 fn cuda_record_error(boundary: i32, status: i32) {
@@ -28,6 +30,14 @@ fn cuda_record_error(boundary: i32, status: i32) {
 
 fn cuda_runtime_close(runtime: *CudaRuntime) {
     if runtime == null { return; }
+    if runtime.caps != null {
+        var ci: i32 = 0;
+        while ci < runtime.cap_count {
+            if runtime.caps[ci] != null { cuMemFree_v2(runtime.caps[ci]); }
+            ci = ci + 1;
+        }
+        free(runtime.caps as *u8);
+    }
     if runtime.output != null { cuMemFree_v2(runtime.output); }
     if runtime.input2 != null { cuMemFree_v2(runtime.input2); }
     if runtime.input != null { cuMemFree_v2(runtime.input); }
@@ -57,6 +67,8 @@ fn cuda_runtime_open(module_path: *u8, kernel_name: *u8,
     runtime.output = null;
     runtime.input_capacity = input_capacity;
     runtime.output_capacity = output_capacity;
+    runtime.caps = null;
+    runtime.cap_count = 0;
 
     var status: i32 = cuInit(0);
     if status != 0 {
@@ -277,4 +289,118 @@ fn cuda_runtime_launch_dot_k8_batch(runtime: *CudaRuntime,
     return cuda_runtime_launch_dot_k8_repeated(
         runtime, input0, input0_bytes, input1, input1_bytes,
         output, output_bytes, lo, hi, repetitions);
+}
+
+// Launches the compiler's general device ABI, bounded by MAX_PFOR_CAP:
+//   kernel(cap0, ..., capN-1, lo, hi)  with 2 <= N <= 32.
+// Host slots 0..N-2 upload as inputs; slot N-1 downloads as the output.
+// The caller orders host slots to the device walk order of the emitted
+// kernel signature; every capture must be a pointer.
+fn cuda_runtime_launch_caps(runtime: *CudaRuntime,
+                            host: **u8, bytes: *usize, ncaps: i32,
+                            lo: i32, hi: i32) -> i32 {
+    g_cuda_error = 0;
+    g_cuda_status = 0;
+    if runtime == null || host == null || bytes == null
+        || ncaps < 2 || ncaps > 32 || lo < 0 || hi <= lo {
+        cuda_record_error(30, 0 - 1);
+        return 0;
+    }
+    var i: i32 = 0;
+    while i < ncaps {
+        if host[i] == null || bytes[i] == 0
+            || bytes[i] > runtime.input_capacity
+            || (i == ncaps - 1 && bytes[i] > runtime.output_capacity) {
+            cuda_record_error(30, 0 - 1);
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    // The device capture array persists across same-shape launches; a shape
+    // change frees every slot and reallocates.
+    if runtime.cap_count != ncaps {
+        if runtime.caps != null {
+            i = 0;
+            while i < runtime.cap_count {
+                if runtime.caps[i] != null { cuMemFree_v2(runtime.caps[i]); }
+                i = i + 1;
+            }
+            free(runtime.caps as *u8);
+            runtime.caps = null;
+            runtime.cap_count = 0;
+        }
+        let slots: **u8 = alloc(ncaps);
+        i = 0;
+        while i < ncaps { slots[i] = null; i = i + 1; }
+        i = 0;
+        var allocation_status: i32 = 0;
+        while i < ncaps && allocation_status == 0 {
+            let slot: **u8 = alloc(1);
+            slot[0] = null;
+            var capacity: usize = runtime.input_capacity;
+            if i == ncaps - 1 { capacity = runtime.output_capacity; }
+            allocation_status = cuMemAlloc_v2(slot, capacity);
+            if allocation_status == 0 && slot[0] != null {
+                slots[i] = slot[0];
+            } else {
+                if allocation_status == 0 { allocation_status = 0 - 1; }
+            }
+            free(slot as *u8);
+            i = i + 1;
+        }
+        if allocation_status != 0 {
+            var j: i32 = 0;
+            while j < ncaps {
+                if slots[j] != null { cuMemFree_v2(slots[j]); }
+                j = j + 1;
+            }
+            free(slots as *u8);
+            cuda_record_error(31, allocation_status);
+            return 0;
+        }
+        runtime.caps = slots;
+        runtime.cap_count = ncaps;
+    }
+
+    var status: i32 = 0;
+    i = 0;
+    while i < ncaps - 1 && status == 0 {
+        status = cuMemcpyHtoD_v2(runtime.caps[i], host[i], bytes[i]);
+        i = i + 1;
+    }
+    if status != 0 { cuda_record_error(32, status); return 0; }
+
+    // kernel_params is an array of addresses: args[i] points at the storage
+    // that holds parameter i's value.
+    let params: **u8 = alloc(ncaps);
+    i = 0;
+    while i < ncaps {
+        params[i] = runtime.caps[i];
+        i = i + 1;
+    }
+    var kernel_lo: i32 = lo;
+    var kernel_hi: i32 = hi;
+    let args: **u8 = alloc(ncaps + 2);
+    i = 0;
+    while i < ncaps {
+        args[i] = (&params[i]) as *u8;
+        i = i + 1;
+    }
+    args[ncaps] = (&kernel_lo) as *u8;
+    args[ncaps + 1] = (&kernel_hi) as *u8;
+    let groups: u32 = (((hi - lo) + 255) / 256) as u32;
+    status = cuLaunchKernel(runtime.function,
+                            groups, 1, 1, 256, 1, 1,
+                            0, null, args, null);
+    free(args as *u8);
+    free(params as *u8);
+    if status != 0 { cuda_record_error(33, status); return 0; }
+    status = cuCtxSynchronize();
+    if status != 0 { cuda_record_error(34, status); return 0; }
+    status = cuMemcpyDtoH_v2(host[ncaps - 1], runtime.caps[ncaps - 1],
+                             bytes[ncaps - 1]);
+    if status != 0 { cuda_record_error(35, status); return 0; }
+    g_cuda_dispatch_count = g_cuda_dispatch_count + 1;
+    return 1;
 }
