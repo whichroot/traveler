@@ -2605,6 +2605,36 @@ elif [ "$NVX_READY" = "1" ]; then
     echo "  SKIP: libcuda or link driver unavailable (dp4a gate execution)"
 fi
 
+# P6. The general launch ABI runs an eight-capture worker byte-exact:
+#     kernel(cap0..cap7, lo, hi). The signature grep pins the capture count;
+#     the fixture weights each plane so a walk-order mistake fails parity.
+NVC_SRC="$SCRIPT_DIR/cuda_cap8_gate.tv"
+NVC_HOST_LL="$TMP/cuda_cap8_gate.ll"
+NVC_HOST_OBJ="$TMP/cuda_cap8_gate.o"
+NVC_EXE="$TMP/cuda-cap8-gate"
+NVC_DEV="$TMP/cuda_cap8_gate_nv.ll"
+NVC_PTX="$TMP/cuda_cap8_gate.ptx"
+NVC_SIG='define ptx_kernel void @__pfor_gpu_worker_0(ptr addrspace(1) %t0, ptr addrspace(1) %t1, ptr addrspace(1) %t2, ptr addrspace(1) %t3, ptr addrspace(1) %t4, ptr addrspace(1) %t5, ptr addrspace(1) %t6, ptr addrspace(1) %t7, i32 %t8, i32 %t9)'
+if [ "$NVX_READY" = "1" ] && [ "$HAVE_CUDA" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
+    if ! "$STAGE1" "$NVC_SRC" -o "$NVC_HOST_LL" 2>/dev/null \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$NVC_HOST_LL" \
+            -o "$NVC_HOST_OBJ" 2>/dev/null \
+       || ! "$STAGE1" --emit-gpu-nvptx "$NVC_SRC" -o "$NVC_DEV" 2>/dev/null \
+       || ! grep -qF "$NVC_SIG" "$NVC_DEV" \
+       || ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu="$NV_SM" \
+            "$NVC_DEV" -o "$NVC_PTX" 2>/dev/null \
+       || ! "$LINKER" $HOST_LINK_PIE -pthread "$NVC_HOST_OBJ" "$CUDA_LIB" \
+            -Wl,-rpath,"$(dirname "$CUDA_LIB")" -o "$NVC_EXE" 2>/dev/null; then
+        echo "  FAIL: CUDA cap8 gate did not build"; fail=1
+    elif [ "$("$NVC_EXE" "$NVC_PTX" 2>/dev/null)" != "1" ]; then
+        echo "  FAIL: CUDA cap8 gate did not reach CPU parity"; fail=1
+    else
+        echo "  ok   CUDA cap8 launch ABI is CPU-byte-exact ($NV_SM, driver JIT)"
+    fi
+elif [ "$NVX_READY" = "1" ]; then
+    echo "  SKIP: libcuda or link driver unavailable (cap8 gate execution)"
+fi
+
 # ========================== Vulkan/HIP runtime ownership =====================
 echo "  -- Vulkan shader and Traveler-owned AMD runtimes"
 VK_GATE_SRC="$SCRIPT_DIR/vulkan_runtime_gate.tv"
