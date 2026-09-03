@@ -273,7 +273,9 @@ objects plus `libvulkan`/`libamdhip64`/`libcuda`, with no project C, C++, HIP,
 CUDA, or shader-runtime shim.
 
 AMDGCN and NVPTX are LLVM device modules; `tests/gpu/run.sh` lowers them with
-`llc` to a gfx1100 object and sm_90 PTX. With `libcuda` and an NVIDIA device
+`llc` to a gfx1100 object and sm_90 PTX. The `udot4` builtin maps to
+`v_dot4_u32_u8` on AMDGCN and to `dp4a.u32.u32` through inline asm on NVPTX
+(LLVM 21 has no NVPTX dp4a intrinsic); other paths expand it bytewise. With `libcuda` and an NVIDIA device
 present, the suite also lowers the NVPTX module for the local architecture
 (`sm_120` on Blackwell; PTX JITs forward from `sm_90` otherwise) and executes
 the same-source field-map gate and the exact Q8xQ4 projection through the
