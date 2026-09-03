@@ -12711,8 +12711,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         // + c over the four byte lanes of two i32 words. AMDGCN device
         // emission maps it to v_dot4_u32_u8 (the honest unsigned spelling;
         // gfx1100's signed dot4 is unsigned×unsigned — known-issues §7a).
-        // NVPTX and all host paths lower the exact byte expansion (LLVM 21's
-        // NVPTX has no dp4a intrinsic).
+        // NVPTX lowers dp4a.u32.u32 through inline asm (LLVM 21 has no NVPTX
+        // dp4a intrinsic); host and other device paths expand bytewise.
         if str_eq(&g_strings[call_name], "udot4") == 1
         && find_func(call_name) < 0 && g_nodes[node].nargs == 3 {
             let uab: i32 = g_nodes[node].args_start;
@@ -12727,6 +12727,14 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr(", i32 "); ir_wr_reg(uc.reg); ir_wr(", i1 false)\n");
                 g_gpu_used_udot4 = 1;
                 return IRValue { reg: ur, type_off: str_intern("i32") };
+            }
+            if g_emit_gpu_mode == 1 && g_gpu_target == 1 {
+                let unr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(unr);
+                ir_wr(" = call i32 asm \"dp4a.u32.u32 $0, $1, $2, $3;\", \"=r,r,r,r\"(i32 ");
+                ir_wr_reg(ua.reg); ir_wr(", i32 "); ir_wr_reg(ub.reg);
+                ir_wr(", i32 "); ir_wr_reg(uc.reg); ir_wr(")\n");
+                return IRValue { reg: unr, type_off: str_intern("i32") };
             }
             var uacc: i32 = uc.reg;
             var uj: i64 = 0;
