@@ -2367,7 +2367,7 @@ if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_wave2_dot.tv" \
     echo "  FAIL: NVPTX wave2 dot did not produce a module"; fail=1
 elif ! grep -q " = and i32 .*, 15$" "$W2_NVDEV"; then
     echo "  FAIL: NVPTX wave2 dot kept the 5-bit lane mask"; fail=1
-elif [ "$(grep -c 'llvm.nvvm.shfl.sync.i32' "$W2_NVDEV")" -lt 5 ]; then
+elif [ "$(grep -c 'llvm.nvvm.shfl.sync.bfly.i32' "$W2_NVDEV")" -lt 5 ]; then
     echo "  FAIL: NVPTX wave2 dot lost its butterfly"; fail=1
 elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
         "$W2_NVDEV" -o "$W2_PTX" 2>"$TMP/w2-llcnv.err"; then
@@ -2422,6 +2422,8 @@ else
 fi
 
 # N7. The Stage-1b wave map lowers through shfl.sync.bfly on NVPTX.
+# The PTX check pins the real instruction: an .extern declaration
+# alone means the intrinsic never lowered (it now cannot pass).
 WAVE_NVDEV="$TMP/gpu_wave_dot_nv.ll"
 WAVE_PTX="$TMP/gpu_wave_dot_nv.ptx"
 if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_wave_dot.tv" \
@@ -2429,12 +2431,12 @@ if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_wave_dot.tv" \
     echo "  FAIL: NVPTX wave dot did not produce a module"; fail=1
 elif grep -q "alloca" "$WAVE_NVDEV"; then
     echo "  FAIL: NVPTX wave dot spilled through alloca"; fail=1
-elif ! grep -q "llvm.nvvm.shfl.sync.i32" "$WAVE_NVDEV"; then
+elif ! grep -q "llvm.nvvm.shfl.sync.bfly.i32" "$WAVE_NVDEV"; then
     echo "  FAIL: NVPTX wave dot lost its shfl.sync butterfly"; fail=1
 elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
         "$WAVE_NVDEV" -o "$WAVE_PTX" 2>"$TMP/wave-llcnv.err"; then
     echo "  FAIL: NVPTX wave dot did not lower for sm_90"; fail=1
-elif ! grep -q "shfl.sync" "$WAVE_PTX"; then
+elif ! grep -q "shfl.sync.bfly.b32" "$WAVE_PTX"; then
     echo "  FAIL: NVPTX wave dot PTX lost the shfl.sync butterfly"; fail=1
 else
     echo "  ok   NVPTX Stage-1b wave map: shfl.sync.bfly, sm_90-lowered"

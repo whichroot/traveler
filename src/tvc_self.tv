@@ -25529,14 +25529,11 @@ fn gpu_emit_butterfly_i32(reg: i32, start: i64) -> i32 {
     while off > 0 {
         let sw: i32 = ir_tmp();
         if g_gpu_target == 1 {
-            let packed: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(packed);
-            ir_wr(" = call { i32, i1 } @llvm.nvvm.shfl.sync.i32(i32 -1, i32 2, i32 ");
+            // shfl.sync.bfly: membermask -1, xor-permute off, segmask 31.
+            ir_wr("  "); ir_wr_reg(sw);
+            ir_wr(" = call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1, i32 ");
             ir_wr_reg(cur); ir_wr(", i32 "); ir_wr_int(off);
             ir_wr(", i32 31)\n");
-            ir_wr("  "); ir_wr_reg(sw);
-            ir_wr(" = extractvalue { i32, i1 } "); ir_wr_reg(packed);
-            ir_wr(", 0\n");
         } else {
             // gfx11 ds_swizzle xor-permute (disasm shows "SWAP,off"):
             // pattern = (off << 10) | 0x1F. NOT the gfx9 bitmask encoding
@@ -26004,7 +26001,7 @@ fn emit_gpu_module() {
         ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.tid.x()\n");
         ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n");
         if any_wave == 1 {
-            ir_wr("declare { i32, i1 } @llvm.nvvm.shfl.sync.i32(i32, i32, i32, i32, i32)\n");
+            ir_wr("declare i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32)\n");
         }
         ir_wr("\n");
     } else {
