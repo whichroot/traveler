@@ -1894,6 +1894,20 @@ else
     fi
 fi
 
+# A9b. udot4 nested 32 deep must pass admission fast: the proof0 udot4 branch
+#      once re-walked its argument subtrees (2^depth growth, hang near 26).
+NEST_SRC="$SCRIPT_DIR/gpu_udot4_nest.tv"
+NEST_DEV="$TMP/gpu_udot4_nest_amd.ll"
+if ! timeout 30 "$STAGE1" --emit-gpu "$NEST_SRC" -o "$NEST_DEV" 2>/dev/null; then
+    echo "  FAIL: AMD udot4 nest-32 admission hung or refused"; fail=1
+elif ! grep -q "define amdgpu_kernel" "$NEST_DEV"; then
+    echo "  FAIL: AMD udot4 nest-32 emitted no kernel"; fail=1
+elif [ "$(grep -c 'call i32 @llvm.amdgcn.udot4' "$NEST_DEV")" -ne 32 ]; then
+    echo "  FAIL: AMD udot4 nest-32 lost nested udot4 calls"; fail=1
+else
+    echo "  ok   AMD udot4 nest-32: admission linear, 32 intrinsics"
+fi
+
 # A10. Stage-1c per-row accumulators: R=2 phi-carried accumulators, R
 #      wave reductions, R stores.
 BATCH_SRC="$SCRIPT_DIR/gpu_batch_dot.tv"
@@ -2445,6 +2459,18 @@ elif ! grep -q "dp4a.u32.u32" "$UDOT_PTX"; then
     echo "  FAIL: NVPTX udot4 PTX lost the dp4a instruction"; fail=1
 else
     echo "  ok   NVPTX udot4 lowers to dp4a.u32.u32 (inline asm)"
+fi
+
+# N16b. The nest-32 admission regression on the NVPTX lowering: same proof0
+#       walk as A9b, same linear contract.
+NEST_NVDEV="$TMP/gpu_udot4_nest_nv.ll"
+if ! timeout 30 "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_udot4_nest.tv" \
+        -o "$NEST_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX udot4 nest-32 admission hung or refused"; fail=1
+elif [ "$(grep -c 'asm "dp4a.u32.u32' "$NEST_NVDEV")" -ne 32 ]; then
+    echo "  FAIL: NVPTX udot4 nest-32 lost nested dp4a asm"; fail=1
+else
+    echo "  ok   NVPTX udot4 nest-32: admission linear, 32 dp4a asm"
 fi
 
 fi

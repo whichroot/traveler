@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Admission regression: udot4 nested 32 deep. The proof0 udot4 branch once
+// re-walked its arguments; that walk grew as 2^depth and hung near depth 26.
+fn main() -> i32 {
+    let q: *i32 = alloc(64);
+    let x: *i32 = alloc(64);
+    let out: *i32 = alloc(64);
+    for i in 0..64 {
+        out[i] = udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, udot4(q[i], x[i] ^ 0x80808080, 0))))))))))))))))))))))))))))))));
+    }
+    return 0;
+}
