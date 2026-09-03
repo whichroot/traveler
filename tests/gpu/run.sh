@@ -9,7 +9,9 @@
 #   NVPTX  (--emit-gpu-nvptx)  `llc -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90`
 #                              lowers to PTX with a .visible .entry, the
 #                              .maxntid launch bound, %tid.x/%ctaid.x SIMT reads
-#                              and .global memory ops.
+#                              and .global memory ops. With libcuda and a device
+#                              present, the Traveler-owned CUDA runtime executes
+#                              the same worker through the driver PTX JIT.
 #   AGX     (--emit-gpu-agx)    directly emits G16X instructions. Canonical
 #                              byte-goldens run everywhere; owned-queue execution
 #                              and the Traveler-native IOKit runtime run on the
@@ -2427,6 +2429,106 @@ fi
 fi
 else
     echo "  SKIP: no nvptx64 target in this llc (NVPTX leg)"
+fi
+
+# ==================== NVPTX execution leg (CUDA driver) ======================
+# The text legs above prove the module; this leg runs it. The Traveler-owned
+# CUDA runtime links libcuda and cuModuleLoad JIT-compiles the PTX for the
+# local GPU, so no ptxas is required. NV_SM follows the local device when
+# nvidia-smi reports it; otherwise PTX lowered for sm_90 JITs forward.
+echo "  -- NVPTX execution (Traveler-owned CUDA runtime)"
+NV_SM="sm_90"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    NV_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1)"
+    case "$NV_CC" in
+        12.*) NV_SM="sm_120" ;;
+        10.*) NV_SM="sm_100" ;;
+    esac
+fi
+
+# P1. The same-source gate runtime compiles without project C.
+NVG_SRC="$SCRIPT_DIR/cuda_runtime_gate.tv"
+NVG_HOST_LL="$TMP/cuda_runtime_gate.ll"
+NVG_HOST_OBJ="$TMP/cuda_runtime_gate.o"
+NVG_EXE="$TMP/cuda-runtime-gate"
+NVG_DEV="$TMP/cuda_runtime_gate_nv.ll"
+NVG_PTX="$TMP/cuda_runtime_gate.ptx"
+NVX_READY=1
+if ! "$STAGE1" "$NVG_SRC" -o "$NVG_HOST_LL" 2>/dev/null \
+   || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$NVG_HOST_LL" \
+        -o "$NVG_HOST_OBJ" 2>/dev/null; then
+    echo "  FAIL: Traveler-owned CUDA runtime did not compile"; fail=1
+    NVX_READY=0
+else
+    echo "  ok   Traveler-owned CUDA runtime compiles without project C"
+fi
+
+# P2. Lower the gate device module for the local architecture. An llc without
+# the arch degrades the execution legs to SKIP; PTX JITs forward at load.
+if [ "$NVX_READY" = "1" ] && [ "$HAVE_NV" = "1" ]; then
+    if ! "$STAGE1" --emit-gpu-nvptx "$NVG_SRC" -o "$NVG_DEV" 2>/dev/null; then
+        echo "  FAIL: CUDA gate device module did not emit"; fail=1
+        NVX_READY=0
+    elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu="$NV_SM" \
+            "$NVG_DEV" -o "$NVG_PTX" 2>/dev/null; then
+        if [ "$NV_SM" != "sm_90" ] \
+           && "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+                "$NVG_DEV" -o "$NVG_PTX" 2>/dev/null; then
+            NV_SM="sm_90"
+        else
+            echo "  SKIP: this llc cannot lower NVPTX for the local GPU"
+            NVX_READY=0
+        fi
+    fi
+elif [ "$NVX_READY" = "1" ]; then
+    echo "  SKIP: no nvptx64 target in this llc (CUDA execution)"
+    NVX_READY=0
+fi
+
+# P3. Execute the exact-map gate through the driver JIT.
+if [ "$NVX_READY" = "1" ]; then
+    if [ "$HAVE_CUDA" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
+        if ! "$LINKER" $HOST_LINK_PIE -pthread "$NVG_HOST_OBJ" "$CUDA_LIB" \
+                -Wl,-rpath,"$(dirname "$CUDA_LIB")" \
+                -o "$NVG_EXE" 2>/dev/null; then
+            echo "  FAIL: CUDA gate did not link against libcuda"; fail=1
+        elif [ "$("$NVG_EXE" "$NVG_PTX" 2>/dev/null)" != "1" ]; then
+            echo "  FAIL: CUDA exact-map gate did not reach CPU parity"; fail=1
+        else
+            echo "  ok   CUDA exact-map gate is CPU-byte-exact ($NV_SM, driver JIT)"
+        fi
+    else
+        echo "  SKIP: libcuda or link driver unavailable (CUDA gate execution)"
+    fi
+fi
+
+# P4. The exact Q8xQ4 projection at 17,408 channels executes the same way.
+NVP_SRC="$SCRIPT_DIR/nv_projection_compare.tv"
+NVP_HOST_LL="$TMP/nv_projection_compare.ll"
+NVP_HOST_OBJ="$TMP/nv_projection_compare.o"
+NVP_EXE="$TMP/nv-projection-compare"
+NVP_DEV="$TMP/nv_projection_compare_nv.ll"
+NVP_PTX="$TMP/nv_projection_compare.ptx"
+if [ "$NVX_READY" = "1" ] && [ "$HAVE_CUDA" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
+    if ! "$STAGE1" "$NVP_SRC" -o "$NVP_HOST_LL" 2>/dev/null \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$NVP_HOST_LL" \
+            -o "$NVP_HOST_OBJ" 2>/dev/null \
+       || ! "$STAGE1" --emit-gpu-nvptx "$NVP_SRC" -o "$NVP_DEV" 2>/dev/null \
+       || ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu="$NV_SM" \
+            "$NVP_DEV" -o "$NVP_PTX" 2>/dev/null \
+       || ! "$LINKER" $HOST_LINK_PIE -pthread "$NVP_HOST_OBJ" "$CUDA_LIB" \
+            -Wl,-rpath,"$(dirname "$CUDA_LIB")" -o "$NVP_EXE" 2>/dev/null; then
+        echo "  FAIL: CUDA exact Q8xQ4 projection did not build"; fail=1
+    else
+        mapfile -t nvproj_metrics < <("$NVP_EXE" "$NVP_PTX")
+        if [ "${nvproj_metrics[0]:-0}" != "1" ]; then
+            echo "  FAIL: CUDA exact Q8xQ4 projection parity"; fail=1
+        else
+            echo "  ok   CUDA exact Q8xQ4 projection parity (17,408 channels, ${nvproj_metrics[1]:-0} dispatches)"
+        fi
+    fi
+elif [ "$NVX_READY" = "1" ]; then
+    echo "  SKIP: libcuda or link driver unavailable (projection execution)"
 fi
 
 # ========================== Vulkan/HIP runtime ownership =====================

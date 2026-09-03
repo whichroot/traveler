@@ -5,7 +5,7 @@
 # not an error. Suites decide what their requirements buy them.
 #
 # Overrides honored: LLC, OPT, LINKER, CC, LLVM14, TRAVELER_LINK_FLAGS,
-# TRAVELER_AGX_PROFILE.
+# TRAVELER_AGX_PROFILE, CUDA_LIB.
 #
 # Provides:
 #   TV_REPO_DIR                  absolute repo root
@@ -27,6 +27,7 @@
 #   HAVE_GLSLANG / GLSLANG_VALIDATOR  Vulkan GLSL-to-SPIR-V assembler
 #   HAVE_VULKAN                  1/0 (loader metadata + render node)
 #   HAVE_HIP                     1/0 (HIP runtime tools)
+#   HAVE_CUDA / CUDA_LIB         1/0 + libcuda path (driver + device node)
 #   tv_env_summary               prints the capability matrix
 
 TV_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -196,6 +197,32 @@ fi
 
 if command -v hipconfig >/dev/null 2>&1; then HAVE_HIP=1; else HAVE_HIP=0; fi
 
+# CUDA driver library plus device node. The Traveler-owned runtime links
+# libcuda and the driver JIT-compiles PTX at module load, so no CUDA toolkit
+# (ptxas/nvcc) is required. CUDA_LIB is a linkable path (unversioned symlink
+# preferred; the versioned library links by path as a fallback).
+CUDA_LIB="${CUDA_LIB:-}"
+if [ -z "$CUDA_LIB" ] || [ ! -e "$CUDA_LIB" ]; then
+    CUDA_LIB=""
+    for p in \
+        /run/opengl-driver/lib/libcuda.so \
+        /usr/lib/x86_64-linux-gnu/libcuda.so \
+        /usr/lib64/libcuda.so \
+        /usr/lib/libcuda.so \
+        /usr/local/cuda/lib64/libcuda.so \
+        /usr/local/cuda/lib64/stubs/libcuda.so; do
+        if [ -e "$p" ]; then CUDA_LIB="$p"; break; fi
+    done
+    if [ -z "$CUDA_LIB" ] && command -v ldconfig >/dev/null 2>&1; then
+        _cuda_so="$(ldconfig -p 2>/dev/null | grep -m1 'libcuda\.so\.1' \
+            | sed 's/.*=>[[:space:]]*//')"
+        if [ -n "$_cuda_so" ] && [ -e "$_cuda_so" ]; then CUDA_LIB="$_cuda_so"; fi
+        unset _cuda_so
+    fi
+fi
+HAVE_CUDA=0
+if [ -n "$CUDA_LIB" ] && [ -e /dev/nvidiactl ]; then HAVE_CUDA=1; fi
+
 # --- Summary ---------------------------------------------------------------
 tv_env_summary() {
     cat <<EOF
@@ -212,6 +239,7 @@ tv_env_summary() {
   glslang:     ${GLSLANG_VALIDATOR:-none}
   vulkan:      $( [ "$HAVE_VULKAN" = "1" ] && echo yes || echo no )
   hip runtime: $( [ "$HAVE_HIP" = "1" ] && echo yes || echo no )
+  cuda driver: $( [ "$HAVE_CUDA" = "1" ] && echo "$CUDA_LIB" || echo no )
   python3:     $( [ "$HAVE_PYTHON3" = "1" ] && echo yes || echo no )
   timeout:     ${TIMEOUT_CMD:-none}
 EOF

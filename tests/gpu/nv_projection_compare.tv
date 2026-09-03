@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: Apache-2.0
+// Exact Q8-by-Q4 projection tile at Splice's 17,408-channel FFN width. One
+// Traveler pfor supplies the CPU oracle and the NVPTX device kernel; the
+// executable links no project C or CUDA source.
+
+import "../../src/lib/gpu/cuda_runtime.tv";
+
+fn projection_equal(left: *i64, right: *i64,
+                    n: i32) -> i32 {
+    var i: i32 = 0;
+    while i < n {
+        if left[i] != right[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 2; }
+    let K: i32 = 8;
+    let N: i32 = 17408;
+    let input_bytes: usize = (K as usize) * 8;
+    let weight_bytes: usize = (K as usize) * (N as usize) * 8;
+    let output_bytes: usize = (N as usize) * 8;
+    let input: *i64 = alloc(K);
+    let weights: *i64 = alloc(K * N);
+    let expected: *i64 = alloc(N);
+    let output: *i64 = alloc(N);
+
+    var i: i32 = 0;
+    while i < K {
+        let signed_input: i64 = ((i as i64 * 37 + 11) % 255) - 127;
+        input[i] = signed_input;
+        i = i + 1;
+    }
+    i = 0;
+    while i < K * N {
+        let signed_weight: i64 = ((i as i64 * 13 + 5) % 16) - 8;
+        weights[i] = signed_weight;
+        i = i + 1;
+    }
+
+    for channel in 0..17408 {
+        var acc: i64 = 0;
+        for slot in 0..8 {
+            acc = acc + input[(channel / 17408) * 8 + slot]
+                * weights[slot * 17408 + (channel % 17408)];
+        }
+        expected[channel] = acc;
+    }
+
+    // Independently verify that the pfor oracle is the bounded signed dot.
+    i = 0;
+    while i < N {
+        var signed_dot: i64 = 0;
+        var k: i32 = 0;
+        while k < K {
+            let x: i64 = ((k as i64 * 37 + 11) % 255) - 127;
+            let w: i64 = (((k * N + i) as i64 * 13 + 5) % 16) - 8;
+            signed_dot = signed_dot + x * w;
+            k = k + 1;
+        }
+        if expected[i] != signed_dot { return 3; }
+        i = i + 1;
+    }
+
+    let cuda: *CudaRuntime = cuda_runtime_open(
+        argv[1], "__pfor_gpu_worker_0", weight_bytes, output_bytes);
+    if cuda == null {
+        print(1000 + g_cuda_error); print(g_cuda_status);
+        return 4;
+    }
+
+    i = 0;
+    while i < 5 {
+        if cuda_runtime_launch_dot_k8(
+            cuda, input as *u8, input_bytes, weights as *u8, weight_bytes,
+            output as *u8, output_bytes, 0, N) == 0 {
+            print(2000 + g_cuda_error); print(g_cuda_status);
+            cuda_runtime_close(cuda); return 5;
+        }
+        i = i + 1;
+    }
+    if cuda_runtime_launch_dot_k8_batch(
+        cuda, input as *u8, input_bytes, weights as *u8, weight_bytes,
+        output as *u8, output_bytes, 0, N, 10) == 0 {
+        print(3000 + g_cuda_error); print(g_cuda_status);
+        cuda_runtime_close(cuda); return 6;
+    }
+
+    let parity: i32 = projection_equal(expected, output, N);
+    print(parity);
+    print(cuda_dispatches());
+
+    cuda_runtime_close(cuda);
+    free(output); free(expected);
+    free(weights); free(input);
+    if parity == 0 { return 7; }
+    return 0;
+}
