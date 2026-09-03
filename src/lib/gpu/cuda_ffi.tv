@@ -23,3 +23,18 @@ extern "C" fn cuLaunchKernel(function: *u8,
                              shared_bytes: u32, stream: *u8,
                              kernel_params: **u8, extra: **u8) -> i32;
 extern "C" fn cuCtxSynchronize() -> i32;
+
+// Registered host memory: a device reads the pinned host pages directly.
+// flags=2 is CU_MEMHOSTREGISTER_DEVICEMAP, the cuMemHostGetDevicePointer form.
+// The driver refuses file-backed mappings; stage through cuMemHostAlloc.
+extern "C" fn cuMemHostRegister_v2(pointer: *u8, size: usize,
+                                   flags: u32) -> i32;
+extern "C" fn cuMemHostGetDevicePointer(device_out: **u8, host: *u8,
+                                        flags: u32) -> i32;
+extern "C" fn cuMemHostUnregister(pointer: *u8) -> i32;
+
+// Driver-allocated pinned host memory. flags=2 is CU_MEMHOSTALLOC_DEVICEMAP;
+// under UVA the host pointer is device-accessible as-is.
+extern "C" fn cuMemHostAlloc(pointer_out: **u8, size: usize,
+                             flags: u32) -> i32;
+extern "C" fn cuMemFreeHost(pointer: *u8) -> i32;
