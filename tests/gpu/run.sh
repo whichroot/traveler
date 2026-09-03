@@ -2426,6 +2426,27 @@ else
     echo "  ok   NVPTX Stage-1b wave map: shfl.sync.bfly, sm_90-lowered"
 fi
 
+# N16. The udot4 builtin lowers to REAL dp4a.u32.u32 on NVPTX: LLVM 21 has no
+# NVPTX dp4a intrinsic, so the compiler emits the PTX instruction through
+# inline asm. The host and other device paths keep the exact byte expansion.
+UDOT_NVDEV="$TMP/gpu_udot4_nv.ll"
+UDOT_PTX="$TMP/gpu_udot4_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_udot4.tv" \
+        -o "$UDOT_NVDEV" 2>/dev/null; then
+    echo "  FAIL: NVPTX udot4 did not produce a module"; fail=1
+elif grep -q "amdgcn" "$UDOT_NVDEV"; then
+    echo "  FAIL: AMDGCN udot4 intrinsic leaked into the NVPTX module"; fail=1
+elif ! grep -q 'asm "dp4a.u32.u32' "$UDOT_NVDEV"; then
+    echo "  FAIL: NVPTX udot4 lost the dp4a inline asm"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$UDOT_NVDEV" -o "$UDOT_PTX" 2>"$TMP/udot-llcnv.err"; then
+    echo "  FAIL: NVPTX udot4 did not lower for sm_90"; fail=1
+elif ! grep -q "dp4a.u32.u32" "$UDOT_PTX"; then
+    echo "  FAIL: NVPTX udot4 PTX lost the dp4a instruction"; fail=1
+else
+    echo "  ok   NVPTX udot4 lowers to dp4a.u32.u32 (inline asm)"
+fi
+
 fi
 else
     echo "  SKIP: no nvptx64 target in this llc (NVPTX leg)"
@@ -2529,6 +2550,33 @@ if [ "$NVX_READY" = "1" ] && [ "$HAVE_CUDA" = "1" ] && [ "$HAVE_LINKER" = "1" ];
     fi
 elif [ "$NVX_READY" = "1" ]; then
     echo "  SKIP: libcuda or link driver unavailable (projection execution)"
+fi
+
+# P5. The dp4a lowering runs byte-exact against the CPU expansion oracle.
+NVU_SRC="$SCRIPT_DIR/cuda_udot4_gate.tv"
+NVU_HOST_LL="$TMP/cuda_udot4_gate.ll"
+NVU_HOST_OBJ="$TMP/cuda_udot4_gate.o"
+NVU_EXE="$TMP/cuda-udot4-gate"
+NVU_DEV="$TMP/cuda_udot4_gate_nv.ll"
+NVU_PTX="$TMP/cuda_udot4_gate.ptx"
+if [ "$NVX_READY" = "1" ] && [ "$HAVE_CUDA" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
+    if ! "$STAGE1" "$NVU_SRC" -o "$NVU_HOST_LL" 2>/dev/null \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$NVU_HOST_LL" \
+            -o "$NVU_HOST_OBJ" 2>/dev/null \
+       || ! "$STAGE1" --emit-gpu-nvptx "$NVU_SRC" -o "$NVU_DEV" 2>/dev/null \
+       || ! grep -q 'asm "dp4a.u32.u32' "$NVU_DEV" \
+       || ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu="$NV_SM" \
+            "$NVU_DEV" -o "$NVU_PTX" 2>/dev/null \
+       || ! "$LINKER" $HOST_LINK_PIE -pthread "$NVU_HOST_OBJ" "$CUDA_LIB" \
+            -Wl,-rpath,"$(dirname "$CUDA_LIB")" -o "$NVU_EXE" 2>/dev/null; then
+        echo "  FAIL: CUDA dp4a gate did not build"; fail=1
+    elif [ "$("$NVU_EXE" "$NVU_PTX" 2>/dev/null)" != "1" ]; then
+        echo "  FAIL: CUDA dp4a gate did not reach CPU parity"; fail=1
+    else
+        echo "  ok   CUDA dp4a gate is CPU-byte-exact ($NV_SM, driver JIT)"
+    fi
+elif [ "$NVX_READY" = "1" ]; then
+    echo "  SKIP: libcuda or link driver unavailable (dp4a gate execution)"
 fi
 
 # ========================== Vulkan/HIP runtime ownership =====================
