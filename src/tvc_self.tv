@@ -4496,6 +4496,7 @@ fn parse_program() -> i32 {
     var pending_fits: i32 = 0;    // set to 1 when #[fits_i32] is parsed
     var pending_unroll2: i32 = 0; // set to 1 when #[unroll2] is parsed
     var pending_wave2: i32 = 0;   // set to 1 when #[wave2] is parsed
+    var pending_readonly: i32 = 0; // set to 1 when #[readonly] is parsed
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
@@ -4534,6 +4535,12 @@ fn parse_program() -> i32 {
                 // @internal-design: stage1-dot.
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 4096;
                 pending_wave2 = 0;
+            }
+            if pending_readonly == 1 {
+                // bit13 = readonly: captures are read-only for the launch;
+                // device loads carry !invariant.load (ld.global.nc).
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 8192;
+                pending_readonly = 0;
             }
         } else if k == TOK_KW_EXTERN {
             decl_node = parse_extern_fn();
@@ -4712,6 +4719,9 @@ fn parse_program() -> i32 {
                     }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "wave2") == 1 {
                         pending_wave2 = 1;
+                    }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "readonly") == 1 {
+                        pending_readonly = 1;
                     }
                 }
                 p_advance();
@@ -14344,7 +14354,14 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             let val: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(val); ir_wr(" = load ");
-            ir_wr_type(elem_type); ir_wr(", ptr "); ir_wr_reg(gep); ir_wr("\n");
+            ir_wr_type(elem_type); ir_wr(", ptr "); ir_wr_reg(gep);
+            // #[readonly] (NVPTX): the source promises the capture is
+            // read-only for the launch, so the load is invariant (.nc).
+            if g_emit_gpu_mode == 1 && g_gpu_target == 1 && g_readonly_on == 1 {
+                ir_wr(", !invariant.load !0");
+                g_gpu_used_readonly = 1;
+            }
+            ir_wr("\n");
             return IRValue { reg: val, type_off: elem_type };
         }
         if type_is_array(obj_type) == 1 {
@@ -25291,6 +25308,13 @@ var g_unroll2_on: i32 = 0;
 // Set per worker from the owner fn's #[wave2] bit. Off by default: the
 // 4-level butterfly halves wave count at twice the lane-local state.
 var g_wave2_on: i32 = 0;
+// Set per worker from the owner fn's #[readonly] bit. Off by default: the
+// source promises the captures are read-only for the launch (!invariant.load
+// -> ld.global.nc on NVPTX). LLVM 21 has no metadata route to ld.global.cs.
+var g_readonly_on: i32 = 0;
+// Set when a device worker emits an invariant load: the module gains the
+// trailing metadata node (declares may follow uses in LLVM IR).
+var g_gpu_used_readonly: i32 = 0;
 
 fn wpipe_init() {
     if g_wpipe_node == null {
@@ -26113,6 +26137,7 @@ fn emit_gpu_module() {
     var w: i32 = 0;
     var nemitted: i32 = 0;
     g_gpu_used_udot4 = 0;
+    g_gpu_used_readonly = 0;
     while w < g_npfor_workers {
         let wid: i32 = g_pfor_workers[roff];
         let body_node: i32 = g_pfor_workers[roff + 1];
@@ -26153,12 +26178,13 @@ fn emit_gpu_module() {
                 uncarried_call = 1;
             }
         }
-        // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2] travel via the
-        // worker's owner fn.
+        // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2]/#[readonly] travel
+        // via the worker's owner fn.
         g_wave_pipe_on = 0;
         g_fits_i32_on = 0;
         g_unroll2_on = 0;
         g_wave2_on = 0;
+        g_readonly_on = 0;
         let owner_fi: i32 = find_func_idx(owner_fn);
         if owner_fi >= 0 {
             if (g_nodes[g_funcs[owner_fi].node].flags & 512) != 0 {
@@ -26172,6 +26198,9 @@ fn emit_gpu_module() {
             }
             if (g_nodes[g_funcs[owner_fi].node].flags & 4096) != 0 {
                 g_wave2_on = 1;
+            }
+            if (g_nodes[g_funcs[owner_fi].node].flags & 8192) != 0 {
+                g_readonly_on = 1;
             }
         }
         var ci: i32 = 0;
@@ -26341,6 +26370,9 @@ fn emit_gpu_module() {
 
     if g_gpu_used_udot4 == 1 {
         ir_wr("\ndeclare i32 @llvm.amdgcn.udot4(i32, i32, i32, i1)\n");
+    }
+    if g_gpu_used_readonly == 1 {
+        ir_wr("\n!0 = !{}\n");
     }
     if g_gpu_target == 1 {
         ir_wr("\nattributes #0 = { \"nvvm.maxntid\"=\"256\" }\n");

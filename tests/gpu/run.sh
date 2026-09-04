@@ -2367,6 +2367,34 @@ else
     echo "  ok   NVPTX wide element: ld.global.v2.b64 wide loads, sm_90-lowered"
 fi
 
+# N5d. #[readonly] is opt-in: the marked worker's loads carry !invariant.load
+#      (ld.global.nc), the unmarked worker's loads stay plain.
+READONLY_SRC="$SCRIPT_DIR/gpu_readonly.tv"
+READONLY_NV="$TMP/gpu_readonly_nv.ll"
+READONLY_PTX="$TMP/gpu_readonly_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$READONLY_SRC" -o "$READONLY_NV" 2>/dev/null; then
+    echo "  FAIL: NVPTX readonly did not produce a module"; fail=1
+elif [ "$(grep -c 'define ptx_kernel' "$READONLY_NV")" -ne 2 ]; then
+    echo "  FAIL: NVPTX readonly lost a kernel"; fail=1
+elif [ "$(grep -c '!invariant.load' "$READONLY_NV")" -ne 1 ]; then
+    echo "  FAIL: NVPTX readonly hint is not opt-in (want exactly 1)"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$READONLY_NV" -o "$READONLY_PTX" 2>"$TMP/ro-llcnv.err"; then
+    echo "  FAIL: NVPTX readonly did not lower for sm_90"; fail=1
+elif [ "$(grep -c 'ld\.global\.nc\.b64' "$READONLY_PTX")" -ne 1 ]; then
+    echo "  FAIL: NVPTX readonly did not become ld.global.nc"; fail=1
+else
+    echo "  ok   NVPTX readonly: opt-in ld.global.nc, sm_90-lowered"
+fi
+READONLY_AMD="$TMP/gpu_readonly_amd.ll"
+if ! "$STAGE1" --emit-gpu "$READONLY_SRC" -o "$READONLY_AMD" 2>/dev/null; then
+    echo "  FAIL: AMD readonly did not produce a module"; fail=1
+elif grep -q "invariant" "$READONLY_AMD"; then
+    echo "  FAIL: AMD picked up an NVPTX-only hint"; fail=1
+else
+    echo "  ok   AMD readonly: hint stays NVPTX-only"
+fi
+
 # N6. The Stage-1 blocked dot stays target-neutral.
 BLOCKED_NVDEV="$TMP/gpu_blocked_dot_nv.ll"
 BLOCKED_PTX="$TMP/gpu_blocked_dot_nv.ptx"

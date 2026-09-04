@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+// #[readonly]: the source promises the weight capture is read-only for the
+// launch — device loads carry !invariant.load (ld.global.nc on NVPTX).
+
+#[readonly]
+fn stream_map(w: *i64, out: *i64, n: i32) {
+    for i in 0..n {
+        out[i] = w[i] * 3 + 1;
+    }
+}
+
+fn plain_map(w: *i64, out: *i64, n: i32) {
+    for i in 0..n {
+        out[i] = w[i] + 7;
+    }
+}
+
+fn main() -> i32 {
+    let w: *i64 = alloc(2048);
+    let out: *i64 = alloc(2048);
+    stream_map(w, out, 2048);
+    plain_map(w, out, 2048);
+    free(out); free(w);
+    return 0;
+}
