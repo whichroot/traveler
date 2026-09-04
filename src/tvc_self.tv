@@ -26228,18 +26228,20 @@ fn emit_gpu_module() {
         // Eligibility: elementwise body AND no dyn (__field) carrier capture
         // (the dyn carrier needs the %__Field kernarg — Stage 3). i64-wide
         // iterators (#54) are Stage-3-deferred: the SIMT identity is i32.
+        // skip_reason names the refusal in the skip record: 0 = body shape,
+        // 1 = i64 iterator, 2 = dyn carrier capture, 3 = uncarried call.
+        var skip_reason: i32 = 0;
         let k8_private_dot: i32 = pfor_body_k8_private_dot(body_node);
         let blocked_dot: i32 = pfor_body_gpu_dot(body_node);
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
-        if wbw == 64 { eligible = 0; }
+        if wbw == 64 { eligible = 0; skip_reason = 1; }
         // The closed dot classes already exclude calls; the flat elementwise
         // class must not emit a call the device module does not carry.
-        var uncarried_call: i32 = 0;
         if eligible == 1 && k8_private_dot == 0 && blocked_dot == 0 {
             if pfor_body_elem_call_free(body_node) == 0 {
                 eligible = 0;
-                uncarried_call = 1;
+                skip_reason = 3;
             }
         }
         // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2]/#[readonly]/
@@ -26274,7 +26276,10 @@ fn emit_gpu_module() {
         var ci: i32 = 0;
         while ci < ncaps {
             let cn: i32 = g_pfor_workers[caps_base + ci * 4];
-            if str_eq(&g_strings[cn], "__field") == 1 { eligible = 0; }
+            if str_eq(&g_strings[cn], "__field") == 1 {
+                eligible = 0;
+                if skip_reason == 0 { skip_reason = 2; }
+            }
             ci = ci + 1;
         }
 
@@ -26424,8 +26429,12 @@ fn emit_gpu_module() {
         } else {
             ir_wr("; skipped __pfor_gpu_worker_");
             ir_wr_int(wid as i64);
-            if uncarried_call == 1 {
+            if skip_reason == 3 {
                 ir_wr(" (call the device module does not carry)\n");
+            } else if skip_reason == 1 {
+                ir_wr(" (i64 iterator: the SIMT identity is i32)\n");
+            } else if skip_reason == 2 {
+                ir_wr(" (dyn field carrier needs the %__Field kernarg)\n");
             } else {
                 ir_wr(" (not the Stage-0 elementwise/private-K8 class)\n");
             }

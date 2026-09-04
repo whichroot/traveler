@@ -2349,6 +2349,21 @@ else
     echo "  ok   NVPTX elementwise user call refused at admission, named, sm_90-lowered"
 fi
 
+# N5c-i64. The other named skip reason: an i64-iterator pfor is CPU-parallel
+#      but outside the device class, and the record must say so.
+I64_ITER_SRC="$SCRIPT_DIR/gpu_i64_iter_refuse.tv"
+I64_ITER_NV="$TMP/gpu_i64_iter_refuse_nv.ll"
+if ! "$STAGE1" --emit-gpu-nvptx "$I64_ITER_SRC" \
+        -o "$I64_ITER_NV" 2>/dev/null; then
+    echo "  FAIL: NVPTX i64-iterator refusal did not produce a module"; fail=1
+elif grep -q "define ptx_kernel" "$I64_ITER_NV"; then
+    echo "  FAIL: NVPTX admitted an i64-iterator worker"; fail=1
+elif ! grep -q "i64 iterator: the SIMT identity is i32" "$I64_ITER_NV"; then
+    echo "  FAIL: NVPTX i64-iterator refusal record absent"; fail=1
+else
+    echo "  ok   NVPTX i64-iterator refusal names the reason"
+fi
+
 # N5c. The wide-element class lowers to real wide loads on NVPTX: i128 is a
 #      16B ld.global.v2.b64 and i256 two of them (32B per thread).
 WIDE_ELEM_NV="$TMP/gpu_wide_elem_nv.ll"

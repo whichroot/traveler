@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// An i64-iterator pfor is CPU-parallel but outside the device class (the
+// SIMT identity is i32). The skip record must name that reason.
+
+fn main() -> i32 {
+    let n: i64 = 4096;
+    let a: *i64 = alloc(4096);
+    let out: *i64 = alloc(4096);
+    for i in 0..n {
+        out[i] = a[i] + 1;
+    }
+    free(out); free(a);
+    return 0;
+}
