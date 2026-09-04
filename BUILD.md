@@ -297,6 +297,35 @@ one own-cell output. The device lowerer fully unrolls that loop into SSA, so the
 module remains alloca-free and registers-only. General private mutables,
 dynamic inner loops, and multi-statement reductions remain outside Stage 0.
 
+The elementwise and blocked-dot device classes share one admission contract:
+
+| Rule | Consequence |
+| --- | --- |
+| Leading bindings must be `var` | an immutable `let` stops the body scan (silent refusal) |
+| Index expressions are affine in the raw loop variables | computed index `let`s refuse; `div`/`mod` on the pfor variable are fine inline |
+| Dot-class assigns take accumulator arithmetic only | no calls, no loads; elementwise bodies take loads and arithmetic |
+| No user calls in device bodies | the device module carries no user callees; `udot4(a,b,c)` is the only admitted call spelling |
+| Rolled loop bound is a literal ≤ 128 | nested serial loops refuse; chunk partials and combine on the CPU when the accumulator is order-free |
+| i128/i256 element arrays and accumulators work | a `*i128` element load lowers to `ld.global.v2.b64` on NVPTX; wide scalar captures still refuse (the worker context slot is 8 bytes) |
+
+Two query surfaces report admission. `--pfor-report` is the CPU authority: one
+JSONL record per pfor, `dispatched` plus a refusal `reason`. The device
+module's `; skipped __pfor_gpu_worker_N` records name the device-side reason:
+body shape, i64 iterator (the SIMT identity is i32), a dyn field carrier
+capture, or a call the device module does not carry. The two disagree in
+exactly one direction: a CPU-parallel loop can still be device-refused.
+
+Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
+wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the
+next block's addresses (`prefetch.global.L2`, NVPTX only) with no carried
+registers; `#[readonly]` marks device loads `!invariant.load`
+(`ld.global.nc` on NVPTX) on the source's read-only promise; `#[fits_i32]`
+narrows signed 64-bit mul operands; `#[unroll2]` doubles the rolled body;
+`#[wave2]` pairs two lanes per thread. On the launch side,
+`cuda_runtime_launch_caps` assumes one thread per cell; wave-mapped kernels
+take `cuda_runtime_launch_caps_wave` with 32 lanes per cell (16 under
+`#[wave2]`).
+
 The measured G16X profile also has an in-tree Traveler submission runtime. It
 needs a regenerated `AGXDISP3` profile image for the exact OS/GPU build; that
 machine-specific image is deliberately not shipped as a portable ABI. On the
