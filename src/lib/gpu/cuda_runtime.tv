@@ -296,9 +296,12 @@ fn cuda_runtime_launch_dot_k8_batch(runtime: *CudaRuntime,
 // Host slots 0..N-2 upload as inputs; slot N-1 downloads as the output.
 // The caller orders host slots to the device walk order of the emitted
 // kernel signature; every capture must be a pointer.
-fn cuda_runtime_launch_caps(runtime: *CudaRuntime,
-                            host: **u8, bytes: *usize, ncaps: i32,
-                            lo: i32, hi: i32) -> i32 {
+// lanes_per_cell: 1 for cell-per-thread kernels, 32 for wave-mapped,
+// 16 for #[wave2] — the SIMT identity divides the thread index by it.
+fn cuda_runtime_launch_caps_impl(runtime: *CudaRuntime,
+                                 host: **u8, bytes: *usize, ncaps: i32,
+                                 lo: i32, hi: i32,
+                                 lanes_per_cell: i32) -> i32 {
     g_cuda_error = 0;
     g_cuda_status = 0;
     if runtime == null || host == null || bytes == null
@@ -389,7 +392,8 @@ fn cuda_runtime_launch_caps(runtime: *CudaRuntime,
     }
     args[ncaps] = (&kernel_lo) as *u8;
     args[ncaps + 1] = (&kernel_hi) as *u8;
-    let groups: u32 = (((hi - lo) + 255) / 256) as u32;
+    let span: i64 = ((hi - lo) as i64) * (lanes_per_cell as i64);
+    let groups: u32 = (((span + 255) / 256)) as u32;
     status = cuLaunchKernel(runtime.function,
                             groups, 1, 1, 256, 1, 1,
                             0, null, args, null);
@@ -403,4 +407,26 @@ fn cuda_runtime_launch_caps(runtime: *CudaRuntime,
     if status != 0 { cuda_record_error(35, status); return 0; }
     g_cuda_dispatch_count = g_cuda_dispatch_count + 1;
     return 1;
+}
+
+// Cell-per-thread launch: one thread per cell, ceil((hi-lo)/256) groups.
+fn cuda_runtime_launch_caps(runtime: *CudaRuntime,
+                            host: **u8, bytes: *usize, ncaps: i32,
+                            lo: i32, hi: i32) -> i32 {
+    return cuda_runtime_launch_caps_impl(runtime, host, bytes, ncaps,
+                                         lo, hi, 1);
+}
+
+// Wave-mapped launch: every cell needs lanes_per_cell threads (32 for the
+// wave map, 16 for #[wave2]), so the group count scales by it. Anything
+// else is a caller error.
+fn cuda_runtime_launch_caps_wave(runtime: *CudaRuntime,
+                                host: **u8, bytes: *usize, ncaps: i32,
+                                lo: i32, hi: i32, lanes_per_cell: i32) -> i32 {
+    if lanes_per_cell != 32 && lanes_per_cell != 16 {
+        cuda_record_error(36, 0 - 1);
+        return 0;
+    }
+    return cuda_runtime_launch_caps_impl(runtime, host, bytes, ncaps,
+                                         lo, hi, lanes_per_cell);
 }

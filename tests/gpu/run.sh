@@ -2785,6 +2785,35 @@ elif [ "$NVX_READY" = "1" ]; then
     echo "  SKIP: libcuda or link driver unavailable (cap8 gate execution)"
 fi
 
+# P7. Wave-aware launch geometry: the wave-mapped blocked dot launches
+#     ceil(N*32/256) groups (wave2: ceil(N*16/256)) through
+#     cuda_runtime_launch_caps_wave; a bad lanes value refuses by name.
+NWV_SRC="$SCRIPT_DIR/cuda_wave_caps_gate.tv"
+NWV_HOST_LL="$TMP/cuda_wave_caps_gate.ll"
+NWV_HOST_OBJ="$TMP/cuda_wave_caps_gate.o"
+NWV_EXE="$TMP/cuda-wave-caps-gate"
+NWV_DEV="$TMP/cuda_wave_caps_gate_nv.ll"
+NWV_PTX="$TMP/cuda_wave_caps_gate.ptx"
+if [ "$NVX_READY" = "1" ] && [ "$HAVE_CUDA" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
+    if ! "$STAGE1" "$NWV_SRC" -o "$NWV_HOST_LL" 2>/dev/null \
+       || ! "$LLC" $HOST_MTRIPLE -filetype=obj "$NWV_HOST_LL" \
+            -o "$NWV_HOST_OBJ" 2>/dev/null \
+       || ! "$STAGE1" --emit-gpu-nvptx "$NWV_SRC" -o "$NWV_DEV" 2>/dev/null \
+       || [ "$(grep -c 'define ptx_kernel' "$NWV_DEV")" -ne 2 ] \
+       || ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu="$NV_SM" \
+            "$NWV_DEV" -o "$NWV_PTX" 2>/dev/null \
+       || ! "$LINKER" $HOST_LINK_PIE -pthread "$NWV_HOST_OBJ" "$CUDA_LIB" \
+            -Wl,-rpath,"$(dirname "$CUDA_LIB")" -o "$NWV_EXE" 2>/dev/null; then
+        echo "  FAIL: CUDA wave-caps gate did not build"; fail=1
+    elif [ "$("$NWV_EXE" "$NWV_PTX" 2>/dev/null)" != "1" ]; then
+        echo "  FAIL: CUDA wave-caps gate did not reach CPU parity"; fail=1
+    else
+        echo "  ok   CUDA wave launch_caps is CPU-byte-exact (wave32 + wave2, $NV_SM)"
+    fi
+elif [ "$NVX_READY" = "1" ]; then
+    echo "  SKIP: libcuda or link driver unavailable (wave-caps gate execution)"
+fi
+
 # ========================== Vulkan/HIP runtime ownership =====================
 echo "  -- Vulkan shader and Traveler-owned AMD runtimes"
 VK_GATE_SRC="$SCRIPT_DIR/vulkan_runtime_gate.tv"

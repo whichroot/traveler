@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: Apache-2.0
+// Wave-aware launch gate: a wave-mapped blocked dot needs ceil(N*32/256)
+// groups (and ceil(N*16/256) under #[wave2]) — the cell-per-thread formula
+// leaves 31 of 32 cells uncomputed. The CPU pfor is the oracle; the device
+// launches go through cuda_runtime_launch_caps_wave with the right lanes.
+
+import "../../src/lib/gpu/cuda_runtime.tv";
+
+fn wave_dot(w: *i64, x: *i64, out: *i64) {
+    for i in 0..64 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + ((w[(i * 4 + b) * 32 + lane]
+                          * x[(i * 4 + b) * 32 + lane]) as i32);
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+}
+
+#[wave2]
+fn wave2_dot(w: *i64, x: *i64, out: *i64) {
+    for i in 0..64 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + ((w[(i * 4 + b) * 32 + lane]
+                          * x[(i * 4 + b) * 32 + lane]) as i32);
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 2; }
+    let n: i32 = 64;
+    let w: *i64 = alloc(n * 4 * 32);
+    let x: *i64 = alloc(n * 4 * 32);
+    let expected: *i64 = alloc(n);
+    let output: *i64 = alloc(n);
+    var i: i32 = 0;
+    while i < n * 4 * 32 {
+        w[i] = ((i * 37 + 11) % 251) as i64;
+        x[i] = ((i * 91 + 7) % 241) as i64;
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        expected[i] = 0;
+        output[i] = 0;
+        i = i + 1;
+    }
+    wave_dot(w, x, expected);
+
+    let host: **u8 = alloc(3);
+    host[0] = w as *u8;
+    host[1] = x as *u8;
+    host[2] = output as *u8;
+    let nbytes: *usize = alloc(3);
+    nbytes[0] = ((n * 4 * 32) as usize) * 8;
+    nbytes[1] = ((n * 4 * 32) as usize) * 8;
+    nbytes[2] = (n as usize) * 8;
+
+    // The lanes contract refuses anything but 32 (wave map) / 16 (wave2).
+    let runtime0: *CudaRuntime = cuda_runtime_open(
+        argv[1], "__pfor_gpu_worker_0", nbytes[0], nbytes[2]);
+    if runtime0 == null {
+        print(g_cuda_error);
+        print(g_cuda_status);
+        return 1;
+    }
+    let refused: i32 = cuda_runtime_launch_caps_wave(
+        runtime0, host, nbytes, 3, 0, n, 8);
+    if refused != 0 || g_cuda_error != 36 {
+        print(90);
+        return 1;
+    }
+    let ran0: i32 = cuda_runtime_launch_caps_wave(
+        runtime0, host, nbytes, 3, 0, n, 32);
+    cuda_runtime_close(runtime0);
+    if ran0 == 0 {
+        print(g_cuda_error);
+        print(g_cuda_status);
+        return 1;
+    }
+    i = 0;
+    while i < n {
+        if output[i] != expected[i] {
+            print(100 + i);
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < n {
+        output[i] = 0;
+        i = i + 1;
+    }
+    let runtime1: *CudaRuntime = cuda_runtime_open(
+        argv[1], "__pfor_gpu_worker_1", nbytes[0], nbytes[2]);
+    if runtime1 == null {
+        print(g_cuda_error);
+        print(g_cuda_status);
+        return 1;
+    }
+    let ran1: i32 = cuda_runtime_launch_caps_wave(
+        runtime1, host, nbytes, 3, 0, n, 16);
+    cuda_runtime_close(runtime1);
+    if ran1 == 0 {
+        print(g_cuda_error);
+        print(g_cuda_status);
+        return 1;
+    }
+    i = 0;
+    while i < n {
+        if output[i] != expected[i] {
+            print(200 + i);
+            return 1;
+        }
+        i = i + 1;
+    }
+    print(1);
+    return 0;
+}
