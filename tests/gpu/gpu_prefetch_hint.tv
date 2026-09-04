@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+// #[prefetch]: warm L2 for the next block's wave loads (NVPTX
+// prefetch.global.L2). Address-only pipeline — no phis, no carried
+// registers, occupancy untouched. The unmarked twin pins the difference.
+
+#[prefetch]
+fn marked_dot(w: *i64, x: *i64, out: *i64) {
+    for i in 0..4 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + ((w[(i * 4 + b) * 32 + lane]
+                          * x[(i * 4 + b) * 32 + lane]) as i32);
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+}
+
+fn unmarked_dot(w: *i64, x: *i64, out: *i64) {
+    for i in 0..4 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            var p: i32 = 0;
+            for lane in 0..32 {
+                p = p + ((w[(i * 4 + b) * 32 + lane]
+                          * x[(i * 4 + b) * 32 + lane]) as i32);
+            }
+            acc = acc + (p as i64);
+        }
+        out[i] = acc;
+    }
+}
+
+fn main() -> i32 {
+    let w: *i64 = alloc(4 * 4 * 32);
+    let x: *i64 = alloc(4 * 4 * 32);
+    let out: *i64 = alloc(4);
+    marked_dot(w, x, out);
+    unmarked_dot(w, x, out);
+    free(out); free(x); free(w);
+    return 0;
+}

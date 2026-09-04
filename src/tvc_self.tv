@@ -4497,6 +4497,7 @@ fn parse_program() -> i32 {
     var pending_unroll2: i32 = 0; // set to 1 when #[unroll2] is parsed
     var pending_wave2: i32 = 0;   // set to 1 when #[wave2] is parsed
     var pending_readonly: i32 = 0; // set to 1 when #[readonly] is parsed
+    var pending_prefetch: i32 = 0; // set to 1 when #[prefetch] is parsed
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
@@ -4541,6 +4542,12 @@ fn parse_program() -> i32 {
                 // device loads carry !invariant.load (ld.global.nc).
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 8192;
                 pending_readonly = 0;
+            }
+            if pending_prefetch == 1 {
+                // bit14 = prefetch: warm L2 for the next block's wave loads
+                // (NVPTX prefetch.global.L2, no carried registers).
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 16384;
+                pending_prefetch = 0;
             }
         } else if k == TOK_KW_EXTERN {
             decl_node = parse_extern_fn();
@@ -4722,6 +4729,9 @@ fn parse_program() -> i32 {
                     }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "readonly") == 1 {
                         pending_readonly = 1;
+                    }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "prefetch") == 1 {
+                        pending_prefetch = 1;
                     }
                 }
                 p_advance();
@@ -25315,6 +25325,10 @@ var g_readonly_on: i32 = 0;
 // Set when a device worker emits an invariant load: the module gains the
 // trailing metadata node (declares may follow uses in LLVM IR).
 var g_gpu_used_readonly: i32 = 0;
+// Set per worker from the owner fn's #[prefetch] bit. Off by default: the
+// next block's wave-load addresses warm L2 via prefetch.global.L2 (NVPTX),
+// an address-only pipeline that holds zero registers across the backedge.
+var g_prefetch_on: i32 = 0;
 
 fn wpipe_init() {
     if g_wpipe_node == null {
@@ -25831,6 +25845,15 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     if g_unroll2_on == 1 && nwpipe == 0 && (n1 % 2) == 0 {
         do_u2 = 1;
     }
+    // #[prefetch] (NVPTX): prefetch the next block's wave-load addresses at
+    // the body head. No phis and no prologue — the address registers die at
+    // the asm call, so occupancy is untouched. wave_pipe wins if both marked.
+    var npf: i32 = 0;
+    if wave_mapped == 1 && g_prefetch_on == 1 && g_gpu_target == 1
+        && nwpipe == 0 && do_u2 == 0 {
+        npf = dot_wave_loads_collect(lbody, loop_var, &wpipe_loads[0],
+                                    &wpipe_vars[0], &wpipe_nvars[0]);
+    }
 
     // Pre-reserve the loop-carried registers and the block labels so the
     // header phis can name the latch values before the latch is emitted.
@@ -26005,6 +26028,47 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
         }
         g_wpipe_cnt = nwpipe;
     }
+    if nwpipe == 0 && npf > 0 {
+        // Guarded one-block-ahead prefetch (the final iteration's addresses
+        // are out of range). No join: nothing is produced, only warmed.
+        let pf_c: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(pf_c); ir_wr(" = icmp slt i32 ");
+        ir_wr_reg(v_phi); ir_wr(", "); ir_wr_int(n1 - 1); ir_wr("\n");
+        ir_wr("  br i1 "); ir_wr_reg(pf_c); ir_wr(", label %");
+        ir_wr_label(lbl_rl); ir_wr(", label %"); ir_wr_label(lbl_join);
+        ir_wr("\n");
+        ir_wr_label_def(lbl_rl);
+        let bp1: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(bp1); ir_wr(" = add i32 ");
+        ir_wr_reg(v_phi); ir_wr(", 1\n");
+        g_syms[lv_si].reg = bp1;
+        sym_push_scope();
+        ri = 0;
+        while ri < wpipe_nvars[0] {
+            sym_add(wpipe_vars[ri], str_intern("i32"), lane_reg, 0);
+            ri = ri + 1;
+        }
+        ri = 0;
+        while ri < npf {
+            let pobj: i32 = g_nodes[wpipe_loads[ri]].child0;
+            let psi: i32 = sym_find(g_nodes[pobj].name0);
+            let pet: i32 = type_pointee(g_syms[psi].type_off);
+            let pidx: IRValue = codegen_expr(g_nodes[wpipe_loads[ri]].child1,
+                                             str_intern("i32"));
+            let pidx64: i32 = emit_index_to_i64(pidx);
+            let pgep: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(pgep); ir_wr(" = getelementptr ");
+            ir_wr_type(pet); ir_wr(", ptr "); ir_wr_reg(g_syms[psi].reg);
+            ir_wr(", i64 "); ir_wr_reg(pidx64); ir_wr("\n");
+            ir_wr("  call void asm sideeffect \"prefetch.global.L2 [$0];\", \"l\"(ptr ");
+            ir_wr_reg(pgep); ir_wr(")\n");
+            ri = ri + 1;
+        }
+        sym_pop_scope();
+        g_syms[lv_si].reg = v_phi;
+        ir_wr("  br label %"); ir_wr_label(lbl_join); ir_wr("\n");
+        ir_wr_label_def(lbl_join);
+    }
     // Row-batched dots carry 8 wave accumulators per row (R <= 8).
     var wave_tgts: [i32; 64] = 0;
     var wave_ntgts: [i32; 1] = 0;
@@ -26178,13 +26242,14 @@ fn emit_gpu_module() {
                 uncarried_call = 1;
             }
         }
-        // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2]/#[readonly] travel
-        // via the worker's owner fn.
+        // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2]/#[readonly]/
+        // #[prefetch] travel via the worker's owner fn.
         g_wave_pipe_on = 0;
         g_fits_i32_on = 0;
         g_unroll2_on = 0;
         g_wave2_on = 0;
         g_readonly_on = 0;
+        g_prefetch_on = 0;
         let owner_fi: i32 = find_func_idx(owner_fn);
         if owner_fi >= 0 {
             if (g_nodes[g_funcs[owner_fi].node].flags & 512) != 0 {
@@ -26201,6 +26266,9 @@ fn emit_gpu_module() {
             }
             if (g_nodes[g_funcs[owner_fi].node].flags & 8192) != 0 {
                 g_readonly_on = 1;
+            }
+            if (g_nodes[g_funcs[owner_fi].node].flags & 16384) != 0 {
+                g_prefetch_on = 1;
             }
         }
         var ci: i32 = 0;

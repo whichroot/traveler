@@ -2395,6 +2395,39 @@ else
     echo "  ok   AMD readonly: hint stays NVPTX-only"
 fi
 
+# N5e. #[prefetch]: the marked worker's wave loads get a guarded one-block-
+#      ahead prefetch.global.L2 with ZERO carried registers (phi count is the
+#      unmarked twin's). The unmarked twin pins opt-in; AMD stays clean.
+PREFETCH_SRC="$SCRIPT_DIR/gpu_prefetch_hint.tv"
+PREFETCH_NV="$TMP/gpu_prefetch_hint_nv.ll"
+PREFETCH_PTX="$TMP/gpu_prefetch_hint_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$PREFETCH_SRC" -o "$PREFETCH_NV" 2>/dev/null; then
+    echo "  FAIL: NVPTX prefetch did not produce a module"; fail=1
+elif [ "$(grep -c 'define ptx_kernel' "$PREFETCH_NV")" -ne 2 ]; then
+    echo "  FAIL: NVPTX prefetch lost a kernel"; fail=1
+elif [ "$(grep -c 'prefetch.global.L2' "$PREFETCH_NV")" -ne 2 ]; then
+    echo "  FAIL: NVPTX prefetch is not opt-in (want exactly 2)"; fail=1
+elif [ "$(grep -c ' = phi ' "$PREFETCH_NV")" -ne 4 ]; then
+    echo "  FAIL: NVPTX prefetch pipeline is not register-flat"; fail=1
+elif ! grep -q 'icmp slt i32 %t[0-9]*, 3$' "$PREFETCH_NV"; then
+    echo "  FAIL: NVPTX prefetch lost the last-iteration guard"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$PREFETCH_NV" -o "$PREFETCH_PTX" 2>"$TMP/ph-llcnv.err"; then
+    echo "  FAIL: NVPTX prefetch did not lower for sm_90"; fail=1
+elif [ "$(grep -c 'prefetch\.global\.L2' "$PREFETCH_PTX")" -ne 2 ]; then
+    echo "  FAIL: NVPTX prefetch did not reach PTX"; fail=1
+else
+    echo "  ok   NVPTX prefetch: guarded, register-flat, sm_90-lowered"
+fi
+PREFETCH_AMD="$TMP/gpu_prefetch_hint_amd.ll"
+if ! "$STAGE1" --emit-gpu "$PREFETCH_SRC" -o "$PREFETCH_AMD" 2>/dev/null; then
+    echo "  FAIL: AMD prefetch did not produce a module"; fail=1
+elif grep -q "prefetch" "$PREFETCH_AMD"; then
+    echo "  FAIL: AMD picked up an NVPTX-only prefetch"; fail=1
+else
+    echo "  ok   AMD prefetch: hint stays NVPTX-only"
+fi
+
 # N6. The Stage-1 blocked dot stays target-neutral.
 BLOCKED_NVDEV="$TMP/gpu_blocked_dot_nv.ll"
 BLOCKED_PTX="$TMP/gpu_blocked_dot_nv.ptx"
