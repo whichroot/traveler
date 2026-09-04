@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// A pure user call in an elementwise body: sound for CPU dispatch, but the
+// device module carries no user callees — admission must refuse by name.
+
+fn dnq32r(x: i64) -> i64 {
+    return x * 3 + 1;
+}
+
+fn main() -> i32 {
+    let input: *i64 = alloc(2048);
+    let output: *i64 = alloc(2048);
+    for i in 0..2048 {
+        output[i] = dnq32r(input[i]);
+    }
+    free(output); free(input);
+    return 0;
+}

@@ -1944,6 +1944,25 @@ else
     echo "  ok   AMD general private-mutable body remains device-refused"
 fi
 
+# A6b. A pure user call in an elementwise body refuses at admission by name:
+#      the device module carries no user callees, so the call must never
+#      reach llc as a dangling symbol (Blackwell campaign report).
+CALL_REFUSE_SRC="$SCRIPT_DIR/gpu_elem_call_refuse.tv"
+CALL_REFUSE_AMD="$TMP/gpu_elem_call_refuse_amd.ll"
+if ! "$STAGE1" --emit-gpu "$CALL_REFUSE_SRC" \
+        -o "$CALL_REFUSE_AMD" 2>/dev/null; then
+    echo "  FAIL: AMD elementwise-call refusal did not produce a module"; fail=1
+elif grep -q "define amdgpu_kernel" "$CALL_REFUSE_AMD"; then
+    echo "  FAIL: AMD admitted an elementwise body with a user call"; fail=1
+elif grep -q "@dnq32r" "$CALL_REFUSE_AMD"; then
+    echo "  FAIL: AMD emitted a dangling user callee"; fail=1
+elif ! grep -q "call the device module does not carry" \
+        "$CALL_REFUSE_AMD"; then
+    echo "  FAIL: AMD elementwise-call refusal record absent"; fail=1
+else
+    echo "  ok   AMD elementwise user call refused at admission, named"
+fi
+
 # A7. Stage-1 blocked private dot: mapped multiplicands (dequant expressions
 #     as dot operands), a rolled outer block loop with loop-carried SSA phis,
 #     unrolled inner K-loops, no allocas. This is the fused Q4_K shape.
@@ -2278,6 +2297,27 @@ elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
     echo "  FAIL: NVPTX private-mutable refusal record absent"; fail=1
 else
     echo "  ok   NVPTX general private-mutable body remains device-refused"
+fi
+
+# N5b. The elementwise-call refusal stays target-neutral, and the refused
+#      module still lowers — no dangling user callee reaches llc.
+CALL_REFUSE_NV="$TMP/gpu_elem_call_refuse_nv.ll"
+CALL_REFUSE_PTX="$TMP/gpu_elem_call_refuse_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$CALL_REFUSE_SRC" \
+        -o "$CALL_REFUSE_NV" 2>/dev/null; then
+    echo "  FAIL: NVPTX elementwise-call refusal did not produce a module"; fail=1
+elif grep -q "define ptx_kernel" "$CALL_REFUSE_NV"; then
+    echo "  FAIL: NVPTX admitted an elementwise body with a user call"; fail=1
+elif grep -q "@dnq32r" "$CALL_REFUSE_NV"; then
+    echo "  FAIL: NVPTX emitted a dangling user callee"; fail=1
+elif ! grep -q "call the device module does not carry" \
+        "$CALL_REFUSE_NV"; then
+    echo "  FAIL: NVPTX elementwise-call refusal record absent"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$CALL_REFUSE_NV" -o "$CALL_REFUSE_PTX" 2>"$TMP/cr-llcnv.err"; then
+    echo "  FAIL: NVPTX refused module did not lower for sm_90"; fail=1
+else
+    echo "  ok   NVPTX elementwise user call refused at admission, named, sm_90-lowered"
 fi
 
 # N6. The Stage-1 blocked dot stays target-neutral.

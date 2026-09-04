@@ -25137,6 +25137,55 @@ fn gpu_dot_expr_ok(node: i32) -> i32 {
     return 0;
 }
 
+// Flat elementwise bodies reuse host codegen, which emits a direct call for
+// a pure user fn — but the device module carries no user callees, so llc dies
+// on the dangling symbol. Answer "no device-uncarried call here": udot4 is a
+// builtin spelling (intrinsic / inline asm), every other call refuses.
+// Unknown composite kinds refuse rather than risk an unwalked nested call.
+fn gpu_elem_expr_call_free(node: i32) -> i32 {
+    if node <= 0 { return 1; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL || kind == AST_IDENT
+        || kind == AST_NULL || kind == AST_STR_LIT { return 1; }
+    if kind == AST_CAST || kind == AST_UNARY || kind == AST_QMARK {
+        return gpu_elem_expr_call_free(g_nodes[node].child0);
+    }
+    if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
+        return gpu_elem_expr_call_free(g_nodes[node].child0);
+    }
+    if kind == AST_BINARY || kind == AST_INDEX {
+        if gpu_elem_expr_call_free(g_nodes[node].child0) == 0 { return 0; }
+        return gpu_elem_expr_call_free(g_nodes[node].child1);
+    }
+    if kind == AST_CALL {
+        if str_eq(&g_strings[g_nodes[node].name0], "udot4") == 1
+            && find_func(g_nodes[node].name0) < 0 && g_nodes[node].nargs == 3 {
+            let uab: i32 = g_nodes[node].args_start;
+            if gpu_elem_expr_call_free(g_args[uab]) == 0 { return 0; }
+            if gpu_elem_expr_call_free(g_args[uab + 1]) == 0 { return 0; }
+            return gpu_elem_expr_call_free(g_args[uab + 2]);
+        }
+        return 0;
+    }
+    return 0;
+}
+
+// Device-side gate for the flat elementwise class: every index-assign arm
+// (base, index, value) must be free of calls the device module cannot carry.
+fn pfor_body_elem_call_free(body: i32) -> i32 {
+    let nstmts: i32 = g_nodes[body].nargs;
+    let sbase: i32 = g_nodes[body].args_start;
+    var si: i32 = 0;
+    while si < nstmts {
+        let st: i32 = g_args[sbase + si];
+        if gpu_elem_expr_call_free(g_nodes[st].child0) == 0 { return 0; }
+        if gpu_elem_expr_call_free(g_nodes[st].child1) == 0 { return 0; }
+        if gpu_elem_expr_call_free(g_nodes[st].child2) == 0 { return 0; }
+        si = si + 1;
+    }
+    return 1;
+}
+
 // One `name = name (+|-) <pure> ...` accumulate statement: a left-nested
 // +/- chain whose spine ends at the target ident, all right children pure.
 // Returns the target name (interned) or 0 when the statement is not the
@@ -26061,6 +26110,15 @@ fn emit_gpu_module() {
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; }
+        // The closed dot classes already exclude calls; the flat elementwise
+        // class must not emit a call the device module does not carry.
+        var uncarried_call: i32 = 0;
+        if eligible == 1 && k8_private_dot == 0 && blocked_dot == 0 {
+            if pfor_body_elem_call_free(body_node) == 0 {
+                eligible = 0;
+                uncarried_call = 1;
+            }
+        }
         // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2] travel via the
         // worker's owner fn.
         g_wave_pipe_on = 0;
@@ -26235,7 +26293,11 @@ fn emit_gpu_module() {
         } else {
             ir_wr("; skipped __pfor_gpu_worker_");
             ir_wr_int(wid as i64);
-            ir_wr(" (not the Stage-0 elementwise/private-K8 class)\n");
+            if uncarried_call == 1 {
+                ir_wr(" (call the device module does not carry)\n");
+            } else {
+                ir_wr(" (not the Stage-0 elementwise/private-K8 class)\n");
+            }
         }
 
         roff = roff + ncaps * 4;
