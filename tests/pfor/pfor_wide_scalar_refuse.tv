@@ -1,0 +1,19 @@
+// A wide SCALAR capture still overflows the 8-byte worker context slot:
+// only pointer elements admit wide loads — wide values stay worker-local.
+
+fn main() -> i32 {
+    let big: i256 = 1000000007;
+    let out: *i64 = alloc(64);
+    for i in 0..64 {
+        out[i] = ((big >> 3) + i as i256) as i64;
+    }
+    var sum: i64 = 0;
+    var i: i32 = 0;
+    while i < 64 {
+        sum = sum + out[i];
+        i = i + 1;
+    }
+    print(sum);
+    free(out);
+    return 0;
+}

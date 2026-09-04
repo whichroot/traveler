@@ -1963,6 +1963,35 @@ else
     echo "  ok   AMD elementwise user call refused at admission, named"
 fi
 
+# A6c. Wide pointer elements (cap-elem Door 1): *i128/*i256 captures admit
+#      wide device loads; AGX fails closed through its own classifiers.
+WIDE_ELEM_SRC="$SCRIPT_DIR/gpu_wide_elem.tv"
+WIDE_ELEM_AMD="$TMP/gpu_wide_elem_amd.ll"
+WIDE_ELEM_AMD_OBJ="$TMP/gpu_wide_elem_amd.o"
+if ! "$STAGE1" --emit-gpu "$WIDE_ELEM_SRC" -o "$WIDE_ELEM_AMD" 2>/dev/null; then
+    echo "  FAIL: AMD wide-element did not produce a module"; fail=1
+elif [ "$(grep -c 'define amdgpu_kernel' "$WIDE_ELEM_AMD")" -ne 2 ]; then
+    echo "  FAIL: AMD wide-element lost a kernel"; fail=1
+elif ! grep -q "load i128" "$WIDE_ELEM_AMD" \
+        || ! grep -q "load i256" "$WIDE_ELEM_AMD"; then
+    echo "  FAIL: AMD wide-element lost the wide loads"; fail=1
+elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
+        "$WIDE_ELEM_AMD" -o "$WIDE_ELEM_AMD_OBJ" 2>"$TMP/we-llc.err"; then
+    echo "  FAIL: AMD wide-element did not lower for gfx1100:"; \
+        sed 's/^/       /' "$TMP/we-llc.err"; fail=1
+else
+    echo "  ok   AMD wide element: i128 + i256 loads, gfx1100-lowered"
+fi
+WIDE_ELEM_AGX="$TMP/gpu_wide_elem.agx.hex"
+if ! "$STAGE1" --emit-gpu-agx "$WIDE_ELEM_SRC" -o "$WIDE_ELEM_AGX" 2>/dev/null; then
+    echo "  FAIL: AGX wide-element did not produce refusal records"; fail=1
+elif [ "$(grep -c '^skip __pfor_gpu_worker_.*reason=unsupported-agx0-worker$' \
+        "$WIDE_ELEM_AGX")" -ne 2 ]; then
+    echo "  FAIL: AGX wide-element did not fail closed"; fail=1
+else
+    echo "  ok   AGX wide element: both workers skipped by name (32-bit encoder)"
+fi
+
 # A7. Stage-1 blocked private dot: mapped multiplicands (dequant expressions
 #     as dot operands), a rolled outer block loop with loop-carried SSA phis,
 #     unrolled inner K-loops, no allocas. This is the fused Q4_K shape.
@@ -2318,6 +2347,24 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX refused module did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX elementwise user call refused at admission, named, sm_90-lowered"
+fi
+
+# N5c. The wide-element class lowers to real wide loads on NVPTX: i128 is a
+#      16B ld.global.v2.b64 and i256 two of them (32B per thread).
+WIDE_ELEM_NV="$TMP/gpu_wide_elem_nv.ll"
+WIDE_ELEM_PTX="$TMP/gpu_wide_elem_nv.ptx"
+if ! "$STAGE1" --emit-gpu-nvptx "$WIDE_ELEM_SRC" \
+        -o "$WIDE_ELEM_NV" 2>/dev/null; then
+    echo "  FAIL: NVPTX wide-element did not produce a module"; fail=1
+elif [ "$(grep -c 'define ptx_kernel' "$WIDE_ELEM_NV")" -ne 2 ]; then
+    echo "  FAIL: NVPTX wide-element lost a kernel"; fail=1
+elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
+        "$WIDE_ELEM_NV" -o "$WIDE_ELEM_PTX" 2>"$TMP/we-llcnv.err"; then
+    echo "  FAIL: NVPTX wide-element did not lower for sm_90"; fail=1
+elif [ "$(grep -c 'ld\.global\.v2\.b64' "$WIDE_ELEM_PTX")" -lt 3 ]; then
+    echo "  FAIL: NVPTX wide-element lost the 16B vector loads"; fail=1
+else
+    echo "  ok   NVPTX wide element: ld.global.v2.b64 wide loads, sm_90-lowered"
 fi
 
 # N6. The Stage-1 blocked dot stays target-neutral.

@@ -1820,6 +1820,10 @@ var g_emit_gpu_mode: i32 = 0;
 // Set when a device worker body calls the udot4 builtin: the module gains a
 // trailing @llvm.amdgcn.udot4 declare (declares may follow uses in LLVM IR).
 var g_gpu_used_udot4: i32 = 0;
+
+// Set when a wide-element alloc is emitted: the host module gains a trailing
+// @aligned_alloc declare (lazy, so unchanged programs keep byte-identical IR).
+var g_used_aligned_alloc: i32 = 0;
 // GPU device target: 0 = AMDGCN, 1 = NVPTX, 2 = AGX G16X, 3 = Vulkan GLSL.
 // AMD/NV share LLVM emission; AGX directly encodes measured instructions and
 // Vulkan emits a closed shader source from the same proven worker record.
@@ -13681,8 +13685,24 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr("  "); ir_wr_reg(ptr_r); ir_wr(" = call ptr @__tv_alloc_dbg(i64 ");
                 ir_wr_reg(total_r); ir_wr(")\n");
             } else {
-                ir_wr("  "); ir_wr_reg(ptr_r); ir_wr(" = call ptr @malloc(i64 ");
-                ir_wr_reg(total_r); ir_wr(")\n");
+                // Wide elements (i128/i256): plain malloc does not promise the
+                // 32B alignment LLVM assumes for wide loads/stores. aligned_alloc
+                // sizes must be a multiple of the alignment.
+                if pfor_prim_int_wide(resolve_type_sub(type_pointee(ctx_type))) == 1 {
+                    let round_r: i32 = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(round_r); ir_wr(" = add i64 ");
+                    ir_wr_reg(total_r); ir_wr(", 31\n");
+                    let size_r: i32 = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(size_r); ir_wr(" = and i64 ");
+                    ir_wr_reg(round_r); ir_wr(", -32\n");
+                    ir_wr("  "); ir_wr_reg(ptr_r);
+                    ir_wr(" = call ptr @aligned_alloc(i64 32, i64 ");
+                    ir_wr_reg(size_r); ir_wr(")\n");
+                    g_used_aligned_alloc = 1;
+                } else {
+                    ir_wr("  "); ir_wr_reg(ptr_r); ir_wr(" = call ptr @malloc(i64 ");
+                    ir_wr_reg(total_r); ir_wr(")\n");
+                }
                 // Memset zero
                 ir_wr("  call void @llvm.memset.p0.i64(ptr ");
                 ir_wr_reg(ptr_r); ir_wr(", i8 0, i64 ");
@@ -15468,14 +15488,15 @@ let PFR_ALLOCA_GLOBAL_ARR: i32 = 4;
 
 // Decay an admissible [T; N] capture to (*T, sentinel). Returns the (possibly
 // unchanged) type; *is_alloca_io is updated in lockstep. Only arrays whose
-// element is already in the closed U1/field set decay — nested arrays, wide
-// values, and struct elements still refuse downstream as cap-elem.
+// element is in the closed U1/wide/field set decay — nested arrays and struct
+// elements still refuse downstream as cap-elem.
 fn pfor_decay_capture_type(type_off: i32, is_alloca: i32, is_alloca_io: *i32) -> i32 {
     let rt: i32 = resolve_type_sub(type_off);
     if type_is_array(rt) == 1 {
         let et: i32 = resolve_type_sub(type_array_elem(rt));
         if type_is_array(et) == 0 {
-            if pfor_prim_int(et) == 1 || type_is_dyn(et) == 1
+            if pfor_prim_int(et) == 1 || pfor_prim_int_wide(et) == 1
+                || type_is_dyn(et) == 1
                 || type_is_field_value(et) == 1 { return type_add_star(et); }
             let efi: i32 = find_field_by_alias(et);
             if efi >= 0 && g_fields[efi].field_kind != FIELD_KIND_EXTENSION {
@@ -15533,6 +15554,19 @@ fn pfor_prim_int(type_off: i32) -> i32 {
     return 0;
 }
 
+// Wide integers are admissible as pointer ELEMENTS only: the load/store is a
+// wide memory op and the captured slot still holds the 8-byte pointer. Wide
+// SCALAR captures would overflow the slot, so they stay cap-elem refused.
+fn pfor_prim_int_wide(type_off: i32) -> i32 {
+    if type_off == NULL_STR { return 0; }
+    let s: *u8 = &g_strings[type_off];
+    if str_eq(s, "i128") == 1 { return 1; }
+    if str_eq(s, "u128") == 1 { return 1; }
+    if str_eq(s, "i256") == 1 { return 1; }
+    if str_eq(s, "u256") == 1 { return 1; }
+    return 0;
+}
+
 // Context slots are eight bytes. The closed admissible set includes U1 pointer/
 // integer captures, scalar field values, proven closure environment pointers,
 // and the synthetic dyn carrier. Aggregates/wide values refuse (cap-elem).
@@ -15543,7 +15577,7 @@ fn pfor_capture_type_ok(name: i32, type_off: i32) -> i32 {
     if type_is_ptr(rt) == 1 {
         let pt: i32 = resolve_type_sub(type_pointee(rt));
         if find_field_by_alias(pt) >= 0 || type_is_dyn(pt) == 1
-            || pfor_prim_int(pt) == 1 { return 1; }
+            || pfor_prim_int(pt) == 1 || pfor_prim_int_wide(pt) == 1 { return 1; }
         return 0;
     }
     if pfor_prim_int(rt) == 1 || type_is_dyn(rt) == 1
@@ -28869,6 +28903,11 @@ fn codegen_program(prog: i32) {
     // ---- Emit wide-integer decimal print helpers (Slice 4), if any wide
     //      value was printed. Lazy: gates set during the print codegen above. ----
     emit_wide_print();
+
+    // Lazy: declared only when a wide-element alloc was emitted above.
+    if g_used_aligned_alloc == 1 {
+        ir_wr("\ndeclare ptr @aligned_alloc(i64, i64)\n");
+    }
 }
 
 // ===== EVAL ENGINE: TRAVELER IR + TREE-WALKING EVALUATOR (--eval) =====

@@ -1,4 +1,5 @@
-// Wide values may be worker-local; a captured *i256 output remains cap-elem.
+// Wide pointer elements admit: a captured *i256 output dispatches (cap-elem
+// lifted for wide pointer elements; the worker context carries the pointer).
 
 fn fill_wide(out: *i256, n: i32) {
     for i in 0..n {

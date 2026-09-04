@@ -274,7 +274,8 @@ if [ -x "$STAGE1" ]; then
         "pfor_alias_provenance:4"
         "pfor_wide_pointer_input:1"
         "pfor_fresh_origin_alias:3"
-        "pfor_wide_output_refuse:0"
+        "pfor_wide_output:1"
+        "pfor_wide_scalar_refuse:0"
     )
     for entry in "${EFFECT_TESTS[@]}"; do
         name="${entry%%:*}"; want_workers="${entry##*:}"
@@ -316,11 +317,16 @@ if [ -x "$STAGE1" ]; then
             [ "$forced" = "2" ] \
                 || { status="FAIL"; detail="fresh-origin accept/refusal boundary changed"; }
         fi
-        if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_output_refuse" ]; then
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_output" ]; then
+            # Wide pointer elements admit; the alloc must carry 32B alignment.
+            grep -q 'call ptr @aligned_alloc(i64 32' "$TMPDIR/${name}.ll" \
+                || { status="FAIL"; detail="wide alloc lost its 32B alignment"; }
+        fi
+        if [ "$status" = "PASS" ] && [ "$name" = "pfor_wide_scalar_refuse" ]; then
             if ! "$STAGE1" --pfor-report "$PFOR_DIR/${name}.tv" \
                     > "$TMPDIR/${name}.report" 2>/dev/null \
                || ! grep -q '"reason":"cap-elem"' "$TMPDIR/${name}.report"; then
-                status="FAIL"; detail="wide output did not retain cap-elem refusal"
+                status="FAIL"; detail="wide scalar capture did not retain cap-elem refusal"
             fi
         fi
         if [ "$status" = "PASS" ]; then
