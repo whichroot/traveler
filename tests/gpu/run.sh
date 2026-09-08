@@ -61,6 +61,9 @@ fi
 # capability flags.
 . "$SCRIPT_DIR/../lib/env.sh"
 
+TIMEOUT_RUN=()
+if [ -n "$TIMEOUT_CMD" ]; then TIMEOUT_RUN=("$TIMEOUT_CMD" 30); fi
+
 # --- Locate llc (same discovery as run.sh; honors $LLC) ---
 find_llc() {
     if [ -n "${LLC:-}" ] && command -v "$LLC" &>/dev/null; then return; fi
@@ -1898,7 +1901,7 @@ fi
 #      once re-walked its argument subtrees (2^depth growth, hang near 26).
 NEST_SRC="$SCRIPT_DIR/gpu_udot4_nest.tv"
 NEST_DEV="$TMP/gpu_udot4_nest_amd.ll"
-if ! timeout 30 "$STAGE1" --emit-gpu "$NEST_SRC" -o "$NEST_DEV" 2>/dev/null; then
+if ! "${TIMEOUT_RUN[@]}" "$STAGE1" --emit-gpu "$NEST_SRC" -o "$NEST_DEV" 2>/dev/null; then
     echo "  FAIL: AMD udot4 nest-32 admission hung or refused"; fail=1
 elif ! grep -q "define amdgpu_kernel" "$NEST_DEV"; then
     echo "  FAIL: AMD udot4 nest-32 emitted no kernel"; fail=1
@@ -2629,7 +2632,7 @@ fi
 # N16b. The nest-32 admission regression on the NVPTX lowering: same proof0
 #       walk as A9b, same linear contract.
 NEST_NVDEV="$TMP/gpu_udot4_nest_nv.ll"
-if ! timeout 30 "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_udot4_nest.tv" \
+if ! "${TIMEOUT_RUN[@]}" "$STAGE1" --emit-gpu-nvptx "$SCRIPT_DIR/gpu_udot4_nest.tv" \
         -o "$NEST_NVDEV" 2>/dev/null; then
     echo "  FAIL: NVPTX udot4 nest-32 admission hung or refused"; fail=1
 elif [ "$(grep -c 'asm "dp4a.u32.u32' "$NEST_NVDEV")" -ne 32 ]; then

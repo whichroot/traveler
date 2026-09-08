@@ -214,8 +214,9 @@ if [ -z "$CUDA_LIB" ] || [ ! -e "$CUDA_LIB" ]; then
         if [ -e "$p" ]; then CUDA_LIB="$p"; break; fi
     done
     if [ -z "$CUDA_LIB" ] && command -v ldconfig >/dev/null 2>&1; then
-        _cuda_so="$(ldconfig -p 2>/dev/null | grep -m1 'libcuda\.so\.1' \
-            | sed 's/.*=>[[:space:]]*//')"
+        _cuda_so="$(ldconfig -p 2>/dev/null \
+            | sed -n '/libcuda\.so\.1/ { s/.*=>[[:space:]]*//; p; }' \
+            | head -1 || true)"
         if [ -n "$_cuda_so" ] && [ -e "$_cuda_so" ]; then CUDA_LIB="$_cuda_so"; fi
         unset _cuda_so
     fi
