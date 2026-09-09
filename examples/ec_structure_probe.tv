@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: Apache-2.0
+// Known anomalous-curve attack plus a point-only sparse translation identity.
+import "ec_padic_core.tv";
+
+extern "C" fn puts(s: *u8) -> i32;
+
+// For f(P)=[d divides canonical log_G(P)], f(P+dG)-f(P) has two endpoints.
+// This evaluates that difference, not f(P), without an exponent oracle.
+fn ec_boundary(point: ECPoint, g: ECPoint, p: i32, order: i32, d: i32) -> i32 {
+    let dg: ECPoint = ec_mul(g, d, p);
+    let sg: ECPoint = ec_mul(g, order % d, p);
+    let positive: ECPoint = ECPoint { x: dg.x, y: mod_pos(0 - dg.y, p) };
+    let negative: ECPoint = ECPoint { x: sg.x, y: mod_pos(0 - sg.y, p) };
+    return ec_equal(point, positive) - ec_equal(point, negative);
+}
+
+fn structure_case(p: i32, order: i32, totals: *i32) -> i32 {
+    let g: ECPoint = ec_generator(p);
+    let setup: *i32 = alloc(4);
+    var failures: i32 = 0;
+    var boundary_checks: i32 = 0;
+    var d: i32 = 4;
+    while d <= 9 {
+        var point: ECPoint = ec_identity();
+        var n: i32 = 0;
+        var support: i32 = 0;
+        while n < order {
+            var before: i32 = 0;
+            var after: i32 = 0;
+            if n % d == 0 { before = 1; }
+            if ((n + d) % order) % d == 0 { after = 1; }
+            let delta: i32 = ec_boundary(point, g, p, order, d);
+            if delta != after - before { failures = failures + 1; }
+            if delta != 0 { support = support + 1; }
+            point = ec_add(point, g, p);
+            n = n + 1;
+            boundary_checks = boundary_checks + 1;
+        }
+        if support != 2 { failures = failures + 1; }
+        d = d + 5;
+    }
+    puts("structure: p, order, point-only boundary checks, failures");
+    print(p); print(order); print(boundary_checks); print(failures);
+    totals[0] = totals[0] + 1;
+    totals[1] = totals[1] + boundary_checks;
+
+    let available: i32 = ec_padic_setup(g, p, order, 0, setup);
+    if order != p {
+        if available != 0 || ec_padic_log(g, p, setup) != 0 - 1 { failures = failures + 1; }
+        // The caller cannot turn this into an anomalous curve by lying about its order.
+        if ec_padic_setup(g, p, p, 0, setup) != 0 { failures = failures + 1; }
+        puts("p-adic path: refused non-anomalous curve");
+        totals[2] = totals[2] + 1;
+    } else {
+        if available != 1 { free(setup); return failures + 1; }
+        var zero_scales: i32 = 0;
+        var zero_lift: i32 = 0 - 1;
+        var trial: i32 = 0;
+        while trial < p {
+            let scale: i32 = ec_padic_phi(g, p, trial);
+            if scale < 0 { failures = failures + 1; }
+            if scale == 0 {
+                zero_scales = zero_scales + 1;
+                zero_lift = trial;
+            }
+            trial = trial + 1;
+        }
+        puts("lift scan: p, zero scales, zero lift");
+        print(p); print(zero_scales); print(zero_lift);
+        if zero_scales != 1 { failures = failures + 1; }
+        var recovered: i32 = 0;
+        var predicate_checks: i32 = 0;
+        var homomorphism_checks: i32 = 0;
+        var variant: i32 = 0;
+        while variant < 3 {
+            var multiplier: i32 = 1;
+            if variant == 1 { multiplier = 2; }
+            if variant == 2 { multiplier = p - 1; }
+            let base: ECPoint = ec_mul(g, multiplier, p);
+            var first_lift: i32 = 0;
+            if variant == 1 { first_lift = zero_lift; }
+            if variant == 2 { first_lift = p - 1; }
+            if ec_padic_setup(base, p, order, first_lift, setup) != 1 { failures = failures + 1; }
+            if variant == 1 && setup[2] != 2 { failures = failures + 1; }
+            if ec_padic_log(base, p + 1, setup) != 0 - 1 { failures = failures + 1; }
+            if ec_padic_log(ECPoint { x: p, y: 0 }, p, setup) != 0 - 1 { failures = failures + 1; }
+            puts("anomalous setup: p, generator multiplier, lift_b, inverse phi(G), attempts");
+            print(p); print(multiplier); print(setup[0]); print(setup[1]); print(setup[2]);
+            let shift: ECPoint = ec_mul(base, 7, p);
+            let shift_phi: i32 = ec_padic_phi(shift, p, setup[0]);
+            var point: ECPoint = ec_identity();
+            var n: i32 = 0;
+            while n < p {
+                let key: i32 = ec_padic_log(point, p, setup);
+                if key == n { recovered = recovered + 1; } else { failures = failures + 1; }
+                if ec_equal(ec_mul(base, key, p), point) == 0 { failures = failures + 1; }
+                if key % 4 == n % 4 { predicate_checks = predicate_checks + 1; }
+                if key % 9 == n % 9 { predicate_checks = predicate_checks + 1; }
+                let phi: i32 = ec_padic_phi(point, p, setup[0]);
+                let sum: ECPoint = ec_add(point, shift, p);
+                let sum_phi: i32 = ec_padic_phi(sum, p, setup[0]);
+                if phi >= 0 && shift_phi >= 0 && sum_phi == mod_pos(phi + shift_phi, p) {
+                    homomorphism_checks = homomorphism_checks + 1;
+                } else { failures = failures + 1; }
+                point = ec_add(point, base, p);
+                n = n + 1;
+            }
+            if ec_equal(point, ec_identity()) == 0 { failures = failures + 1; }
+            variant = variant + 1;
+        }
+        puts("anomalous results: recovered keys, residue checks, homomorphism checks");
+        print(recovered); print(predicate_checks); print(homomorphism_checks);
+        if recovered != 3 * p || predicate_checks != 6 * p { failures = failures + 1; }
+        totals[3] = totals[3] + 1;
+        totals[4] = totals[4] + recovered;
+        totals[5] = totals[5] + homomorphism_checks;
+    }
+    free(setup);
+    return failures;
+}
+
+fn main() -> i32 {
+    let totals: *i32 = alloc(6);
+    var i: i32 = 0;
+    while i < 6 { totals[i] = 0; i = i + 1; }
+    var failures: i32 = 0;
+    let rejected: *i32 = alloc(4);
+    let base: ECPoint = ec_generator(103);
+    if ec_padic_setup(base, 25, 25, 0, rejected) != 0 { failures = failures + 1; }
+    if ec_padic_setup(base, 709, 709, 0, rejected) != 0 { failures = failures + 1; }
+    if ec_padic_setup(ec_identity(), 103, 103, 0, rejected) != 0 { failures = failures + 1; }
+    if ec_padic_setup(base, 103, 103, 103, rejected) != 0 { failures = failures + 1; }
+    if ec_padic_log(base, 103, rejected) != 0 - 1 { failures = failures + 1; }
+    free(rejected);
+    var p: i32 = 17;
+    while p <= 701 {
+        if is_prime(p) == 1 && 140 % p != 0 {
+            let order: i32 = count_fp(p, 2, 2);
+            if order > 9 && is_prime(order) == 1 {
+                failures = failures + structure_case(p, order, totals);
+            }
+        }
+        p = p + 1;
+    }
+    if totals[0] != 11 || totals[1] != 7950 || totals[2] != 8 || totals[3] != 3
+        || totals[4] != 3711 || totals[5] != 3711 { failures = failures + 1; }
+    puts("summary: prime-order curves, boundary checks, refusals, anomalous curves, keys, homomorphism checks, failures");
+    i = 0;
+    while i < 6 { print(totals[i]); i = i + 1; }
+    print(failures);
+    free(totals);
+    if failures != 0 { return 1; }
+    puts("EC STRUCTURE: PASS");
+    return 0;
+}

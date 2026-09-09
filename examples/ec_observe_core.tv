@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: Apache-2.0
+// Tiny exact groups on y^2 = x^3 + 2x + 2; not cryptographic arithmetic.
+import "../src/lib/nt/curve.tv";
+
+struct ECPoint {
+    x: i32,
+    y: i32,
+}
+
+fn ec_identity() -> ECPoint { return ECPoint { x: 0 - 1, y: 0 - 1 }; }
+
+fn ec_equal(a: ECPoint, b: ECPoint) -> i32 {
+    if a.x == b.x && a.y == b.y { return 1; }
+    return 0;
+}
+
+fn ec_valid(a: ECPoint, p: i32) -> i32 {
+    if a.x == 0 - 1 {
+        if a.y == 0 - 1 { return 1; }
+        return 0;
+    }
+    if a.x < 0 || a.x >= p || a.y < 0 || a.y >= p { return 0; }
+    if mod_pos(a.y * a.y - a.x * a.x * a.x - 2 * a.x - 2, p) == 0 { return 1; }
+    return 0;
+}
+
+fn ec_add(a: ECPoint, b: ECPoint, p: i32) -> ECPoint {
+    if a.x == 0 - 1 { return b; }
+    if b.x == 0 - 1 { return a; }
+    if a.x == b.x && mod_pos(a.y + b.y, p) == 0 { return ec_identity(); }
+    var numerator: i32 = b.y - a.y;
+    var denominator: i32 = b.x - a.x;
+    if a.x == b.x {
+        numerator = 3 * a.x * a.x + 2;
+        denominator = 2 * a.y;
+    }
+    let slope: i32 = mod_pos(numerator * modpow(denominator, p - 2, p), p);
+    let x: i32 = mod_pos(slope * slope - a.x - b.x, p);
+    let y: i32 = mod_pos(slope * (a.x - x) - a.y, p);
+    return ECPoint { x: x, y: y };
+}
+
+fn ec_mul(a: ECPoint, scalar: i32, p: i32) -> ECPoint {
+    var result: ECPoint = ec_identity();
+    var base: ECPoint = a;
+    var k: i32 = scalar;
+    while k > 0 {
+        if k % 2 == 1 { result = ec_add(result, base, p); }
+        base = ec_add(base, base, p);
+        k = k / 2;
+    }
+    return result;
+}
+
+fn ec_generator(p: i32) -> ECPoint {
+    var x: i32 = 0;
+    while x < p {
+        var y: i32 = 0;
+        while y < p {
+            let a: ECPoint = ECPoint { x: x, y: y };
+            if ec_valid(a, p) == 1 { return a; }
+            y = y + 1;
+        }
+        x = x + 1;
+    }
+    return ec_identity();
+}
+
+// Exhaustive DLP is confined to this reference oracle: costs[0] calls,
+// costs[1] scan additions. Neither is a claimed efficient implementation.
+fn ec_divisible_oracle(target: ECPoint, g: ECPoint, p: i32,
+                       order: i32, d: i32, costs: *i64) -> i32 {
+    costs[0] = costs[0] + 1;
+    var point: ECPoint = ec_identity();
+    var n: i32 = 0;
+    while n < order {
+        if ec_equal(point, target) == 1 {
+            if n % d == 0 { return 1; }
+            return 0;
+        }
+        point = ec_add(point, g, p);
+        costs[1] = costs[1] + 1;
+        n = n + 1;
+    }
+    return 0 - 1;
+}
+
+// Prime order and 2 <= d < order make division by d invertible in the group.
+// Small-exponent comparisons precede every oracle round to avoid wraparound.
+fn ec_recover(target: ECPoint, g: ECPoint, p: i32,
+              order: i32, d: i32, costs: *i64) -> i32 {
+    if is_prime(order) == 0 || d < 2 || d >= order { return 0 - 1; }
+    let inverse: i32 = modpow(d, order - 2, order);
+    var current: ECPoint = target;
+    var place: i32 = 1;
+    var recovered: i32 = 0;
+    while place <= order {
+        var small: ECPoint = ec_identity();
+        var j: i32 = 0;
+        while j < d {
+            if ec_equal(current, small) == 1 { return recovered + place * j; }
+            small = ec_add(small, g, p);
+            j = j + 1;
+        }
+        var shifted: ECPoint = current;
+        let negative_g: ECPoint = ECPoint { x: g.x, y: mod_pos(0 - g.y, p) };
+        var digit: i32 = 0 - 1;
+        var quotient: ECPoint = ec_identity();
+        j = 0;
+        while j < d {
+            let answer: i32 = ec_divisible_oracle(shifted, g, p, order, d, costs);
+            if answer < 0 { return 0 - 1; }
+            if answer == 1 {
+                if digit >= 0 { return 0 - 1; }
+                digit = j;
+                quotient = ec_mul(shifted, inverse, p);
+            }
+            shifted = ec_add(shifted, negative_g, p);
+            j = j + 1;
+        }
+        if digit < 0 { return 0 - 1; }
+        recovered = recovered + place * digit;
+        current = quotient;
+        place = place * d;
+    }
+    return 0 - 1;
+}
+
+// Packed shifted-coordinate parity, including (-1,-1) for infinity.
+// Only coordinates cross this boundary: no scalars, labels, or DLP table.
+fn ec_observe_map(coords: *i32, features: *i32, n: i32) {
+    for j in 0..n {
+        features[j] = (coords[2 * j] + 1) % 2 + 2 * ((coords[2 * j + 1] + 1) % 2);
+    }
+}

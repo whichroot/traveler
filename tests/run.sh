@@ -771,6 +771,31 @@ compile_obj_self nt_bm_carriers
 link_objs nt_bm_carriers nt_bm_carriers
 run_test nt_bm_carriers "$TIMEOUT_SINGLE"
 
+# Rank must survive singular leading minors and agree with nullspace counts.
+compile_obj_self hankel_rank_test
+link_objs hankel_rank_test hankel_rank_test
+run_test hankel_rank_test "$TIMEOUT_SINGLE"
+
+# Tiny-group oracle recovery and coordinate-only observables stay exact.
+compile_obj_self ec_subgroup_observe
+link_objs ec_subgroup_observe ec_subgroup_observe
+run_test ec_subgroup_observe "$TIMEOUT_SINGLE"
+
+# Anomalous-curve logarithms, bad-lift retries, and sparse translation endpoints.
+compile_obj_self ec_structure_probe
+link_objs ec_structure_probe ec_structure_probe
+run_test ec_structure_probe "$TIMEOUT_SINGLE"
+
+# Divisor obstruction, Miller addition chains, and nontrivial Tate characters.
+compile_obj_self ec_divisor_probe
+link_objs ec_divisor_probe ec_divisor_probe
+run_test ec_divisor_probe "$TIMEOUT_SINGLE"
+
+# Gaussian lifts, relation row space, and bounded target descent controls.
+compile_obj_self ec_descent_probe
+link_objs ec_descent_probe ec_descent_probe
+run_test ec_descent_probe "$TIMEOUT_SINGLE"
+
 # Squares, both citizens (src/lib/nt/sqrt.tv): exact isqrt/is-square with the
 # bracketing certificate (magnitude side) + Tonelli-Shanks sqrt_mod (field side)
 # — detection (Euler) finally paired with EXTRACTION; check = one re-mul (the

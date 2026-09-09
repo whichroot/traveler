@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: Apache-2.0
+// Exhaustive nullspace counting checks rank without elimination or BM.
+import "../src/lib/nt/linrec.tv";
+
+extern "C" fn puts(s: *u8) -> i32;
+
+fn exhaustive(p: i32, max_n: i32) -> i32 {
+    let s: *i64 = alloc(max_n);
+    let v: *i64 = alloc(max_n);
+    var checked: i32 = 0;
+    var words: i32 = 1;
+    var n: i32 = 0;
+    while n <= max_n {
+        let k: i32 = (n + 1) / 2;
+        var vectors: i32 = 1;
+        var i: i32 = 0;
+        while i < k { vectors = vectors * p; i = i + 1; }
+        var word: i32 = 0;
+        while word < words {
+            var digits: i32 = word;
+            i = 0;
+            while i < n {
+                s[i] = (digits % p) as i64;
+                digits = digits / p;
+                i = i + 1;
+            }
+            var kernel: i32 = 0;
+            var code: i32 = 0;
+            while code < vectors {
+                digits = code;
+                i = 0;
+                while i < k {
+                    v[i] = (digits % p) as i64;
+                    digits = digits / p;
+                    i = i + 1;
+                }
+                var zero: i32 = 1;
+                i = 0;
+                while i < k {
+                    var dot: i64 = 0;
+                    var j: i32 = 0;
+                    while j < k { dot = dot + s[i + j] * v[j]; j = j + 1; }
+                    if dot % (p as i64) != 0 { zero = 0; }
+                    i = i + 1;
+                }
+                kernel = kernel + zero;
+                code = code + 1;
+            }
+            var nullity: i32 = 0;
+            while kernel > 1 { kernel = kernel / p; nullity = nullity + 1; }
+            let actual: i32 = hankel_rank(s, n, p as i64);
+            if actual != k - nullity {
+                puts("rank mismatch: p, n, word, actual, expected");
+                print(p); print(n); print(word); print(actual); print(k - nullity);
+                free(s); free(v);
+                return 0 - 1;
+            }
+            digits = word;
+            i = 0;
+            while i < n {
+                if s[i] != (digits % p) as i64 { free(s); free(v); return 0 - 1; }
+                digits = digits / p;
+                i = i + 1;
+            }
+            checked = checked + 1;
+            word = word + 1;
+        }
+        words = words * p;
+        n = n + 1;
+    }
+    free(s); free(v);
+    return checked;
+}
+
+fn main() -> i32 {
+    let s: *i64 = alloc(5);
+    let c: *i64 = alloc(6);
+    s[0] = 0; s[1] = 1; s[2] = 0; s[3] = 1; s[4] = 0;
+    let hr: i32 = hankel_rank(s, 5, 5);
+    let bm: i32 = bm_l(s, 5, 5, c);
+    puts("alternating: rank, BM"); print(hr); print(bm);
+    if hr != 2 || bm != 2 { free(s); free(c); return 1; }
+    s[1] = 0; s[3] = 0; s[4] = 1;
+    let delayed: i32 = hankel_rank(s, 5, 5);
+    let delayed_bm: i32 = bm_l(s, 5, 5, c);
+    puts("delayed impulse: rank, BM"); print(delayed); print(delayed_bm);
+    if delayed != 1 || delayed_bm != 5 { free(s); free(c); return 1; }
+    s[0] = 5; s[1] = 0 - 4; s[2] = 10; s[3] = 6; s[4] = 0 - 5;
+    if hankel_rank(s, 5, 5) != 2 { free(s); free(c); return 1; }
+    free(s); free(c);
+    let a: i32 = exhaustive(2, 7);
+    let b: i32 = exhaustive(3, 5);
+    let d: i32 = exhaustive(5, 5);
+    puts("exhaustive sequences: F2, F3, F5"); print(a); print(b); print(d);
+    if a != 255 || b != 364 || d != 3906 { return 1; }
+    puts("HANKEL: PASS");
+    return 0;
+}

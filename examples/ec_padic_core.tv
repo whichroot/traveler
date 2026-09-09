@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: Apache-2.0
+// First-order p-adic logarithm for the tiny anomalous curves in this example.
+import "ec_observe_core.tv";
+
+struct ECLift {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+fn lift_mod(a: i64, modulus: i64) -> i64 {
+    let r: i64 = a % modulus;
+    if r < 0 { return r + modulus; }
+    return r;
+}
+
+// Jacobian x=X/Z^2, y=Y/Z^3 over Z/p^2; no division by a nonunit.
+fn lift_double(a: ECLift, modulus: i64) -> ECLift {
+    if a.z == 0 { return a; }
+    let yy: i64 = lift_mod(a.y * a.y, modulus);
+    let yyyy: i64 = lift_mod(yy * yy, modulus);
+    let zz: i64 = lift_mod(a.z * a.z, modulus);
+    let zzzz: i64 = lift_mod(zz * zz, modulus);
+    let s: i64 = lift_mod(4 * a.x * yy, modulus);
+    let m: i64 = lift_mod(3 * a.x * a.x + 2 * zzzz, modulus);
+    let x: i64 = lift_mod(m * m - 2 * s, modulus);
+    let y: i64 = lift_mod(m * (s - x) - 8 * yyyy, modulus);
+    let z: i64 = lift_mod(2 * a.y * a.z, modulus);
+    return ECLift { x: x, y: y, z: z };
+}
+
+// Mixed Jacobian addition; the right operand is affine (Z=1).
+// Only used by the [p] ladder, which avoids distinct lifts with equal reduction.
+fn lift_add(a: ECLift, b: ECLift, modulus: i64) -> ECLift {
+    if a.z == 0 { return b; }
+    let zz: i64 = lift_mod(a.z * a.z, modulus);
+    let zzz: i64 = lift_mod(zz * a.z, modulus);
+    let h: i64 = lift_mod(b.x * zz - a.x, modulus);
+    let r: i64 = lift_mod(b.y * zzz - a.y, modulus);
+    if h == 0 && r == 0 { return lift_double(a, modulus); }
+    let hh: i64 = lift_mod(h * h, modulus);
+    let hhh: i64 = lift_mod(hh * h, modulus);
+    let v: i64 = lift_mod(a.x * hh, modulus);
+    let x: i64 = lift_mod(r * r - hhh - 2 * v, modulus);
+    let y: i64 = lift_mod(r * (v - x) - a.y * hhh, modulus);
+    let z: i64 = lift_mod(a.z * h, modulus);
+    return ECLift { x: x, y: y, z: z };
+}
+
+// For prime p validated by setup: phi(P)=(-X*Z/Y)([p] lift(P))/p mod p.
+// Hensel lifts keep x fixed on y^2=x^3+2x+(2+lift_b*p); -1 refuses.
+fn ec_padic_phi(point: ECPoint, p: i32, lift_b: i32) -> i32 {
+    if p < 17 || p > 701 || lift_b < 0 || lift_b >= p { return 0 - 1; }
+    if ec_valid(point, p) == 0 { return 0 - 1; }
+    if point.x == 0 - 1 { return 0; }
+    if point.y == 0 { return 0 - 1; }
+    let prime: i64 = p as i64;
+    let modulus: i64 = prime * prime;
+    let x: i64 = point.x as i64;
+    let y: i64 = point.y as i64;
+    let b: i64 = 2 + (lift_b as i64) * prime;
+    let rhs: i64 = x * x * x + 2 * x + b;
+    let inverse: i64 = modpow(2 * point.y, p - 2, p) as i64;
+    let correction: i64 = lift_mod(((rhs - y * y) / prime) * inverse, prime);
+    let lifted_y: i64 = y + prime * correction;
+    if lift_mod(lifted_y * lifted_y - rhs, modulus) != 0 { return 0 - 1; }
+    let base: ECLift = ECLift { x: x, y: lifted_y, z: 1 };
+    var result: ECLift = ECLift { x: 1, y: 1, z: 0 };
+    var bit: i32 = 1;
+    while bit <= p / 2 { bit = bit * 2; }
+    while bit > 0 {
+        result = lift_double(result, modulus);
+        if (p / bit) % 2 == 1 { result = lift_add(result, base, modulus); }
+        bit = bit / 2;
+    }
+
+    let zz: i64 = lift_mod(result.z * result.z, modulus);
+    let z4: i64 = lift_mod(zz * zz, modulus);
+    let z6: i64 = lift_mod(z4 * zz, modulus);
+    let xx: i64 = lift_mod(result.x * result.x, modulus);
+    let curve_rhs: i64 = lift_mod(xx * result.x + 2 * result.x * z4 + b * z6, modulus);
+    if lift_mod(result.y * result.y, modulus) != curve_rhs { return 0 - 1; }
+    if result.z % prime != 0 || result.y % prime == 0 { return 0 - 1; }
+
+    // One Newton step lifts the inverse of unit Y from mod p to mod p^2.
+    let iy: i64 = modpow((result.y % prime) as i32, p - 2, p) as i64;
+    let iy2: i64 = lift_mod(iy * (2 - result.y * iy), modulus);
+    let xz: i64 = lift_mod(result.x * result.z, modulus);
+    let t: i64 = lift_mod((0 - xz) * iy2, modulus);
+    if t % prime != 0 { return 0 - 1; }
+    return (t / prime) as i32;
+}
+
+// Public setup finds a nonzero formal-log scale, not a table of logarithms.
+// setup holds lift_b, 1/phi(G), attempts, p. It belongs to this curve and base.
+fn ec_padic_setup(g: ECPoint, p: i32, order: i32, first_lift: i32, setup: *i32) -> i32 {
+    setup[0] = 0 - 1; setup[1] = 0;
+    setup[2] = 0; setup[3] = 0;
+    if p < 17 || p > 701 || order != p || is_prime(p) == 0 { return 0; }
+    if first_lift < 0 || first_lift >= p { return 0; }
+    if count_fp(p, 2, 2) != p || ec_valid(g, p) == 0 || g.x < 0 { return 0; }
+    var attempt: i32 = 0;
+    while attempt < p {
+        let lift_b: i32 = (first_lift + attempt) % p;
+        let phi: i32 = ec_padic_phi(g, p, lift_b);
+        if phi > 0 {
+            setup[0] = lift_b;
+            setup[1] = modpow(phi, p - 2, p);
+            setup[2] = attempt + 1; setup[3] = p;
+            return 1;
+        }
+        attempt = attempt + 1;
+    }
+    return 0;
+}
+
+fn ec_padic_log(target: ECPoint, p: i32, setup: *i32) -> i32 {
+    if setup[0] < 0 || setup[1] <= 0 || setup[1] >= p || setup[3] != p { return 0 - 1; }
+    let phi: i32 = ec_padic_phi(target, p, setup[0]);
+    if phi < 0 { return 0 - 1; }
+    return mod_pos(phi * setup[1], p);
+}

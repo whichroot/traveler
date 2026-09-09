@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: Apache-2.0
+// CPU and NVPTX compile the same coordinate-only map; no label reaches CUDA.
+import "ec_observe_core.tv";
+import "../src/lib/gpu/cuda_runtime.tv";
+
+extern "C" fn puts(s: *u8) -> i32;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { puts("usage: ec_observe_cuda kernel.ptx"); return 2; }
+    let p: i32 = 17;
+    let order: i32 = 19;
+    let n: i32 = order * (order - 1);
+    let coords: *i32 = alloc(2 * n);
+    let expected: *i32 = alloc(n);
+    let output: *i32 = alloc(n);
+    let g: ECPoint = ec_generator(p);
+    var u: i32 = 1;
+    var at: i32 = 0;
+    while u < order {
+        let base: ECPoint = ec_mul(g, u, p);
+        var point: ECPoint = ec_identity();
+        var j: i32 = 0;
+        while j < order {
+            coords[2 * at] = point.x;
+            coords[2 * at + 1] = point.y;
+            point = ec_add(point, base, p);
+            at = at + 1;
+            j = j + 1;
+        }
+        u = u + 1;
+    }
+    ec_observe_map(coords, expected, n);
+    let input_bytes: usize = (2 * n * 4) as usize;
+    let output_bytes: usize = (n * 4) as usize;
+    let runtime: *CudaRuntime = cuda_runtime_open(
+        argv[1], "__pfor_gpu_worker_0", input_bytes, output_bytes);
+    var ran: i32 = 0;
+    if runtime != null {
+        ran = cuda_runtime_launch_map_1d(runtime, coords as *u8, input_bytes,
+                                        output as *u8, output_bytes, 0, n);
+    }
+    cuda_runtime_close(runtime);
+    var failures: i32 = 0;
+    if ran == 0 || cuda_dispatches() != 1 {
+        puts("CUDA failure: boundary, status"); print(g_cuda_error); print(g_cuda_status);
+        failures = failures + 1;
+    } else {
+        at = 0;
+        while at < n {
+            if expected[at] != output[at] { failures = failures + 1; }
+            at = at + 1;
+        }
+    }
+    puts("CUDA point-only map: generators, points, dispatches, mismatches");
+    print(order - 1); print(n); print(cuda_dispatches()); print(failures);
+    free(coords); free(expected); free(output);
+    if failures != 0 { return 1; }
+    puts("EC CUDA: PASS");
+    return 0;
+}

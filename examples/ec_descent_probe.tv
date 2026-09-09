@@ -1,0 +1,1231 @@
+// SPDX-License-Identifier: Apache-2.0
+import "ec_miller_core.tv";
+
+extern "C" fn puts(s: *u8) -> i32;
+
+struct GaussianBasis { ux: i32, uy: i32, vx: i32, vy: i32, }
+
+// Reduce <(p,0),(re/im,1)>; nonzero vectors reduce to rational multiples of z.
+// The stop test includes half-integer ties, so each reduction decreases norm.
+fn lattice_basis(z: Fp2, p: i32, counts: *i32) -> GaussianBasis {
+    if z.im == 0 { return GaussianBasis { ux: 1, uy: 0, vx: 0, vy: p }; }
+    counts[3] = counts[3] + 1;
+    var ux: i32 = p;
+    var uy: i32 = 0;
+    var vx: i32 = mod_pos(z.re * modpow(z.im, p - 2, p), p);
+    var vy: i32 = 1;
+    while 1 == 1 {
+        if vx * vx + vy * vy < ux * ux + uy * uy {
+            let x: i32 = ux; let y: i32 = uy;
+            ux = vx; uy = vy; vx = x; vy = y;
+        }
+        let norm: i32 = ux * ux + uy * uy;
+        let dot: i32 = ux * vx + uy * vy;
+        var magnitude: i32 = dot;
+        if magnitude < 0 { magnitude = 0 - magnitude; }
+        if 2 * magnitude <= norm {
+            return GaussianBasis { ux: ux, uy: uy, vx: vx, vy: vy };
+        }
+        var quotient: i32 = (2 * magnitude + norm) / (2 * norm);
+        if dot < 0 { quotient = 0 - quotient; }
+        vx = vx - quotient * ux; vy = vy - quotient * uy;
+        counts[4] = counts[4] + 1;
+    }
+    return GaussianBasis { ux: 0, uy: 0, vx: 0, vy: 0 };
+}
+
+fn lattice_lift(z: Fp2, p: i32, sample: i32, counts: *i32) -> Fp2 {
+    if z.re == 0 && z.im == 0 { return Fp2 { re: 0 - 1, im: 0 - 1 }; }
+    if z.im == 0 { return Fp2 { re: 1, im: 0 }; }
+    let basis: GaussianBasis = lattice_basis(z, p, counts);
+    var x: i32 = basis.ux;
+    var y: i32 = basis.uy;
+    if sample == 2 { x = basis.vx; y = basis.vy; }
+    if sample == 3 { x = basis.ux + basis.vx; y = basis.uy + basis.vy; }
+    if sample == 4 { x = basis.ux - basis.vx; y = basis.uy - basis.vy; }
+    x = mod_pos(x, p); y = mod_pos(y, p);
+    if x == 0 && y == 0 { return Fp2 { re: 0 - 1, im: 0 - 1 }; }
+    return Fp2 { re: x, im: y };
+}
+
+fn shortest_lift(z: Fp2, p: i32, counts: *i32) -> Fp2 {
+    return lattice_lift(z, p, 1, counts);
+}
+
+// Remove rational and ramified factors, then divide by 2+i, 3+2i and conjugates.
+// Return the unfactored remainder, with signed base valuations in v[0..1].
+fn gaussian_remainder(x: i32, y: i32, v: *i32) -> Fp2 {
+    v[0] = 0; v[1] = 0;
+    var a: i32 = x;
+    var b: i32 = y;
+    var h: i32 = a;
+    var t: i32 = b;
+    if h < 0 { h = 0 - h; }
+    if t < 0 { t = 0 - t; }
+    while t != 0 { let rem: i32 = h % t; h = t; t = rem; }
+    if h == 0 { return Fp2 { re: 0, im: 0 }; }
+    a = a / h; b = b / h;
+    while (a + b) % 2 == 0 {
+        let next: i32 = (a + b) / 2;
+        b = (b - a) / 2; a = next;
+    }
+    var j: i32 = 0;
+    while j < 2 {
+        let u: i32 = j + 2;
+        let w: i32 = j + 1;
+        let norm: i32 = u * u + w * w;
+        var sign: i32 = 1;
+        while sign >= 0 - 1 {
+            var dividing: i32 = 1;
+            while dividing == 1 {
+                let re: i32 = a * u + b * w * sign;
+                let im: i32 = b * u - a * w * sign;
+                if re % norm != 0 || im % norm != 0 { dividing = 0; }
+                else { a = re / norm; b = im / norm; v[j] = v[j] + sign; }
+            }
+            sign = sign - 2;
+        }
+        j = j + 1;
+    }
+    return Fp2 { re: a, im: b };
+}
+
+fn gaussian_raw(x: i32, y: i32, v: *i32) -> i32 {
+    let rest: Fp2 = gaussian_remainder(x, y, v);
+    if rest.re * rest.re + rest.im * rest.im == 1 { return 1; }
+    return 0;
+}
+
+// Return 1 for full smoothness, a residual prime norm <=97, or 0 on rejection.
+// v[2] orients the residual; v[3..4] give its canonical u+vi with u>v>0.
+fn gaussian_partial(x: i32, y: i32, v: *i32) -> i32 {
+    let rest: Fp2 = gaussian_remainder(x, y, v);
+    v[2] = 0; v[3] = 0; v[4] = 0;
+    let norm: i32 = rest.re * rest.re + rest.im * rest.im;
+    if norm == 1 { return 1; }
+    if norm < 17 || norm > 97 || norm % 4 != 1 || is_prime(norm) == 0 { return 0; }
+    var a: i32 = rest.re;
+    var b: i32 = rest.im;
+    var orientation: i32 = 1;
+    if a * b < 0 { orientation = 0 - 1; }
+    if a < 0 { a = 0 - a; }
+    if b < 0 { b = 0 - b; }
+    if a < b {
+        let saved: i32 = a; a = b; b = saved;
+        orientation = 0 - orientation;
+    }
+    v[2] = orientation; v[3] = a; v[4] = b;
+    return norm;
+}
+
+fn raw_candidate(basis: GaussianBasis, a: i32, b: i32, p: i32) -> Fp2 {
+    var h: i32 = a;
+    if h < 0 { h = 0 - h; }
+    var t: i32 = b;
+    while t != 0 { let rem: i32 = h % t; h = t; t = rem; }
+    if h != 1 || b < 0 || (b == 0 && a != 1) { return Fp2 { re: 0, im: 0 }; }
+    let x: i32 = a * basis.ux + b * basis.vx;
+    let y: i32 = a * basis.uy + b * basis.vy;
+    if mod_pos(x, p) == 0 && mod_pos(y, p) == 0 { return Fp2 { re: 0, im: 0 }; }
+    return Fp2 { re: x, im: y };
+}
+
+fn gaussian_lift(z: Fp2, p: i32, v: *i32) -> i32 {
+    v[0] = 0; v[1] = 0;
+    if z.re < 0 || z.re >= p || z.im < 0 || z.im >= p { return 0; }
+    var a: i32 = z.re;
+    var b: i32 = z.im;
+    if a > p / 2 { a = a - p; }
+    if b > p / 2 { b = b - p; }
+    return gaussian_raw(a, b, v);
+}
+
+// Rows are stored at their pivot column, with a third, augmented coordinate.
+// Return the first missing pivot, or -1 when the row reduces to zero.
+fn descent_reduce(row: *i32, rows: *i32, present: *i32, r: i32) -> i32 {
+    var c: i32 = 0;
+    while c < 2 {
+        row[c] = mod_pos(row[c], r);
+        if row[c] != 0 {
+            if present[c] == 0 { return c; }
+            let factor: i32 = row[c];
+            var j: i32 = c;
+            while j < 3 {
+                row[j] = mod_pos(row[j] - factor * rows[3 * c + j], r);
+                j = j + 1;
+            }
+        }
+        c = c + 1;
+    }
+    row[2] = mod_pos(row[2], r);
+    return 0 - 1;
+}
+
+fn descent_stride(r: i32) -> i32 {
+    let half: i32 = (r - 1) / 2;
+    var s: i32 = 2;
+    while s < half {
+        var a: i32 = half;
+        var b: i32 = s;
+        while b != 0 { let rem: i32 = a % b; a = b; b = rem; }
+        if a == 1 { return s; }
+        s = s + 1;
+    }
+    return s;
+}
+
+// Mode 4 visits the four kernel classes modulo Fp*, generated by 1+i.
+// Its square is 2i and its fourth power is -4, so rho kills every class.
+fn descent_lift(value: Fp2, p: i32, mode: i32, sample: i32, counts: *i32) -> Fp2 {
+    if mode == 0 { return shortest_lift(value, p, counts); }
+    if mode == 5 { return lattice_lift(value, p, sample, counts); }
+    if mode == 4 {
+        let kernel: Fp2 = fp2_pow(Fp2 { re: 1, im: 1 }, sample - 1, p, p - 1);
+        return shortest_lift(fp2_mul(value, kernel, p, p - 1), p, counts);
+    }
+    return fp2_mul(value, Fp2 { re: sample, im: 0 }, p, p - 1);
+}
+
+// Unknowns are logs of rho(2+i), rho(3+2i), where rho(z)=(z^e)^(e^-1 mod r).
+// With e=4(p-1), rho fixes mu_r and kills nonzero rational rescalings.
+fn descent_collect(root: Fp2, p: i32, r: i32, budget: i32, lifts: i32,
+                   rows: *i32, present: *i32, counts: *i32) -> i32 {
+    var i: i32 = 0;
+    while i < 6 { rows[i] = 0; i = i + 1; }
+    present[0] = 0; present[1] = 0;
+    counts[0] = 0; counts[1] = 0; counts[2] = 0;
+    counts[3] = 0; counts[4] = 0;
+    var lift_count: i32 = lifts;
+    if lifts == 0 { lift_count = 1; }
+    if lifts == 5 { lift_count = 4; }
+    let row: *i32 = alloc(3);
+    let stride: i32 = descent_stride(r);
+    i = 0;
+    while i < budget {
+        let k: i32 = 1 + (stride * i) % ((r - 1) / 2);
+        let value: Fp2 = fp2_pow(root, k, p, p - 1);
+        var scale: i32 = 1;
+        while scale <= lift_count {
+            counts[0] = counts[0] + 1;
+            let lifted: Fp2 = descent_lift(value, p, lifts, scale, counts);
+            if gaussian_lift(lifted, p, row) == 1 {
+                counts[1] = counts[1] + 1;
+                row[2] = k;
+                let pivot: i32 = descent_reduce(row, rows, present, r);
+                if pivot < 0 {
+                    if row[2] != 0 { free(row); return 0; }
+                } else {
+                    let inv: i32 = modpow(row[pivot], r - 2, r);
+                    var j: i32 = 0;
+                    while j < 3 { rows[3 * pivot + j] = mod_pos(row[j] * inv, r); j = j + 1; }
+                    present[pivot] = 1; counts[2] = counts[2] + 1;
+                }
+            }
+            scale = scale + 1;
+        }
+        i = i + 1;
+    }
+    free(row);
+    return 1;
+}
+
+// A target row must lie in the collected row space; free logs are never guessed.
+// Return -1 on budget exhaustion and -2 on invalid input or failed verification.
+fn descent_log(target: Fp2, root: Fp2, p: i32, r: i32, budget: i32, lifts: i32,
+               rows: *i32, present: *i32, counts: *i32) -> i32 {
+    counts[0] = 0; counts[1] = 0; counts[2] = 0;
+    counts[3] = 0; counts[4] = 0;
+    var lift_count: i32 = lifts;
+    if lifts == 0 { lift_count = 1; }
+    if lifts == 5 { lift_count = 4; }
+    let one: Fp2 = Fp2 { re: 1, im: 0 };
+    if p < 43 || p > 701 || r <= 9 || p + 1 != 4 * r
+        || is_prime(p) == 0 || is_prime(r) == 0 || budget < 0 || budget > 8
+        || lifts < 0 || lifts > 5 || lifts == 2 { return 0 - 2; }
+    if target.re < 0 || target.re >= p || target.im < 0 || target.im >= p
+        || root.re < 0 || root.re >= p || root.im < 0 || root.im >= p { return 0 - 2; }
+    if fp2_equal(root, one) == 1 || fp2_equal(fp2_pow(root, r, p, p - 1), one) == 0
+        || fp2_equal(fp2_pow(target, r, p, p - 1), one) == 0 { return 0 - 2; }
+    let row: *i32 = alloc(3);
+    let stride: i32 = descent_stride(r);
+    var i: i32 = 0;
+    while i < budget {
+        var shift: i32 = 0;
+        if i > 0 { shift = 1 + (stride * (i - 1)) % ((r - 1) / 2); }
+        let value: Fp2 = fp2_mul(target, fp2_pow(root, shift, p, p - 1), p, p - 1);
+        var scale: i32 = 1;
+        while scale <= lift_count {
+            counts[0] = counts[0] + 1;
+            let lifted: Fp2 = descent_lift(value, p, lifts, scale, counts);
+            if gaussian_lift(lifted, p, row) == 1 {
+                counts[1] = counts[1] + 1;
+                row[2] = 0;
+                if descent_reduce(row, rows, present, r) < 0 {
+                    let result: i32 = mod_pos(0 - row[2] - shift, r);
+                    free(row);
+                    if fp2_equal(fp2_pow(root, result, p, p - 1), target) == 0 { return 0 - 2; }
+                    if result != mod_pos(0 - shift, r) { counts[2] = 1; }
+                    return result;
+                }
+            }
+            scale = scale + 1;
+        }
+        i = i + 1;
+    }
+    free(row);
+    return 0 - 1;
+}
+
+fn descent_case(p: i32, r: i32, lifts: i32, anchor: i32, compact: i32) -> i32 {
+    let base: ECPoint = tate_generator(p);
+    let g: ECPoint = miller_mul(base, anchor, p, 1);
+    // Fix the second argument so changing G changes the character root linearly.
+    let q: ECExtPoint = ECExtPoint { xr: mod_pos(0 - base.x, p), xi: 0, yr: 0, yi: base.y };
+    let stats: *i32 = alloc(5);
+    let root: Fp2 = reduced_tate(g, q, p, r, stats);
+    let rows: *i32 = alloc(6);
+    let present: *i32 = alloc(2);
+    var budget: i32 = (r - 1) / 4;
+    if budget > 8 { budget = 8; }
+    var failures: i32 = 0;
+    let base_root: Fp2 = reduced_tate(base, q, p, r, stats);
+    if fp2_equal(root, fp2_pow(base_root, anchor, p, p - 1)) != 1 { failures = failures + 1; }
+    if descent_collect(root, p, r, budget, lifts, rows, present, stats) == 0 { failures = failures + 1; }
+    let collected: i32 = stats[0];
+    let relations: i32 = stats[1];
+    let rank: i32 = stats[2];
+    let collector_inversions: i32 = stats[3];
+    let collector_reductions: i32 = stats[4];
+    if compact == 0 {
+        puts("Descent: p, r, exponent budget, lift mode (0=shortest, 4=kernel, 5=neighbors), collected attempts, smooth relations, rank");
+        print(p); print(r); print(budget); print(lifts); print(stats[0]); print(stats[1]); print(stats[2]);
+        puts("collector lattice inversions, reductions"); print(stats[3]); print(stats[4]);
+    }
+    var solved: i32 = 0;
+    var refused: i32 = 0;
+    var attempts: i32 = 0;
+    var smooth: i32 = 0;
+    var labels: i32 = 0;
+    var nontrivial: i32 = 0;
+    var beyond_shifts: i32 = 0;
+    var identity_only: i32 = 0;
+    var inversions: i32 = 0;
+    var reductions: i32 = 0;
+    let empty: *i32 = alloc(2);
+    empty[0] = 0; empty[1] = 0;
+    var scalar: i32 = 0;
+    // Exhaustive scalars belong only to the verifier, never to descent_log.
+    while scalar < r {
+        let point: ECPoint = miller_mul(g, scalar, p, 1);
+        let target: Fp2 = reduced_tate(point, q, p, r, stats);
+        let result: i32 = descent_log(target, root, p, r, budget, lifts, rows, present, stats);
+        attempts = attempts + stats[0]; smooth = smooth + stats[1];
+        nontrivial = nontrivial + stats[2];
+        inversions = inversions + stats[3]; reductions = reductions + stats[4];
+        if result == scalar {
+            solved = solved + 1;
+            if result % 4 == scalar % 4 && result % 9 == scalar % 9 { labels = labels + 2; }
+        } else {
+            if result == 0 - 1 {
+                refused = refused + 1;
+                if compact == 0 && (lifts == 0 || lifts >= 4) { puts("exhausted scalar (verifier only)"); print(scalar); }
+            }
+            else { failures = failures + 1; }
+        }
+        let control: i32 = descent_log(target, root, p, r, budget, lifts, rows, empty, stats);
+        if control == scalar { identity_only = identity_only + 1; }
+        else {
+            if control != 0 - 1 { failures = failures + 1; }
+            if result == scalar { beyond_shifts = beyond_shifts + 1; }
+        }
+        scalar = scalar + 1;
+    }
+    if compact == 0 {
+        puts("verification: targets, recovered, exhausted, target lift attempts, smooth lifts, nonidentity descents, correct labels");
+        print(r); print(solved); print(refused); print(attempts); print(smooth); print(nontrivial); print(labels);
+        puts("identity-only control recoveries, recoveries outside that control");
+        print(identity_only); print(beyond_shifts);
+        puts("target lattice inversions, reductions"); print(inversions); print(reductions);
+    } else {
+        print(p); print(r); print(anchor); print(lifts); print(budget);
+        print(collected); print(relations); print(rank); print(solved); print(refused);
+        print(identity_only); print(beyond_shifts); print(attempts);
+        print(collector_inversions); print(collector_reductions); print(inversions); print(reductions);
+    }
+    if identity_only != budget || beyond_shifts != solved - budget { failures = failures + 1; }
+    if solved == 0 || solved + refused != r || labels != 2 * solved { failures = failures + 1; }
+    if descent_log(root, root, p, r, 0, lifts, rows, present, stats) != 0 - 1 { failures = failures + 1; }
+    if descent_log(Fp2 { re: 0, im: 0 }, root, p, r, budget, lifts, rows, present, stats) != 0 - 2 { failures = failures + 1; }
+    if descent_log(root, Fp2 { re: 1, im: 0 }, p, r, budget, lifts, rows, present, stats) != 0 - 2 { failures = failures + 1; }
+    free(empty); free(rows); free(present); free(stats);
+    return failures;
+}
+
+fn gaussian_controls(p: i32, r: i32) -> i32 {
+    let row: *i32 = alloc(3);
+    let neighbor_row: *i32 = alloc(3);
+    let stats: *i32 = alloc(5);
+    stats[3] = 0; stats[4] = 0;
+    let exponent: i32 = 4 * (p - 1);
+    let b0: Fp2 = fp2_pow(Fp2 { re: 2, im: 1 }, exponent, p, p - 1);
+    let b1: Fp2 = fp2_pow(Fp2 { re: 3, im: 2 }, exponent, p, p - 1);
+    var failures: i32 = 0;
+    var accepted: i32 = 0;
+    if lattice_lift(Fp2 { re: 0, im: 1 }, p, 2, stats).re != 0 - 1 { failures = failures + 1; }
+    var sample: i32 = 1;
+    while sample <= 4 {
+        let kernel: Fp2 = fp2_pow(Fp2 { re: 1, im: 1 }, sample - 1, p, p - 1);
+        if fp2_equal(fp2_pow(kernel, exponent, p, p - 1), Fp2 { re: 1, im: 0 }) != 1 {
+            failures = failures + 1;
+        }
+        sample = sample + 1;
+    }
+    var re: i32 = 0;
+    while re < p {
+        var im: i32 = 0;
+        while im < p {
+            let z: Fp2 = Fp2 { re: re, im: im };
+            let smooth: i32 = gaussian_lift(z, p, row);
+            var a: i32 = re;
+            var b: i32 = im;
+            if a > p / 2 { a = p - a; }
+            if b > p / 2 { b = p - b; }
+            var h: i32 = a;
+            var t: i32 = b;
+            while t != 0 { let rem: i32 = h % t; h = t; t = rem; }
+            var expected: i32 = 0;
+            if h != 0 {
+                var norm: i32 = (a * a + b * b) / h / h;
+                while norm % 2 == 0 { norm = norm / 2; }
+                while norm % 5 == 0 { norm = norm / 5; }
+                while norm % 13 == 0 { norm = norm / 13; }
+                if norm == 1 { expected = 1; }
+            }
+            if smooth != expected { failures = failures + 1; }
+            let short: Fp2 = shortest_lift(z, p, stats);
+            if re == 0 && im == 0 {
+                if short.re != 0 - 1 { failures = failures + 1; }
+            } else {
+                var x: i32 = short.re;
+                var y: i32 = short.im;
+                if x > p / 2 { x = x - p; }
+                if y > p / 2 { y = y - p; }
+                let norm: i32 = x * x + y * y;
+                if short.re < 0 || norm == 0 || (norm as i64) * (norm as i64) * 3 > (p as i64) * (p as i64) * 4
+                    || mod_pos(x * im - y * re, p) != 0 { failures = failures + 1; }
+                var choice: i32 = 2;
+                while choice <= 4 {
+                    let neighbor: Fp2 = lattice_lift(z, p, choice, stats);
+                    if neighbor.re >= 0 {
+                        if neighbor.re >= p || neighbor.im < 0 || neighbor.im >= p
+                            || (neighbor.re == 0 && neighbor.im == 0)
+                            || mod_pos(neighbor.re * im - neighbor.im * re, p) != 0 { failures = failures + 1; }
+                        if gaussian_lift(neighbor, p, neighbor_row) == 1 {
+                            let rhs: Fp2 = fp2_mul(fp2_pow(b0, mod_pos(neighbor_row[0], r), p, p - 1),
+                                                  fp2_pow(b1, mod_pos(neighbor_row[1], r), p, p - 1), p, p - 1);
+                            if fp2_equal(fp2_pow(z, exponent, p, p - 1), rhs) == 0 { failures = failures + 1; }
+                        }
+                    } else {
+                        if re != 0 || choice != 2 { failures = failures + 1; }
+                    }
+                    choice = choice + 1;
+                }
+            }
+            if smooth == 1 {
+                accepted = accepted + 1;
+                let rhs: Fp2 = fp2_mul(fp2_pow(b0, mod_pos(row[0], r), p, p - 1),
+                                      fp2_pow(b1, mod_pos(row[1], r), p, p - 1), p, p - 1);
+                if fp2_equal(fp2_pow(z, exponent, p, p - 1), rhs) == 0 { failures = failures + 1; }
+            }
+            im = im + 1;
+        }
+        re = re + 1;
+    }
+    puts("Gaussian and lattice controls: p, field pairs, accepted lifts, failures");
+    print(p); print(p * p); print(accepted); print(failures);
+    free(row); free(neighbor_row); free(stats);
+    return failures;
+}
+
+fn descent_controls() -> i32 {
+    let rows: *i32 = alloc(6);
+    let present: *i32 = alloc(2);
+    let row: *i32 = alloc(3);
+    let stats: *i32 = alloc(5);
+    var i: i32 = 0;
+    while i < 6 { rows[i] = 0; i = i + 1; }
+    present[0] = 0; present[1] = 1;
+    rows[4] = 1; rows[5] = 3;
+    var failures: i32 = 0;
+    if gaussian_raw(3, 4, row) != 1 || row[0] != 2 || row[1] != 0 { failures = failures + 1; }
+    if gaussian_raw(3, 0 - 4, row) != 1 || row[0] != 0 - 2 || row[1] != 0 { failures = failures + 1; }
+    if gaussian_raw(0 - 3, 0 - 4, row) != 1 || row[0] != 2 || row[1] != 0 { failures = failures + 1; }
+    if gaussian_raw(5, 12, row) != 1 || row[0] != 0 || row[1] != 2 { failures = failures + 1; }
+    if gaussian_raw(21, 28, row) != 1 || row[0] != 2 || row[1] != 0 { failures = failures + 1; }
+    if gaussian_raw(0, 0, row) != 0 || gaussian_raw(1, 4, row) != 0 { failures = failures + 1; }
+    row[0] = 1; row[1] = 0; row[2] = 0;
+    if descent_reduce(row, rows, present, 11) != 0 { failures = failures + 1; }
+    row[0] = 0; row[1] = 4; row[2] = 0;
+    if descent_reduce(row, rows, present, 11) != 0 - 1 || row[2] != 10 { failures = failures + 1; }
+    row[0] = 0; row[1] = 2; row[2] = 7;
+    if descent_reduce(row, rows, present, 11) != 0 - 1 || row[2] != 1 { failures = failures + 1; }
+    row[0] = 2; row[1] = 4; row[2] = 10;
+    if descent_reduce(row, rows, present, 11) != 0 { failures = failures + 1; }
+    let inv: i32 = modpow(row[0], 9, 11);
+    i = 0;
+    while i < 3 { rows[i] = mod_pos(row[i] * inv, 11); i = i + 1; }
+    present[0] = 1;
+    row[0] = 0 - 8; row[1] = 0 - 6; row[2] = 0;
+    if descent_reduce(row, rows, present, 11) != 0 - 1 || row[2] != 10 { failures = failures + 1; }
+    let g: ECPoint = tate_generator(43);
+    let q: ECExtPoint = ECExtPoint { xr: mod_pos(0 - g.x, 43), xi: 0, yr: 0, yi: g.y };
+    let root: Fp2 = reduced_tate(g, q, 43, 11, stats);
+    if descent_collect(root, 43, 11, 2, 1, rows, present, stats) != 1 { failures = failures + 1; }
+    // The k=1 or k=3 relation must recover its own nonidentity point at shift zero.
+    var witnesses: i32 = 0;
+    i = 1;
+    while i <= 3 {
+        let target: Fp2 = fp2_pow(root, i, 43, 42);
+        if gaussian_lift(target, 43, row) == 1 {
+            if descent_log(target, root, 43, 11, 1, 1, rows, present, stats) != i { failures = failures + 1; }
+            witnesses = witnesses + 1;
+            let saved0: i32 = rows[2];
+            let saved1: i32 = rows[5];
+            rows[2] = 0; rows[5] = 0;
+            if descent_log(target, root, 43, 11, 1, 1, rows, present, stats) != 0 - 2 { failures = failures + 1; }
+            rows[2] = saved0; rows[5] = saved1;
+        }
+        i = i + 2;
+    }
+    if witnesses != 1 { failures = failures + 1; }
+    puts("row-space and corrupted-relation control failures"); print(failures);
+    free(rows); free(present); free(row); free(stats);
+    return failures;
+}
+
+// Primitive coefficient pairs give primitive raw vectors unless zero modulo p.
+// Mark norm factors along five linear zero sets: one over 2, two over 5 and 13.
+fn sieve_log(target: Fp2, root: Fp2, p: i32, r: i32, budget: i32, bound: i32,
+             sieve: i32, rows: *i32, present: *i32, counts: *i32) -> i32 {
+    var j: i32 = 0;
+    while j < 9 { counts[j] = 0; j = j + 1; }
+    if bound < 1 || bound > 8 || budget < 0 || budget > 8 || sieve < 0 || sieve > 2
+        || p < 43 || p > 701 || p + 1 != 4 * r || is_prime(p) == 0 || is_prime(r) == 0
+        || present[0] != 1 || present[1] != 1 { return 0 - 2; }
+    if target.re < 0 || target.re >= p || target.im < 0 || target.im >= p
+        || root.re < 0 || root.re >= p || root.im < 0 || root.im >= p { return 0 - 2; }
+    let one: Fp2 = Fp2 { re: 1, im: 0 };
+    if fp2_equal(root, one) == 1 || fp2_equal(fp2_pow(root, r, p, p - 1), one) == 0
+        || fp2_equal(fp2_pow(target, r, p, p - 1), one) == 0 { return 0 - 2; }
+    let remaining: *i32 = alloc(2 * bound + 1);
+    let primes: *i32 = alloc(5);
+    let inverse: *i32 = alloc(5);
+    let beta: *i32 = alloc(5);
+    let row: *i32 = alloc(3);
+    var result: i32 = 0 - 1;
+    var finished: i32 = 0;
+    var step: i32 = 0;
+    while step < budget && finished == 0 {
+        var shift: i32 = 0;
+        if step > 0 { shift = 1 + (descent_stride(r) * (step - 1)) % ((r - 1) / 2); }
+        let value: Fp2 = fp2_mul(target, fp2_pow(root, shift, p, p - 1), p, p - 1);
+        let basis: GaussianBasis = lattice_basis(value, p, counts);
+        counts[8] = counts[8] + 1;
+        let aa: i32 = basis.ux * basis.ux + basis.uy * basis.uy;
+        let dd: i32 = basis.ux * basis.vx + basis.uy * basis.vy;
+        let cc: i32 = basis.vx * basis.vx + basis.vy * basis.vy;
+        if sieve != 0 {
+            j = 0;
+            while j < 5 {
+                var prime: i32 = 2;
+                var root_i: i32 = 1;
+                if j == 1 { prime = 5; root_i = 2; }
+                if j == 2 { prime = 5; root_i = 0 - 2; }
+                if j == 3 { prime = 13; root_i = 5; }
+                if j == 4 { prime = 13; root_i = 0 - 5; }
+                primes[j] = prime;
+                let alpha: i32 = mod_pos(basis.ux + root_i * basis.uy, prime);
+                beta[j] = mod_pos(basis.vx + root_i * basis.vy, prime);
+                inverse[j] = 0;
+                if alpha != 0 {
+                    inverse[j] = 1;
+                    if prime != 2 {
+                        inverse[j] = modpow(alpha, prime - 2, prime);
+                        counts[7] = counts[7] + 1;
+                    }
+                }
+                j = j + 1;
+            }
+        }
+        var b: i32 = 0;
+        while b <= bound && finished == 0 {
+            var a: i32 = 0 - bound;
+            while a <= bound {
+                remaining[a + bound] = 0;
+                var h: i32 = a;
+                if h < 0 { h = 0 - h; }
+                var t: i32 = b;
+                while t != 0 { let rem: i32 = h % t; h = t; t = rem; }
+                if h == 1 && (b > 0 || a == 1) {
+                    let x: i32 = a * basis.ux + b * basis.vx;
+                    let y: i32 = a * basis.uy + b * basis.vy;
+                    if mod_pos(x, p) != 0 || mod_pos(y, p) != 0 {
+                        remaining[a + bound] = 1;
+                        if sieve != 0 {
+                            remaining[a + bound] = aa * a * a + 2 * dd * a * b + cc * b * b;
+                            counts[2] = counts[2] + 1;
+                            if sieve == 2 {
+                                var hx: i32 = x;
+                                var hy: i32 = y;
+                                if hx < 0 { hx = 0 - hx; }
+                                if hy < 0 { hy = 0 - hy; }
+                                while hy != 0 { let rem: i32 = hx % hy; hx = hy; hy = rem; }
+                                if hx != 1 || remaining[a + bound] != x * x + y * y {
+                                    result = 0 - 2; finished = 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                a = a + 1;
+            }
+            if sieve != 0 {
+                j = 0;
+                while j < 5 {
+                    let prime: i32 = primes[j];
+                    var stride: i32 = prime;
+                    var first: i32 = bound + 1;
+                    if inverse[j] != 0 {
+                        let residue: i32 = mod_pos(0 - beta[j] * b * inverse[j], prime);
+                        first = 0 - bound + mod_pos(residue + bound, prime);
+                    } else {
+                        if mod_pos(beta[j] * b, prime) == 0 { first = 0 - bound; stride = 1; }
+                    }
+                    a = first;
+                    while a <= bound {
+                        let index: i32 = a + bound;
+                        if remaining[index] > 0 {
+                            counts[5] = counts[5] + 1;
+                            while remaining[index] % prime == 0 {
+                                remaining[index] = remaining[index] / prime;
+                                counts[6] = counts[6] + 1;
+                            }
+                        }
+                        a = a + stride;
+                    }
+                    j = j + 1;
+                }
+            }
+            a = 0 - bound;
+            while a <= bound && finished == 0 {
+                if remaining[a + bound] > 0 {
+                    counts[0] = counts[0] + 1;
+                    // Mode 2 audits every mask entry, including positions past first success.
+                    if sieve == 2 {
+                        let x: i32 = a * basis.ux + b * basis.vx;
+                        let y: i32 = a * basis.uy + b * basis.vy;
+                        var expected: i32 = 0;
+                        if remaining[a + bound] == 1 { expected = 1; }
+                        if gaussian_raw(x, y, row) != expected { result = 0 - 2; finished = 1; }
+                    }
+                    if finished == 0 && (sieve == 0 || remaining[a + bound] == 1) {
+                        counts[1] = counts[1] + 1;
+                        let x: i32 = a * basis.ux + b * basis.vx;
+                        let y: i32 = a * basis.uy + b * basis.vy;
+                        let accepted: i32 = gaussian_raw(x, y, row);
+                        if accepted == 1 {
+                            row[2] = 0;
+                            let pivot: i32 = descent_reduce(row, rows, present, r);
+                            result = mod_pos(0 - row[2] - shift, r);
+                            if pivot >= 0 || fp2_equal(fp2_pow(root, result, p, p - 1), target) == 0 { result = 0 - 2; }
+                            if sieve != 2 || result < 0 { finished = 1; }
+                        } else {
+                            if sieve != 0 { result = 0 - 2; finished = 1; }
+                        }
+                    }
+                }
+                a = a + 1;
+            }
+            b = b + 1;
+        }
+        step = step + 1;
+    }
+    free(remaining); free(primes); free(inverse); free(beta); free(row);
+    return result;
+}
+
+// Store one public equation K=w.lambda+delta*L for each residual prime norm.
+// Later equations eliminate L; their rank is measured separately from the pool.
+fn large_prime_collect(root: Fp2, p: i32, r: i32, budget: i32,
+                       db: *i32, pooled: *i32, present: *i32) -> i32 {
+    let v: *i32 = alloc(5);
+    let check: *i32 = alloc(3);
+    let collision: *i32 = alloc(6);
+    let pivots: *i32 = alloc(2);
+    let work: *i32 = alloc(5);
+    var i: i32 = 0;
+    while i < 392 { db[i] = 0; i = i + 1; }
+    i = 0;
+    while i < 6 { collision[i] = 0; i = i + 1; }
+    pivots[0] = 0; pivots[1] = 0; work[3] = 0; work[4] = 0;
+    var candidates: i32 = 0;
+    var full: i32 = 0;
+    var partial: i32 = 0;
+    var rejected: i32 = 0;
+    var keys: i32 = 0;
+    var same: i32 = 0;
+    var opposite: i32 = 0;
+    var duplicates: i32 = 0;
+    var nonzero: i32 = 0;
+    var rank: i32 = 0;
+    var failures: i32 = 0;
+    let exponent: i32 = 4 * (p - 1);
+    let normalized: i32 = exponent * modpow(exponent % r, r - 2, r);
+    var choice: i32 = 0;
+    while choice < 4 {
+        var anchor: i32 = 1;
+        if choice == 1 { anchor = 2; }
+        if choice == 2 { anchor = 7; }
+        if choice == 3 { anchor = r - 1; }
+        var sample: i32 = 0;
+        while sample < budget {
+            let k: i32 = 1 + (descent_stride(r) * sample) % ((r - 1) / 2);
+            let label: i32 = mod_pos(anchor * k, r);
+            let value: Fp2 = fp2_pow(root, label, p, p - 1);
+            let basis: GaussianBasis = lattice_basis(value, p, work);
+            var b: i32 = 0;
+            while b <= 8 {
+                var a: i32 = 0 - 8;
+                while a <= 8 {
+                    let raw: Fp2 = raw_candidate(basis, a, b, p);
+                    if raw.re != 0 || raw.im != 0 {
+                        candidates = candidates + 1;
+                        let key: i32 = gaussian_partial(raw.re, raw.im, v);
+                        if key == 0 { rejected = rejected + 1; }
+                        if key == 1 {
+                            full = full + 1;
+                            check[0] = v[0]; check[1] = v[1]; check[2] = label;
+                            if descent_reduce(check, pooled, present, r) >= 0 || check[2] != 0 { failures = failures + 1; }
+                        }
+                        if key > 1 {
+                            partial = partial + 1;
+                            let index: i32 = 4 * key;
+                            if db[index + 3] == 0 {
+                                db[index] = v[0]; db[index + 1] = v[1]; db[index + 2] = label; db[index + 3] = v[2];
+                                keys = keys + 1;
+                                check[0] = v[0]; check[1] = v[1]; check[2] = 0;
+                                if descent_reduce(check, pooled, present, r) >= 0 { failures = failures + 1; }
+                                let learned: i32 = mod_pos(v[2] * (label + check[2]), r);
+                                let projected: Fp2 = fp2_pow(Fp2 { re: v[3], im: v[4] }, normalized, p, p - 1);
+                                if fp2_equal(fp2_pow(root, learned, p, p - 1), projected) == 0 { failures = failures + 1; }
+                                puts("Residual coordinate: p, norm, v0, v1, public exponent, orientation, learned log");
+                                print(p); print(key); print(v[0]); print(v[1]); print(label); print(v[2]); print(learned);
+                            } else {
+                                let sign: i32 = v[2] * db[index + 3];
+                                if sign == 1 { same = same + 1; } else { opposite = opposite + 1; }
+                                let c0: i32 = v[0] - sign * db[index];
+                                let c1: i32 = v[1] - sign * db[index + 1];
+                                let rhs: i32 = mod_pos(label - sign * db[index + 2], r);
+                                check[0] = c0; check[1] = c1; check[2] = rhs;
+                                if descent_reduce(check, pooled, present, r) >= 0 || check[2] != 0 { failures = failures + 1; }
+                                if mod_pos(c0, r) == 0 && mod_pos(c1, r) == 0 && rhs == 0 { duplicates = duplicates + 1; }
+                                else {
+                                    nonzero = nonzero + 1;
+                                    if nonzero == 1 {
+                                        puts("Collision witness: p, residual norm, v0, v1, known exponent difference");
+                                        print(p); print(key); print(c0); print(c1); print(rhs);
+                                        puts("Collision parents: stored v0, v1, K, orientation; new v0, v1, K, orientation");
+                                        print(db[index]); print(db[index + 1]); print(db[index + 2]); print(db[index + 3]);
+                                        print(v[0]); print(v[1]); print(label); print(v[2]);
+                                    }
+                                }
+                                check[0] = c0; check[1] = c1; check[2] = rhs;
+                                let pivot: i32 = descent_reduce(check, collision, pivots, r);
+                                if pivot < 0 {
+                                    if check[2] != 0 { failures = failures + 1; }
+                                } else {
+                                    let inv: i32 = modpow(check[pivot], r - 2, r);
+                                    var j: i32 = 0;
+                                    while j < 3 { collision[3 * pivot + j] = mod_pos(check[j] * inv, r); j = j + 1; }
+                                    pivots[pivot] = 1; rank = rank + 1;
+                                }
+                            }
+                        }
+                    }
+                    a = a + 1;
+                }
+                b = b + 1;
+            }
+            sample = sample + 1;
+        }
+        choice = choice + 1;
+    }
+    if candidates != full + partial + rejected || partial - keys != same + opposite
+        || same + opposite != duplicates + nonzero { failures = failures + 1; }
+    puts("One-prime setup: p, r, radius, norm cap, powers, candidates, full, partial, rejected, keys, same orientation, opposite orientation, duplicate collisions, nonzero collisions, collision-only rank, inversions, reductions, DB bytes");
+    print(p); print(r); print(8); print(97); print(4 * budget); print(candidates); print(full); print(partial);
+    print(rejected); print(keys); print(same); print(opposite); print(duplicates); print(nonzero); print(rank);
+    print(work[3]); print(work[4]); print(1568);
+    free(v); free(check); free(collision); free(pivots); free(work);
+    return failures;
+}
+
+// Audit the entire bounded stream, retaining the first verified result and cost.
+// The database is read-only here; target equations never become public records.
+fn large_prime_log(target: Fp2, root: Fp2, p: i32, r: i32, budget: i32, inv_anchor: i32,
+                   db: *i32, rows: *i32, present: *i32, counts: *i32) -> i32 {
+    var i: i32 = 0;
+    while i < 15 { counts[i] = 0; i = i + 1; }
+    counts[10] = 0 - 1;
+    let one: Fp2 = Fp2 { re: 1, im: 0 };
+    if p < 43 || p > 701 || p + 1 != 4 * r || is_prime(p) == 0 || is_prime(r) == 0
+        || budget < 0 || budget > 8 || inv_anchor < 1 || inv_anchor >= r
+        || present[0] != 1 || present[1] != 1 { return 0 - 2; }
+    if target.re < 0 || target.re >= p || target.im < 0 || target.im >= p
+        || root.re < 0 || root.re >= p || root.im < 0 || root.im >= p { return 0 - 2; }
+    if fp2_equal(root, one) == 1 || fp2_equal(fp2_pow(root, r, p, p - 1), one) == 0
+        || fp2_equal(fp2_pow(target, r, p, p - 1), one) == 0 { return 0 - 2; }
+    let v: *i32 = alloc(5);
+    let work: *i32 = alloc(5);
+    work[3] = 0; work[4] = 0;
+    var result: i32 = 0 - 1;
+    var failures: i32 = 0;
+    var step: i32 = 0;
+    while step < budget {
+        var shift: i32 = 0;
+        if step > 0 { shift = 1 + (descent_stride(r) * (step - 1)) % ((r - 1) / 2); }
+        let value: Fp2 = fp2_mul(target, fp2_pow(root, shift, p, p - 1), p, p - 1);
+        let basis: GaussianBasis = lattice_basis(value, p, work);
+        var b: i32 = 0;
+        while b <= 8 {
+            var a: i32 = 0 - 8;
+            while a <= 8 {
+                let raw: Fp2 = raw_candidate(basis, a, b, p);
+                if raw.re != 0 || raw.im != 0 {
+                    counts[0] = counts[0] + 1;
+                    let key: i32 = gaussian_partial(raw.re, raw.im, v);
+                    var usable: i32 = 0;
+                    var known: i32 = 0;
+                    if key == 0 { counts[5] = counts[5] + 1; }
+                    if key == 1 { counts[1] = counts[1] + 1; usable = 1; }
+                    if key > 1 {
+                        counts[2] = counts[2] + 1;
+                        let index: i32 = 4 * key;
+                        if db[index + 3] == 0 { counts[4] = counts[4] + 1; }
+                        else {
+                            counts[3] = counts[3] + 1; usable = 1;
+                            let sign: i32 = v[2] * db[index + 3];
+                            v[0] = v[0] - sign * db[index];
+                            v[1] = v[1] - sign * db[index + 1];
+                            known = mod_pos(sign * db[index + 2] * inv_anchor, r);
+                        }
+                    }
+                    if usable == 1 {
+                        v[2] = 0;
+                        let pivot: i32 = descent_reduce(v, rows, present, r);
+                        let candidate: i32 = mod_pos(0 - v[2] + known - shift, r);
+                        if pivot >= 0 || fp2_equal(fp2_pow(root, candidate, p, p - 1), target) == 0 { failures = failures + 1; }
+                        if key == 1 && counts[8] == 0 { counts[8] = counts[0]; counts[10] = candidate; }
+                        if result < 0 {
+                            result = candidate; counts[6] = counts[0]; counts[7] = 1; counts[9] = key;
+                            if key > 1 { counts[7] = 2; }
+                            counts[11] = work[3]; counts[12] = work[4];
+                        }
+                    }
+                }
+                a = a + 1;
+            }
+            b = b + 1;
+        }
+        step = step + 1;
+    }
+    if result < 0 { counts[6] = counts[0]; counts[11] = work[3]; counts[12] = work[4]; }
+    counts[13] = work[3]; counts[14] = work[4];
+    free(v); free(work);
+    if failures != 0 { return 0 - 2; }
+    return result;
+}
+
+// Public-anchor relations v.lambda_c=k become v.lambda=c*k in base coordinates.
+// Pooling changes preprocessing only; target shifts and lift choices stay fixed.
+fn descent_global_case(p: i32, r: i32) -> i32 {
+    let base: ECPoint = tate_generator(p);
+    let q: ECExtPoint = ECExtPoint { xr: mod_pos(0 - base.x, p), xi: 0, yr: 0, yi: base.y };
+    let stats: *i32 = alloc(5);
+    let root: Fp2 = reduced_tate(base, q, p, r, stats);
+    let rows: *i32 = alloc(6);
+    let present: *i32 = alloc(2);
+    let pooled: *i32 = alloc(6);
+    let pool_present: *i32 = alloc(2);
+    let converted: *i32 = alloc(6);
+    let row: *i32 = alloc(3);
+    let seen: *i32 = alloc(r);
+    let direct_stats: *i32 = alloc(9);
+    let sieve_stats: *i32 = alloc(9);
+    let totals: *i32 = alloc(9);
+    let residual_db: *i32 = alloc(392);
+    let frozen_db: *i32 = alloc(392);
+    let empty_db: *i32 = alloc(392);
+    let lp_stats: *i32 = alloc(15);
+    var i: i32 = 0;
+    while i < 6 { pooled[i] = 0; i = i + 1; }
+    pool_present[0] = 0; pool_present[1] = 0;
+    i = 0;
+    while i < r { seen[i] = 0; i = i + 1; }
+    var budget: i32 = (r - 1) / 4;
+    if budget > 8 { budget = 8; }
+    var failures: i32 = 0;
+    var rank: i32 = 0;
+    var attempts: i32 = 0;
+    var inversions: i32 = 0;
+    var reductions: i32 = 0;
+    var distinct: i32 = 0;
+    var choice: i32 = 0;
+    while choice < 4 {
+        var anchor: i32 = 1;
+        if choice == 1 { anchor = 2; }
+        if choice == 2 { anchor = 7; }
+        if choice == 3 { anchor = r - 1; }
+        let anchor_root: Fp2 = fp2_pow(root, anchor, p, p - 1);
+        if descent_collect(anchor_root, p, r, budget, 5, rows, present, stats) == 0 { failures = failures + 1; }
+        attempts = attempts + stats[0]; inversions = inversions + stats[3]; reductions = reductions + stats[4];
+        i = 0;
+        while i < budget {
+            let k: i32 = 1 + (descent_stride(r) * i) % ((r - 1) / 2);
+            let exponent: i32 = mod_pos(anchor * k, r);
+            if seen[exponent] == 0 { seen[exponent] = 1; distinct = distinct + 1; }
+            i = i + 1;
+        }
+        i = 0;
+        while i < 2 {
+            if present[i] == 1 {
+                row[0] = rows[3 * i]; row[1] = rows[3 * i + 1];
+                row[2] = mod_pos(anchor * rows[3 * i + 2], r);
+                let pivot: i32 = descent_reduce(row, pooled, pool_present, r);
+                if pivot < 0 {
+                    if row[2] != 0 { failures = failures + 1; }
+                } else {
+                    let inv: i32 = modpow(row[pivot], r - 2, r);
+                    var j: i32 = 0;
+                    while j < 3 { pooled[3 * pivot + j] = mod_pos(row[j] * inv, r); j = j + 1; }
+                    pool_present[pivot] = 1; rank = rank + 1;
+                }
+            }
+            i = i + 1;
+        }
+        choice = choice + 1;
+    }
+    puts("Pooled setup: p, r, scheduled powers, distinct powers, lift attempts, rank, lattice inversions, reductions");
+    print(p); print(r); print(4 * budget); print(distinct); print(attempts); print(rank); print(inversions); print(reductions);
+    failures = failures + large_prime_collect(root, p, r, budget, residual_db, pooled, pool_present);
+    i = 0;
+    while i < 392 { frozen_db[i] = residual_db[i]; empty_db[i] = residual_db[i]; i = i + 1; }
+    var witness_key: i32 = 17;
+    while witness_key <= 97 && residual_db[4 * witness_key + 3] == 0 { witness_key = witness_key + 1; }
+    if witness_key <= 97 {
+        let known: i32 = residual_db[4 * witness_key + 2];
+        empty_db[4 * witness_key + 2] = mod_pos(known + 1, r);
+        let witness: Fp2 = fp2_pow(root, known, p, p - 1);
+        if large_prime_log(witness, root, p, r, budget, 1, empty_db, pooled, pool_present, lp_stats) != 0 - 2 {
+            failures = failures + 1;
+        }
+    } else { failures = failures + 1; }
+    i = 0;
+    while i < 392 { empty_db[i] = 0; i = i + 1; }
+    choice = 0;
+    while choice < 4 {
+        var anchor: i32 = 1;
+        if choice == 1 { anchor = 2; }
+        if choice == 2 { anchor = 7; }
+        if choice == 3 { anchor = r - 1; }
+        let g: ECPoint = miller_mul(base, anchor, p, 1);
+        let anchor_root: Fp2 = fp2_pow(root, anchor, p, p - 1);
+        if descent_collect(anchor_root, p, r, budget, 5, rows, present, stats) == 0 { failures = failures + 1; }
+        let local_rank: i32 = stats[2];
+        let inv_anchor: i32 = modpow(anchor, r - 2, r);
+        i = 0;
+        while i < 6 { converted[i] = pooled[i]; i = i + 1; }
+        converted[2] = mod_pos(converted[2] * inv_anchor, r);
+        converted[5] = mod_pos(converted[5] * inv_anchor, r);
+        var baseline: i32 = 0;
+        var no_smooth: i32 = 0;
+        var missing_row: i32 = 0;
+        var recovered: i32 = 0;
+        var rescued: i32 = 0;
+        var target_attempts: i32 = 0;
+        var target_inversions: i32 = 0;
+        var target_reductions: i32 = 0;
+        var scalar: i32 = 0;
+        while scalar < r {
+            let target: Fp2 = reduced_tate(miller_mul(g, scalar, p, 1), q, p, r, stats);
+            let original: i32 = descent_log(target, anchor_root, p, r, budget, 5, rows, present, stats);
+            var has_smooth: i32 = 0;
+            if stats[1] > 0 { has_smooth = 1; }
+            if original == scalar { baseline = baseline + 1; }
+            else {
+                if original != 0 - 1 { failures = failures + 1; }
+                if has_smooth == 0 { no_smooth = no_smooth + 1; }
+                else { missing_row = missing_row + 1; }
+            }
+            let result: i32 = descent_log(target, anchor_root, p, r, budget, 5, converted, pool_present, stats);
+            target_attempts = target_attempts + stats[0];
+            target_inversions = target_inversions + stats[3]; target_reductions = target_reductions + stats[4];
+            if result == scalar {
+                recovered = recovered + 1;
+                if original < 0 { rescued = rescued + 1; }
+                if has_smooth == 0 { failures = failures + 1; }
+            } else {
+                if result != 0 - 1 || original >= 0 { failures = failures + 1; }
+                if rank == 2 && has_smooth == 1 { failures = failures + 1; }
+            }
+            scalar = scalar + 1;
+        }
+        if baseline + no_smooth + missing_row != r { failures = failures + 1; }
+        if rank == 2 && recovered != r - no_smooth { failures = failures + 1; }
+        puts("Coverage: anchor, baseline rank, recovered, no smooth candidate, smooth outside row space, pooled recovered, rescued, pooled target attempts, inversions, reductions");
+        print(anchor); print(local_rank); print(baseline); print(no_smooth); print(missing_row);
+        print(recovered); print(rescued); print(target_attempts); print(target_inversions); print(target_reductions);
+        if sieve_log(anchor_root, anchor_root, p, r, 0, 2, 1, converted, pool_present, sieve_stats) != 0 - 1
+            || sieve_log(anchor_root, anchor_root, p, r, budget, 9, 1, converted, pool_present, sieve_stats) != 0 - 2
+            || sieve_log(Fp2 { re: 0, im: 0 }, anchor_root, p, r, budget, 2, 1, converted, pool_present, sieve_stats) != 0 - 2 {
+            failures = failures + 1;
+        }
+        if p == 43 && choice == 0 {
+            pool_present[0] = 0;
+            if sieve_log(anchor_root, anchor_root, p, r, budget, 2, 1, converted, pool_present, sieve_stats) != 0 - 2 {
+                failures = failures + 1;
+            }
+            pool_present[0] = 1;
+            let saved0: i32 = converted[2];
+            let saved1: i32 = converted[5];
+            converted[2] = 0; converted[5] = 0;
+            if sieve_log(anchor_root, anchor_root, p, r, budget, 2, 1, converted, pool_present, sieve_stats) != 0 - 2 {
+                failures = failures + 1;
+            }
+            converted[2] = saved0; converted[5] = saved1;
+        }
+        // Reuse verifier flags to check target-by-target nesting of raw boxes.
+        i = 0;
+        while i < r { seen[i] = 0; i = i + 1; }
+        var bound: i32 = 2;
+        var previous: i32 = 0;
+        while bound <= 8 {
+            i = 0;
+            while i < 9 { totals[i] = 0; i = i + 1; }
+            var raw_recovered: i32 = 0;
+            var raw_rescued: i32 = 0;
+            var lost: i32 = 0;
+            var direct_factors: i32 = 0;
+            scalar = 0;
+            while scalar < r {
+                let target: Fp2 = reduced_tate(miller_mul(g, scalar, p, 1), q, p, r, stats);
+                let old: i32 = descent_log(target, anchor_root, p, r, budget, 5, converted, pool_present, stats);
+                let direct: i32 = sieve_log(target, anchor_root, p, r, budget, bound, 0, converted, pool_present, direct_stats);
+                let sieved: i32 = sieve_log(target, anchor_root, p, r, budget, bound, 1, converted, pool_present, sieve_stats);
+                if direct != sieved || direct_stats[0] != sieve_stats[0] || direct_stats[3] != sieve_stats[3]
+                    || direct_stats[4] != sieve_stats[4] || direct_stats[8] != sieve_stats[8] { failures = failures + 1; }
+                if direct == scalar {
+                    seen[scalar] = 1;
+                    raw_recovered = raw_recovered + 1;
+                    if sieve_stats[1] != 1 { failures = failures + 1; }
+                    if old == 0 - 1 { raw_rescued = raw_rescued + 1; }
+                } else {
+                    if seen[scalar] != 0 { failures = failures + 1; }
+                    if direct != 0 - 1 || sieve_stats[1] != 0 { failures = failures + 1; }
+                    if old == scalar { lost = lost + 1; }
+                }
+                direct_factors = direct_factors + direct_stats[1];
+                i = 0;
+                while i < 9 { totals[i] = totals[i] + sieve_stats[i]; i = i + 1; }
+                if choice == 0 && (p <= 67 || scalar < 3) {
+                    let audited: i32 = sieve_log(target, anchor_root, p, r, budget, bound, 2, converted, pool_present, sieve_stats);
+                    if audited != direct { failures = failures + 1; }
+                }
+                scalar = scalar + 1;
+            }
+            if raw_recovered < previous || raw_recovered != recovered + raw_rescued - lost
+                || direct_factors != totals[0] || totals[2] < totals[0] { failures = failures + 1; }
+            previous = raw_recovered;
+            puts("Raw box: bound, recovered, exhausted, centered recovered, rescued, lost, direct factors, sieve factors, candidates, norm positions, marking visits, valuation divisions, lattice inversions, reductions, small-prime inversions, shifted bases");
+            print(bound); print(raw_recovered); print(r - raw_recovered); print(recovered); print(raw_rescued); print(lost);
+            print(direct_factors); print(totals[1]); print(totals[0]); print(totals[2]); print(totals[5]); print(totals[6]);
+            print(totals[3]); print(totals[4]); print(totals[7]); print(totals[8]);
+            bound = bound * 2;
+        }
+        var lp_recovered: i32 = 0;
+        var lp_rescued: i32 = 0;
+        var no_partial: i32 = 0;
+        var no_match: i32 = 0;
+        var first_full: i32 = 0;
+        var first_partial: i32 = 0;
+        var prefix_candidates: i32 = 0;
+        var prefix_inversions: i32 = 0;
+        var prefix_reductions: i32 = 0;
+        var audit_candidates: i32 = 0;
+        var full_candidates: i32 = 0;
+        var partial_candidates: i32 = 0;
+        var matched_candidates: i32 = 0;
+        var unmatched_candidates: i32 = 0;
+        var audit_inversions: i32 = 0;
+        var audit_reductions: i32 = 0;
+        var empty_recovered: i32 = 0;
+        var empty_unmatched: i32 = 0;
+        var empty_no_partial: i32 = 0;
+        scalar = 0;
+        while scalar < r {
+            let target: Fp2 = reduced_tate(miller_mul(g, scalar, p, 1), q, p, r, stats);
+            let result: i32 = large_prime_log(target, anchor_root, p, r, budget, inv_anchor,
+                                             residual_db, converted, pool_present, lp_stats);
+            if seen[scalar] == 1 && lp_stats[10] != scalar { failures = failures + 1; }
+            if seen[scalar] == 0 && lp_stats[10] != 0 - 1 { failures = failures + 1; }
+            if lp_stats[0] != lp_stats[1] + lp_stats[2] + lp_stats[5]
+                || lp_stats[2] != lp_stats[3] + lp_stats[4] { failures = failures + 1; }
+            if result == scalar {
+                lp_recovered = lp_recovered + 1;
+                if seen[scalar] == 0 { lp_rescued = lp_rescued + 1; }
+                if lp_stats[7] == 1 { first_full = first_full + 1; }
+                if lp_stats[7] == 2 { first_partial = first_partial + 1; }
+            } else {
+                if result != 0 - 1 || seen[scalar] != 0 || lp_stats[3] != 0 { failures = failures + 1; }
+                if lp_stats[2] == 0 { no_partial = no_partial + 1; }
+                else { no_match = no_match + 1; }
+            }
+            prefix_candidates = prefix_candidates + lp_stats[6];
+            prefix_inversions = prefix_inversions + lp_stats[11]; prefix_reductions = prefix_reductions + lp_stats[12];
+            audit_candidates = audit_candidates + lp_stats[0]; full_candidates = full_candidates + lp_stats[1];
+            partial_candidates = partial_candidates + lp_stats[2]; matched_candidates = matched_candidates + lp_stats[3];
+            unmatched_candidates = unmatched_candidates + lp_stats[4];
+            audit_inversions = audit_inversions + lp_stats[13]; audit_reductions = audit_reductions + lp_stats[14];
+            let control: i32 = large_prime_log(target, anchor_root, p, r, budget, inv_anchor,
+                                              empty_db, converted, pool_present, lp_stats);
+            if seen[scalar] == 1 {
+                if control != scalar { failures = failures + 1; }
+                empty_recovered = empty_recovered + 1;
+            } else {
+                if control != 0 - 1 { failures = failures + 1; }
+                if lp_stats[2] > 0 { empty_unmatched = empty_unmatched + 1; }
+                else { empty_no_partial = empty_no_partial + 1; }
+            }
+            if lp_stats[3] != 0 || lp_stats[2] != lp_stats[4] { failures = failures + 1; }
+            scalar = scalar + 1;
+        }
+        if lp_recovered != previous + lp_rescued || lp_recovered + no_partial + no_match != r
+            || first_full + first_partial != lp_recovered { failures = failures + 1; }
+        puts("One-prime targets: p, r, anchor, full-only, matched, rescued, no partial, no key, first full, first partial, prefix candidates/inv/red, audit candidates/full/partial/matched/unmatched/inv/red");
+        print(p); print(r); print(anchor); print(previous); print(lp_recovered); print(lp_rescued);
+        print(no_partial); print(no_match); print(first_full); print(first_partial);
+        print(prefix_candidates); print(prefix_inversions); print(prefix_reductions); print(audit_candidates);
+        print(full_candidates); print(partial_candidates); print(matched_candidates); print(unmatched_candidates);
+        print(audit_inversions); print(audit_reductions);
+        puts("Empty-DB control: recovered, partials without a key, no partials");
+        print(empty_recovered); print(empty_unmatched); print(empty_no_partial);
+        if empty_recovered != previous || empty_recovered + empty_unmatched + empty_no_partial != r { failures = failures + 1; }
+        if large_prime_log(anchor_root, anchor_root, p, r, 0, inv_anchor, residual_db, converted, pool_present, lp_stats) != 0 - 1
+            || large_prime_log(Fp2 { re: 0, im: 0 }, anchor_root, p, r, budget, inv_anchor,
+                               residual_db, converted, pool_present, lp_stats) != 0 - 2 { failures = failures + 1; }
+        choice = choice + 1;
+    }
+    i = 0;
+    while i < 392 { if frozen_db[i] != residual_db[i] { failures = failures + 1; } i = i + 1; }
+    free(stats); free(rows); free(present); free(pooled); free(pool_present); free(converted); free(row); free(seen);
+    free(direct_stats); free(sieve_stats); free(totals);
+    free(residual_db); free(frozen_db); free(empty_db); free(lp_stats);
+    return failures;
+}
+
+fn partial_controls() -> i32 {
+    let v: *i32 = alloc(5);
+    let rotated: *i32 = alloc(5);
+    let conjugate: *i32 = alloc(5);
+    var failures: i32 = 0;
+    if gaussian_partial(7, 6, v) != 17 || v[0] != 1 || v[1] != 0 || v[2] != 1 || v[3] != 4 || v[4] != 1 { failures = failures + 1; }
+    if gaussian_partial(28, 7, v) != 17 || v[0] != 0 || v[1] != 0 || v[2] != 1 { failures = failures + 1; }
+    if gaussian_partial(9, 4, v) != 97 || v[2] != 1 { failures = failures + 1; }
+    if gaussian_partial(15, 8, v) != 0 || gaussian_partial(18, 13, v) != 0
+        || gaussian_partial(10, 1, v) != 0 || gaussian_partial(0, 0, v) != 0 { failures = failures + 1; }
+    var partials: i32 = 0;
+    var x: i32 = 0 - 16;
+    while x <= 16 {
+        var y: i32 = 0 - 16;
+        while y <= 16 {
+            let key: i32 = gaussian_partial(x, y, v);
+            let unit_key: i32 = gaussian_partial(0 - y, x, rotated);
+            let conjugate_key: i32 = gaussian_partial(x, 0 - y, conjugate);
+            if key != unit_key || key != conjugate_key { failures = failures + 1; }
+            if key != 0 {
+                if v[0] != rotated[0] || v[1] != rotated[1] || v[2] != rotated[2]
+                    || v[0] != 0 - conjugate[0] || v[1] != 0 - conjugate[1] || v[2] != 0 - conjugate[2] {
+                    failures = failures + 1;
+                }
+            }
+            if key > 1 {
+                partials = partials + 1;
+                if v[3] <= v[4] || v[4] <= 0 || v[3] * v[3] + v[4] * v[4] != key
+                    || v[3] != rotated[3] || v[4] != rotated[4]
+                    || v[3] != conjugate[3] || v[4] != conjugate[4] { failures = failures + 1; }
+            }
+            y = y + 1;
+        }
+        x = x + 1;
+    }
+    puts("Partial-factor controls: integer pairs, accepted partials, failures");
+    print(1089); print(partials); print(failures);
+    free(v); free(rotated); free(conjugate);
+    return failures;
+}
+
+fn main() -> i32 {
+    var failures: i32 = descent_controls();
+    failures = failures + partial_controls();
+    var r: i32 = 11;
+    while r <= 71 {
+        let p: i32 = 4 * r - 1;
+        if is_prime(r) == 1 && is_prime(p) == 1 {
+            failures = failures + gaussian_controls(p, r);
+            failures = failures + descent_case(p, r, 1, 1, 0);
+            failures = failures + descent_case(p, r, 3, 1, 0);
+            failures = failures + descent_case(p, r, 0, 1, 0);
+            failures = failures + descent_case(p, r, 4, 1, 0);
+            failures = failures + descent_case(p, r, 5, 1, 0);
+        }
+        r = r + 1;
+    }
+    r = 72;
+    while 4 * r - 1 <= 701 {
+        let p: i32 = 4 * r - 1;
+        if is_prime(r) == 1 && is_prime(p) == 1 { failures = failures + gaussian_controls(p, r); }
+        r = r + 1;
+    }
+    puts("Expanded table: p, r, anchor, mode, budget, collector attempts, smooth relations, rank, recovered, exhausted, identity control, beyond control, target attempts, collector inversions, collector reductions, target inversions, target reductions");
+    var cases: i32 = 0;
+    r = 11;
+    while 4 * r - 1 <= 701 {
+        let p: i32 = 4 * r - 1;
+        if is_prime(r) == 1 && is_prime(p) == 1 {
+            var choice: i32 = 0;
+            while choice < 4 {
+                var anchor: i32 = 1;
+                if choice == 1 { anchor = 2; }
+                if choice == 2 { anchor = 7; }
+                if choice == 3 { anchor = r - 1; }
+                failures = failures + descent_case(p, r, 0, anchor, 1);
+                failures = failures + descent_case(p, r, 5, anchor, 1);
+                cases = cases + 2;
+                choice = choice + 1;
+            }
+        }
+        r = r + 1;
+    }
+    puts("expanded cases"); print(cases);
+    if cases != 72 { failures = failures + 1; }
+    r = 11;
+    while 4 * r - 1 <= 701 {
+        let p: i32 = 4 * r - 1;
+        if is_prime(r) == 1 && is_prime(p) == 1 { failures = failures + descent_global_case(p, r); }
+        r = r + 1;
+    }
+    puts("descent failures"); print(failures);
+    if failures != 0 { return 1; }
+    puts("EC DESCENT: PASS");
+    return 0;
+}

@@ -1,0 +1,223 @@
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+17
+19
+9
+6
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+5
+14
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+3
+16
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+103
+103
+0
+10
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+26
+77
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+12
+91
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+151
+157
+156
+11
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+40
+117
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+18
+139
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+173
+193
+64
+9
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+49
+144
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+22
+171
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+313
+293
+292
+11
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+74
+219
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+33
+260
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+449
+467
+233
+13
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+117
+350
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+52
+415
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+467
+463
+231
+14
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+116
+347
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+52
+411
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+491
+487
+243
+14
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+122
+365
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+55
+432
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+541
+541
+0
+13
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+136
+405
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+61
+480
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+593
+593
+0
+12
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+149
+444
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+66
+527
+divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function
+677
+659
+658
+13
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+4
+165
+494
+bounds: d, least effective divisor degree, rational pole-degree lower bound
+9
+74
+585
+Tate transfer: p, r, embedding degree, root re/im, Miller steps
+43
+11
+2
+7
+9
+5
+checks: transfers, norm-one, order-two recurrence, d-th-power successes, nondivisible labels
+8
+8
+8
+16
+13
+trace-only collisions with opposite divisibility labels
+2
+Tate transfer: p, r, embedding degree, root re/im, Miller steps
+67
+17
+2
+50
+39
+5
+checks: transfers, norm-one, order-two recurrence, d-th-power successes, nondivisible labels
+8
+8
+8
+16
+12
+trace-only collisions with opposite divisibility labels
+2
+Tate transfer: p, r, embedding degree, root re/im, Miller steps
+163
+41
+2
+146
+53
+7
+checks: transfers, norm-one, order-two recurrence, d-th-power successes, nondivisible labels
+8
+8
+8
+16
+12
+trace-only collisions with opposite divisibility labels
+2
+Tate transfer: p, r, embedding degree, root re/im, Miller steps
+211
+53
+2
+97
+64
+8
+checks: transfers, norm-one, order-two recurrence, d-th-power successes, nondivisible labels
+8
+8
+8
+16
+13
+trace-only collisions with opposite divisibility labels
+2
+Tate transfer: p, r, embedding degree, root re/im, Miller steps
+283
+71
+2
+241
+255
+9
+checks: transfers, norm-one, order-two recurrence, d-th-power successes, nondivisible labels
+8
+8
+8
+16
+14
+trace-only collisions with opposite divisibility labels
+2
+summary: divisor curves, Tate curves, failures
+11
+5
+0
+EC DIVISOR: PASS

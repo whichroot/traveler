@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: Apache-2.0
+// Divisor classes, Miller addition chains, and a checked Tate-character transfer.
+import "ec_miller_core.tv";
+
+extern "C" fn puts(s: *u8) -> i32;
+
+// Public off-base-field witness, disjoint from all Fp points.
+fn divisor_witness(p: i32, a: i32, b: i32, nr: i32) -> ECExtPoint {
+    var x: i32 = 0;
+    while x < p {
+        let rhs: i32 = mod_pos(x * x * x + a * x + b, p);
+        if legendre(rhs, p) == 0 - 1 {
+            let y2: i32 = mod_pos(rhs * modpow(nr, p - 2, p), p);
+            let y: i32 = sqrt_mod(y2 as i64, p as i64) as i32;
+            return ECExtPoint { xr: x, xi: 0, yr: 0, yi: y };
+        }
+        x = x + 1;
+    }
+    return ECExtPoint { xr: 0 - 1, xi: 0, yr: 0, yi: 0 };
+}
+
+fn divisor_translate(q: ECExtPoint, g: ECPoint, p: i32, nr: i32) -> ECExtPoint {
+    let x: Fp2 = Fp2 { re: q.xr, im: q.xi };
+    let y: Fp2 = Fp2 { re: q.yr, im: q.yi };
+    let gx: Fp2 = Fp2 { re: g.x, im: 0 };
+    let slope: Fp2 = fp2_div(fp2_sub(y, Fp2 { re: g.y, im: 0 }, p), fp2_sub(x, gx, p), p, nr);
+    let rx: Fp2 = fp2_sub(fp2_sub(fp2_mul(slope, slope, p, nr), x, p), gx, p);
+    let ry: Fp2 = fp2_sub(fp2_mul(slope, fp2_sub(x, rx, p), p, nr), y, p);
+    return ECExtPoint { xr: rx.re, xi: rx.im, yr: ry.re, yi: ry.im };
+}
+
+fn miller_controls() -> i32 {
+    let one: Fp2 = Fp2 { re: 1, im: 0 };
+    let stats: *i32 = alloc(1);
+    var failures: i32 = 0;
+    // x=3 keeps the vertical-function values x^2, x^3, and 1 distinct.
+    let q2: ECExtPoint = ECExtPoint { xr: 3, xi: 0, yr: 0, yi: 20 };
+    let torsion: ECPoint = ECPoint { x: 0, y: 0 };
+    let f1: Fp2 = miller_eval(torsion, 1, q2, 43, 1, 0, 42, stats);
+    if fp2_equal(f1, one) == 0 || stats[0] != 0 { failures = failures + 1; }
+    let f5: Fp2 = miller_eval(torsion, 5, q2, 43, 1, 0, 42, stats);
+    let x: Fp2 = Fp2 { re: q2.xr, im: q2.xi };
+    if fp2_equal(f5, fp2_pow(x, 2, 43, 42)) == 0 || stats[0] != 3 { failures = failures + 1; }
+    let f6: Fp2 = miller_eval(torsion, 6, q2, 43, 1, 0, 42, stats);
+    if fp2_equal(f6, fp2_pow(x, 3, 43, 42)) == 0 || stats[0] != 3 { failures = failures + 1; }
+
+    let nr: i32 = smallest_nonresidue(701);
+    let base: ECPoint = ECPoint { x: 700, y: sqrt_mod(700, 701) as i32 };
+    let q: ECExtPoint = divisor_translate(divisor_witness(701, 700, 700, nr), base, 701, nr);
+    let f9: Fp2 = miller_eval(base, 9, q, 701, 700, 700, nr, stats);
+    let f10: Fp2 = miller_eval(base, 10, q, 701, 700, 700, nr, stats);
+    let f19: Fp2 = miller_eval(base, 19, q, 701, 700, 700, nr, stats);
+    let line: Fp2 = miller_line(miller_mul(base, 9, 701, 700), miller_mul(base, 10, 701, 700), q, 701, 700, nr);
+    if q.xi == 0 || f9.re < 0 || f10.re < 0 || f19.re < 0 || line.re < 0 { failures = failures + 1; }
+    if fp2_equal(f19, fp2_mul(fp2_mul(f9, f10, 701, nr), line, 701, nr)) == 0 { failures = failures + 1; }
+    let u: Fp2 = Fp2 { re: 700, im: 700 };
+    let v: Fp2 = Fp2 { re: 699, im: 698 };
+    if fp2_equal(fp2_div(fp2_mul(u, v, 701, nr), v, 701, nr), u) == 0 { failures = failures + 1; }
+    free(stats);
+    return failures;
+}
+
+fn divisor_case(p: i32, r: i32) -> i32 {
+    let g: ECPoint = ec_generator(p);
+    let nr: i32 = smallest_nonresidue(p);
+    let witness: ECExtPoint = divisor_witness(p, 2, 2, nr);
+    let stats: *i32 = alloc(1);
+    var failures: i32 = 0;
+    let bad_chart: Fp2 = miller_eval(g, r, witness, p, 2, 2, 1, stats);
+    let bad_scalar: Fp2 = miller_eval(g, 0, witness, p, 2, 2, nr, stats);
+    let identity: Fp2 = miller_eval(ec_identity(), r, witness, p, 2, 2, nr, stats);
+    let zero_division: Fp2 = fp2_div(Fp2 { re: 1, im: 0 }, Fp2 { re: 0, im: 0 }, p, nr);
+    if bad_chart.re != 0 - 1 || bad_scalar.re != 0 - 1 || zero_division.re != 0 - 1
+        || fp2_equal(identity, Fp2 { re: 1, im: 0 }) == 0 || stats[0] != 0 { failures = failures + 1; }
+    var binary_steps: i32 = 0;
+    var n: i32 = r;
+    while n > 1 { binary_steps = binary_steps + 1 + n % 2; n = n / 2; }
+    puts("divisor: p, r, embedding degree (0=characteristic), Miller steps per r-function");
+    print(p); print(r); print(ec_embedding_degree(p, r)); print(binary_steps);
+    var d: i32 = 4;
+    while d <= 9 {
+        let m: i32 = (r + d - 1) / d;
+        let dg: ECPoint = miller_mul(g, d, p, 2);
+        let sg: ECPoint = miller_mul(g, r % d, p, 2);
+        let a: ECPoint = ECPoint { x: dg.x, y: mod_pos(0 - dg.y, p) };
+        let b: ECPoint = ECPoint { x: sg.x, y: mod_pos(0 - sg.y, p) };
+        let obstruction: ECPoint = miller_add(a, sg, p, 2);
+        if ec_equal(obstruction, ec_identity()) == 1 { failures = failures + 1; }
+        if ec_equal(miller_mul(obstruction, r, p, 2), ec_identity()) == 0 { failures = failures + 1; }
+        if ec_equal(miller_mul(a, m, p, 2), obstruction) == 0 { failures = failures + 1; }
+        puts("bounds: d, least effective divisor degree, rational pole-degree lower bound");
+        print(d); print(m); print(r - m);
+
+        var first: Fp2 = Fp2 { re: 0, im: 0 };
+        var sample: i32 = 0;
+        while sample < 3 {
+            var q: ECExtPoint = ECExtPoint { xr: witness.xr, xi: witness.xi, yr: witness.yr, yi: witness.yi };
+            if sample == 1 { q.yi = mod_pos(0 - witness.yi, p); }
+            if sample == 2 {
+                q = divisor_translate(witness, g, p, nr);
+                if q.xi == 0 { failures = failures + 1; }
+            }
+            let fa: Fp2 = miller_eval(a, r, q, p, 2, 2, nr, stats);
+            if fa.re < 0 || stats[0] != binary_steps { failures = failures + 1; }
+            let fb: Fp2 = miller_eval(b, r, q, p, 2, 2, nr, stats);
+            if fb.re < 0 || stats[0] != binary_steps { failures = failures + 1; }
+            let ratio: Fp2 = fp2_div(fa, fb, p, nr);
+            if ratio.re < 0 || (ratio.re == 0 && ratio.im == 0) { failures = failures + 1; }
+            if sample == 0 { first = ratio; }
+            if sample == 1 && fp2_equal(ratio, Fp2 { re: first.re, im: mod_pos(0 - first.im, p) }) == 0 {
+                failures = failures + 1;
+            }
+
+            // A different addition chain must give the same normalized f_8.
+            let f3: Fp2 = miller_eval(a, 3, q, p, 2, 2, nr, stats);
+            let f5: Fp2 = miller_eval(a, 5, q, p, 2, 2, nr, stats);
+            let f8: Fp2 = miller_eval(a, 8, q, p, 2, 2, nr, stats);
+            let line: Fp2 = miller_line(miller_mul(a, 3, p, 2), miller_mul(a, 5, p, 2), q, p, 2, nr);
+            if f3.re < 0 || f5.re < 0 || f8.re < 0 || line.re < 0 { failures = failures + 1; }
+            if fp2_equal(f8, fp2_mul(fp2_mul(f3, f5, p, nr), line, p, nr)) == 0 { failures = failures + 1; }
+            sample = sample + 1;
+        }
+        let collision: ECExtPoint = ECExtPoint { xr: a.x, xi: 0, yr: a.y, yi: 0 };
+        let refused: Fp2 = miller_eval(a, r, collision, p, 2, 2, nr, stats);
+        if refused.re != 0 - 1 { failures = failures + 1; }
+        d = d + 5;
+    }
+    free(stats);
+    return failures;
+}
+
+fn tate_case(p: i32, r: i32) -> i32 {
+    let one: Fp2 = Fp2 { re: 1, im: 0 };
+    let nr: i32 = p - 1;
+    let stats: *i32 = alloc(1);
+    let g: ECPoint = tate_generator(p);
+    let q: ECExtPoint = ECExtPoint { xr: mod_pos(0 - g.x, p), xi: 0, yr: 0, yi: g.y };
+    var failures: i32 = 0;
+    let outside: Fp2 = reduced_tate(ECPoint { x: 0, y: 0 }, q, p, r, stats);
+    let malformed: Fp2 = reduced_tate(ECPoint { x: p, y: 0 }, q, p, r, stats);
+    if outside.re != 0 - 1 || malformed.re != 0 - 1 { failures = failures + 1; }
+    if count_fp(p, 1, 0) != 4 * r || ec_embedding_degree(p, r) != 2 { failures = failures + 1; }
+    if g.x < 0 || q.yi == 0 || ec_equal(miller_mul(g, r, p, 1), ec_identity()) == 0 { failures = failures + 1; }
+    let root: Fp2 = reduced_tate(g, q, p, r, stats);
+    let steps: i32 = stats[0];
+    if root.re < 0 || fp2_equal(root, one) == 1 || fp2_equal(fp2_pow(root, r, p, nr), one) == 0 {
+        failures = failures + 1;
+    }
+    let trace: i32 = mod_pos(2 * root.re, p);
+    if mod_pos(trace * trace - 4, p) == 0 { failures = failures + 1; }
+    var transfers: i32 = 0;
+    var norms: i32 = 0;
+    var recurrences: i32 = 0;
+    var power_tests: i32 = 0;
+    var nondivisible: i32 = 0;
+    var sample: i32 = 0;
+    while sample < 8 {
+        var scalar: i32 = sample;
+        if sample == 4 { scalar = 7; }
+        if sample == 5 { scalar = r / 2; }
+        if sample == 6 { scalar = r - 2; }
+        if sample == 7 { scalar = r - 1; }
+        // The evaluator gets the point only; scalar is retained by this verifier.
+        let point: ECPoint = miller_mul(g, scalar, p, 1);
+        let value: Fp2 = reduced_tate(point, q, p, r, stats);
+        if value.re >= 0 && fp2_equal(value, fp2_pow(root, scalar, p, nr)) == 1 {
+            transfers = transfers + 1;
+        } else { failures = failures + 1; }
+        let conjugate: Fp2 = Fp2 { re: value.re, im: mod_pos(0 - value.im, p) };
+        if fp2_equal(fp2_mul(value, conjugate, p, nr), one) == 1 { norms = norms + 1; }
+        let next: ECPoint = miller_add(point, g, p, 1);
+        let v1: Fp2 = reduced_tate(next, q, p, r, stats);
+        let v2: Fp2 = reduced_tate(miller_add(next, g, p, 1), q, p, r, stats);
+        if v1.re < 0 || v2.re < 0 || fp2_equal(v1, fp2_mul(value, root, p, nr)) == 0 { failures = failures + 1; }
+        if mod_pos(2 * v2.re - trace * 2 * v1.re + 2 * value.re, p) == 0 { recurrences = recurrences + 1; }
+        var d: i32 = 4;
+        while d <= 9 {
+            let inverse_d: i32 = modpow(d, r - 2, r);
+            let candidate: Fp2 = fp2_pow(value, inverse_d, p, nr);
+            if fp2_equal(fp2_pow(candidate, d, p, nr), value) == 1 { power_tests = power_tests + 1; }
+            if scalar % d != 0 { nondivisible = nondivisible + 1; }
+            d = d + 5;
+        }
+        sample = sample + 1;
+    }
+    puts("Tate transfer: p, r, embedding degree, root re/im, Miller steps");
+    print(p); print(r); print(2); print(root.re); print(root.im); print(steps);
+    puts("checks: transfers, norm-one, order-two recurrence, d-th-power successes, nondivisible labels");
+    print(transfers); print(norms); print(recurrences); print(power_tests); print(nondivisible);
+    if transfers != 8 || norms != 8 || recurrences != 8 || power_tests != 16 || nondivisible == 0 { failures = failures + 1; }
+    var trace_collisions: i32 = 0;
+    var d: i32 = 4;
+    while d <= 9 {
+        let positive: Fp2 = reduced_tate(miller_mul(g, d, p, 1), q, p, r, stats);
+        let negative: Fp2 = reduced_tate(miller_mul(g, r - d, p, 1), q, p, r, stats);
+        if positive.re >= 0 && positive.re == negative.re && positive.im != negative.im
+            && (r - d) % d != 0 { trace_collisions = trace_collisions + 1; }
+        d = d + 5;
+    }
+    puts("trace-only collisions with opposite divisibility labels"); print(trace_collisions);
+    if trace_collisions != 2 { failures = failures + 1; }
+    free(stats);
+    return failures;
+}
+
+fn main() -> i32 {
+    var failures: i32 = miller_controls();
+    var divisors: i32 = 0;
+    var p: i32 = 17;
+    while p <= 701 {
+        if is_prime(p) == 1 && 140 % p != 0 {
+            let r: i32 = count_fp(p, 2, 2);
+            if r > 9 && is_prime(r) == 1 {
+                failures = failures + divisor_case(p, r);
+                divisors = divisors + 1;
+            }
+        }
+        p = p + 1;
+    }
+    var pairings: i32 = 0;
+    var r: i32 = 11;
+    while r <= 71 {
+        p = 4 * r - 1;
+        if is_prime(r) == 1 && is_prime(p) == 1 {
+            failures = failures + tate_case(p, r);
+            pairings = pairings + 1;
+        }
+        r = r + 1;
+    }
+    if divisors != 11 || pairings != 5 { failures = failures + 1; }
+    puts("summary: divisor curves, Tate curves, failures");
+    print(divisors); print(pairings); print(failures);
+    if failures != 0 { return 1; }
+    puts("EC DIVISOR: PASS");
+    return 0;
+}

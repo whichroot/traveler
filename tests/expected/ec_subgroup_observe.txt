@@ -1,0 +1,90 @@
+curve: p, order, generator x, y, group-check failures
+17
+19
+0
+6
+0
+setup: enumerated affine candidates, subgroup additions, pair checks
+289
+19
+361
+oracle: d, positives, recovered, queries, reference scan additions
+4
+5
+19
+72
+600
+unguarded zero-exponent shift matches
+2
+held-out: coordinate bit, flip, train count, TP, FP, TN, FN, always-zero correct
+0
+1
+11
+0
+4
+3
+1
+7
+held-out: coordinate bit, flip, train count, TP, FP, TN, FN, always-zero correct
+1
+0
+11
+1
+3
+4
+0
+7
+oracle: d, positives, recovered, queries, reference scan additions
+9
+3
+19
+90
+855
+unguarded zero-exponent shift matches
+2
+held-out: coordinate bit, flip, train count, TP, FP, TN, FN, always-zero correct
+0
+0
+11
+1
+3
+4
+0
+7
+held-out: coordinate bit, flip, train count, TP, FP, TN, FN, always-zero correct
+1
+1
+11
+1
+3
+4
+0
+7
+x-orbit over Fp: sample count, BM, Hankel rank
+38
+19
+19
+summary: curves, failures
+1
+0
+explicit-index controls over F5: N, Mobius BM/rank, prime-indicator BM/rank
+32
+16
+16
+16
+16
+explicit-index controls over F5: N, Mobius BM/rank, prime-indicator BM/rank
+64
+32
+32
+33
+31
+explicit-index controls over F5: N, Mobius BM/rank, prime-indicator BM/rank
+128
+64
+64
+64
+64
+prime-square zero violations
+0
+EC OBSERVE: PASS

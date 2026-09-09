@@ -1,0 +1,11 @@
+alternating: rank, BM
+2
+2
+delayed impulse: rank, BM
+1
+5
+exhaustive sequences: F2, F3, F5
+255
+364
+3906
+HANKEL: PASS

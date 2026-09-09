@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: Apache-2.0
+// Exact controls for canonical-log divisibility, not a DLP hardness test.
+import "ec_observe_core.tv";
+import "../src/lib/nt/linrec.tv";
+
+extern "C" fn puts(s: *u8) -> i32;
+
+fn ec_probe(p: i32, order: i32) -> i32 {
+    let g: ECPoint = ec_generator(p);
+    let points: *ECPoint = alloc(order);
+    let coords: *i32 = alloc(2 * order);
+    let features: *i32 = alloc(order);
+    let costs: *i64 = alloc(2);
+    let seq: *i64 = alloc(2 * order);
+    let c: *i64 = alloc(2 * order + 1);
+    var failures: i32 = 0;
+    var direct_count: i32 = 1;
+    var x: i32 = 0;
+    while x < p {
+        var y: i32 = 0;
+        while y < p {
+            if ec_valid(ECPoint { x: x, y: y }, p) == 1 { direct_count = direct_count + 1; }
+            y = y + 1;
+        }
+        x = x + 1;
+    }
+    if direct_count != order { failures = failures + 1; }
+    var point: ECPoint = ec_identity();
+    var n: i32 = 0;
+    while n < order {
+        points[n] = point;
+        coords[2 * n] = point.x;
+        coords[2 * n + 1] = point.y;
+        if ec_valid(point, p) == 0 || ec_equal(point, ec_mul(g, n, p)) == 0 {
+            failures = failures + 1;
+        }
+        if n > 0 && ec_equal(point, ec_identity()) == 1 { failures = failures + 1; }
+        point = ec_add(point, g, p);
+        n = n + 1;
+    }
+    if ec_equal(point, ec_identity()) == 0 { failures = failures + 1; }
+    n = 0;
+    while n < order {
+        var j: i32 = 0;
+        while j < order {
+            if ec_equal(ec_add(points[n], points[j], p), points[(n + j) % order]) == 0 {
+                failures = failures + 1;
+            }
+            j = j + 1;
+        }
+        n = n + 1;
+    }
+    puts("curve: p, order, generator x, y, group-check failures");
+    print(p); print(order); print(g.x); print(g.y); print(failures);
+    puts("setup: enumerated affine candidates, subgroup additions, pair checks");
+    print(p * p); print(order); print(order * order);
+    ec_observe_map(coords, features, order);
+    var q: i32 = 2;
+    while q <= 3 {
+        let d: i32 = q * q;
+        costs[0] = 0; costs[1] = 0;
+        var recovered: i32 = 0;
+        var positives: i32 = 0;
+        n = 0;
+        while n < order {
+            let before: i64 = costs[0];
+            if ec_recover(points[n], g, p, order, d, costs) == n { recovered = recovered + 1; }
+            if n < d && costs[0] != before { failures = failures + 1; }
+            if n % d == 0 { positives = positives + 1; }
+            n = n + 1;
+        }
+        puts("oracle: d, positives, recovered, queries, reference scan additions");
+        print(d); print(positives); print(recovered); print(costs[0]); print(costs[1]);
+        if recovered != order { failures = failures + 1; }
+
+        var shifted: ECPoint = ec_identity();
+        let negative_g: ECPoint = ECPoint { x: g.x, y: mod_pos(0 - g.y, p) };
+        var matches: i32 = 0;
+        var j: i32 = 0;
+        while j < d {
+            if ec_divisible_oracle(shifted, g, p, order, d, costs) == 1 { matches = matches + 1; }
+            shifted = ec_add(shifted, negative_g, p);
+            j = j + 1;
+        }
+        puts("unguarded zero-exponent shift matches"); print(matches);
+        if matches != 2 { failures = failures + 1; }
+
+        // A fixed point-coordinate split does not use the divisibility labels.
+        // Fit only bit polarity on training points; held-out labels never select it.
+        var bit: i32 = 0;
+        while bit < 2 {
+            var train: i32 = 0;
+            var train_correct: i32 = 0;
+            n = 0;
+            while n < order {
+                let pt: ECPoint = points[n];
+                if mod_pos(pt.x + 3 * pt.y, 3) != 0 {
+                    var predicted: i32 = features[n] % 2;
+                    if bit == 1 { predicted = features[n] / 2; }
+                    var label: i32 = 0;
+                    if n % d == 0 { label = 1; }
+                    if predicted == label { train_correct = train_correct + 1; }
+                    train = train + 1;
+                }
+                n = n + 1;
+            }
+            var flip: i32 = 0;
+            if 2 * train_correct < train { flip = 1; }
+            var tp: i32 = 0; var fp: i32 = 0;
+            var tn: i32 = 0; var missed: i32 = 0;
+            n = 0;
+            while n < order {
+                let pt: ECPoint = points[n];
+                if mod_pos(pt.x + 3 * pt.y, 3) == 0 {
+                    var predicted: i32 = features[n] % 2;
+                    if bit == 1 { predicted = features[n] / 2; }
+                    if flip == 1 { predicted = 1 - predicted; }
+                    if n % d == 0 {
+                        if predicted == 1 { tp = tp + 1; } else { missed = missed + 1; }
+                    } else {
+                        if predicted == 1 { fp = fp + 1; } else { tn = tn + 1; }
+                    }
+                }
+                n = n + 1;
+            }
+            puts("held-out: coordinate bit, flip, train count, TP, FP, TN, FN, always-zero correct");
+            print(bit); print(flip); print(train); print(tp); print(fp); print(tn); print(missed); print(fp + tn);
+            if train == 0 || tp + fp + tn + missed == 0 { failures = failures + 1; }
+            bit = bit + 1;
+        }
+        q = q + 1;
+    }
+
+    // Two full orbit periods; infinity maps to zero, finite x maps to x+1.
+    n = 0;
+    while n < 2 * order {
+        let pt: ECPoint = points[n % order];
+        seq[n] = (pt.x + 1) as i64;
+        n = n + 1;
+    }
+    let bm: i32 = bm_l(seq, 2 * order, p as i64, c);
+    let hr: i32 = hankel_rank(seq, 2 * order, p as i64);
+    puts("x-orbit over Fp: sample count, BM, Hankel rank");
+    print(2 * order); print(bm); print(hr);
+    if bm != hr { failures = failures + 1; }
+    free(points); free(coords); free(features); free(costs); free(seq); free(c);
+    return failures;
+}
+
+fn main() -> i32 {
+    var curves: i32 = 0;
+    var failures: i32 = 0;
+    var p: i32 = 17;
+    while p <= 97 {
+        if is_prime(p) == 1 && 140 % p != 0 {
+            let order: i32 = count_fp(p, 2, 2);
+            if order > 9 && is_prime(order) == 1 {
+                failures = failures + ec_probe(p, order);
+                curves = curves + 1;
+            }
+        }
+        p = p + 1;
+    }
+    puts("summary: curves, failures"); print(curves); print(failures);
+    if curves < 1 || failures != 0 { return 1; }
+
+    let mu: *i64 = alloc(128);
+    let primes: *i64 = alloc(128);
+    let c: *i64 = alloc(129);
+    var n: i32 = 1;
+    while n <= 128 {
+        mu[n - 1] = mobius(n) as i64;
+        primes[n - 1] = is_prime(n) as i64;
+        n = n + 1;
+    }
+    var q: i32 = 2;
+    while q * q <= 128 {
+        if is_prime(q) == 1 {
+            n = q * q;
+            while n <= 128 {
+                if mu[n - 1] != 0 || primes[n - 1] != 0 { failures = failures + 1; }
+                n = n + q * q;
+            }
+        }
+        q = q + 1;
+    }
+    n = 32;
+    while n <= 128 {
+        puts("explicit-index controls over F5: N, Mobius BM/rank, prime-indicator BM/rank");
+        print(n); print(bm_l(mu, n, 5, c)); print(hankel_rank(mu, n, 5));
+        print(bm_l(primes, n, 5, c)); print(hankel_rank(primes, n, 5));
+        n = n * 2;
+    }
+    free(mu); free(primes); free(c);
+    puts("prime-square zero violations"); print(failures);
+    if failures != 0 { return 1; }
+    puts("EC OBSERVE: PASS");
+    return 0;
+}

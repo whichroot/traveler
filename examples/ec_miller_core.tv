@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: Apache-2.0
+// Tiny prime-field curve arithmetic and Miller evaluation over Fp[w]/(w^2-nr).
+import "ec_observe_core.tv";
+import "../src/lib/nt/sqrt.tv";
+
+struct Fp2 {
+    re: i32,
+    im: i32,
+}
+
+struct ECExtPoint {
+    xr: i32,
+    xi: i32,
+    yr: i32,
+    yi: i32,
+}
+
+fn fp2_equal(a: Fp2, b: Fp2) -> i32 {
+    if a.re == b.re && a.im == b.im { return 1; }
+    return 0;
+}
+
+fn fp2_add(a: Fp2, b: Fp2, p: i32) -> Fp2 {
+    return Fp2 { re: mod_pos(a.re + b.re, p), im: mod_pos(a.im + b.im, p) };
+}
+
+fn fp2_sub(a: Fp2, b: Fp2, p: i32) -> Fp2 {
+    return Fp2 { re: mod_pos(a.re - b.re, p), im: mod_pos(a.im - b.im, p) };
+}
+
+fn fp2_mul(a: Fp2, b: Fp2, p: i32, nr: i32) -> Fp2 {
+    return Fp2 { re: mod_pos(a.re * b.re + nr * a.im * b.im, p),
+                 im: mod_pos(a.re * b.im + a.im * b.re, p) };
+}
+
+fn fp2_div(a: Fp2, b: Fp2, p: i32, nr: i32) -> Fp2 {
+    let norm: i32 = mod_pos(b.re * b.re - nr * b.im * b.im, p);
+    if norm == 0 { return Fp2 { re: 0 - 1, im: 0 - 1 }; }
+    let inverse: i32 = modpow(norm, p - 2, p);
+    let conjugate: Fp2 = Fp2 { re: mod_pos(b.re * inverse, p), im: mod_pos(0 - b.im * inverse, p) };
+    return fp2_mul(a, conjugate, p, nr);
+}
+
+fn fp2_pow(a: Fp2, exponent: i32, p: i32, nr: i32) -> Fp2 {
+    var result: Fp2 = Fp2 { re: 1, im: 0 };
+    var base: Fp2 = a;
+    var n: i32 = exponent;
+    while n > 0 {
+        if n % 2 == 1 { result = fp2_mul(result, base, p, nr); }
+        base = fp2_mul(base, base, p, nr);
+        n = n / 2;
+    }
+    return result;
+}
+
+fn miller_curve_valid(point: ECPoint, p: i32, a: i32, b: i32) -> i32 {
+    if point.x == 0 - 1 && point.y == 0 - 1 { return 1; }
+    if point.x < 0 || point.x >= p || point.y < 0 || point.y >= p { return 0; }
+    if mod_pos(point.y * point.y - point.x * point.x * point.x - a * point.x - b, p) == 0 { return 1; }
+    return 0;
+}
+
+fn miller_add(u: ECPoint, v: ECPoint, p: i32, a: i32) -> ECPoint {
+    if u.x < 0 { return v; }
+    if v.x < 0 { return u; }
+    if u.x == v.x && mod_pos(u.y + v.y, p) == 0 { return ec_identity(); }
+    var numerator: i32 = v.y - u.y;
+    var denominator: i32 = v.x - u.x;
+    if u.x == v.x { numerator = 3 * u.x * u.x + a; denominator = 2 * u.y; }
+    let slope: i32 = mod_pos(numerator * modpow(denominator, p - 2, p), p);
+    let x: i32 = mod_pos(slope * slope - u.x - v.x, p);
+    return ECPoint { x: x, y: mod_pos(slope * (u.x - x) - u.y, p) };
+}
+
+fn miller_mul(point: ECPoint, scalar: i32, p: i32, a: i32) -> ECPoint {
+    var result: ECPoint = ec_identity();
+    var base: ECPoint = point;
+    var n: i32 = scalar;
+    while n > 0 {
+        if n % 2 == 1 { result = miller_add(result, base, p, a); }
+        base = miller_add(base, base, p, a);
+        n = n / 2;
+    }
+    return result;
+}
+
+// Line/vertical quotient: divisor [U]+[V]-[U+V]-[O].
+// A zero numerator or denominator refuses this evaluation chart.
+fn miller_line(u: ECPoint, v: ECPoint, q: ECExtPoint, p: i32, a: i32, nr: i32) -> Fp2 {
+    if u.x < 0 || v.x < 0 { return Fp2 { re: 1, im: 0 }; }
+    let qx: Fp2 = Fp2 { re: q.xr, im: q.xi };
+    let qy: Fp2 = Fp2 { re: q.yr, im: q.yi };
+    let dx: Fp2 = fp2_sub(qx, Fp2 { re: u.x, im: 0 }, p);
+    if u.x == v.x && mod_pos(u.y + v.y, p) == 0 {
+        if dx.re == 0 && dx.im == 0 { return Fp2 { re: 0 - 1, im: 0 - 1 }; }
+        return dx;
+    }
+    var numerator: i32 = v.y - u.y;
+    var denominator: i32 = v.x - u.x;
+    if u.x == v.x { numerator = 3 * u.x * u.x + a; denominator = 2 * u.y; }
+    let slope: i32 = mod_pos(numerator * modpow(denominator, p - 2, p), p);
+    let sum_x: i32 = mod_pos(slope * slope - u.x - v.x, p);
+    let line: Fp2 = fp2_sub(fp2_sub(qy, Fp2 { re: u.y, im: 0 }, p),
+                             fp2_mul(Fp2 { re: slope, im: 0 }, dx, p, nr), p);
+    if line.re == 0 && line.im == 0 { return Fp2 { re: 0 - 1, im: 0 - 1 }; }
+    return fp2_div(line, fp2_sub(qx, Fp2 { re: sum_x, im: 0 }, p), p, nr);
+}
+
+// div(f_{n,A})=n[A]-[nA]-(n-1)[O]. stats[0] counts binary line steps.
+// Only a point, public scalar, and curve parameters enter; no orbit or log table.
+fn miller_eval(base: ECPoint, n: i32, q: ECExtPoint,
+               p: i32, a: i32, b: i32, nr: i32, stats: *i32) -> Fp2 {
+    stats[0] = 0;
+    let refused: Fp2 = Fp2 { re: 0 - 1, im: 0 - 1 };
+    if p < 17 || p > 701 || is_prime(p) == 0 || n < 1 { return refused; }
+    if a < 0 || a >= p || b < 0 || b >= p || nr < 1 || nr >= p { return refused; }
+    if mod_pos(4 * a * a * a + 27 * b * b, p) == 0 || legendre(nr, p) != 0 - 1 { return refused; }
+    if miller_curve_valid(base, p, a, b) == 0 { return refused; }
+    if q.xr < 0 || q.xr >= p || q.xi < 0 || q.xi >= p
+        || q.yr < 0 || q.yr >= p || q.yi < 0 || q.yi >= p { return refused; }
+    let qx: Fp2 = Fp2 { re: q.xr, im: q.xi };
+    let qy: Fp2 = Fp2 { re: q.yr, im: q.yi };
+    let rhs: Fp2 = fp2_add(fp2_add(fp2_mul(fp2_mul(qx, qx, p, nr), qx, p, nr),
+                                  fp2_mul(Fp2 { re: a, im: 0 }, qx, p, nr), p), Fp2 { re: b, im: 0 }, p);
+    if fp2_equal(fp2_mul(qy, qy, p, nr), rhs) == 0 { return refused; }
+    var value: Fp2 = Fp2 { re: 1, im: 0 };
+    if base.x < 0 { return value; }
+    // Keep accumulator storage separate from the fixed addition-chain base.
+    var point: ECPoint = ECPoint { x: base.x, y: base.y };
+    var bit: i32 = 1;
+    while bit <= n / 2 { bit = bit * 2; }
+    bit = bit / 2;
+    while bit > 0 {
+        let doubled: Fp2 = miller_line(point, point, q, p, a, nr);
+        if doubled.re < 0 { return refused; }
+        value = fp2_mul(fp2_mul(value, value, p, nr), doubled, p, nr);
+        point = miller_add(point, point, p, a);
+        stats[0] = stats[0] + 1;
+        if (n / bit) % 2 == 1 {
+            let added: Fp2 = miller_line(point, base, q, p, a, nr);
+            if added.re < 0 { return refused; }
+            value = fp2_mul(value, added, p, nr);
+            point = miller_add(point, base, p, a);
+            stats[0] = stats[0] + 1;
+        }
+        bit = bit / 2;
+    }
+    return value;
+}
+
+// For the checked supersingular family #E(Fp)=p+1=4r, nr=-1, r>9 prime.
+fn reduced_tate(point: ECPoint, q: ECExtPoint, p: i32, r: i32, stats: *i32) -> Fp2 {
+    let refused: Fp2 = Fp2 { re: 0 - 1, im: 0 - 1 };
+    stats[0] = 0;
+    if p < 17 || p > 701 || p % 4 != 3 || is_prime(p) == 0 || r <= 9 || r > 701
+        || p + 1 != 4 * r || is_prime(r) == 0 { return refused; }
+    if miller_curve_valid(point, p, 1, 0) == 0 { return refused; }
+    if ec_equal(miller_mul(point, r, p, 1), ec_identity()) == 0 { return refused; }
+    let raw: Fp2 = miller_eval(point, r, q, p, 1, 0, p - 1, stats);
+    if raw.re < 0 { return refused; }
+    return fp2_pow(raw, (p * p - 1) / r, p, p - 1);
+}
+
+// Generator discovery uses square roots and the public cofactor, not an orbit.
+fn tate_generator(p: i32) -> ECPoint {
+    var x: i32 = 0;
+    while x < p {
+        let rhs: i32 = mod_pos(x * x * x + x, p);
+        let y: i32 = sqrt_mod(rhs as i64, p as i64) as i32;
+        if y >= 0 {
+            let g: ECPoint = miller_mul(ECPoint { x: x, y: y }, 4, p, 1);
+            if g.x >= 0 { return g; }
+        }
+        x = x + 1;
+    }
+    return ec_identity();
+}
+
+// Public-parameter order computation by factoring r-1, not an EC orbit search.
+fn ec_embedding_degree(p: i32, r: i32) -> i32 {
+    if r < 3 || r > 701 || is_prime(r) == 0 || p % r == 0 { return 0; }
+    var degree: i32 = r - 1;
+    var remaining: i32 = r - 1;
+    var factor: i32 = 2;
+    while factor * factor <= remaining {
+        if remaining % factor == 0 {
+            while remaining % factor == 0 { remaining = remaining / factor; }
+            while degree % factor == 0 && modpow(p, degree / factor, r) == 1 { degree = degree / factor; }
+        }
+        factor = factor + 1;
+    }
+    if remaining > 1 {
+        while degree % remaining == 0 && modpow(p, degree / remaining, r) == 1 { degree = degree / remaining; }
+    }
+    return degree;
+}
