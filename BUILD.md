@@ -308,12 +308,27 @@ The elementwise and blocked-dot device classes share one admission contract:
 | Rolled loop bound is a literal ≤ 128 | nested serial loops refuse; chunk partials and combine on the CPU when the accumulator is order-free |
 | i128/i256 element arrays and accumulators work | a `*i128` element load lowers to `ld.global.v2.b64` on NVPTX; wide scalar captures still refuse (the worker context slot is 8 bytes) |
 
-Two query surfaces report admission. `--pfor-report` is the CPU authority: one
-JSONL record per pfor, `dispatched` plus a refusal `reason`. The device
-module's `; skipped __pfor_gpu_worker_N` records name the device-side reason:
-body shape, i64 iterator (the SIMT identity is i32), a dyn field carrier
-capture, or a call the device module does not carry. The two disagree in
-exactly one direction: a CPU-parallel loop can still be device-refused.
+`--pfor-report` reports CPU worker admission: one JSONL record per loop with
+`dispatched` and a refusal `reason`. An admitted worker may still execute
+serially because of alias guards, loop size, or runtime thread settings.
+
+Use `--pfor-alias-report` to inspect the emitted CPU alias decision:
+
+```sh
+$TVC program.tv --pfor-alias-report
+```
+
+Each record includes `fn`, `line`, `var`, `admitted`, `alias`, and `reason`.
+`alias` is `not-admitted`, `serial` (forced fallback), `checked` (runtime range
+checks), or `disjoint` (no overlap check needed). Reasons name untrusted
+captures, callee/read/write footprints, or missing footprints. A `checked`
+result permits parallel dispatch only when the runtime ranges pass. Pointer
+overlap and address/index overflow select serial execution.
+
+The device module's `; skipped __pfor_gpu_worker_N` records report device-side
+refusals, including body shape, i64 iterator, dynamic field carrier, and calls
+the device module cannot carry. Device admission and CPU alias eligibility
+are separate decisions.
 
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the

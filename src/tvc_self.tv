@@ -1644,6 +1644,29 @@ struct PForAliasRange {
     bad: i32,            // arithmetic/provenance failure -> serial fallback
 }
 
+struct PForBounds {
+    lo: i64,
+    hi: i64,
+    ok: i32,
+}
+
+struct PForFootprint {
+    names: *i32,
+    bounds: *PForBounds,
+    count: i32,
+    target: i32,
+    seen: i32,
+    lo: i64,
+    hi: i64,
+    ok: i32,
+}
+
+struct PForDotFootprint {
+    role: i32,
+    kcap: i32,
+    ncap: i32,
+}
+
 // The single live analysis instance (arenas attached in main())
 var g_pf: *PForState = null;
 
@@ -1808,6 +1831,7 @@ var g_purity_fn_node: i32 = 0 - 1;
 var g_purity_param_shadows: u64 = 0;
 // 1 = --pfor-report query mode active (set by the CLI flag).
 var g_pfor_report_mode: i32 = 0;
+var g_pfor_alias_report_mode: i32 = 0;
 // Distinguishes an explicitly requested legacy report from the PROOF0 schema;
 // the two query formats do not compose.
 var g_pfor_legacy_requested: i32 = 0;
@@ -19048,6 +19072,388 @@ fn pfor_alias_or(a: i32, b: i32) -> i32 {
     return r;
 }
 
+fn pfor_bounds(lo: i64, hi: i64) -> PForBounds {
+    var ok: i32 = 1;
+    if lo < 0 || hi < lo || hi > 2147483647 { ok = 0; }
+    return PForBounds { lo: lo, hi: hi, ok: ok };
+}
+
+fn pfor_footprint_find(F: *PForFootprint, name: i32) -> i32 {
+    var i: i32 = F.count - 1;
+    while i >= 0 {
+        if F.names[i] == name { return i; }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+// Every admitted intermediate fits nonnegative i32; endpoint products fit i64.
+fn pfor_footprint_expr(F: *PForFootprint, node: i32, depth: i32) -> PForBounds {
+    let no: PForBounds = pfor_bounds(0 - 1, 0);
+    if node < 0 || node >= g_nnodes || depth > 64 { return no; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT {
+        let r: PForBounds = pfor_bounds(g_nodes[node].int_val, g_nodes[node].int_val);
+        return r;
+    }
+    if kind == AST_IDENT {
+        let i: i32 = pfor_footprint_find(F, g_nodes[node].name0);
+        if i >= 0 {
+            let values: *PForBounds = F.bounds;
+            return PForBounds { lo: values[i].lo, hi: values[i].hi, ok: values[i].ok };
+        }
+        return no;
+    }
+    if kind != AST_BINARY { return no; }
+    let a: PForBounds = pfor_footprint_expr(F, g_nodes[node].child0, depth + 1);
+    let b: PForBounds = pfor_footprint_expr(F, g_nodes[node].child1, depth + 1);
+    if a.ok == 0 || b.ok == 0 { return no; }
+    let op: i32 = g_nodes[node].op;
+    if op == OP_ADD { let r: PForBounds = pfor_bounds(a.lo + b.lo, a.hi + b.hi); return r; }
+    if op == OP_SUB { let r: PForBounds = pfor_bounds(a.lo - b.hi, a.hi - b.lo); return r; }
+    if op == OP_MUL { let r: PForBounds = pfor_bounds(a.lo * b.lo, a.hi * b.hi); return r; }
+    if b.lo == b.hi && b.lo > 0 {
+        if op == OP_DIV { let r: PForBounds = pfor_bounds(a.lo / b.lo, a.hi / b.lo); return r; }
+        if op == OP_MOD { let r: PForBounds = pfor_bounds(0, b.lo - 1); return r; }
+    }
+    return no;
+}
+
+fn pfor_footprint_bind(F: *PForFootprint, name: i32, bounds: PForBounds) {
+    if F.count >= 64 || name == F.target { F.ok = 0; return; }
+    let names: *i32 = F.names;
+    let values: *PForBounds = F.bounds;
+    names[F.count] = name;
+    values[F.count].lo = bounds.lo;
+    values[F.count].hi = bounds.hi;
+    values[F.count].ok = bounds.ok;
+    F.count = F.count + 1;
+}
+
+fn pfor_footprint_walk(F: *PForFootprint, node: i32, depth: i32) {
+    if F.ok == 0 { return; }
+    if node < 0 || node >= g_nnodes || depth > 64 { F.ok = 0; return; }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL || kind == AST_NULL { return; }
+    if kind == AST_IDENT {
+        if g_nodes[node].name0 == F.target { F.ok = 0; }
+        return;
+    }
+    if kind == AST_BLOCK {
+        let saved: i32 = F.count;
+        var i: i32 = 0;
+        while i < g_nodes[node].nargs && F.ok == 1 {
+            pfor_footprint_walk(F, g_args[g_nodes[node].args_start + i], depth + 1);
+            i = i + 1;
+        }
+        F.count = saved;
+        return;
+    }
+    if kind == AST_FOR {
+        let a: PForBounds = pfor_footprint_expr(F, g_nodes[node].child0, 0);
+        let b: PForBounds = pfor_footprint_expr(F, g_nodes[node].child1, 0);
+        if a.ok == 0 || b.ok == 0 || a.lo >= b.hi { F.ok = 0; return; }
+        let saved: i32 = F.count;
+        let range: PForBounds = pfor_bounds(a.lo, b.hi - 1);
+        pfor_footprint_bind(F, g_nodes[node].name0, range);
+        pfor_footprint_walk(F, g_nodes[node].child2, depth + 1);
+        F.count = saved;
+        return;
+    }
+    if kind == AST_LET {
+        pfor_footprint_walk(F, g_nodes[node].child0, depth + 1);
+        let unknown: PForBounds = pfor_bounds(0 - 1, 0);
+        pfor_footprint_bind(F, g_nodes[node].name0, unknown);
+        return;
+    }
+    if kind == AST_ASSIGN {
+        let name: i32 = g_nodes[node].name0;
+        let i: i32 = pfor_footprint_find(F, name);
+        let values: *PForBounds = F.bounds;
+        if name == F.target { F.ok = 0; return; }
+        if i >= 0 && values[i].ok == 1 { F.ok = 0; return; }
+        pfor_footprint_walk(F, g_nodes[node].child0, depth + 1);
+        return;
+    }
+    if kind == AST_INDEX || kind == AST_INDEX_ASSIGN {
+        let base: i32 = g_nodes[node].child0;
+        let index: i32 = g_nodes[node].child1;
+        if g_nodes[base].kind == AST_IDENT && g_nodes[base].name0 == F.target {
+            let r: PForBounds = pfor_footprint_expr(F, index, 0);
+            if r.ok == 0 { F.ok = 0; return; }
+            if F.seen == 0 || r.lo < F.lo { F.lo = r.lo; }
+            if F.seen == 0 || r.hi > F.hi { F.hi = r.hi; }
+            F.seen = 1;
+        } else {
+            pfor_footprint_walk(F, base, depth + 1);
+        }
+        pfor_footprint_walk(F, index, depth + 1);
+        if kind == AST_INDEX_ASSIGN {
+            pfor_footprint_walk(F, g_nodes[node].child2, depth + 1);
+        }
+        return;
+    }
+    if kind == AST_BINARY {
+        pfor_footprint_walk(F, g_nodes[node].child0, depth + 1);
+        pfor_footprint_walk(F, g_nodes[node].child1, depth + 1);
+        return;
+    }
+    if kind == AST_UNARY && g_nodes[node].op == OP_ADDR { F.ok = 0; return; }
+    if kind == AST_UNARY || kind == AST_CAST || kind == AST_EXPR_STMT {
+        pfor_footprint_walk(F, g_nodes[node].child0, depth + 1);
+        return;
+    }
+    F.ok = 0;
+}
+
+fn pfor_footprint(body: i32, target: i32, iter: i32,
+                   start: i32, end: i32) -> PForBounds {
+    let names: *i32 = alloc(64);
+    let bounds: *PForBounds = alloc(64);
+    var F: PForFootprint = PForFootprint { names: names, bounds: bounds,
+        count: 0, target: target, seen: 0, lo: 0, hi: 0, ok: 1 };
+    let a: PForBounds = pfor_footprint_expr(&F, start, 0);
+    let b: PForBounds = pfor_footprint_expr(&F, end, 0);
+    if a.ok == 1 && b.ok == 1 && a.lo < b.hi {
+        let range: PForBounds = pfor_bounds(a.lo, b.hi - 1);
+        pfor_footprint_bind(&F, iter, range);
+        pfor_footprint_walk(&F, body, 0);
+    } else { F.ok = 0; }
+    let result: PForBounds = PForBounds { lo: F.lo, hi: F.hi, ok: F.ok * F.seen };
+    free(bounds); free(names);
+    return result;
+}
+
+fn pfor_footprint_emit(ptr_reg: i32, bounds: PForBounds, elem: i32) -> PForAliasRange {
+    let base: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(base); ir_wr(" = ptrtoint ptr ");
+    ir_wr_reg(ptr_reg); ir_wr(" to i64\n");
+    let lo: PForAliasChecked = pfor_alias_checked_address(base,
+        pfor_alias_const_i64(bounds.lo * (elem as i64)));
+    let hi: PForAliasChecked = pfor_alias_checked_address(base,
+        pfor_alias_const_i64((bounds.hi + 1) * (elem as i64)));
+    return PForAliasRange { lo: lo.value, hi: hi.value, bad: pfor_alias_or(lo.bad, hi.bad) };
+}
+
+fn pfor_alias_report(stmt: i32, iter: i32, admitted: i32, forced: i32, checked: i32) {
+    wr(1, "{\"fn\":"); json_emit_intern(g_cur_fn);
+    wr(1, ",\"line\":"); wr_int(1, g_nodes[stmt].line as i64);
+    wr(1, ",\"var\":"); json_emit_intern(iter);
+    wr(1, ",\"admitted\":"); wr_int(1, admitted as i64);
+    wr(1, ",\"alias\":\"");
+    if admitted == 0 { wr(1, "not-admitted"); }
+    else if forced != 0 { wr(1, "serial"); }
+    else if checked >= 0 { wr(1, "checked"); }
+    else { wr(1, "disjoint"); }
+    wr(1, "\",\"reason\":\"");
+    if admitted == 0 {
+        var code: i32 = g_pf0.cpu_reason;
+        if code == 0 { code = g_pf_reason; }
+        let reason: *u8 = pfor_reason_str(code);
+        if reason[0] == 0 { wr(1, "worker-not-admitted"); } else { wr(1, reason); }
+    }
+    if forced == 1 { wr(1, "untrusted-capture"); }
+    if forced == 2 { wr(1, "callee-footprint"); }
+    if forced == 3 { wr(1, "write-footprint"); }
+    if forced == 4 { wr(1, "read-footprint"); }
+    if forced == 5 { wr(1, "missing-footprint"); }
+    wr(1, "\"}\n");
+}
+
+fn pfor_is_name(node: i32, name: i32) -> i32 {
+    if node < 0 || node >= g_nnodes { return 0; }
+    if g_nodes[node].kind == AST_IDENT && g_nodes[node].name0 == name { return 1; }
+    return 0;
+}
+
+fn pfor_is_binary(node: i32, op: i32) -> i32 {
+    if node < 0 || node >= g_nnodes { return 0; }
+    if g_nodes[node].kind == AST_BINARY && g_nodes[node].op == op { return 1; }
+    return 0;
+}
+
+fn pfor_names_binary(node: i32, op: i32, a: i32, b: i32) -> i32 {
+    if pfor_is_binary(node, op) == 0 { return 0; }
+    return pfor_is_name(g_nodes[node].child0, a) * pfor_is_name(g_nodes[node].child1, b);
+}
+
+// Match the full rectangular-dot body, including index types and induction.
+// (design-notes/jane-alias-footprints.md "rectangular-callee")
+fn pfor_rectangular_dot(fi: i32) -> i32 {
+    if fi < 0 || g_funcs[fi].reads_nonparam != 0
+        || g_funcs[fi].read_param_mask != 3 { return 0; }
+    let decl: i32 = g_funcs[fi].node;
+    if g_nodes[decl].nargs != 5 { return 0; }
+    let body: i32 = g_nodes[decl].child0;
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 6 { return 0; }
+    var names: [i32; 9] = 0;
+    var i: i32 = 0;
+    while i < 5 {
+        let param: i32 = g_args[g_nodes[decl].args_start + i];
+        names[i] = g_nodes[param].name0;
+        if i >= 2 && g_nodes[param].name1 != str_intern("i32") { return 0; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < 4 {
+        let local: i32 = g_args[g_nodes[body].args_start + i];
+        if g_nodes[local].kind != AST_LET { return 0; }
+        names[5 + i] = g_nodes[local].name0;
+        if i != 2 && g_nodes[local].name1 != str_intern("i32") { return 0; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < 9 {
+        var j: i32 = 0;
+        while j < i { if names[i] == names[j] { return 0; } j = j + 1; }
+        i = i + 1;
+    }
+    let row: i32 = g_nodes[g_args[g_nodes[body].args_start]].child0;
+    if pfor_is_binary(row, OP_MUL) == 0
+        || pfor_names_binary(g_nodes[row].child0, OP_DIV, names[4], names[3]) == 0
+        || pfor_is_name(g_nodes[row].child1, names[2]) == 0 { return 0; }
+    let col: i32 = g_nodes[g_args[g_nodes[body].args_start + 1]].child0;
+    if pfor_names_binary(col, OP_MOD, names[4], names[3]) == 0 { return 0; }
+    i = 2;
+    while i < 4 {
+        var init: i32 = g_nodes[g_args[g_nodes[body].args_start + i]].child0;
+        if i == 2 && g_nodes[init].kind == AST_CAST { init = g_nodes[init].child0; }
+        if g_nodes[init].kind != AST_LIT_INT || g_nodes[init].int_val != 0 { return 0; }
+        i = i + 1;
+    }
+    let loop: i32 = g_args[g_nodes[body].args_start + 4];
+    if g_nodes[loop].kind != AST_WHILE
+        || pfor_names_binary(g_nodes[loop].child0, OP_LT, names[8], names[2]) == 0 { return 0; }
+    let inner: i32 = g_nodes[loop].child1;
+    if g_nodes[inner].kind != AST_BLOCK || g_nodes[inner].nargs != 2 { return 0; }
+    let mac: i32 = g_args[g_nodes[inner].args_start];
+    let inc: i32 = g_args[g_nodes[inner].args_start + 1];
+    if g_nodes[mac].kind != AST_ASSIGN || g_nodes[mac].name0 != names[7]
+        || g_nodes[inc].kind != AST_ASSIGN || g_nodes[inc].name0 != names[8] { return 0; }
+    let step: i32 = g_nodes[inc].child0;
+    if pfor_is_binary(step, OP_ADD) == 0
+        || pfor_is_name(g_nodes[step].child0, names[8]) == 0 { return 0; }
+    let one: i32 = g_nodes[step].child1;
+    if g_nodes[one].kind != AST_LIT_INT || g_nodes[one].int_val != 1 { return 0; }
+    let sum: i32 = g_nodes[mac].child0;
+    if pfor_is_binary(sum, OP_ADD) == 0
+        || pfor_is_name(g_nodes[sum].child0, names[7]) == 0 { return 0; }
+    let product: i32 = g_nodes[sum].child1;
+    if pfor_is_binary(product, OP_MUL) == 0 { return 0; }
+    let x: i32 = g_nodes[product].child0;
+    let w: i32 = g_nodes[product].child1;
+    if g_nodes[x].kind != AST_INDEX || g_nodes[w].kind != AST_INDEX
+        || pfor_is_name(g_nodes[x].child0, names[0]) == 0
+        || pfor_is_name(g_nodes[w].child0, names[1]) == 0
+        || pfor_names_binary(g_nodes[x].child1, OP_ADD, names[5], names[8]) == 0 { return 0; }
+    let wi: i32 = g_nodes[w].child1;
+    if pfor_is_binary(wi, OP_ADD) == 0
+        || pfor_names_binary(g_nodes[wi].child0, OP_MUL, names[8], names[3]) == 0
+        || pfor_is_name(g_nodes[wi].child1, names[6]) == 0 { return 0; }
+    let ret: i32 = g_args[g_nodes[body].args_start + 5];
+    if g_nodes[ret].kind != AST_RETURN
+        || pfor_is_name(g_nodes[ret].child0, names[7]) == 0 { return 0; }
+    return 1;
+}
+
+fn pfor_dot_footprint(body: i32, target: i32, iter: i32, pf: *PForState) -> PForDotFootprint {
+    let no: PForDotFootprint = PForDotFootprint { role: 0, kcap: 0, ncap: 0 };
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 { return no; }
+    let store: i32 = g_args[g_nodes[body].args_start];
+    if g_nodes[store].kind != AST_INDEX_ASSIGN { return no; }
+    let call: i32 = g_nodes[store].child2;
+    if g_nodes[call].kind != AST_CALL || g_nodes[call].nargs != 5 { return no; }
+    let fi: i32 = find_func_idx(g_nodes[call].name0);
+    if pfor_rectangular_dot(fi) == 0 { return no; }
+    let args: i32 = g_nodes[call].args_start;
+    if pfor_is_name(g_args[args + 4], iter) == 0 { return no; }
+    var result: PForDotFootprint = PForDotFootprint { role: 0, kcap: 0, ncap: 0 };
+    if pfor_is_name(g_args[args], target) == 1 { result.role = 1; }
+    if pfor_is_name(g_args[args + 1], target) == 1 { result.role = result.role + 2; }
+    if result.role == 0 { return no; }
+    var pi: i32 = 0;
+    while pi < 4 {
+        let actual: i32 = g_args[args + pi];
+        if g_nodes[actual].kind != AST_IDENT { return no; }
+        var cap: i32 = 0 - 1;
+        var i: i32 = 0;
+        while i < pf.ncaps {
+            if pf.caps[i * 4] == g_nodes[actual].name0 { cap = i; }
+            i = i + 1;
+        }
+        if cap < 0 { return no; }
+        let ty: i32 = pf.caps[cap * 4 + 1];
+        if pi >= 2 {
+            if ty != str_intern("i32") { return no; }
+            if pi == 2 { result.kcap = cap; } else { result.ncap = cap; }
+        } else {
+            if type_is_ptr(ty) == 0 { return no; }
+            let decl: i32 = g_funcs[fi].node;
+            let formal: i32 = g_args[g_nodes[decl].args_start + pi];
+            let formal_type: i32 = resolve_type_sub(g_nodes[formal].name1);
+            if str_eq(&g_strings[formal_type], &g_strings[ty]) == 0 { return no; }
+            let elem: i32 = type_pointee(ty);
+            if elem != str_intern("i32") && elem != str_intern("i64")
+                && type_is_dyn(elem) == 0 && find_field_by_alias(elem) < 0 { return no; }
+        }
+        pi = pi + 1;
+    }
+    return result;
+}
+
+// The caller supplies i32 bounds and dimensions; invalid spans select serial.
+// A positive substitute divisor keeps the guard itself defined when N <= 0.
+fn pfor_dot_emit(ptr_reg: i32, kreg: i32, nreg: i32, start: i32, end: i32,
+                  role: i32, elem: i32) -> PForAliasRange {
+    let k: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(k); ir_wr(" = sext i32 "); ir_wr_reg(kreg); ir_wr(" to i64\n");
+    let n: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(n); ir_wr(" = sext i32 "); ir_wr_reg(nreg); ir_wr(" to i64\n");
+    let kp: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(kp); ir_wr(" = icmp slt i64 "); ir_wr_reg(k); ir_wr(", 1\n");
+    let np: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(np); ir_wr(" = icmp slt i64 "); ir_wr_reg(n); ir_wr(", 1\n");
+    let sn: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(sn); ir_wr(" = icmp slt i64 "); ir_wr_reg(start); ir_wr(", 0\n");
+    let en: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(en); ir_wr(" = icmp slt i64 "); ir_wr_reg(end); ir_wr(", 1\n");
+    let divisor: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(divisor); ir_wr(" = select i1 "); ir_wr_reg(np);
+    ir_wr(", i64 1, i64 "); ir_wr_reg(n); ir_wr("\n");
+    let last: PForAliasChecked = pfor_alias_checked_add(end, 0 - 1);
+    let row: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(row); ir_wr(" = sdiv i64 "); ir_wr_reg(last.value);
+    ir_wr(", "); ir_wr_reg(divisor); ir_wr("\n");
+    let rows: PForAliasChecked = pfor_alias_checked_add(row, 1);
+    let xe: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(xe); ir_wr(" = mul i64 "); ir_wr_reg(rows.value);
+    ir_wr(", "); ir_wr_reg(k); ir_wr("\n");
+    let we: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(we); ir_wr(" = mul i64 "); ir_wr_reg(k);
+    ir_wr(", "); ir_wr_reg(n); ir_wr("\n");
+    var limit: i32 = xe;
+    if role == 2 { limit = we; }
+    if role == 3 {
+        let more: i32 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(more); ir_wr(" = icmp sgt i64 "); ir_wr_reg(xe);
+        ir_wr(", "); ir_wr_reg(we); ir_wr("\n");
+        limit = ir_tmp();
+        ir_wr("  "); ir_wr_reg(limit); ir_wr(" = select i1 "); ir_wr_reg(more);
+        ir_wr(", i64 "); ir_wr_reg(xe); ir_wr(", i64 "); ir_wr_reg(we); ir_wr("\n");
+    }
+    var bad: i32 = pfor_alias_or(pfor_alias_or(kp, np), pfor_alias_or(sn, en));
+    bad = pfor_alias_or(bad, pfor_alias_or(last.bad, rows.bad));
+    let zero: i32 = pfor_alias_const_i64(0);
+    bad = pfor_alias_or(bad, pfor_alias_i32_range_bad(zero, xe));
+    bad = pfor_alias_or(bad, pfor_alias_i32_range_bad(zero, we));
+    let bytes: PForAliasChecked = pfor_alias_checked_mul(limit, elem);
+    let base: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(base); ir_wr(" = ptrtoint ptr "); ir_wr_reg(ptr_reg); ir_wr(" to i64\n");
+    let hi: PForAliasChecked = pfor_alias_checked_address(base, bytes.value);
+    bad = pfor_alias_or(bad, pfor_alias_or(bytes.bad, hi.bad));
+    return PForAliasRange { lo: base, hi: hi.value, bad: bad };
+}
+
 fn pfor_alias_checked_add(base: i32, delta: i64) -> PForAliasChecked {
     var bad: i32 = 0 - 1;
     if delta > 0 {
@@ -20220,9 +20626,8 @@ fn codegen_stmt(stmt: i32) {
         }
         let caps: *i32 = worker_pf.caps;
 
-        // --pfor-report: emit this loop's verdict (query mode, no IR effect).
-        // The dispatch predicate is mirrored so `dispatched` matches exactly.
-        if g_pfor_report_mode == 1 {
+        // Preserve admission records; the alias report observes later guards.
+        if g_pfor_report_mode == 1 && g_pfor_alias_report_mode == 0 {
             if legacy_disp == 0 && pf.independent == 1 && g_pf_reason == 0 {
                 if pf.ncaps == 0 {
                     g_pf_reason = PFR_NO_CAPTURES;
@@ -20246,6 +20651,9 @@ fn codegen_stmt(stmt: i32) {
         }
 
         // Evaluate range bounds (#54: the iterator ADOPTS the bound width).
+        if g_pfor_alias_report_mode == 1 && dispatch_ready == 0 {
+            pfor_alias_report(stmt, iter_name, 0, 0, 0 - 1);
+        }
         // Prepeek picks the literal-emission context; the codegen'd types are
         // authoritative. i32-bound loops emit byte-identically to before.
         var bw: i32 = for_bound_prepeek(start_node);
@@ -20437,7 +20845,7 @@ fn codegen_stmt(stmt: i32) {
                             var c_accesses: i32 = 0;
                             if pfor_alias_capture_trusted(caps, wcap) == 0
                                 || pfor_alias_capture_trusted(caps, c2) == 0 {
-                                alias_forced = 1;
+                                if alias_forced == 0 { alias_forced = 1; }
                                 check = 0;
                             }
                             if check == 1 && pfor_alias_origins_disjoint(
@@ -20445,6 +20853,60 @@ fn codegen_stmt(stmt: i32) {
                                     pfor_alias_capture_origin(caps, c2)) == 1 {
                                 c_accesses = 1;
                                 check = 0;
+                            }
+                            if check == 1 && bw == 32 && g_emit_gpu_mode == 0 && g_agx_dispatch_mode == 0
+                                && g_agx_ir0_shadow == 0 && g_agx_ra0_shadow == 0
+                                && pwrites[wi * 16 + 1] == 1 && pwrites[wi * 16 + 3] == 0
+                                && pfor_alias_has_call_read(worker_pf, cname) == 1 {
+                                let dot: PForDotFootprint = pfor_dot_footprint(body_node, cname, iter_name, worker_pf);
+                                if dot.role != 0 {
+                                    if alias_start64 < 0 {
+                                        alias_start64 = ir_tmp();
+                                        ir_wr("  "); ir_wr_reg(alias_start64); ir_wr(" = sext i32 ");
+                                        ir_wr_reg(start_reg); ir_wr(" to i64\n");
+                                        alias_end64 = ir_tmp();
+                                        ir_wr("  "); ir_wr_reg(alias_end64); ir_wr(" = sext i32 ");
+                                        ir_wr_reg(end_reg); ir_wr(" to i64\n");
+                                    }
+                                    let wr: PForAliasRange = pfor_alias_emit_range(cap_loaded[wcap],
+                                        &pwrites[wi * 16], alias_start64, alias_end64,
+                                        ctx_elem_size(caps[wcap * 4 + 1]), bw);
+                                    let cr: PForAliasRange = pfor_dot_emit(cap_loaded[c2],
+                                        cap_loaded[dot.kcap], cap_loaded[dot.ncap], alias_start64, alias_end64,
+                                        dot.role, ctx_elem_size(caps[c2 * 4 + 1]));
+                                    alias_acc = pfor_alias_or(alias_acc, pfor_alias_emit_overlap(wr, cr));
+                                    c_accesses = 1;
+                                    check = 0;
+                                }
+                            }
+                            if check == 1 && g_emit_gpu_mode == 0 && g_agx_dispatch_mode == 0
+                                && g_agx_ir0_shadow == 0 && g_agx_ra0_shadow == 0
+                                && pwrites[wi * 16 + 1] == 1 && pwrites[wi * 16 + 3] == 0
+                                && pfor_alias_has_call_read(worker_pf, cname) == 0 {
+                                var needs_bounds: i32 = 0;
+                                var bri: i32 = 0;
+                                while bri < worker_pf.nreads {
+                                    if preads[bri * 16] == cname as i64
+                                        && (preads[bri * 16 + 1] != 1 || preads[bri * 16 + 3] != 0) {
+                                        needs_bounds = 1;
+                                    }
+                                    bri = bri + 1;
+                                }
+                                if needs_bounds == 1 {
+                                    let wb: PForBounds = pfor_footprint(body_node, warr as i32,
+                                        iter_name, start_node, end_node);
+                                    let cb: PForBounds = pfor_footprint(body_node, cname,
+                                        iter_name, start_node, end_node);
+                                    if wb.ok == 1 && cb.ok == 1 {
+                                        let wr: PForAliasRange = pfor_footprint_emit(cap_loaded[wcap],
+                                            wb, ctx_elem_size(caps[wcap * 4 + 1]));
+                                        let cr: PForAliasRange = pfor_footprint_emit(cap_loaded[c2],
+                                            cb, ctx_elem_size(caps[c2 * 4 + 1]));
+                                        alias_acc = pfor_alias_or(alias_acc, pfor_alias_emit_overlap(wr, cr));
+                                        c_accesses = 1;
+                                        check = 0;
+                                    }
+                                }
                             }
                             let agx_w_words: i32 = pfor_alias_agx_words(
                                 agx_shape, wcap);
@@ -20461,11 +20923,11 @@ fn codegen_stmt(stmt: i32) {
                                     pfor_alias_emit_overlap(wrange0, crange0));
                             } else if check == 1 {
                             if pfor_alias_has_call_read(worker_pf, cname) == 1 {
-                                alias_forced = 1;
+                                if alias_forced == 0 { alias_forced = 2; }
                             }
                             if pwrites[wi * 16 + 1] != 1
                                 || pwrites[wi * 16 + 3] != 0 {
-                                alias_forced = 1;
+                                if alias_forced == 0 { alias_forced = 3; }
                             }
                             var ri: i32 = 0;
                             while ri < worker_pf.nreads {
@@ -20473,7 +20935,7 @@ fn codegen_stmt(stmt: i32) {
                                     c_accesses = c_accesses + 1;
                                     if preads[ri * 16 + 1] != 1
                                         || preads[ri * 16 + 3] != 0 {
-                                        alias_forced = 1;
+                                        if alias_forced == 0 { alias_forced = 4; }
                                     } else if pwrites[wi * 16 + 1] == 1
                                         && pwrites[wi * 16 + 3] == 0 {
                                         if alias_start64 < 0 {
@@ -20510,7 +20972,7 @@ fn codegen_stmt(stmt: i32) {
                                     c_accesses = c_accesses + 1;
                                     if pwrites[wj * 16 + 1] != 1
                                         || pwrites[wj * 16 + 3] != 0 {
-                                        alias_forced = 1;
+                                        if alias_forced == 0 { alias_forced = 3; }
                                     } else if pwrites[wi * 16 + 1] == 1
                                         && pwrites[wi * 16 + 3] == 0 {
                                         if alias_start64 < 0 {
@@ -20542,14 +21004,17 @@ fn codegen_stmt(stmt: i32) {
                                 wj = wj + 1;
                             }
                             }
-                            if c_accesses == 0 { alias_forced = 1; }
+                            if c_accesses == 0 && alias_forced == 0 { alias_forced = 5; }
                         }
                         c2 = c2 + 1;
                     }
                 }
                 wi = wi + 1;
             }
-            if alias_forced == 1 {
+            if g_pfor_alias_report_mode == 1 {
+                pfor_alias_report(stmt, iter_name, 1, alias_forced, alias_acc);
+            }
+            if alias_forced != 0 {
                 let forced: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(forced); ir_wr(" = icmp eq i1 0, 0\n");
                 alias_acc = pfor_alias_or(alias_acc, forced);
@@ -42082,6 +42547,9 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
             // B3b-LSP: emit the scope-aware reference table (JSONL) on stdout.
             g_references_mode = 1;
             g_diag_json = 1;
+        } else if str_eq(argv[ai], "--pfor-alias-report") == 1 {
+            g_pfor_report_mode = 1;
+            g_pfor_alias_report_mode = 1;
         } else if str_eq(argv[ai], "--pfor-report") == 1 {
             // --pfor-report: per-loop verdicts (JSONL) on stdout; read-only
             // query mode (does NOT set g_diag_json — human errors preserved).

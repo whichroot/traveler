@@ -828,6 +828,12 @@ if [ -x "$STAGE1" ]; then
         printf "  [%2d] %-32s FAIL (%s)\n" "$TOTAL" "$name" "$detail"
         FAIL=$((FAIL + 1)); FAILURES="$FAILURES $name"
     fi
+    TOTAL=$((TOTAL + 1))
+    if python3 "$PFOR_DIR/check_alias_dispatch.py" "$STAGE1" "$LLC" "$LINKER"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1)); FAILURES="$FAILURES alias_dispatch"
+    fi
 else
     echo "  U1 (Stage D) tests SKIPPED (stage1 not built)"
 fi

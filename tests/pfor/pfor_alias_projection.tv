@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+
+#[export]
+fn blocked(w: *i64, x: *i64, out: *i64) {
+    for row in 0..1024 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            var dot: i32 = 0;
+            for lane in 0..32 {
+                dot = dot + ((w[row * 128 + b * 32 + (lane / 2) * 2 + lane % 2]
+                    * x[b * 32 + lane]) as i32);
+            }
+            acc = acc + (dot as i64);
+        }
+        out[row] = acc;
+    }
+}
+
+fn dot(x: *i64, w: *i64, K: i32, N: i32, o: i32) -> i64 {
+    let row: i32 = (o / N) * K;
+    let j: i32 = o % N;
+    var acc: i64 = 0;
+    var k: i32 = 0;
+    while k < K { acc = acc + x[row + k] * w[k * N + j]; k = k + 1; }
+    return acc;
+}
+
+#[export]
+fn rectangular(x: *i64, w: *i64, out: *i64, K: i32, N: i32, total: i32) {
+    for o in 0..total { out[o] = dot(x, w, K, N, o); }
+}
+
+fn forward_dot(x: *i64, w: *i64, K: i32, N: i32, o: i32) -> i64 {
+    return dot(x, w, K, N, o);
+}
+
+#[export]
+fn opaque(x: *i64, w: *i64, out: *i64, K: i32, N: i32, total: i32) {
+    for o in 0..total { out[o] = forward_dot(x, w, K, N, o); }
+}
+
+#[export]
+fn wrapped(w: *i64, out: *i64) {
+    for row in 0..1024 {
+        var acc: i64 = 0;
+        for b in 0..4 { acc = acc + w[(row * 2147483647) % 16 + b]; }
+        out[row] = acc;
+    }
+}
+
+#[export]
+fn shadowed(w: *i64, out: *i64) {
+    for row in 0..1024 {
+        var acc: i64 = 0;
+        for b in 0..4 {
+            let row: i32 = 7;
+            acc = acc + w[row + b];
+        }
+        out[row] = acc;
+    }
+}
