@@ -330,6 +330,29 @@ refusals, including body shape, i64 iterator, dynamic field carrier, and calls
 the device module cannot carry. Device admission and CPU alias eligibility
 are separate decisions.
 
+Explicit Stage-0 requests (`--emit-gpu` for AMDGCN and `--emit-gpu-nvptx`)
+exit **1** when no usable workers are emitted, including sources with no
+worker candidates. This refusal publishes no device IR to stdout and creates no
+output file. An existing `-o` file keeps its previous contents. Successful
+file output is staged and renamed into place. Callers must check the exit
+status before using an existing artifact.
+
+Both modes write JSONL decisions to stderr with schema `traveler.device.v1`:
+
+- `kind: "worker"`: `target`, numeric `worker` suffix, `fn`, body `line`,
+  `status` (`emitted` or `refused`), and `reason`.
+- Refusal reasons: `body-shape`, `i64-iterator`, `dynamic-field-carrier`, or
+  `uncarried-call`. Emitted workers have an empty reason.
+- `kind: "module"`: `target`, `candidates`, `emitted`, `refused`, and `reason`
+  (`no-usable-workers` when empty; otherwise empty).
+
+Worker records cover candidates registered by the device-mode host pass.
+They report device code generation, not runtime execution or successful
+file publication. Ordinary errors can also appear on stderr. A mixed module
+succeeds if it emits at least one kernel; its refused workers remain named
+in the decisions and module comments. The CPU admission and alias query
+schemas retain their existing contracts.
+
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the
 next block's addresses (`prefetch.global.L2`, NVPTX only) with no carried

@@ -2165,35 +2165,39 @@ fn derr_u64(n: u64) {
 // Emit a quoted JSON string to stdout, escaping '"', '\', and control bytes
 // < 0x20 (\n / \t / \uXXXX).
 fn json_emit_escaped(s: *u8, len: i32) {
-    write(1, "\"", 1);
+    json_emit_escaped_fd(1, s, len);
+}
+
+fn json_emit_escaped_fd(fd: i32, s: *u8, len: i32) {
+    write(fd, "\"", 1);
     var i: i32 = 0;
     while i < len {
         let c: u8 = s[i];
         if c == 34 {            // "
-            write(1, "\\\"", 2);
+            write(fd, "\\\"", 2);
         } else if c == 92 {     // backslash
-            write(1, "\\\\", 2);
+            write(fd, "\\\\", 2);
         } else if c == 10 {     // newline
-            write(1, "\\n", 2);
+            write(fd, "\\n", 2);
         } else if c == 9 {      // tab
-            write(1, "\\t", 2);
+            write(fd, "\\t", 2);
         } else if c == 13 {     // carriage return
-            write(1, "\\r", 2);
+            write(fd, "\\r", 2);
         } else if c < 32 {
             // \u00XX for other control bytes.
-            write(1, "\\u00", 4);
+            write(fd, "\\u00", 4);
             let hi: i32 = (c as i32) / 16;
             let lo: i32 = (c as i32) % 16;
             var hx: [u8; 2] = 0;
             if hi < 10 { hx[0] = (hi + 48) as u8; } else { hx[0] = (hi - 10 + 97) as u8; }
             if lo < 10 { hx[1] = (lo + 48) as u8; } else { hx[1] = (lo - 10 + 97) as u8; }
-            write(1, &hx[0], 2);
+            write(fd, &hx[0], 2);
         } else {
-            write(1, &s[i], 1);
+            write(fd, &s[i], 1);
         }
         i = i + 1;
     }
-    write(1, "\"", 1);
+    write(fd, "\"", 1);
 }
 
 // Estimate the 1-past-end column from the current token's lexeme length
@@ -26607,6 +26611,33 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     sym_pop_scope();
 }
 
+var g_gpu_emitted: i32 = 0;
+
+fn gpu_decision_prefix(kind: *u8) {
+    wr(2, "{\"schema\":\"traveler.device.v1\",\"kind\":\"");
+    wr(2, kind); wr(2, "\",\"target\":\"");
+    if g_gpu_target == 1 { wr(2, "nvptx"); } else { wr(2, "amdgcn"); }
+    wr(2, "\"");
+}
+
+fn gpu_worker_decision(wid: i32, owner: i32, body: i32, eligible: i32, reason: i32) {
+    gpu_decision_prefix("worker");
+    wr(2, ",\"worker\":"); wr_int(2, wid as i64);
+    wr(2, ",\"fn\":");
+    json_emit_escaped_fd(2, &g_strings[owner], str_len(&g_strings[owner]));
+    wr(2, ",\"line\":"); wr_int(2, g_nodes[body].line as i64);
+    wr(2, ",\"status\":\"");
+    if eligible == 1 { wr(2, "emitted"); } else { wr(2, "refused"); }
+    wr(2, "\",\"reason\":\"");
+    if eligible == 0 {
+        if reason == 3 { wr(2, "uncarried-call"); }
+        else if reason == 1 { wr(2, "i64-iterator"); }
+        else if reason == 2 { wr(2, "dynamic-field-carrier"); }
+        else { wr(2, "body-shape"); }
+    }
+    wr(2, "\"}\n");
+}
+
 fn emit_gpu_module() {
     if g_gpu_target == 2 {
         emit_agx_module();
@@ -26905,6 +26936,7 @@ fn emit_gpu_module() {
             }
         }
 
+        gpu_worker_decision(wid, owner_fn, body_node, eligible, skip_reason);
         roff = roff + ncaps * 4;
         g_gen_nsub = saved_gen_nsub;
         w = w + 1;
@@ -26924,6 +26956,14 @@ fn emit_gpu_module() {
     if nemitted == 0 {
         ir_wr("; (no elementwise-class prime-field pfor workers emitted)\n");
     }
+    g_gpu_emitted = nemitted;
+    gpu_decision_prefix("module");
+    wr(2, ",\"candidates\":"); wr_int(2, g_npfor_workers as i64);
+    wr(2, ",\"emitted\":"); wr_int(2, nemitted as i64);
+    wr(2, ",\"refused\":"); wr_int(2, (g_npfor_workers - nemitted) as i64);
+    wr(2, ",\"reason\":\"");
+    if nemitted == 0 { wr(2, "no-usable-workers"); }
+    wr(2, "\"}\n");
 }
 
 // ===== CLOSURE LIFTED-FN EMISSION (deferred) =====
@@ -43050,6 +43090,43 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
         close(g_ir_fd);
         if g_diag_count > 0 {
             exit(1);
+        }
+        if g_gpu_target < 2 {
+            let stream: *u8 = tmpfile();
+            if stream == null { wr(2, "error: cannot open temporary device output\n"); exit(1); }
+            g_ir_fd = fileno(stream);
+            if g_ir_fd < 0 { fclose(stream); exit(1); }
+            g_ir_write_failed = 0;
+            emit_gpu_module();
+            if g_gpu_emitted == 0 || g_diag_count > 0 || g_ir_write_failed != 0 {
+                fclose(stream);
+                wr(2, "error: device emission failed; no output published\n");
+                exit(1);
+            }
+            if output_path != null {
+                let staged: *u8 = drv_materialize_raw(stream, output_path);
+                if staged == null { wr(2, "error: cannot stage device output\n"); exit(1); }
+                if drv_publish(staged, output_path, 0) != 0 { unlink(staged); exit(1); }
+                free(staged);
+            } else {
+                if fseek(stream, 0, 2) != 0 { fclose(stream); exit(1); }
+                let size: i64 = ftell(stream);
+                if size < 0 || fseek(stream, 0, 0) != 0 { fclose(stream); exit(1); }
+                let buf: *u8 = alloc(65536);
+                var left: i64 = size;
+                while left > 0 {
+                    var want: i64 = 65536;
+                    if left < want { want = left; }
+                    let got: i64 = fread(buf, 1, want, stream);
+                    if got != want || write_all(1, buf, got as i32) == 0 {
+                        free(buf); fclose(stream); exit(1);
+                    }
+                    left = left - got;
+                }
+                free(buf);
+                if fclose(stream) != 0 { exit(1); }
+            }
+            exit(0);
         }
         if output_path != null {
             g_ir_fd = creat(output_path, 438);

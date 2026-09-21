@@ -1759,7 +1759,6 @@ fi
 
 # ============================== AMDGCN leg (--emit-gpu) ======================
 K8_SRC="$REPO_DIR/tests/gpu/gpu_k8_private_dot.tv"
-PRIVATE_REFUSE_SRC="$REPO_DIR/tests/gpu/gpu_private_refuse.tv"
 if [ "$HAVE_AMD" = "1" ]; then
 echo "  -- AMDGCN (--emit-gpu)"
 
@@ -1933,37 +1932,9 @@ elif ! "$LLC" -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -filetype=obj \
 else
     echo "  ok   AMD Stage-1c batch dot: per-row phis + stores, gfx1100-lowered"
 fi
-# A6. Other proved private-mutable bodies stay outside the closed device class.
-PRIVATE_REFUSE_AMD="$TMP/gpu_private_refuse_amd.ll"
-if ! "$STAGE1" --emit-gpu "$PRIVATE_REFUSE_SRC" \
-        -o "$PRIVATE_REFUSE_AMD" 2>/dev/null; then
-    echo "  FAIL: AMD private-mutable refusal did not produce a module"; fail=1
-elif grep -q "define amdgpu_kernel" "$PRIVATE_REFUSE_AMD"; then
-    echo "  FAIL: AMD admitted a general private-mutable body"; fail=1
-elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
-        "$PRIVATE_REFUSE_AMD"; then
-    echo "  FAIL: AMD private-mutable refusal record absent"; fail=1
-else
-    echo "  ok   AMD general private-mutable body remains device-refused"
-fi
-
-# A6b. A pure user call in an elementwise body refuses at admission by name:
-#      the device module carries no user callees, so the call must never
-#      reach llc as a dangling symbol (Blackwell campaign report).
-CALL_REFUSE_SRC="$SCRIPT_DIR/gpu_elem_call_refuse.tv"
-CALL_REFUSE_AMD="$TMP/gpu_elem_call_refuse_amd.ll"
-if ! "$STAGE1" --emit-gpu "$CALL_REFUSE_SRC" \
-        -o "$CALL_REFUSE_AMD" 2>/dev/null; then
-    echo "  FAIL: AMD elementwise-call refusal did not produce a module"; fail=1
-elif grep -q "define amdgpu_kernel" "$CALL_REFUSE_AMD"; then
-    echo "  FAIL: AMD admitted an elementwise body with a user call"; fail=1
-elif grep -q "@dnq32r" "$CALL_REFUSE_AMD"; then
-    echo "  FAIL: AMD emitted a dangling user callee"; fail=1
-elif ! grep -q "call the device module does not carry" \
-        "$CALL_REFUSE_AMD"; then
-    echo "  FAIL: AMD elementwise-call refusal record absent"; fail=1
-else
-    echo "  ok   AMD elementwise user call refused at admission, named"
+# A6. Check named refusals, mixed modules, and transactional publication.
+if ! python3 "$SCRIPT_DIR/check_device_emission.py" "$STAGE1"; then
+    echo "  FAIL: Stage-0 device emission contract"; fail=1
 fi
 
 # A6c. Wide pointer elements (cap-elem Door 1): *i128/*i256 captures admit
@@ -2063,10 +2034,10 @@ fi
 # A13. Prefetch negatives: a mixed-assign let and a stored carried fetch
 # must stay off the device.
 PFN_DEV="$TMP/gpu_prefetch_refuse_amd.ll"
-if ! "$STAGE1" --emit-gpu "$SCRIPT_DIR/gpu_prefetch_refuse.tv" \
+if "$STAGE1" --emit-gpu "$SCRIPT_DIR/gpu_prefetch_refuse.tv" \
         -o "$PFN_DEV" 2>/dev/null; then
-    echo "  FAIL: prefetch negative catalogue did not produce a module"; fail=1
-elif grep -q "define amdgpu_kernel" "$PFN_DEV"; then
+    echo "  FAIL: prefetch negative catalogue returned success"; fail=1
+elif [ -e "$PFN_DEV" ]; then
     echo "  FAIL: prefetch negative catalogue reached the device"; fail=1
 else
     echo "  ok   prefetch negatives (mixed assign, stored prefetch) stay refused"
@@ -2316,55 +2287,6 @@ elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
     echo "  FAIL: NVPTX private K=8 dot did not lower for sm_90"; fail=1
 else
     echo "  ok   NVPTX private K=8 dot: proved, alloca-free, sm_90-lowered"
-fi
-
-PRIVATE_REFUSE_NV="$TMP/gpu_private_refuse_nv.ll"
-if ! "$STAGE1" --emit-gpu-nvptx "$PRIVATE_REFUSE_SRC" \
-        -o "$PRIVATE_REFUSE_NV" 2>/dev/null; then
-    echo "  FAIL: NVPTX private-mutable refusal did not produce a module"; fail=1
-elif grep -q "define ptx_kernel" "$PRIVATE_REFUSE_NV"; then
-    echo "  FAIL: NVPTX admitted a general private-mutable body"; fail=1
-elif ! grep -q "not the Stage-0 elementwise/private-K8 class" \
-        "$PRIVATE_REFUSE_NV"; then
-    echo "  FAIL: NVPTX private-mutable refusal record absent"; fail=1
-else
-    echo "  ok   NVPTX general private-mutable body remains device-refused"
-fi
-
-# N5b. The elementwise-call refusal stays target-neutral, and the refused
-#      module still lowers — no dangling user callee reaches llc.
-CALL_REFUSE_NV="$TMP/gpu_elem_call_refuse_nv.ll"
-CALL_REFUSE_PTX="$TMP/gpu_elem_call_refuse_nv.ptx"
-if ! "$STAGE1" --emit-gpu-nvptx "$CALL_REFUSE_SRC" \
-        -o "$CALL_REFUSE_NV" 2>/dev/null; then
-    echo "  FAIL: NVPTX elementwise-call refusal did not produce a module"; fail=1
-elif grep -q "define ptx_kernel" "$CALL_REFUSE_NV"; then
-    echo "  FAIL: NVPTX admitted an elementwise body with a user call"; fail=1
-elif grep -q "@dnq32r" "$CALL_REFUSE_NV"; then
-    echo "  FAIL: NVPTX emitted a dangling user callee"; fail=1
-elif ! grep -q "call the device module does not carry" \
-        "$CALL_REFUSE_NV"; then
-    echo "  FAIL: NVPTX elementwise-call refusal record absent"; fail=1
-elif ! "$LLC" -mtriple=nvptx64-nvidia-cuda -mcpu=sm_90 \
-        "$CALL_REFUSE_NV" -o "$CALL_REFUSE_PTX" 2>"$TMP/cr-llcnv.err"; then
-    echo "  FAIL: NVPTX refused module did not lower for sm_90"; fail=1
-else
-    echo "  ok   NVPTX elementwise user call refused at admission, named, sm_90-lowered"
-fi
-
-# N5c-i64. The other named skip reason: an i64-iterator pfor is CPU-parallel
-#      but outside the device class, and the record must say so.
-I64_ITER_SRC="$SCRIPT_DIR/gpu_i64_iter_refuse.tv"
-I64_ITER_NV="$TMP/gpu_i64_iter_refuse_nv.ll"
-if ! "$STAGE1" --emit-gpu-nvptx "$I64_ITER_SRC" \
-        -o "$I64_ITER_NV" 2>/dev/null; then
-    echo "  FAIL: NVPTX i64-iterator refusal did not produce a module"; fail=1
-elif grep -q "define ptx_kernel" "$I64_ITER_NV"; then
-    echo "  FAIL: NVPTX admitted an i64-iterator worker"; fail=1
-elif ! grep -q "i64 iterator: the SIMT identity is i32" "$I64_ITER_NV"; then
-    echo "  FAIL: NVPTX i64-iterator refusal record absent"; fail=1
-else
-    echo "  ok   NVPTX i64-iterator refusal names the reason"
 fi
 
 # N5c. The wide-element class lowers to real wide loads on NVPTX: i128 is a
@@ -2972,12 +2894,12 @@ done
 # Static closure identity restores CPU prove-through, but device modules do not
 # contain lifted closure bodies. Keep that context strictly outside all targets.
 PROOF1_CLOSURE_SRC="$REPO_DIR/examples/closure_prove_through.tv"
-if ! "$STAGE1" --emit-gpu "$PROOF1_CLOSURE_SRC" \
+if "$STAGE1" --emit-gpu "$PROOF1_CLOSURE_SRC" \
         -o "$TMP/proof1-closure-amd.ll" 2>/dev/null \
-   || grep -q 'define amdgpu_kernel' "$TMP/proof1-closure-amd.ll" \
-   || ! "$STAGE1" --emit-gpu-nvptx "$PROOF1_CLOSURE_SRC" \
+   || [ -e "$TMP/proof1-closure-amd.ll" ] \
+   || "$STAGE1" --emit-gpu-nvptx "$PROOF1_CLOSURE_SRC" \
         -o "$TMP/proof1-closure-nv.ll" 2>/dev/null \
-   || grep -q 'define ptx_kernel' "$TMP/proof1-closure-nv.ll" \
+   || [ -e "$TMP/proof1-closure-nv.ll" ] \
    || ! "$STAGE1" --emit-gpu-agx "$PROOF1_CLOSURE_SRC" \
         -o "$TMP/proof1-closure-agx.hex" 2>/dev/null \
    || grep -q '^worker __pfor_gpu_worker_' "$TMP/proof1-closure-agx.hex"; then
