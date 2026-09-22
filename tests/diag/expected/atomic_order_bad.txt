@@ -1,0 +1,4 @@
+atomic order must be one of relaxed, acquire, release, acq_rel, seq_cst
+atomic_order_bad.tv:5:5
+atomic_load(p, ord): ord is relaxed, acquire or seq_cst
+atomic_order_bad.tv:6:18

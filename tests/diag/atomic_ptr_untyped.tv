@@ -1,0 +1,6 @@
+// atomic_ptr_untyped.tv — the atomic operand needs a statically visible *T.
+fn main() -> i32 {
+    let s: i64 = 4;
+    let q: i64 = atomic_load(s, acquire);
+    return 0;
+}

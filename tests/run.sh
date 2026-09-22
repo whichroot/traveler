@@ -504,6 +504,13 @@ run_test global_array_init "$TIMEOUT_SINGLE"
 compile_obj_self defer_cleanup
 link_objs defer_cleanup defer_cleanup
 run_test defer_cleanup "$TIMEOUT_SINGLE"
+# Atomics gate: atomic_load/store/add/cas + fence with bare-identifier orders.
+# Two pthreads hand a token back and forth 10^6 times and publish payloads
+# under release/acquire; the counts are exact only if the orders hold.
+# tvc_self-only: the frozen seed has no atomic builtins.
+compile_obj_self atomics_basic
+link_objs atomics_basic atomics_basic
+run_test atomics_basic "$TIMEOUT_MULTI"
 # M3 gate: lib/mem arena (chunk-list growth never invalidates issued pointers)
 # + pool (handles survive realloc). The counterexamples are the point: the
 # arena's grown-over chunk still reads its values, and pool handles re-fetched

@@ -3173,6 +3173,41 @@ Field elements are naturally aligned:
 Arrays of field elements are contiguous with no padding between elements.
 This enables SIMD loads/stores for vectorized operations.
 
+### 12.6 Atomics
+
+Ordinary loads and stores through a pointer are plain: the compiler assumes
+no other thread touches the cell. Five builtins order memory between threads.
+Each takes a memory order as a bare identifier: `relaxed`, `acquire`,
+`release`, `acq_rel`, or `seq_cst`, with the C++/LLVM meaning.
+
+```
+atomic_load(p, ord) -> T             // ord: relaxed | acquire | seq_cst
+atomic_store(p, v, ord)              // ord: relaxed | release | seq_cst
+atomic_add(p, v, ord) -> T           // returns the old value, wraps at width
+atomic_cas(p, expect, new, ord) -> T // returns the old value; wrote iff old == expect
+fence(ord)                           // ord: acquire | release | acq_rel | seq_cst
+```
+
+`p` must have a statically visible element type: a value declared `*T`, or
+`&name[i]` / `&name` where `name` is declared `*T`, `[T; N]`, or `T`. `T` is
+an 8-, 16-, 32-, or 64-bit integer. Each access is single-copy atomic at the
+natural alignment of `T`; an unaligned `p` is undefined behavior, as in C.
+`atomic_cas` uses `ord` for success; the failure order drops the release half.
+
+Atomics are impure: a loop that calls one does not auto-parallelize, and
+device (GPU) emission refuses it. A user function named like a builtin shadows
+it, as for every other guarded builtin.
+
+```
+// Publish a payload: the release store orders the plain store before it;
+// the acquire load on the other thread orders the plain load after it.
+m[PAYLOAD] = value;
+atomic_store(&m[FLAG], seq, release);
+...
+while atomic_load(&m[FLAG], acquire) != seq { }
+let got: i64 = m[PAYLOAD];
+```
+
 ---
 
 ## 13. Module System

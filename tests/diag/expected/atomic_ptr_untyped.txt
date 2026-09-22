@@ -1,0 +1,2 @@
+atomic operand must have a declared *T pointer type
+atomic_ptr_untyped.tv:4:18

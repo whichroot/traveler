@@ -8469,6 +8469,78 @@ fn type_pointee(type_off: i32) -> i32 {
     return str_intern(&g_strings[type_off + 1]);
 }
 
+// Atomic builtin names: atomic_load/store/add/cas and fence.
+fn is_atomic_builtin(name: i32) -> i32 {
+    if str_eq(&g_strings[name], "atomic_load") == 1 { return 1; }
+    if str_eq(&g_strings[name], "atomic_store") == 1 { return 1; }
+    if str_eq(&g_strings[name], "atomic_add") == 1 { return 1; }
+    if str_eq(&g_strings[name], "atomic_cas") == 1 { return 1; }
+    if str_eq(&g_strings[name], "fence") == 1 { return 1; }
+    return 0;
+}
+
+// Memory-order argument: a bare identifier, spelled as in C++/LLVM.
+// 0 relaxed, 1 acquire, 2 release, 3 acq_rel, 4 seq_cst; -1 otherwise.
+fn atomic_order_of(node: i32) -> i32 {
+    if node <= 0 || node >= g_nnodes || g_nodes[node].kind != AST_IDENT { return 0 - 1; }
+    let s: *u8 = &g_strings[g_nodes[node].name0];
+    if str_eq(s, "relaxed") == 1 { return 0; }
+    if str_eq(s, "acquire") == 1 { return 1; }
+    if str_eq(s, "release") == 1 { return 2; }
+    if str_eq(s, "acq_rel") == 1 { return 3; }
+    if str_eq(s, "seq_cst") == 1 { return 4; }
+    return 0 - 1;
+}
+
+// LLVM spelling of a memory order; relaxed is `monotonic`.
+fn ir_wr_order(ord: i32) {
+    if ord == 0 { ir_wr("monotonic"); return; }
+    if ord == 1 { ir_wr("acquire"); return; }
+    if ord == 2 { ir_wr("release"); return; }
+    if ord == 3 { ir_wr("acq_rel"); return; }
+    ir_wr("seq_cst");
+}
+
+// Static element type of an atomic pointer expression: a value of declared
+// type *T, or &name[i] / &name where name is declared *T or [T; N] / T.
+// NULL_STR when the type is not visible statically.
+fn atomic_static_elem(node: i32, val_type: i32) -> i32 {
+    if type_is_ptr(val_type) == 1 { return type_pointee(val_type); }
+    if node <= 0 || node >= g_nnodes { return NULL_STR; }
+    if g_nodes[node].kind != AST_UNARY || g_nodes[node].op != OP_ADDR { return NULL_STR; }
+    var target: i32 = g_nodes[node].child0;
+    var indexed: i32 = 0;
+    if g_nodes[target].kind == AST_INDEX {
+        indexed = 1;
+        target = g_nodes[target].child0;
+    }
+    if g_nodes[target].kind != AST_IDENT { return NULL_STR; }
+    let si: i32 = sym_find(g_nodes[target].name0);
+    if si < 0 { return NULL_STR; }
+    let dt: i32 = resolve_type_sub(g_syms[si].type_off);
+    if indexed == 0 { return dt; }
+    if type_is_ptr(dt) == 1 { return type_pointee(dt); }
+    if type_is_array(dt) == 1 { return type_array_elem(dt); }
+    return NULL_STR;
+}
+
+// Atomic element type check: an integer T of 8..64 bits. Diagnoses and
+// returns i64 so one error does not cascade.
+fn atomic_elem_type(node: i32, val_type: i32, line: i32, col: i32) -> i32 {
+    let et: i32 = atomic_static_elem(node, val_type);
+    if et == NULL_STR {
+        diag_error_at(line, col, "atomic operand must have a declared *T pointer type");
+        return str_intern("i64");
+    }
+    let bits: i32 = type_bits(et);
+    if bits != 8 && bits != 16 && bits != 32 && bits != 64
+        || type_is_family(et) == 1 || type_is_ptr(et) == 1 {
+        diag_error_at(line, col, "atomic element type must be an 8/16/32/64-bit integer");
+        return str_intern("i64");
+    }
+    return et;
+}
+
 // Get the element type from an array type. "[u8; 16]" -> "u8".
 fn type_array_elem(type_off: i32) -> i32 {
     let s: *u8 = &g_strings[type_off];
@@ -12814,6 +12886,89 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             return IRValue { reg: uacc, type_off: str_intern("i32") };
         }
+        // Atomics: atomic_load(p, ord), atomic_store(p, v, ord),
+        // atomic_add(p, v, ord) -> old, atomic_cas(p, expect, new, ord) -> old,
+        // fence(ord). ord is a bare identifier. (design-notes/atomics.md "surface")
+        if is_atomic_builtin(call_name) == 1 && find_func(call_name) < 0 {
+            let at_ln: i32 = g_nodes[node].line;
+            let at_cl: i32 = g_nodes[node].col;
+            let at_n: i32 = g_nodes[node].nargs;
+            let at_ab: i32 = g_nodes[node].args_start;
+            let at_ord: i32 = atomic_order_of(g_args[at_ab + at_n - 1]);
+            if at_n < 1 || at_ord < 0 {
+                diag_error_at(at_ln, at_cl,
+                    "atomic order must be one of relaxed, acquire, release, acq_rel, seq_cst");
+            }
+            if str_eq(&g_strings[call_name], "fence") == 1 {
+                if at_n != 1 || at_ord == 0 {
+                    diag_error_at(at_ln, at_cl, "fence takes one order: acquire, release, acq_rel or seq_cst");
+                }
+                ir_wr("  fence "); ir_wr_order(at_ord); ir_wr("\n");
+                return IRValue { reg: 0, type_off: NULL_STR };
+            }
+            let at_p: IRValue = codegen_expr(g_args[at_ab], NULL_STR);
+            let at_et: i32 = atomic_elem_type(g_args[at_ab], at_p.type_off, at_ln, at_cl);
+            let at_align: i64 = (type_bits(at_et) / 8) as i64;
+            if str_eq(&g_strings[call_name], "atomic_load") == 1 {
+                if at_n != 2 || at_ord == 2 || at_ord == 3 {
+                    diag_error_at(at_ln, at_cl, "atomic_load(p, ord): ord is relaxed, acquire or seq_cst");
+                }
+                let lr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(lr); ir_wr(" = load atomic ");
+                ir_wr_type(at_et); ir_wr(", ptr "); ir_wr_reg(at_p.reg);
+                ir_wr(" "); ir_wr_order(at_ord);
+                ir_wr(", align "); ir_wr_int(at_align); ir_wr("\n");
+                return IRValue { reg: lr, type_off: at_et };
+            }
+            if str_eq(&g_strings[call_name], "atomic_store") == 1 {
+                if at_n != 3 || at_ord == 1 || at_ord == 3 {
+                    diag_error_at(at_ln, at_cl, "atomic_store(p, v, ord): ord is relaxed, release or seq_cst");
+                }
+                let sv: IRValue = codegen_expr(g_args[at_ab + 1], at_et);
+                let sr: i32 = emit_implicit_convert(sv.reg, sv.type_off, at_et);
+                ir_wr("  store atomic "); ir_wr_type(at_et); ir_wr(" ");
+                ir_wr_reg(sr); ir_wr(", ptr "); ir_wr_reg(at_p.reg);
+                ir_wr(" "); ir_wr_order(at_ord);
+                ir_wr(", align "); ir_wr_int(at_align); ir_wr("\n");
+                return IRValue { reg: 0, type_off: NULL_STR };
+            }
+            if str_eq(&g_strings[call_name], "atomic_add") == 1 {
+                if at_n != 3 {
+                    diag_error_at(at_ln, at_cl, "atomic_add(p, v, ord) takes three arguments");
+                }
+                let av: IRValue = codegen_expr(g_args[at_ab + 1], at_et);
+                let ar: i32 = emit_implicit_convert(av.reg, av.type_off, at_et);
+                let rr: i32 = ir_tmp();
+                ir_wr("  "); ir_wr_reg(rr); ir_wr(" = atomicrmw add ptr ");
+                ir_wr_reg(at_p.reg); ir_wr(", "); ir_wr_type(at_et); ir_wr(" ");
+                ir_wr_reg(ar); ir_wr(" "); ir_wr_order(at_ord);
+                ir_wr(", align "); ir_wr_int(at_align); ir_wr("\n");
+                return IRValue { reg: rr, type_off: at_et };
+            }
+            // atomic_cas: the failure order drops release (release->relaxed,
+            // acq_rel->acquire) as LLVM requires; the result is the old value.
+            if at_n != 4 {
+                diag_error_at(at_ln, at_cl, "atomic_cas(p, expect, new, ord) takes four arguments");
+            }
+            let ev: IRValue = codegen_expr(g_args[at_ab + 1], at_et);
+            let er: i32 = emit_implicit_convert(ev.reg, ev.type_off, at_et);
+            let nv: IRValue = codegen_expr(g_args[at_ab + 2], at_et);
+            let nr: i32 = emit_implicit_convert(nv.reg, nv.type_off, at_et);
+            var fail_ord: i32 = at_ord;
+            if at_ord == 2 { fail_ord = 0; }
+            if at_ord == 3 { fail_ord = 1; }
+            let cr: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(cr); ir_wr(" = cmpxchg ptr ");
+            ir_wr_reg(at_p.reg); ir_wr(", "); ir_wr_type(at_et); ir_wr(" ");
+            ir_wr_reg(er); ir_wr(", "); ir_wr_type(at_et); ir_wr(" ");
+            ir_wr_reg(nr); ir_wr(" "); ir_wr_order(at_ord);
+            ir_wr(" "); ir_wr_order(fail_ord);
+            ir_wr(", align "); ir_wr_int(at_align); ir_wr("\n");
+            let old: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(old); ir_wr(" = extractvalue { ");
+            ir_wr_type(at_et); ir_wr(", i1 } "); ir_wr_reg(cr); ir_wr(", 0\n");
+            return IRValue { reg: old, type_off: at_et };
+        }
         // field(p) / field(p, data_max) builtin: runtime Field carrier via
         // @__field_init (Miller-Rabin + Barrett). One-time per prime.
         if str_eq(&g_strings[call_name], "field") == 1
@@ -14708,6 +14863,8 @@ fn is_impure_builtin(name: i32) -> i32 {
     if str_eq(&g_strings[name], "malloc") == 1 { return 1; }
     if str_eq(&g_strings[name], "realloc") == 1 { return 1; }
     if str_eq(&g_strings[name], "free") == 1 { return 1; }
+    // Atomics order memory; the parallelizer refuses them (default-deny).
+    if is_atomic_builtin(name) == 1 { return 1; }
     return 0;
 }
 
@@ -14740,6 +14897,7 @@ fn call_may_use_builtin_precedence(call: i32) -> i32 {
     if str_eq(&g_strings[name], "advance") == 1 && nargs >= 1 { return 1; }
     if str_eq(&g_strings[name], "eval") == 1 && nargs >= 2 { return 1; }
     if str_eq(&g_strings[name], "signed") == 1 && nargs >= 1 { return 1; }
+    if is_atomic_builtin(name) == 1 && nargs >= 1 { return 1; }
     return 0;
 }
 
@@ -21704,6 +21862,9 @@ fn is_preamble_decl(name: i32) -> i32 {
     if str_eq(s, "putchar") == 1 { return 1; }
     if str_eq(s, "creat") == 1 { return 1; }
     if str_eq(s, "getenv") == 1 { return 1; }   // preamble declares it (pfor runtime)
+    // pfor runtime declares these as ptr-typed; user externs must match.
+    if str_eq(s, "pthread_create") == 1 { return 1; }
+    if str_eq(s, "pthread_join") == 1 { return 1; }
     return 0;
 }
 

@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// atomics_basic.tv — language-level atomics: atomic_load, atomic_store,
+// atomic_add, atomic_cas and fence, with a bare-identifier memory order.
+// tvc_self ONLY.
+//
+// Expected output:
+//   7        atomic_load after atomic_store
+//   7        atomic_add returns the old value
+//   12       and the cell holds old + 5
+//   12       failed cas returns the current value
+//   12       cell unchanged
+//   12       successful cas returns the old value
+//   99       cell holds the new value
+//   1        u8 lane: relaxed add wraps at 8 bits (255 + 2)
+//   1000000  two threads: each spins on a flag, adds 1, releases; sum is exact
+//   1        the consumer saw every payload the producer published
+
+// The pfor runtime preamble declares both with ptr-typed parameters.
+extern "C" fn pthread_create(t: *u8, attr: *u8, start: fn(*u8) -> *u8, arg: *u8) -> i32;
+extern "C" fn pthread_join(t: *u8, ret: **u8) -> i32;
+
+// Mailbox lanes: 0 flag, 1 payload, 2 counter, 3 seen_ok, 4 ack.
+let FLAG: i64 = 0;
+let PAYLOAD: i64 = 1;
+let COUNTER: i64 = 2;
+let SEEN_OK: i64 = 3;
+let ACK: i64 = 4;
+
+fn worker(arg: *u8) -> *u8 {
+    let m: *i64 = arg as *i64;
+    let flag: *i64 = &m[FLAG];
+    let counter: *i64 = &m[COUNTER];
+    var i: i64 = 0;
+    while i < 500000 {
+        // Spin until the other side hands the token over (1 == mine).
+        while atomic_load(flag, acquire) != 1 { }
+        let c: i64 = atomic_load(counter, relaxed);
+        atomic_store(counter, c + 1, relaxed);
+        atomic_store(flag, 0, release);
+        i = i + 1;
+    }
+    return null;
+}
+
+fn consumer(arg: *u8) -> *u8 {
+    let m: *i64 = arg as *i64;
+    let flag: *i64 = &m[FLAG];
+    var ok: i64 = 1;
+    var expect: i64 = 1;
+    while expect <= 10000 {
+        while atomic_load(flag, acquire) != expect { }
+        // The release on flag orders the payload store before this load.
+        if m[PAYLOAD] != expect * 3 { ok = 0; }
+        atomic_store(&m[ACK], expect, release);
+        expect = expect + 1;
+    }
+    atomic_store(&m[SEEN_OK], ok, release);
+    return null;
+}
+
+fn main() -> i32 {
+    let cell: *i64 = alloc(1);
+    atomic_store(cell, 7, seq_cst);
+    print(atomic_load(cell, seq_cst));            // 7
+    print(atomic_add(cell, 5, acq_rel));          // 7
+    print(atomic_load(cell, acquire));            // 12
+    print(atomic_cas(cell, 3, 99, seq_cst));      // 12 (fails)
+    print(atomic_load(cell, relaxed));            // 12
+    print(atomic_cas(cell, 12, 99, acq_rel));     // 12 (succeeds)
+    print(atomic_load(cell, acquire));            // 99
+    fence(seq_cst);
+
+    let lane: *u8 = alloc(1);
+    atomic_store(lane, 255, relaxed);
+    atomic_add(lane, 2, relaxed);
+    print(atomic_load(lane, relaxed) as i64);     // 1
+
+    // Ping-pong: main and a worker alternate ownership of a counter.
+    let m: *i64 = alloc(5);
+    let flag: *i64 = &m[FLAG];
+    let counter: *i64 = &m[COUNTER];
+    let t: **u8 = alloc(1);
+    pthread_create(t as *u8, null, &worker, m as *u8);
+    var i: i64 = 0;
+    while i < 500000 {
+        while atomic_load(flag, acquire) != 0 { }
+        let c: i64 = atomic_load(counter, relaxed);
+        atomic_store(counter, c + 1, relaxed);
+        atomic_store(flag, 1, release);
+        i = i + 1;
+    }
+    let ret: **u8 = alloc(1);
+    pthread_join(t[0], ret);
+    print(atomic_load(counter, acquire));         // 1000000
+
+    // Publish/subscribe: payload before flag, release/acquire pairs.
+    atomic_store(flag, 0, seq_cst);
+    pthread_create(t as *u8, null, &consumer, m as *u8);
+    var k: i64 = 1;
+    while k <= 10000 {
+        m[PAYLOAD] = k * 3;
+        atomic_store(flag, k, release);
+        while atomic_load(&m[ACK], acquire) != k { }
+        k = k + 1;
+    }
+    pthread_join(t[0], ret);
+    print(atomic_load(&m[SEEN_OK], acquire));     // 1
+    return 0;
+}
