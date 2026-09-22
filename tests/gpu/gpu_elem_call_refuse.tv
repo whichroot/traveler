@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// A pure user call in an elementwise body: sound for CPU dispatch, but the
-// device module carries no user callees — admission must refuse by name.
+// Conditional callees remain outside the scalar expression-return profile.
 
 fn dnq32r(x: i64) -> i64 {
+    if x < 0 { return 0; }
     return x * 3 + 1;
 }
 

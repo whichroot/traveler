@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Widen operands before multiplication; accumulation wraps at 512 bits.
+// Exact accumulation requires the caller's sum to fit the result type.
+fn wide_accumulate_i512(acc: i512, x: i256, y: i256) -> i512 {
+    return acc + (x as i512) * (y as i512);
+}
+
+fn wide_accumulate_u512(acc: u512, x: u256, y: u256) -> u512 {
+    return acc + (x as u512) * (y as u512);
+}

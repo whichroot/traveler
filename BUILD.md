@@ -304,9 +304,44 @@ The elementwise and blocked-dot device classes share one admission contract:
 | Leading bindings must be `var` | an immutable `let` stops the body scan (silent refusal) |
 | Index expressions are affine in the raw loop variables | computed index `let`s refuse; `div`/`mod` on the pfor variable are fine inline |
 | Dot-class assigns take accumulator arithmetic only | no calls, no loads; elementwise bodies take loads and arithmetic |
-| No user calls in device bodies | the device module carries no user callees; `udot4(a,b,c)` is the only admitted call spelling |
+| Device calls must have a supported expansion | flat integer elementwise workers admit the scalar-helper profile below; dot classes retain their closed call rules |
 | Rolled loop bound is a literal ≤ 128 | nested serial loops refuse; chunk partials and combine on the CPU when the accumulator is order-free |
-| i128/i256 element arrays and accumulators work | a `*i128` element load lowers to `ld.global.v2.b64` on NVPTX; wide scalar captures still refuse (the worker context slot is 8 bytes) |
+| i128/i256/i512 element arrays and accumulators work | wide memory operations lower into device limbs; wide scalar captures still refuse (the worker context slot is 8 bytes) |
+
+#### Scalar library calls and 512-bit accumulation
+
+NVPTX and AMDGCN can expand direct, nonrecursive integer helpers in flat
+elementwise workers before device emission. Imported helpers and nested calls
+work. Each helper must have one expression-return statement, integer parameters,
+and an integer return type. Its body may use those parameters, integer literals,
+casts, arithmetic, bitwise operations, shifts, comparisons, and supported nested
+calls. Arguments are evaluated once, in source order, including unused arguments.
+
+The initial profile covers signed/unsigned 8-, 16-, 32-, 64-, 128-, 256-, and
+512-bit integers plus `i1`. It excludes generic helpers, helper-local statements,
+conditional returns, short-circuit operators, pointer parameters, hidden memory
+reads, external/indirect calls, and field arithmetic. Division/remainder above
+64 bits and literal text exceeding 64 bits also refuse in this profile; wide
+values can come from memory, widening, or supported arithmetic. Expansion is
+bounded to 16 active calls, expression depth 64, 4096 expression visits, 4096
+typed nodes, and 256 live bindings. Unsupported calls retain `uncarried-call`
+decisions, with a located `device-call-refused` diagnostic explaining the class
+of refusal. Call-free workers keep their existing lowering path.
+
+`src/lib/core/wide_accum.tv` provides `wide_accumulate_i512` and
+`wide_accumulate_u512`. Both widen their 256-bit multiplicands before multiplying
+and adding to an explicit 512-bit accumulator. Accumulation wraps at 512 bits;
+an exact algorithm must establish that its sum fits the signed/unsigned result.
+These helpers expand into the device kernel rather than requiring a device
+library symbol. LLVM lowers the wide arithmetic into narrower instructions.
+
+Native compilation supports `i512`/`u512` storage, addition, subtraction,
+multiplication, bitwise operations, shifts, comparisons, conversions, and decimal
+printing. The evaluator still has 256-bit value boxes and explicitly
+refuses 512-bit values with `512-bit-eval`. The device-call gate uses Python
+big-integer oracles instead: it compares native CPU results and retargeted device
+arithmetic, verifies PTX has no external arithmetic calls, and checks AMD objects
+for undefined symbols. Retargeted execution does not replace GPU hardware tests.
 
 `--pfor-report` reports CPU worker admission: one JSONL record per loop with
 `dispatched` and a refusal `reason`. An admitted worker may still execute

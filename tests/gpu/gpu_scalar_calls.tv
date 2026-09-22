@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// Repeated and unused parameters retain single, ordered argument evaluation.
+fn scalar_twice(x: i64, unused: i64) -> i64 {
+    return x + x;
+}
+
+fn scalar_mix(x: i64) -> i64 {
+    return scalar_twice(x * 3 + 1, x / 7) ^ (x >> 5);
+}
+
+#[export]
+fn scalar_calls(input: *i64, output: *i64) {
+    for i in 0..2048 {
+        output[i] = scalar_mix(input[i]);
+    }
+}

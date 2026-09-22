@@ -168,6 +168,8 @@ let TOK_KW_DEFER: i32 = 95;  // `defer <stmt>;` — function-scoped exit cleanup
 let TOK_TY_BINT: i32 = 96;   // `Int<B>` — magnitude-bounded integer
 let TOK_TY_EXP: i32 = 97;    // `Exp<E>` — scale-typed integer (Q-format)
 let TOK_TY_FIX: i32 = 98;    // `Fix<B,E>` — bound-and-scale integer
+let TOK_TY_I512: i32 = 99;
+let TOK_TY_U512: i32 = 100;
 
 // Field kind constants
 let FIELD_KIND_PRIME: i32 = 0;
@@ -419,6 +421,8 @@ fn keyword_kind(text: *u8) -> i32 {
     if str_eq(text, "u128") == 1 { return TOK_TY_U128; }
     if str_eq(text, "i256") == 1 { return TOK_TY_I256; }
     if str_eq(text, "u256") == 1 { return TOK_TY_U256; }
+    if str_eq(text, "i512") == 1 { return TOK_TY_I512; }
+    if str_eq(text, "u512") == 1 { return TOK_TY_U512; }
     if str_eq(text, "usize") == 1 { return 37; }
     if str_eq(text, "bool") == 1 { return 38; }
     if str_eq(text, "Field") == 1 { return 39; }
@@ -5954,6 +5958,7 @@ var g_use_prelude: i32 = 0;
 // the double-dabble helpers. Non-wide programs stay byte-identical.
 var g_uses_print_i128: i32 = 0;
 var g_uses_print_i256: i32 = 0;
+var g_uses_print_i512: i32 = 0;
 
 // Append string to prelude or body buffer (called only when g_body_mode == 1).
 fn ir_buf_append(s: *u8) {
@@ -8110,6 +8115,8 @@ fn type_to_ir(type_off: i32) -> i32 {
     if str_eq(s, "u128") == 1 { return str_intern("i128"); }
     if str_eq(s, "i256") == 1 { return str_intern("i256"); }
     if str_eq(s, "u256") == 1 { return str_intern("i256"); }
+    if str_eq(s, "i512") == 1 { return str_intern("i512"); }
+    if str_eq(s, "u512") == 1 { return str_intern("i512"); }
     // Int<B> bounded integer -> i64 (bounds are erased at IR level)
     if type_is_bounded_int(type_off) == 1 { return str_intern("i64"); }
     // Exp<E> scale-typed integer -> i64 (scales are erased at IR level)
@@ -13135,6 +13142,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 if arg_bits > 64 {
                     if arg_bits == 128 { g_uses_print_i128 = 1; }
                     if arg_bits == 256 { g_uses_print_i256 = 1; }
+                    if arg_bits == 512 { g_uses_print_i512 = 1; }
                     ir_wr("  call void @__print_i"); ir_wr_int(arg_bits as i64);
                     ir_wr("(i"); ir_wr_int(arg_bits as i64); ir_wr(" ");
                     ir_wr_reg(arg.reg); ir_wr(", i1 ");
@@ -15777,6 +15785,8 @@ fn pfor_prim_int_wide(type_off: i32) -> i32 {
     if str_eq(s, "u128") == 1 { return 1; }
     if str_eq(s, "i256") == 1 { return 1; }
     if str_eq(s, "u256") == 1 { return 1; }
+    if str_eq(s, "i512") == 1 { return 1; }
+    if str_eq(s, "u512") == 1 { return 1; }
     return 0;
 }
 
@@ -21816,10 +21826,11 @@ fn emit_wide_print_one(nbits: i32, ndigits: i32) {
 // Emit the wide decimal print runtime lazily (only widths actually used);
 // a program printing no wide value carries none of this.
 fn emit_wide_print() {
-    if g_uses_print_i128 == 0 && g_uses_print_i256 == 0 { return; }
+    if g_uses_print_i128 == 0 && g_uses_print_i256 == 0 && g_uses_print_i512 == 0 { return; }
     ir_wr("@.fmt_wides = private constant [4 x i8] c\"%s\\0A\\00\"\n");
     if g_uses_print_i128 == 1 { emit_wide_print_one(128, 39); }
     if g_uses_print_i256 == 1 { emit_wide_print_one(256, 78); }
+    if g_uses_print_i512 == 1 { emit_wide_print_one(512, 155); }
 }
 
 // ===== EXTERN DECLARATION EMISSION =====
@@ -26786,6 +26797,386 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
     sym_pop_scope();
 }
 
+// (design-notes/device-call-expansion.md "Required semantic contract")
+// A private, ordered EIR arena keeps failed expansion out of other workers.
+struct DeviceScalarPlan {
+    nodes: *EIRNode,
+    count: i32,
+    work: i32,
+    names: *i32,
+    values: *i32,
+    bindings: i32,
+    floor: i32,
+    stack: *i32,
+    calls: i32,
+    reason: i32,
+    source: i32,
+}
+
+fn device_scalar_type(t: i32) -> i32 {
+    if t == NULL_STR { return 0; }
+    let s: *u8 = &g_strings[t];
+    if str_eq(s, "i1") == 1 || str_eq(s, "i8") == 1 || str_eq(s, "u8") == 1
+        || str_eq(s, "i16") == 1 || str_eq(s, "u16") == 1
+        || str_eq(s, "i32") == 1 || str_eq(s, "u32") == 1
+        || str_eq(s, "i64") == 1 || str_eq(s, "u64") == 1
+        || str_eq(s, "i128") == 1 || str_eq(s, "u128") == 1
+        || str_eq(s, "i256") == 1 || str_eq(s, "u256") == 1
+        || str_eq(s, "i512") == 1 || str_eq(s, "u512") == 1 { return 1; }
+    return 0;
+}
+
+fn device_scalar_fail(P: *DeviceScalarPlan, reason: i32, source: i32) -> i32 {
+    if P.reason == 0 {
+        P.reason = reason;
+        if source > 0 { P.source = source; }
+    }
+    return 0 - 1;
+}
+
+fn device_scalar_node(P: *DeviceScalarPlan, kind: i32, t: i32, source: i32) -> i32 {
+    if P.reason != 0 { return 0 - 1; }
+    if P.count >= 4096 { return device_scalar_fail(P, 4, source); }
+    let e: i32 = P.count;
+    P.count = e + 1;
+    P.nodes[e] = EIRNode { kind: kind, op: 0, alg: 0 - 1,
+        a: 0 - 1, b: 0 - 1, c: 0 - 1, nargs: 0, args_start: 0,
+        type_off: t, aux_type: NULL_STR, ival: 0,
+        line: g_nodes[source].line, col: g_nodes[source].col };
+    return e;
+}
+
+fn device_scalar_bind(P: *DeviceScalarPlan, name: i32, value: i32) -> i32 {
+    if value < 0 { return 0; }
+    if P.bindings >= 256 { device_scalar_fail(P, 4, 0); return 0; }
+    P.names[P.bindings] = name;
+    P.values[P.bindings] = value;
+    P.bindings = P.bindings + 1;
+    return 1;
+}
+
+fn device_scalar_find(P: *DeviceScalarPlan, name: i32) -> i32 {
+    var i: i32 = P.bindings - 1;
+    while i >= P.floor {
+        if P.names[i] == name { return P.values[i]; }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+fn device_scalar_convert(P: *DeviceScalarPlan, e: i32, t: i32, source: i32) -> i32 {
+    if e < 0 { return 0 - 1; }
+    if device_scalar_type(t) == 0 || device_scalar_type(P.nodes[e].type_off) == 0 {
+        return device_scalar_fail(P, 2, source);
+    }
+    if P.nodes[e].type_off == t { return e; }
+    let out: i32 = device_scalar_node(P, EIR_CAST, t, source);
+    if out < 0 { return out; }
+    P.nodes[out].a = e;
+    P.nodes[out].aux_type = P.nodes[e].type_off;
+    return out;
+}
+
+fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> i32 {
+    if P.reason != 0 { return 0 - 1; }
+    P.work = P.work + 1;
+    if depth > 64 || P.work > 4096 { return device_scalar_fail(P, 4, node); }
+    if node <= 0 { return device_scalar_fail(P, 3, 0); }
+    let kind: i32 = g_nodes[node].kind;
+    if kind == AST_IDENT {
+        let e: i32 = device_scalar_find(P, g_nodes[node].name0);
+        if e < 0 { return device_scalar_fail(P, 3, node); }
+        return e;
+    }
+    if kind == AST_LIT_INT || kind == AST_LIT_BOOL {
+        var t: i32 = ctx;
+        if t == NULL_STR { t = str_intern("i32"); }
+        if kind == AST_LIT_BOOL { t = str_intern("i1"); }
+        if device_scalar_type(t) == 0 { return device_scalar_fail(P, 2, node); }
+        if kind == AST_LIT_INT && g_nodes[node].name0 != NULL_STR {
+            if lit_text_overflows_u64(&g_strings[g_nodes[node].name0]) == 1 {
+                return device_scalar_fail(P, 2, node);
+            }
+        }
+        let e: i32 = device_scalar_node(P, EIR_CONST, t, node);
+        if e >= 0 { P.nodes[e].ival = g_nodes[node].int_val; }
+        return e;
+    }
+    if kind == AST_CAST {
+        let t: i32 = g_nodes[node].name0;
+        if device_scalar_type(t) == 0 { return device_scalar_fail(P, 2, node); }
+        let inner: i32 = g_nodes[node].child0;
+        var inner_ctx: i32 = NULL_STR;
+        if g_nodes[inner].kind == AST_LIT_INT && g_nodes[inner].int_val >= 2147483648
+            && type_bits(t) >= 64 { inner_ctx = t; }
+        return device_scalar_convert(P, device_scalar_expr(P, inner, inner_ctx, depth + 1), t, node);
+    }
+    if kind == AST_INDEX {
+        if P.calls != 0 || g_nodes[g_nodes[node].child0].kind != AST_IDENT {
+            return device_scalar_fail(P, 3, node);
+        }
+        let idx: i32 = device_scalar_expr(P, g_nodes[node].child1, str_intern("i32"), depth + 1);
+        let i64idx: i32 = device_scalar_convert(P, idx, str_intern("i64"), node);
+        let base: i32 = device_scalar_expr(P, g_nodes[node].child0, NULL_STR, depth + 1);
+        if base < 0 || i64idx < 0 { return 0 - 1; }
+        if type_is_ptr(P.nodes[base].type_off) == 0 { return device_scalar_fail(P, 2, node); }
+        let t: i32 = type_pointee(P.nodes[base].type_off);
+        if device_scalar_type(t) == 0 { return device_scalar_fail(P, 2, node); }
+        let e: i32 = device_scalar_node(P, EIR_INDEX, t, node);
+        if e >= 0 { P.nodes[e].a = base; P.nodes[e].b = i64idx; }
+        return e;
+    }
+    if kind == AST_BINARY {
+        let op: i32 = g_nodes[node].op;
+        if op == OP_POW || op == OP_AND || op == OP_OR {
+            return device_scalar_fail(P, 3, node);
+        }
+        var lctx: i32 = ctx;
+        if op >= OP_EQ && op <= OP_GE && ctx == str_intern("i1") { lctx = str_intern("i32"); }
+        var a: i32 = device_scalar_expr(P, g_nodes[node].child0, lctx, depth + 1);
+        if a < 0 { return a; }
+        var b: i32 = device_scalar_expr(P, g_nodes[node].child1, P.nodes[a].type_off, depth + 1);
+        if b < 0 { return b; }
+        var t: i32 = P.nodes[a].type_off;
+        if device_scalar_type(t) == 0 || device_scalar_type(P.nodes[b].type_off) == 0 {
+            return device_scalar_fail(P, 2, node);
+        }
+        if type_bits(t) < type_bits(P.nodes[b].type_off) { t = P.nodes[b].type_off; }
+        a = device_scalar_convert(P, a, t, node);
+        b = device_scalar_convert(P, b, t, node);
+        if a < 0 || b < 0 { return 0 - 1; }
+        if (op == OP_DIV || op == OP_MOD) && type_bits(t) > 64 {
+            return device_scalar_fail(P, 3, node);
+        }
+        if (op < OP_ADD || op > OP_GE) && op != OP_BITAND && op != OP_BITOR
+            && op != OP_BITXOR && op != OP_SHL && op != OP_SHR {
+            return device_scalar_fail(P, 3, node);
+        }
+        var rt: i32 = t;
+        if op >= OP_EQ && op <= OP_GE { rt = str_intern("i1"); }
+        let e: i32 = device_scalar_node(P, EIR_BIN, rt, node);
+        if e >= 0 { P.nodes[e].op = op; P.nodes[e].a = a; P.nodes[e].b = b; P.nodes[e].aux_type = t; }
+        return e;
+    }
+    if kind == AST_UNARY {
+        let op: i32 = g_nodes[node].op;
+        if op != OP_NEG && op != OP_BITNOT && op != OP_NOT { return device_scalar_fail(P, 3, node); }
+        let a: i32 = device_scalar_expr(P, g_nodes[node].child0, ctx, depth + 1);
+        if a < 0 { return a; }
+        let t: i32 = P.nodes[a].type_off;
+        if device_scalar_type(t) == 0 || (op == OP_NOT && t != str_intern("i1")) {
+            return device_scalar_fail(P, 2, node);
+        }
+        let e: i32 = device_scalar_node(P, EIR_UN, t, node);
+        if e >= 0 { P.nodes[e].a = a; P.nodes[e].op = op; }
+        return e;
+    }
+    if kind == AST_CALL { return device_scalar_call(P, node, depth + 1); }
+    return device_scalar_fail(P, 3, node);
+}
+
+fn device_scalar_call(P: *DeviceScalarPlan, node: i32, depth: i32) -> i32 {
+    let fi: i32 = find_func(g_nodes[node].name0);
+    if fi < 0 { return device_scalar_fail(P, 1, node); }
+    if g_funcs[fi].is_extern == 1 || g_funcs[fi].is_generic == 1
+        || g_funcs[fi].mono_concrete != NULL_STR || g_funcs[fi].purity_computed == 0
+        || g_funcs[fi].is_pure == 0 || g_funcs[fi].writes_arrays == 1
+        || g_funcs[fi].reads_arrays == 1 { return device_scalar_fail(P, 1, node); }
+    if P.calls >= 16 { return device_scalar_fail(P, 4, node); }
+    var i: i32 = 0;
+    while i < P.calls {
+        if P.stack[i] == fi { return device_scalar_fail(P, 1, node); }
+        i = i + 1;
+    }
+    let decl: i32 = g_funcs[fi].node;
+    let body: i32 = g_nodes[decl].child0;
+    let n: i32 = g_nodes[node].nargs;
+    let rt: i32 = g_funcs[fi].ret_type;
+    if n != g_nodes[decl].nargs || n > 16 || device_scalar_type(rt) == 0 {
+        return device_scalar_fail(P, 2, node);
+    }
+    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 {
+        return device_scalar_fail(P, 3, node);
+    }
+    let ret: i32 = g_args[g_nodes[body].args_start];
+    if g_nodes[ret].kind != AST_RETURN { return device_scalar_fail(P, 3, node); }
+    var actual: [i32; 16] = 0;
+    i = 0;
+    while i < n {
+        let param: i32 = g_args[g_nodes[decl].args_start + i];
+        let t: i32 = g_nodes[param].name1;
+        if device_scalar_type(t) == 0 { return device_scalar_fail(P, 2, node); }
+        let a: i32 = device_scalar_expr(P, g_args[g_nodes[node].args_start + i], t, depth + 1);
+        actual[i] = device_scalar_convert(P, a, t, node);
+        if actual[i] < 0 { return 0 - 1; }
+        i = i + 1;
+    }
+    let saved: i32 = P.bindings;
+    let floor: i32 = P.floor;
+    P.floor = saved;
+    P.stack[P.calls] = fi;
+    P.calls = P.calls + 1;
+    i = 0;
+    while i < n {
+        let param: i32 = g_args[g_nodes[decl].args_start + i];
+        device_scalar_bind(P, g_nodes[param].name0, actual[i]);
+        i = i + 1;
+    }
+    let value: i32 = device_scalar_expr(P, g_nodes[ret].child0, rt, depth + 1);
+    let result: i32 = device_scalar_convert(P, value, rt, node);
+    P.calls = P.calls - 1;
+    P.bindings = saved;
+    P.floor = floor;
+    return result;
+}
+
+fn device_scalar_free(P: *DeviceScalarPlan) {
+    free(P.nodes); free(P.names); free(P.values); free(P.stack);
+}
+
+fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
+    var i: i32 = 0;
+    while i < P.count {
+        let k: i32 = P.nodes[i].kind;
+        if k != EIR_LOCAL && k != EIR_CONST {
+            let a: i32 = P.nodes[i].a;
+            if a < 0 || a >= i { return 0; }
+            if k == EIR_CAST {
+                if P.nodes[i].aux_type != P.nodes[a].type_off { return 0; }
+            } else if k == EIR_BIN || k == EIR_INDEX || k == EIR_INDEX_ST {
+                let b: i32 = P.nodes[i].b;
+                if b < 0 || b >= i { return 0; }
+                if k == EIR_BIN {
+                    if P.nodes[a].type_off != P.nodes[i].aux_type
+                        || P.nodes[b].type_off != P.nodes[i].aux_type { return 0; }
+                } else {
+                    if type_is_ptr(P.nodes[a].type_off) == 0
+                        || type_pointee(P.nodes[a].type_off) != P.nodes[i].type_off
+                        || P.nodes[b].type_off != str_intern("i64") { return 0; }
+                }
+                if k == EIR_INDEX_ST {
+                    let c: i32 = P.nodes[i].c;
+                    if c < 0 || c >= i || P.nodes[c].type_off != P.nodes[i].type_off { return 0; }
+                }
+            } else if k != EIR_UN { return 0; }
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn device_scalar_prepare(P: *DeviceScalarPlan, body: i32, loop_name: i32,
+                         ncaps: i32, caps_base: i32) -> i32 {
+    P.nodes = alloc(4096); P.names = alloc(256); P.values = alloc(256); P.stack = alloc(16);
+    P.count = 0; P.work = 0; P.bindings = 0; P.floor = 0; P.calls = 0; P.reason = 0; P.source = body;
+    if g_gen_nsub != 0 || ncaps >= 255 { device_scalar_fail(P, 2, body); return 0; }
+    var ci: i32 = 0;
+    while ci < ncaps {
+        let t: i32 = g_pfor_workers[caps_base + ci * 4 + 1];
+        var ok: i32 = device_scalar_type(t);
+        if type_is_ptr(t) == 1 { ok = device_scalar_type(type_pointee(t)); }
+        if ok == 0 { device_scalar_fail(P, 2, body); return 0; }
+        let e: i32 = device_scalar_node(P, EIR_LOCAL, t, body);
+        P.nodes[e].a = ci;
+        device_scalar_bind(P, g_pfor_workers[caps_base + ci * 4], e);
+        ci = ci + 1;
+    }
+    let iter: i32 = device_scalar_node(P, EIR_LOCAL, str_intern("i32"), body);
+    P.nodes[iter].a = ncaps;
+    device_scalar_bind(P, loop_name, iter);
+    var si: i32 = 0;
+    while si < g_nodes[body].nargs && P.reason == 0 {
+        let st: i32 = g_args[g_nodes[body].args_start + si];
+        if g_nodes[st].kind != AST_INDEX_ASSIGN { device_scalar_fail(P, 3, st); return 0; }
+        let index: i32 = device_scalar_expr(P, g_nodes[st].child1, str_intern("i32"), 0);
+        let idx: i32 = device_scalar_convert(P, index, str_intern("i64"), st);
+        let base: i32 = device_scalar_expr(P, g_nodes[st].child0, NULL_STR, 0);
+        if base < 0 || idx < 0 { return 0; }
+        if type_is_ptr(P.nodes[base].type_off) == 0 { device_scalar_fail(P, 2, st); return 0; }
+        let t: i32 = type_pointee(P.nodes[base].type_off);
+        let val: i32 = device_scalar_expr(P, g_nodes[st].child2, t, 0);
+        let converted: i32 = device_scalar_convert(P, val, t, st);
+        if converted < 0 { return 0; }
+        let e: i32 = device_scalar_node(P, EIR_INDEX_ST, t, st);
+        if e < 0 { return 0; }
+        P.nodes[e].a = base; P.nodes[e].b = idx; P.nodes[e].c = converted;
+        si = si + 1;
+    }
+    if P.reason == 0 && device_scalar_verify(P) == 0 { device_scalar_fail(P, 3, body); }
+    return (P.reason == 0) as i32;
+}
+
+// Nodes are topologically ordered; even unused arguments execute once.
+// Capture and iterator nodes bind to the existing kernel envelope's registers.
+fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32) {
+    let regs: *i32 = alloc(P.count);
+    var i: i32 = 0;
+    while i < P.count {
+        let kind: i32 = P.nodes[i].kind;
+        let t: i32 = P.nodes[i].type_off;
+        if kind == EIR_LOCAL {
+            let slot: i32 = P.nodes[i].a;
+            if slot == ncaps { regs[i] = idx; }
+            else { regs[i] = g_syms[sym_find(g_pfor_workers[caps_base + slot * 4])].reg; }
+        } else if kind == EIR_CAST {
+            regs[i] = emit_implicit_convert(regs[P.nodes[i].a], P.nodes[i].aux_type, t);
+        } else if kind == EIR_INDEX || kind == EIR_INDEX_ST {
+            let ptr: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(ptr); ir_wr(" = getelementptr "); ir_wr_type(t);
+            ir_wr(", ptr "); ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", i64 "); ir_wr_reg(regs[P.nodes[i].b]); ir_wr("\n");
+            if kind == EIR_INDEX {
+                regs[i] = ir_tmp();
+                ir_wr("  "); ir_wr_reg(regs[i]); ir_wr(" = load "); ir_wr_type(t);
+                ir_wr(", ptr "); ir_wr_reg(ptr); ir_wr("\n");
+            } else {
+                ir_wr("  store "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(regs[P.nodes[i].c]);
+                ir_wr(", ptr "); ir_wr_reg(ptr); ir_wr("\n");
+            }
+        } else {
+            regs[i] = ir_tmp();
+            ir_wr("  "); ir_wr_reg(regs[i]); ir_wr(" = ");
+            if kind == EIR_CONST {
+                ir_wr("add "); ir_wr_type(t); ir_wr(" 0, "); ir_wr_u64(P.nodes[i].ival); ir_wr("\n");
+            } else if kind == EIR_UN {
+                if P.nodes[i].op == OP_NEG {
+                    ir_wr("sub "); ir_wr_type(t); ir_wr(" 0, "); ir_wr_reg(regs[P.nodes[i].a]);
+                } else {
+                    ir_wr("xor "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", -1");
+                }
+                ir_wr("\n");
+            } else if kind == EIR_BIN {
+                let op: i32 = P.nodes[i].op;
+                let ot: i32 = P.nodes[i].aux_type;
+                let signed: i32 = type_is_signed(ot);
+                if op == OP_ADD { ir_wr("add"); }
+                else if op == OP_SUB { ir_wr("sub"); }
+                else if op == OP_MUL { ir_wr("mul"); }
+                else if op == OP_DIV { if signed == 1 { ir_wr("sdiv"); } else { ir_wr("udiv"); } }
+                else if op == OP_MOD { if signed == 1 { ir_wr("srem"); } else { ir_wr("urem"); } }
+                else if op == OP_SHL { ir_wr("shl"); }
+                else if op == OP_SHR { if signed == 1 { ir_wr("ashr"); } else { ir_wr("lshr"); } }
+                else if op == OP_BITAND { ir_wr("and"); }
+                else if op == OP_BITOR { ir_wr("or"); }
+                else if op == OP_BITXOR { ir_wr("xor"); }
+                else {
+                    ir_wr("icmp ");
+                    if op == OP_EQ { ir_wr("eq"); }
+                    else if op == OP_NEQ { ir_wr("ne"); }
+                    else {
+                        if signed == 1 { ir_wr("s"); } else { ir_wr("u"); }
+                        if op == OP_LT { ir_wr("lt"); } else if op == OP_GT { ir_wr("gt"); }
+                        else if op == OP_LE { ir_wr("le"); } else { ir_wr("ge"); }
+                    }
+                }
+                ir_wr(" "); ir_wr_type(ot); ir_wr(" "); ir_wr_reg(regs[P.nodes[i].a]);
+                ir_wr(", "); ir_wr_reg(regs[P.nodes[i].b]); ir_wr("\n");
+            }
+        }
+        i = i + 1;
+    }
+    free(regs);
+}
+
 var g_gpu_emitted: i32 = 0;
 
 fn gpu_decision_prefix(kind: *u8) {
@@ -26902,6 +27293,9 @@ fn emit_gpu_module() {
         // skip_reason names the refusal in the skip record: 0 = body shape,
         // 1 = i64 iterator, 2 = dyn carrier capture, 3 = uncarried call.
         var skip_reason: i32 = 0;
+        let scalar_plan: *DeviceScalarPlan = alloc(1);
+        var scalar_prepared: i32 = 0;
+        var scalar_attempted: i32 = 0;
         let k8_private_dot: i32 = pfor_body_k8_private_dot(body_node);
         let blocked_dot: i32 = pfor_body_gpu_dot(body_node);
         var eligible: i32 = pfor_body_all_index_assign(body_node);
@@ -26911,8 +27305,9 @@ fn emit_gpu_module() {
         // class must not emit a call the device module does not carry.
         if eligible == 1 && k8_private_dot == 0 && blocked_dot == 0 {
             if pfor_body_elem_call_free(body_node) == 0 {
-                eligible = 0;
-                skip_reason = 3;
+                scalar_attempted = 1;
+                scalar_prepared = device_scalar_prepare(scalar_plan, body_node, loop_var_name, ncaps, caps_base);
+                if scalar_prepared == 0 { eligible = 0; skip_reason = 3; }
             }
         }
         // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2]/#[readonly]/
@@ -27081,6 +27476,8 @@ fn emit_gpu_module() {
                 codegen_gpu_k8_private_dot(body_node);
             } else if blocked_dot == 1 {
                 codegen_gpu_blocked_dot(body_node, wave_mapped, lane_reg);
+            } else if scalar_prepared == 1 {
+                device_scalar_emit(scalar_plan, ncaps, caps_base, idxr);
             } else {
                 codegen_stmt(body_node);
             }
@@ -27112,6 +27509,16 @@ fn emit_gpu_module() {
         }
 
         gpu_worker_decision(wid, owner_fn, body_node, eligible, skip_reason);
+        if scalar_attempted == 1 && scalar_prepared == 0 {
+            wr(2, "device-call-refused: ");
+            if scalar_plan.reason == 1 { wr(2, "callee"); }
+            else if scalar_plan.reason == 2 { wr(2, "type"); }
+            else if scalar_plan.reason == 4 { wr(2, "expansion-limit"); }
+            else { wr(2, "expression-shape"); }
+            wr(2, " at line "); wr_int(2, g_nodes[scalar_plan.source].line as i64); wr(2, "\n");
+        }
+        if scalar_attempted == 1 { device_scalar_free(scalar_plan); }
+        free(scalar_plan);
         roff = roff + ncaps * 4;
         g_gen_nsub = saved_gen_nsub;
         w = w + 1;
@@ -30387,6 +30794,14 @@ fn lw_agg_size(t: i32, line: i32, col: i32) -> i32 {
 // everything else refuses here — the refusal catalogue IS the coverage boundary.
 fn lw_check_scalar_type(t: i32, line: i32, col: i32) {
     if t == NULL_STR { return; }
+    var carrier: i32 = t;
+    while type_is_ptr(carrier) == 1 || type_is_array(carrier) == 1 {
+        if type_is_ptr(carrier) == 1 { carrier = type_pointee(carrier); }
+        else { carrier = type_array_elem(carrier); }
+    }
+    if carrier == str_intern("i512") || carrier == str_intern("u512") {
+        ev_refuse("512-bit-eval", line, col);
+    }
     // E2f: "dyn" is a covered 64-bit scalar (residue in an i64 register);
     // the bare "Field" carrier is a covered ptr scalar (ev_type_is_ptrish).
     if type_is_dyn(t) == 1 { return; }
@@ -30489,6 +30904,10 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
     let ln: i32 = g_nodes[node].line;
     let cl: i32 = g_nodes[node].col;
     let ctx_type: i32 = resolve_type_sub(ctx_type_in);
+
+    if ctx_type == str_intern("i512") || ctx_type == str_intern("u512") {
+        ev_refuse("512-bit-eval", ln, cl);
+    }
 
     // Closure literal (codegen_closure mirror): the /dev/null pass already
     // recorded the descriptor; the env is EIR_STRUCT_LIT-shaped (no new arm).

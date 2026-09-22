@@ -1936,6 +1936,14 @@ fi
 if ! python3 "$SCRIPT_DIR/check_device_emission.py" "$STAGE1"; then
     echo "  FAIL: Stage-0 device emission contract"; fail=1
 fi
+if [ "$HAVE_NV" = "1" ] && [ "$HAVE_AMD" = "1" ] && [ -n "$OPT" ] && [ "$HAVE_LINKER" = "1" ]; then
+    if ! python3 "$SCRIPT_DIR/check_scalar_calls.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+        echo "  FAIL: scalar device call expansion"
+        fail=1
+    fi
+else
+    echo "  SKIP: scalar device calls need NVPTX, AMDGCN, opt, and a linker"
+fi
 
 # A6c. Wide pointer elements (cap-elem Door 1): *i128/*i256 captures admit
 #      wide device loads; AGX fails closed through its own classifiers.

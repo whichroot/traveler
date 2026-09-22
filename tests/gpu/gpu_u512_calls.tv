@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/core/wide_accum.tv";
+
+#[export]
+fn unsigned_wide_calls(input: *u512, output: *u512) {
+    for i in 0..2048 {
+        output[i] = wide_accumulate_u512(input[i], (input[i] >> 256) as u256, input[i] as u256);
+    }
+}

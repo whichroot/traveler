@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Imported arithmetic expands into the device body with no external callee.
+import "../../src/lib/core/wide_accum.tv";
+
+fn finish512(value: i512) -> i512 {
+    return value + 1;
+}
+
+#[export]
+fn wide_calls(input: *i512, output: *i512) {
+    for i in 0..2048 {
+        output[i] = finish512(wide_accumulate_i512(input[i], (input[i] >> 256) as i256, input[i] as i256));
+    }
+}
