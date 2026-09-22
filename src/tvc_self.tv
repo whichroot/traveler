@@ -21862,9 +21862,23 @@ fn is_preamble_decl(name: i32) -> i32 {
     if str_eq(s, "putchar") == 1 { return 1; }
     if str_eq(s, "creat") == 1 { return 1; }
     if str_eq(s, "getenv") == 1 { return 1; }   // preamble declares it (pfor runtime)
-    // pfor runtime declares these as ptr-typed; user externs must match.
+    // The pfor runtime preamble declares these; a user extern must match.
     if str_eq(s, "pthread_create") == 1 { return 1; }
     if str_eq(s, "pthread_join") == 1 { return 1; }
+    if str_eq(s, "pthread_once") == 1 { return 1; }
+    if str_eq(s, "pthread_mutex_init") == 1 { return 1; }
+    if str_eq(s, "pthread_mutex_lock") == 1 { return 1; }
+    if str_eq(s, "pthread_mutex_unlock") == 1 { return 1; }
+    if str_eq(s, "pthread_cond_init") == 1 { return 1; }
+    if str_eq(s, "pthread_cond_wait") == 1 { return 1; }
+    if str_eq(s, "pthread_cond_signal") == 1 { return 1; }
+    if str_eq(s, "pthread_cond_broadcast") == 1 { return 1; }
+    if str_eq(s, "pthread_attr_init") == 1 { return 1; }
+    if str_eq(s, "pthread_attr_setstacksize") == 1 { return 1; }
+    if str_eq(s, "pthread_attr_destroy") == 1 { return 1; }
+    if str_eq(s, "sched_yield") == 1 { return 1; }
+    if str_eq(s, "sysconf") == 1 { return 1; }
+    if str_eq(s, "atoi") == 1 { return 1; }
     return 0;
 }
 
