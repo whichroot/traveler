@@ -524,6 +524,16 @@ run_test mem_arena_pool "$TIMEOUT_SINGLE"
 compile_obj_self dax_region
 link_objs dax_region dax_region
 run_test dax_region "$TIMEOUT_SINGLE"
+# Optimize polling loops so ordinary loads cannot pass as atomic reads.
+if [ -n "$OPT" ] && [ "$HAVE_LLC" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
+    "$TVC_SELF" "$EXAMPLES/dax_atomics.tv" -o "$TMPDIR/dax_atomics.ll"
+    "$OPT" -passes='default<O2>,verify' -S "$TMPDIR/dax_atomics.ll" -o "$TMPDIR/dax_atomics.opt.ll"
+    "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/dax_atomics.opt.ll" -o "$TMPDIR/dax_atomics.o"
+    link_objs dax_atomics dax_atomics
+else
+    mark_skip dax_atomics "opt/llc/linker"
+fi
+run_test dax_atomics "$TIMEOUT_MULTI"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.

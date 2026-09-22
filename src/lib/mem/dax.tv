@@ -256,8 +256,8 @@ fn dax_view_slice(v: *DaxView, rel: i64, length: i64) -> Result<DaxView, DaxErro
     return Result::Ok(DaxView { ptr: &v.ptr[rel], offset: v.offset + rel, length: length });
 }
 
-// Typed reads. Each is one naturally aligned load, so it is single-copy
-// atomic against a concurrent writer of the same cell (no torn value).
+// Relaxed atomic reads prevent tearing and preserve repeated observations.
+// Concurrent writers must use atomic stores of the same cell width.
 // Out-of-range or misaligned access traps (exit 96): a read that cannot be
 // defined must not be answered.
 fn dax_trap(what: *u8) {
@@ -274,31 +274,32 @@ fn dax_check_load(v: *DaxView, rel: i64, width: i64) {
 
 fn dax_load_u8(v: *DaxView, rel: i64) -> u8 {
     dax_check_load(v, rel, 1);
-    return v.ptr[rel];
+    let p: *u8 = &v.ptr[rel];
+    return atomic_load(p, relaxed);
 }
 
 fn dax_load_u16(v: *DaxView, rel: i64) -> u16 {
     dax_check_load(v, rel, 2);
     let p: *u16 = (&v.ptr[rel]) as *u16;
-    return p[0];
+    return atomic_load(p, relaxed);
 }
 
 fn dax_load_u32(v: *DaxView, rel: i64) -> u32 {
     dax_check_load(v, rel, 4);
     let p: *u32 = (&v.ptr[rel]) as *u32;
-    return p[0];
+    return atomic_load(p, relaxed);
 }
 
 fn dax_load_u64(v: *DaxView, rel: i64) -> u64 {
     dax_check_load(v, rel, 8);
     let p: *u64 = (&v.ptr[rel]) as *u64;
-    return p[0];
+    return atomic_load(p, relaxed);
 }
 
 fn dax_load_i64(v: *DaxView, rel: i64) -> i64 {
     dax_check_load(v, rel, 8);
     let p: *i64 = (&v.ptr[rel]) as *i64;
-    return p[0];
+    return atomic_load(p, relaxed);
 }
 
 // Acquire read of a 64-bit cell: pairs with a writer's release store, so
@@ -316,7 +317,8 @@ fn dax_copy(v: *DaxView, rel: i64, dst: *u8, n: i64) {
     if rel < 0 || rel > v.length - n { dax_trap("copy out of range"); }
     var i: i64 = 0;
     while i < n {
-        dst[i] = v.ptr[rel + i];
+        let p: *u8 = &v.ptr[rel + i];
+        dst[i] = atomic_load(p, relaxed);
         i = i + 1;
     }
 }
@@ -330,7 +332,7 @@ fn dax_xor64(v: *DaxView) -> u64 {
     var acc: u64 = 0;
     var i: i64 = 0;
     while i < n {
-        acc = acc ^ p[i];
+        acc = acc ^ atomic_load(&p[i], relaxed);
         i = i + 1;
     }
     return acc;

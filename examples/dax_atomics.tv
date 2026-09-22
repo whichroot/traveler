@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// Each reader must observe updates across optimized polling iterations.
+// The acknowledgement keeps the writer from advancing before all reads finish.
+import "../src/lib/mem/dax.tv";
+
+extern "C" fn pthread_create(t: *u8, attr: *u8, start: fn(*u8) -> *u8, arg: *u8) -> i32;
+extern "C" fn pthread_join(t: *u8, ret: **u8) -> i32;
+
+fn writer(arg: *u8) -> *u8 {
+    let cells: *u64 = arg as *u64;
+    var k: u64 = 1;
+    while k <= 100 {
+        atomic_store((&cells[0]) as *u8, k as u8, relaxed);
+        atomic_store((&cells[1]) as *u16, k as u16, relaxed);
+        atomic_store((&cells[2]) as *u32, k as u32, relaxed);
+        atomic_store(&cells[3], k, relaxed);
+        atomic_store((&cells[4]) as *i64, k as i64, relaxed);
+        atomic_store((&cells[5]) as *u8, k as u8, relaxed);
+        atomic_store(&cells[6], k, relaxed);
+        while atomic_load(&cells[7], acquire) != k {}
+        k = k + 1;
+    }
+    return null;
+}
+
+fn main() -> i32 {
+    let cells: *u64 = alloc(8);
+    var i: i32 = 0;
+    while i < 8 { cells[i] = 0; i = i + 1; }
+    var v: DaxView = DaxView { ptr: cells as *u8, offset: 0, length: 56 };
+    var word: DaxView = DaxView { ptr: (&cells[6]) as *u8, offset: 48, length: 8 };
+    let byte: *u8 = alloc(1);
+    let t: **u8 = alloc(1);
+    let ret: **u8 = alloc(1);
+    if pthread_create(t as *u8, null, &writer, cells as *u8) != 0 { return 1; }
+    var k: u64 = 1;
+    while k <= 100 {
+        while dax_load_u8(&v, 0) != k as u8 {}
+        while dax_load_u16(&v, 8) != k as u16 {}
+        while dax_load_u32(&v, 16) != k as u32 {}
+        while dax_load_u64(&v, 24) != k {}
+        while dax_load_i64(&v, 32) != k as i64 {}
+        dax_copy(&v, 40, byte, 1);
+        while byte[0] != k as u8 { dax_copy(&v, 40, byte, 1); }
+        while dax_xor64(&word) != k {}
+        atomic_store(&cells[7], k, release);
+        k = k + 1;
+    }
+    if pthread_join(t[0], ret) != 0 { return 1; }
+    print(1);
+    free(ret);
+    free(t);
+    free(byte);
+    free(cells);
+    return 0;
+}
