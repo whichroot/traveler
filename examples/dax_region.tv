@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dax_region.tv — the mem/dax read contract on an ordinary file standing in
+// for a device-DAX node: dax_attach with a 4 KiB alignment, aligned windows,
+// checked views, typed single-copy loads, discard, and the refusals.
+// tvc_self ONLY. On Jane the same calls run against /dev/dax0.0 via dax_open.
+//
+// Expected output:
+//   1        attach: 64 KiB file, 4 KiB align
+//   3        map at offset 4096 length 8192: first byte is page index 1 + 2
+//   4        view at device byte 8192 sees page 2 (+2)
+//   0        u64 at page start: bytes 02 02 02.. read back as the pattern
+//   1        u64 fingerprint of the view is stable across two reads
+//   1        acquire load equals the plain load
+//   2        BadOffset for a negative offset
+//   6        Unaligned for offset 100
+//   7        OutOfRange for a window past the end
+//   7        OutOfRange for a view past the region
+//   1        discard of the mapped window succeeds and bytes reread the same
+//   1        unmap ok
+//   1        a read-only device refuses dax_map_rw
+
+import "../src/lib/mem/dax.tv";
+import "../src/lib/fs/fs.tv";
+
+extern "C" fn ftruncate(fd: i32, length: i64) -> i32;
+
+fn err_code(e: DaxError) -> i32 {
+    match e {
+        DaxError::OpenFailed => { return 1; }
+        DaxError::SysfsFailed => { return 2; }
+        DaxError::BadAlign => { return 3; }
+        DaxError::BadOffset => { return 2; }
+        DaxError::BadLength => { return 5; }
+        DaxError::Unaligned => { return 6; }
+        DaxError::OutOfRange => { return 7; }
+        DaxError::MapFailed => { return 8; }
+        DaxError::UnmapFailed => { return 9; }
+        DaxError::DiscardFailed => { return 10; }
+    }
+    return 0;
+}
+
+// 16 pages; byte value in page k is k + 2.
+fn make_file(path: *u8) -> i32 {
+    let page: *u8 = alloc(4096);
+    match fs_open(path, "wb") {
+        Result::Ok(f) => {
+            var k: i32 = 0;
+            while k < 16 {
+                var i: i32 = 0;
+                while i < 4096 { page[i] = (k + 2) as u8; i = i + 1; }
+                match file_write(f, page, 4096) {
+                    Result::Ok(n) => {}
+                    Result::Err(e) => { return 0; }
+                }
+                k = k + 1;
+            }
+            match file_close(f) {
+                Result::Ok(n) => {}
+                Result::Err(e) => { return 0; }
+            }
+        }
+        Result::Err(e) => { return 0; }
+    }
+    free(page);
+    return 1;
+}
+
+fn main() -> i32 {
+    let path: *u8 = "/tmp/traveler_dax_region.bin";
+    if make_file(path) == 0 { print(0 - 1); return 1; }
+    let fd: i32 = open(path, 0);
+    var dev: DaxDevice = DaxDevice { fd: 0 - 1, writable: 0, size: 0, align: 0 };
+    match dax_attach(fd, 0, 65536, 4096) {
+        Result::Ok(d) => { dev = d; print(1); }
+        Result::Err(e) => { print(0 - err_code(e)); return 1; }
+    }
+
+    var region: DaxRegion = DaxRegion { base: null, offset: 0, length: 0, align: 0, writable: 0 };
+    match dax_map(&dev, 4096, 8192) {
+        Result::Ok(r) => { region = r; }
+        Result::Err(e) => { print(0 - err_code(e)); return 1; }
+    }
+    print(region.base[0] as i32);                       // 3
+
+    match dax_view(&region, 8192, 4096) {
+        Result::Ok(v0) => {
+            var v: DaxView = v0;
+            print(dax_load_u8(&v, 0) as i32);           // 4
+            let w: u64 = dax_load_u64(&v, 8);
+            print((w != 289360691352306692) as i32);    // 0 (0x0404040404040404)
+            let f1: u64 = dax_xor64(&v);
+            let f2: u64 = dax_xor64(&v);
+            print((f1 == f2) as i32);                   // 1
+            print((dax_load_acquire_u64(&v, 16) == w) as i32); // 1
+        }
+        Result::Err(e) => { print(0 - err_code(e)); return 1; }
+    }
+
+    match dax_map(&dev, 0 - 4096, 4096) {
+        Result::Ok(r) => { print(0); }
+        Result::Err(e) => { print(err_code(e)); }       // 2
+    }
+    match dax_map(&dev, 100, 4096) {
+        Result::Ok(r) => { print(0); }
+        Result::Err(e) => { print(err_code(e)); }       // 6
+    }
+    match dax_map(&dev, 61440, 8192) {
+        Result::Ok(r) => { print(0); }
+        Result::Err(e) => { print(err_code(e)); }       // 7
+    }
+    match dax_view(&region, 8192, 8192) {
+        Result::Ok(v) => { print(0); }
+        Result::Err(e) => { print(err_code(e)); }       // 7
+    }
+
+    match dax_discard(&region, 4096, 8192) {
+        Result::Ok(n) => { print((region.base[4096] == 4) as i32); }  // 1
+        Result::Err(e) => { print(0 - err_code(e)); }
+    }
+    match dax_unmap(&region) {
+        Result::Ok(n) => { print(1); }
+        Result::Err(e) => { print(0 - err_code(e)); }
+    }
+    match dax_map_rw(&dev, 0, 4096) {
+        Result::Ok(r) => { print(0); }
+        Result::Err(e) => { print(1); }                 // 1
+    }
+    dax_close(&dev);
+    return 0;
+}

@@ -519,6 +519,11 @@ run_test atomics_basic "$TIMEOUT_MULTI"
 compile_obj_self mem_arena_pool
 link_objs mem_arena_pool mem_arena_pool
 run_test mem_arena_pool "$TIMEOUT_SINGLE"
+# mem/dax gate: aligned windows, checked views, typed single-copy loads,
+# discard, unmap, and the refusals, on a file that stands in for a DAX node.
+compile_obj_self dax_region
+link_objs dax_region dax_region
+run_test dax_region "$TIMEOUT_SINGLE"
 # #55 gate: the exact-2^63 literal (INT64_MIN bit pattern) + INT64_MIN print.
 # Pre-fix tvc_self SEGFAULTED on the literal (wr_int/fmt_i64 negate-overflow
 # recursion); the seed never had the bug -> dual-parity eligible.

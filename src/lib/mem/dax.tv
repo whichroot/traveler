@@ -1,0 +1,337 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: Matt Flores
+// dax.tv — bounded mappings of a Linux device-DAX character device.
+// A DaxDevice knows its capacity and alignment (sysfs). A DaxRegion owns one
+// MAP_SHARED mapping of an aligned window. A DaxView is a checked sub-window
+// for readers. Reads are the contract; a writable region is a separate,
+// explicit call. tvc_self ONLY. (design-notes/dax.md "read contract")
+
+import "../core/result.tv";
+
+extern "C" fn open(path: *u8, flags: i32) -> i32;
+extern "C" fn close(fd: i32) -> i32;
+extern "C" fn read(fd: i32, buf: *u8, n: i64) -> i64;
+extern "C" fn mmap(addr: *u8, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *u8;
+extern "C" fn munmap(addr: *u8, length: usize) -> i32;
+extern "C" fn madvise(addr: *u8, length: usize, advice: i32) -> i32;
+extern "C" fn write(fd: i32, buf: *u8, n: usize) -> i64;
+extern "C" fn exit(code: i32);
+
+enum DaxError {
+    OpenFailed,
+    SysfsFailed,
+    BadAlign,
+    BadOffset,
+    BadLength,
+    Unaligned,
+    OutOfRange,
+    MapFailed,
+    UnmapFailed,
+    DiscardFailed,
+}
+
+// fd is open read-only unless dax_open_rw was used (writable = 1).
+struct DaxDevice {
+    fd: i32,
+    writable: i32,
+    size: i64,
+    align: i64,
+}
+
+// One mapping: base covers [offset, offset + length) of the device.
+struct DaxRegion {
+    base: *u8,
+    offset: i64,
+    length: i64,
+    align: i64,
+    writable: i32,
+}
+
+// A checked window inside a region: ptr covers `length` bytes at device
+// byte `offset`. Views do not own the mapping.
+struct DaxView {
+    ptr: *u8,
+    offset: i64,
+    length: i64,
+}
+
+let DAX_PROT_READ: i32 = 1;
+let DAX_PROT_WRITE: i32 = 2;
+let DAX_MAP_SHARED: i32 = 1;
+let DAX_MADV_DONTNEED: i32 = 4;
+let DAX_O_RDONLY: i32 = 0;
+let DAX_O_RDWR: i32 = 2;
+
+fn dax_cstr_len(s: *u8) -> i32 {
+    var n: i32 = 0;
+    while s[n] != 0 { n = n + 1; }
+    return n;
+}
+
+// Read a decimal integer from a sysfs attribute file. -1 on failure.
+fn dax_sysfs_dec(path: *u8) -> i64 {
+    let fd: i32 = open(path, DAX_O_RDONLY);
+    if fd < 0 { return 0 - 1; }
+    let buf: *u8 = alloc(64);
+    let n: i64 = read(fd, buf, 63);
+    close(fd);
+    if n <= 0 { free(buf); return 0 - 1; }
+    var v: i64 = 0;
+    var i: i64 = 0;
+    var digits: i64 = 0;
+    while i < n {
+        let c: u8 = buf[i];
+        if c >= 48 && c <= 57 {
+            v = v * 10 + ((c - 48) as i64);
+            digits = digits + 1;
+        } else if c != 10 && c != 32 {
+            free(buf);
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    free(buf);
+    if digits == 0 { return 0 - 1; }
+    return v;
+}
+
+// "/sys/bus/dax/devices/<basename(dev_path)>/<attr>" into a fresh buffer.
+fn dax_sysfs_path(dev_path: *u8, attr: *u8) -> *u8 {
+    let prefix: *u8 = "/sys/bus/dax/devices/";
+    let plen: i32 = dax_cstr_len(prefix);
+    let dlen: i32 = dax_cstr_len(dev_path);
+    var start: i32 = 0;
+    var i: i32 = 0;
+    while i < dlen {
+        if dev_path[i] == 47 { start = i + 1; }
+        i = i + 1;
+    }
+    let alen: i32 = dax_cstr_len(attr);
+    let out: *u8 = alloc(plen + (dlen - start) + 1 + alen + 1);
+    var o: i32 = 0;
+    i = 0;
+    while i < plen { out[o] = prefix[i]; o = o + 1; i = i + 1; }
+    i = start;
+    while i < dlen { out[o] = dev_path[i]; o = o + 1; i = i + 1; }
+    out[o] = 47;
+    o = o + 1;
+    i = 0;
+    while i < alen { out[o] = attr[i]; o = o + 1; i = i + 1; }
+    out[o] = 0;
+    return out;
+}
+
+fn dax_pow2(v: i64) -> i32 {
+    if v <= 0 { return 0; }
+    if (v & (v - 1)) != 0 { return 0; }
+    return 1;
+}
+
+// Attach an already-open descriptor with known capacity and alignment.
+// This is the core; dax_open discovers size/align from sysfs and calls it.
+fn dax_attach(fd: i32, writable: i32, size: i64, align: i64) -> Result<DaxDevice, DaxError> {
+    if fd < 0 { return Result::Err(DaxError::OpenFailed); }
+    if dax_pow2(align) == 0 { return Result::Err(DaxError::BadAlign); }
+    if size <= 0 || (size % align) != 0 { return Result::Err(DaxError::BadLength); }
+    return Result::Ok(DaxDevice { fd: fd, writable: writable, size: size, align: align });
+}
+
+fn dax_open_flags(path: *u8, flags: i32, writable: i32) -> Result<DaxDevice, DaxError> {
+    let sp: *u8 = dax_sysfs_path(path, "size");
+    let size: i64 = dax_sysfs_dec(sp);
+    free(sp);
+    let ap: *u8 = dax_sysfs_path(path, "align");
+    let align: i64 = dax_sysfs_dec(ap);
+    free(ap);
+    if size < 0 || align < 0 { return Result::Err(DaxError::SysfsFailed); }
+    let fd: i32 = open(path, flags);
+    if fd < 0 { return Result::Err(DaxError::OpenFailed); }
+    let r: Result<DaxDevice, DaxError> = dax_attach(fd, writable, size, align);
+    match r {
+        Result::Ok(d) => {}
+        Result::Err(e) => { close(fd); }
+    }
+    return r;
+}
+
+// Open a device-DAX node read-only, e.g. "/dev/dax0.0".
+fn dax_open(path: *u8) -> Result<DaxDevice, DaxError> {
+    return dax_open_flags(path, DAX_O_RDONLY, 0);
+}
+
+// Open read-write. Only a writer (a loader or a persistence layer) needs this.
+fn dax_open_rw(path: *u8) -> Result<DaxDevice, DaxError> {
+    return dax_open_flags(path, DAX_O_RDWR, 1);
+}
+
+fn dax_close(d: *DaxDevice) -> i32 {
+    if d.fd < 0 { return 0; }
+    let rc: i32 = close(d.fd);
+    d.fd = 0 - 1;
+    return rc;
+}
+
+// Reject a window that is not aligned, empty, or outside the device.
+fn dax_check_window(d: *DaxDevice, offset: i64, length: i64) -> i32 {
+    if offset < 0 { return 1; }
+    if length <= 0 { return 2; }
+    if (offset % d.align) != 0 || (length % d.align) != 0 { return 3; }
+    if offset > d.size - length { return 4; }
+    return 0;
+}
+
+fn dax_window_err(code: i32) -> DaxError {
+    if code == 1 { return DaxError::BadOffset; }
+    if code == 2 { return DaxError::BadLength; }
+    if code == 3 { return DaxError::Unaligned; }
+    return DaxError::OutOfRange;
+}
+
+fn dax_map_prot(d: *DaxDevice, offset: i64, length: i64, prot: i32, writable: i32) -> Result<DaxRegion, DaxError> {
+    let code: i32 = dax_check_window(d, offset, length);
+    if code != 0 { return Result::Err(dax_window_err(code)); }
+    let p: *u8 = mmap(null, length as usize, prot, DAX_MAP_SHARED, d.fd, offset);
+    if (p as i64) == (0 - 1) { return Result::Err(DaxError::MapFailed); }
+    return Result::Ok(DaxRegion { base: p, offset: offset, length: length, align: d.align, writable: writable });
+}
+
+// Map [offset, offset + length) read-only. Both must be align multiples.
+fn dax_map(d: *DaxDevice, offset: i64, length: i64) -> Result<DaxRegion, DaxError> {
+    return dax_map_prot(d, offset, length, DAX_PROT_READ, 0);
+}
+
+// Map read-write. Requires dax_open_rw; a read-only device refuses.
+fn dax_map_rw(d: *DaxDevice, offset: i64, length: i64) -> Result<DaxRegion, DaxError> {
+    if d.writable == 0 { return Result::Err(DaxError::MapFailed); }
+    return dax_map_prot(d, offset, length, DAX_PROT_READ | DAX_PROT_WRITE, 1);
+}
+
+fn dax_unmap(r: *DaxRegion) -> Result<i64, DaxError> {
+    if r.base == null { return Result::Ok(0); }
+    let rc: i32 = munmap(r.base, r.length as usize);
+    r.base = null;
+    if rc != 0 { return Result::Err(DaxError::UnmapFailed); }
+    return Result::Ok(0);
+}
+
+// Drop the kernel's per-page state for an aligned sub-window (MADV_DONTNEED).
+// The bytes on media are unchanged; the next access faults them back.
+fn dax_discard(r: *DaxRegion, offset: i64, length: i64) -> Result<i64, DaxError> {
+    if offset < r.offset { return Result::Err(DaxError::BadOffset); }
+    if length <= 0 { return Result::Err(DaxError::BadLength); }
+    if (offset % r.align) != 0 || (length % r.align) != 0 { return Result::Err(DaxError::Unaligned); }
+    if offset - r.offset > r.length - length { return Result::Err(DaxError::OutOfRange); }
+    let p: *u8 = &r.base[offset - r.offset];
+    if madvise(p, length as usize, DAX_MADV_DONTNEED) != 0 {
+        return Result::Err(DaxError::DiscardFailed);
+    }
+    return Result::Ok(0);
+}
+
+// A checked window [offset, offset + length) in device bytes; any byte range
+// inside the region is allowed. The view borrows the region's mapping.
+fn dax_view(r: *DaxRegion, offset: i64, length: i64) -> Result<DaxView, DaxError> {
+    if r.base == null { return Result::Err(DaxError::MapFailed); }
+    if offset < r.offset { return Result::Err(DaxError::BadOffset); }
+    if length <= 0 { return Result::Err(DaxError::BadLength); }
+    if offset - r.offset > r.length - length { return Result::Err(DaxError::OutOfRange); }
+    return Result::Ok(DaxView { ptr: &r.base[offset - r.offset], offset: offset, length: length });
+}
+
+// A view of the whole region.
+fn dax_view_all(r: *DaxRegion) -> Result<DaxView, DaxError> {
+    return dax_view(r, r.offset, r.length);
+}
+
+// The raw pointer for kernels. The caller keeps the view's length.
+fn dax_view_ptr(v: *DaxView) -> *u8 {
+    return v.ptr;
+}
+
+// Sub-view with a byte range relative to the view.
+fn dax_view_slice(v: *DaxView, rel: i64, length: i64) -> Result<DaxView, DaxError> {
+    if rel < 0 { return Result::Err(DaxError::BadOffset); }
+    if length <= 0 { return Result::Err(DaxError::BadLength); }
+    if rel > v.length - length { return Result::Err(DaxError::OutOfRange); }
+    return Result::Ok(DaxView { ptr: &v.ptr[rel], offset: v.offset + rel, length: length });
+}
+
+// Typed reads. Each is one naturally aligned load, so it is single-copy
+// atomic against a concurrent writer of the same cell (no torn value).
+// Out-of-range or misaligned access traps (exit 96): a read that cannot be
+// defined must not be answered.
+fn dax_trap(what: *u8) {
+    write(2, "dax: ", 5);
+    write(2, what, dax_cstr_len(what) as usize);
+    write(2, "\n", 1);
+    exit(96);
+}
+
+fn dax_check_load(v: *DaxView, rel: i64, width: i64) {
+    if rel < 0 || rel > v.length - width { dax_trap("load out of range"); }
+    if ((v.offset + rel) % width) != 0 { dax_trap("load misaligned"); }
+}
+
+fn dax_load_u8(v: *DaxView, rel: i64) -> u8 {
+    dax_check_load(v, rel, 1);
+    return v.ptr[rel];
+}
+
+fn dax_load_u16(v: *DaxView, rel: i64) -> u16 {
+    dax_check_load(v, rel, 2);
+    let p: *u16 = (&v.ptr[rel]) as *u16;
+    return p[0];
+}
+
+fn dax_load_u32(v: *DaxView, rel: i64) -> u32 {
+    dax_check_load(v, rel, 4);
+    let p: *u32 = (&v.ptr[rel]) as *u32;
+    return p[0];
+}
+
+fn dax_load_u64(v: *DaxView, rel: i64) -> u64 {
+    dax_check_load(v, rel, 8);
+    let p: *u64 = (&v.ptr[rel]) as *u64;
+    return p[0];
+}
+
+fn dax_load_i64(v: *DaxView, rel: i64) -> i64 {
+    dax_check_load(v, rel, 8);
+    let p: *i64 = (&v.ptr[rel]) as *i64;
+    return p[0];
+}
+
+// Acquire read of a 64-bit cell: pairs with a writer's release store, so
+// bytes the writer stored before the cell are visible after this returns.
+fn dax_load_acquire_u64(v: *DaxView, rel: i64) -> u64 {
+    dax_check_load(v, rel, 8);
+    let p: *u64 = (&v.ptr[rel]) as *u64;
+    return atomic_load(p, acquire);
+}
+
+// Copy n bytes out. Bytes are read one at a time; no atomicity across the
+// range is promised, only per-byte.
+fn dax_copy(v: *DaxView, rel: i64, dst: *u8, n: i64) {
+    if n < 0 { dax_trap("copy length"); }
+    if rel < 0 || rel > v.length - n { dax_trap("copy out of range"); }
+    var i: i64 = 0;
+    while i < n {
+        dst[i] = v.ptr[rel + i];
+        i = i + 1;
+    }
+}
+
+// XOR of every 8-byte word in the view: a cheap whole-view fingerprint.
+// Requires an 8-aligned view with an 8-multiple length.
+fn dax_xor64(v: *DaxView) -> u64 {
+    if (v.offset % 8) != 0 || (v.length % 8) != 0 { dax_trap("xor64 alignment"); }
+    let p: *u64 = v.ptr as *u64;
+    let n: i64 = v.length / 8;
+    var acc: u64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        acc = acc ^ p[i];
+        i = i + 1;
+    }
+    return acc;
+}
