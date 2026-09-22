@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Author: Matt Flores
 // dax_region.tv — the mem/dax read contract on an ordinary file standing in
-// for a device-DAX node: dax_attach with a 4 KiB alignment, aligned windows,
+// for a device-DAX node: dax_attach with native page alignment, aligned windows,
 // checked views, typed single-copy loads, discard, and the refusals.
 // tvc_self ONLY. On Jane the same calls run against /dev/dax0.0 via dax_open.
 //
 // Expected output:
-//   1        attach: 64 KiB file, 4 KiB align
-//   3        map at offset 4096 length 8192: first byte is page index 1 + 2
-//   4        view at device byte 8192 sees page 2 (+2)
-//   0        u64 at page start: bytes 02 02 02.. read back as the pattern
+//   1        attach: 16-page file, native page alignment
+//   3        map pages 1 and 2: first byte is page index 1 + 2
+//   4        view of page 2 sees page index 2 (+2)
+//   0        u64 at page start: bytes 04 04 04.. read back as the pattern
 //   1        u64 fingerprint of the view is stable across two reads
-//   1        acquire load equals the plain load
+//   1        acquire load equals the relaxed load
 //   2        BadOffset for a negative offset
 //   6        Unaligned for offset 100
 //   7        OutOfRange for a window past the end
@@ -23,7 +23,7 @@
 import "../src/lib/mem/dax.tv";
 import "../src/lib/fs/fs.tv";
 
-extern "C" fn ftruncate(fd: i32, length: i64) -> i32;
+extern "C" fn getpagesize() -> i32;
 
 fn err_code(e: DaxError) -> i32 {
     match e {
@@ -42,15 +42,15 @@ fn err_code(e: DaxError) -> i32 {
 }
 
 // 16 pages; byte value in page k is k + 2.
-fn make_file(path: *u8) -> i32 {
-    let page: *u8 = alloc(4096);
+fn make_file(path: *u8, page_size: i64) -> i32 {
+    let page: *u8 = alloc(page_size);
     match fs_open(path, "wb") {
         Result::Ok(f) => {
             var k: i32 = 0;
             while k < 16 {
-                var i: i32 = 0;
-                while i < 4096 { page[i] = (k + 2) as u8; i = i + 1; }
-                match file_write(f, page, 4096) {
+                var i: i64 = 0;
+                while i < page_size { page[i] = (k + 2) as u8; i = i + 1; }
+                match file_write(f, page, page_size) {
                     Result::Ok(n) => {}
                     Result::Err(e) => { return 0; }
                 }
@@ -69,22 +69,23 @@ fn make_file(path: *u8) -> i32 {
 
 fn main() -> i32 {
     let path: *u8 = "/tmp/traveler_dax_region.bin";
-    if make_file(path) == 0 { print(0 - 1); return 1; }
+    let page_size: i64 = getpagesize() as i64;
+    if make_file(path, page_size) == 0 { print(0 - 1); return 1; }
     let fd: i32 = open(path, 0);
     var dev: DaxDevice = DaxDevice { fd: 0 - 1, writable: 0, size: 0, align: 0 };
-    match dax_attach(fd, 0, 65536, 4096) {
+    match dax_attach(fd, 0, 16 * page_size, page_size) {
         Result::Ok(d) => { dev = d; print(1); }
         Result::Err(e) => { print(0 - err_code(e)); return 1; }
     }
 
     var region: DaxRegion = DaxRegion { base: null, offset: 0, length: 0, align: 0, writable: 0 };
-    match dax_map(&dev, 4096, 8192) {
+    match dax_map(&dev, page_size, 2 * page_size) {
         Result::Ok(r) => { region = r; }
         Result::Err(e) => { print(0 - err_code(e)); return 1; }
     }
     print(region.base[0] as i32);                       // 3
 
-    match dax_view(&region, 8192, 4096) {
+    match dax_view(&region, 2 * page_size, page_size) {
         Result::Ok(v0) => {
             var v: DaxView = v0;
             print(dax_load_u8(&v, 0) as i32);           // 4
@@ -98,32 +99,32 @@ fn main() -> i32 {
         Result::Err(e) => { print(0 - err_code(e)); return 1; }
     }
 
-    match dax_map(&dev, 0 - 4096, 4096) {
+    match dax_map(&dev, 0 - page_size, page_size) {
         Result::Ok(r) => { print(0); }
         Result::Err(e) => { print(err_code(e)); }       // 2
     }
-    match dax_map(&dev, 100, 4096) {
+    match dax_map(&dev, 100, page_size) {
         Result::Ok(r) => { print(0); }
         Result::Err(e) => { print(err_code(e)); }       // 6
     }
-    match dax_map(&dev, 61440, 8192) {
+    match dax_map(&dev, 15 * page_size, 2 * page_size) {
         Result::Ok(r) => { print(0); }
         Result::Err(e) => { print(err_code(e)); }       // 7
     }
-    match dax_view(&region, 8192, 8192) {
+    match dax_view(&region, 2 * page_size, 2 * page_size) {
         Result::Ok(v) => { print(0); }
         Result::Err(e) => { print(err_code(e)); }       // 7
     }
 
-    match dax_discard(&region, 4096, 8192) {
-        Result::Ok(n) => { print((region.base[4096] == 4) as i32); }  // 1
+    match dax_discard(&region, page_size, 2 * page_size) {
+        Result::Ok(n) => { print((region.base[page_size] == 4) as i32); }  // 1
         Result::Err(e) => { print(0 - err_code(e)); }
     }
     match dax_unmap(&region) {
         Result::Ok(n) => { print(1); }
         Result::Err(e) => { print(0 - err_code(e)); }
     }
-    match dax_map_rw(&dev, 0, 4096) {
+    match dax_map_rw(&dev, 0, page_size) {
         Result::Ok(r) => { print(0); }
         Result::Err(e) => { print(1); }                 // 1
     }
