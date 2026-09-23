@@ -312,21 +312,91 @@ The elementwise and blocked-dot device classes share one admission contract:
 
 NVPTX and AMDGCN can expand direct, nonrecursive integer helpers in flat
 elementwise workers before device emission. Imported helpers and nested calls
-work. Each helper must have one expression-return statement, integer parameters,
-and an integer return type. Its body may use those parameters, integer literals,
-casts, arithmetic, bitwise operations, shifts, comparisons, and supported nested
-calls. Arguments are evaluated once, in source order, including unused arguments.
+work, including unbounded type generics inferred from scalar arguments. Helpers
+can bind and shadow scalar locals, assign concrete mutable scalar locals, and end
+with a return or a terminal `if`/`else` whose arms each return. Nested terminal
+branches are supported. Branch evaluation is lazy; only the selected arm runs.
+Bodies can use integer literals, casts, arithmetic, bitwise operations, shifts,
+comparisons, and supported nested calls. Arguments are evaluated once, in source
+order, including unused arguments. Caller and callee type bindings are separate.
 
 The initial profile covers signed/unsigned 8-, 16-, 32-, 64-, 128-, 256-, and
-512-bit integers plus `i1`. It excludes generic helpers, helper-local statements,
-conditional returns, short-circuit operators, pointer parameters, hidden memory
-reads, external/indirect calls, and field arithmetic. Division/remainder above
+512-bit integers plus `i1` and `bool`. It excludes const/bounded generics,
+nonterminal returns, loops inside helpers, short-circuit operators, arbitrary pointer
+parameters, hidden memory reads, external/indirect calls, and field arithmetic.
+Helper bodies must pass the typed device verifier. Implicit pfor discovery also
+requires the existing CPU loop proof. Division/remainder above
 64 bits and literal text exceeding 64 bits also refuse in this profile; wide
 values can come from memory, widening, or supported arithmetic. Expansion is
-bounded to 16 active calls, expression depth 64, 4096 expression visits, 4096
+bounded to 16 active calls, 16 type parameters, depth 64, 4096 expression/statement visits, 4096
 typed nodes, and 256 live bindings. Unsupported calls retain `uncarried-call`
 decisions, with a located `device-call-refused` diagnostic explaining the class
 of refusal. Call-free workers keep their existing lowering path.
+
+Explicit kernels can call helpers with local aggregates:
+
+- Fully initialized flat structs with 1–16 scalar fields. Field initializers
+  execute once in source order, and mutable fields can be updated.
+- Zero-initialized fixed arrays with 1–16 scalar elements, including generic
+  element types. Reads and writes require in-bounds integer-literal indexes.
+- Trait-qualified associated functions with scalar parameters and returns.
+
+Aggregates are represented by immutable versions of their scalar components.
+They require no device allocation, and branch-local changes do not affect the
+other branch. A plan holds at most 4096 aggregate component references. Nested
+or pointer-bearing aggregates, aggregate copies/returns, array arguments, dynamic
+local indexes, and escaping references are outside this profile.
+Helpers using local aggregates can require explicit entries when the CPU pfor
+proof cannot establish their effects.
+
+Flat local structs can also be passed by value to read-only helpers, including
+generic helpers. Read-only receiver methods support both `value.method(args)`
+and trait-qualified calls with `&value`. A local struct reference can be forwarded
+to another verified read-only helper or supplied to multiple read-only arguments.
+The compiler tracks the current scalar version of the struct; it does not create
+a device address. Receiver mutation, mutation of by-value struct parameters,
+stored reference aliases, address-to-integer casts, and returned references refuse.
+
+Statically resolved `+`, `-`, `*`, and `==` overloads are supported when the left
+operand is a local struct identifier and the concrete implementation returns a
+supported scalar. Right-hand arguments use the declared parameter type, including
+signed/unsigned widening and truncation. The same conversion applies to native
+CPU overload calls. `tests/gpu/check_receiver_calls.py` covers these operations,
+read-only aliasing, mutation between calls, and transactional refusal cases.
+
+Local nonescaping closures support scalar parameters, returns, and captures up to
+64 bits. Parameters must be explicitly typed. Captures snapshot their values at
+creation, including values read from mutable locals. Later changes to those locals
+do not change the snapshot. Expression bodies and verified block bodies, including
+terminal conditional branches, expand through the shared device verifier.
+
+```traveler
+fn apply_twice<C>(callback: C, value: i64) -> i64 {
+    return callback(value) + callback(value + 1);
+}
+
+fn snapshot_example(value: i64) -> i64 {
+    var bias: i64 = value * 3;
+    let transform = |x: i64| -> i64 x + bias;
+    bias = bias + 99;
+    return apply_twice(transform, value);
+}
+```
+
+Named closures and inline literals can be passed directly to generic callback
+parameters. Zero-argument closures use `| |`. Arguments are evaluated once in the
+caller environment and converted to the declared parameter types. Closure bodies
+use their own capture/parameter bindings. Call resolution follows the CPU compiler:
+builtins and declared functions retain precedence over same-named closure locals.
+
+The initial closure profile permits 16 closure values per expanded kernel, with
+at most 16 parameters and 16 captures each. It shares the 16-active-call and
+depth/work limits with ordinary device helpers. Literals in generic function
+bodies, nested closure construction, capture mutation, global/pointer/aggregate/
+closure captures, local closure aliases, escaping closures, and function-pointer
+coercion are refused. No closure environment, indirect call, or lifted callee is
+published in the device artifact. The native closure-call boundary also applies
+the declared scalar argument conversions.
 
 `src/lib/core/wide_accum.tv` provides `wide_accumulate_i512` and
 `wide_accumulate_u512`. Both widen their 256-bit multiplicands before multiplying
@@ -342,6 +412,58 @@ refuses 512-bit values with `512-bit-eval`. The device-call gate uses Python
 big-integer oracles instead: it compares native CPU results and retargeted device
 arithmetic, verifies PTX has no external arithmetic calls, and checks AMD objects
 for undefined symbols. Retargeted execution does not replace GPU hardware tests.
+
+#### Explicit kernel entries (provisional K2 syntax)
+
+`#[kernel]` declares an explicit entry on NVPTX or AMDGCN. This syntax is
+provisional. The initial profile requires a concrete void function whose first
+parameter is an `i32` logical index. Its remaining parameters are typed device
+buffers and scalar launch arguments. The body consists of direct-index stores;
+their expressions can call the scalar library helpers described above.
+
+```traveler
+fn guarded_value<T>(value: T) -> T {
+    if value == 0 {
+        return 7;
+    } else {
+        return 30 / value;
+    }
+}
+
+// Provisional entry syntax; index is supplied by the device launch.
+#[kernel]
+fn guarded_map(index: i32, input: *i64, output: *i64) {
+    output[index] = guarded_value(input[index]);
+}
+```
+
+The first parameter is replaced by the launch's logical index. It is not a packed
+argument. The compiler emits the remaining parameters in declaration order,
+followed by synthetic `lo`/`hi` bounds. Launch through the resident API by owner
+name (`guarded_map`), with the same typed views, footprint checks, and fixed
+`[256,1,1]` block geometry as `direct-index-v1`. Ordinary CPU calls execute the
+function for the supplied single index; they do not launch a GPU grid.
+
+NVPTX explicit entries always include semantic descriptors. Their `execution`
+field is `independent-kernel`, and their symbols start with `__traveler_kernel_`.
+Existing pfor entries retain `independent-pfor` and their existing symbols.
+Both use the shared typed entry representation and device verifier. An invalid
+explicit entry prevents publication of the whole device module, including mixed
+modules containing otherwise valid pfor workers. Cooperative geometry, shared
+memory, and barriers are later profiles.
+
+`tests/gpu/check_generic_calls.py` checks CPU/Python parity, both LLVM device
+backends, lazy branches, and explicit-entry refusals. To include native SM120
+execution through the resident API:
+
+```sh
+python3 tests/gpu/check_generic_calls.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+python3 tests/gpu/check_receiver_calls.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+```
+
+The K2 acceptance fixtures cover 17 kernels across these two modules, including
+direct/factored generic equivalence, local aggregates, read-only receivers,
+operators, closure snapshots, and generic callbacks.
 
 `--pfor-report` reports CPU worker admission: one JSONL record per loop with
 `dispatched` and a refusal `reason`. An admitted worker may still execute

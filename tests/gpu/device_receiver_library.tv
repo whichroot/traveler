@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: Apache-2.0
+struct ReceiverPair {
+    left: i64,
+    right: i16,
+}
+
+fn receiver_read(pair: *ReceiverPair) -> i64 {
+    return pair.left + (pair.right as i64);
+}
+
+fn receiver_value<T>(pair: T) -> i64 {
+    return pair.left + (pair.right as i64);
+}
+
+fn receiver_twice(a: *ReceiverPair, b: *ReceiverPair) -> i64 {
+    return a.left - b.left + (a.right as i64) + (b.right as i64);
+}
+
+trait ReceiverStats {
+    fn score(self, offset: i64) -> i64;
+}
+
+impl ReceiverStats for ReceiverPair {
+    fn score(self, offset: i64) -> i64 {
+        return receiver_read(self) * 3 + offset;
+    }
+}
+
+trait Add {
+    fn add(self, other: ReceiverPair) -> i64;
+}
+
+impl Add for ReceiverPair {
+    fn add(self, other: ReceiverPair) -> i64 {
+        return self.left - other.left + (self.right as i64) + (other.right as i64);
+    }
+}
+
+trait Sub {
+    fn sub(self, other: i64) -> i64;
+}
+
+impl Sub for ReceiverPair {
+    fn sub(self, other: i64) -> i64 {
+        return self.left - other + (self.right as i64);
+    }
+}
+
+trait Mul {
+    fn mul(self, other: i8) -> i64;
+}
+
+impl Mul for ReceiverPair {
+    fn mul(self, other: i8) -> i64 {
+        return self.left * (other as i64);
+    }
+}
+
+trait Eq {
+    fn eq(self, other: ReceiverPair) -> i1;
+}
+
+impl Eq for ReceiverPair {
+    fn eq(self, other: ReceiverPair) -> i1 {
+        if self.left == other.left {
+            return self.right == other.right;
+        } else {
+            return false;
+        }
+    }
+}
+
+fn receiver_algorithm(value: i64) -> i64 {
+    let p: ReceiverPair = ReceiverPair { left: value * 5, right: value as i16 };
+    let q: ReceiverPair = ReceiverPair { right: (value >> 3) as i16, left: value + 7 };
+    let method: i64 = p.score(value);
+    let qualified: i64 = ReceiverStats__ReceiverPair__score(&p, value);
+    let operator: i64 = p + q;
+    let direct: i64 = Add__ReceiverPair__add(&p, q);
+    return method + qualified + operator + direct + receiver_value(p)
+        + receiver_twice(&p, &p) + (p - value) + (p - q.right)
+        + (p - (q.right as u16)) + (p * value)
+        + ((p == p) as i64) + ((p == q) as i64);
+}
+
+fn receiver_branch(value: i64) -> i64 {
+    var p: ReceiverPair = ReceiverPair { left: value * 5, right: value as i16 };
+    let before: i64 = p.score(value);
+    if value == 0 {
+        p.left = 19;
+        return before + p.score(value);
+    } else {
+        p.left = p.left - 3;
+        return before + p.score(value);
+    }
+}

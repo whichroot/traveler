@@ -211,7 +211,8 @@ fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
         || cuda_json_string(d, k, "stage", "semantic-ir") == 0
         || cuda_json_string(d, k, "compiler", "tvc_self") == 0
         || cuda_json_string(d, k, "target", "nvptx64-nvidia-cuda") == 0
-        || cuda_json_string(d, k, "execution", "independent-pfor") == 0
+        || (cuda_json_string(d, k, "execution", "independent-pfor") == 0
+            && cuda_json_string(d, k, "execution", "independent-kernel") == 0)
         || cuda_json_string(d, k, "profile", "direct-index-v1") == 0
         || cuda_json_int(d, k, "dimensions", 1) == 0
         || cuda_json_int(d, k, "lanes_per_cell", 1) == 0
@@ -221,7 +222,8 @@ fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
     if artifact < 0 || json_kind(d, artifact) != JSON_NULL { return 0; }
     let symbol: i32 = json_get(d, k, "symbol");
     if cuda_json_text(d, symbol, 64) == 0 || cuda_json_text(d, json_get(d, k, "owner"), 255) == 0 { return 0; }
-    let prefix: *u8 = "__pfor_gpu_worker_";
+    var prefix: *u8 = "__pfor_gpu_worker_";
+    if cuda_json_string(d, k, "execution", "independent-kernel") == 1 { prefix = "__traveler_kernel_"; }
     if d.nodes[symbol].slen <= 18 { return 0; }
     var i: i32 = 0;
     while i < d.nodes[symbol].slen {

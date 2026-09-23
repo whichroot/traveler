@@ -41,14 +41,16 @@ def validate_kernel(k):
                        "index_bits", "domain", "parameters", "disjoint"}, "kernel fields")
     for key, value in {"schema": "traveler.kernel.v1", "abi": 1, "stage": "semantic-ir",
                        "compiler": "tvc_self", "target": "nvptx64-nvidia-cuda", "artifact": None,
-                       "execution": "independent-pfor", "profile": "direct-index-v1",
+                       "profile": "direct-index-v1",
                        "block": [256, 1, 1], "dimensions": 1, "lanes_per_cell": 1,
                        "dynamic_shared_bytes": 0, "index_bits": 32,
                        "domain": {"min_lo": 0, "max_hi": 2147483392, "empty": "no-launch"}}.items():
         require(k[key] == value and type(k[key]) is type(value), f"unsupported {key}")
     require(all(type(v) is int for v in k["block"]), "block dimensions")
     require(type(k["domain"]["min_lo"]) is int and type(k["domain"]["max_hi"]) is int, "domain integers")
-    require(isinstance(k["symbol"], str) and re.fullmatch(r"__pfor_gpu_worker_[0-9]+", k["symbol"]), "entry symbol")
+    require(k["execution"] in ("independent-pfor", "independent-kernel"), "unsupported execution")
+    prefix = "__traveler_kernel_" if k["execution"] == "independent-kernel" else "__pfor_gpu_worker_"
+    require(isinstance(k["symbol"], str) and re.fullmatch(prefix + r"[0-9]+", k["symbol"]), "entry symbol")
     require(isinstance(k["owner"], str) and 0 < len(k["owner"]) <= 255, "owner")
     require(integer(k["line"], 1, 2147483647) and integer(k["column"], 0, 2147483647), "location")
     require(type(k["specialization"]) is list and len(k["specialization"]) <= 32, "specialization")

@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory() as directory:
     kernel = "\nfn work(a: *i64, b: *i64) { for i in 0..2048 { b[i] = helper(a[i]); } }\n"
     cases = {
         "conditional": "fn helper(x:i64)->i64 { if x < 0 { return 0; } return x; }",
-        "generic": "fn helper<T>(x:T)->T { return x; }",
+        "bounded_generic": "fn helper<T: Any>(x:T)->T { return x; }",
         "hidden_read": "let table: *i64 = null; fn helper(x:i64)->i64 { return table[x]; }",
         "short_circuit": "fn helper(x:i64)->i64 { return ((x != 0) && (10 / x > 0)) as i64; }",
     }

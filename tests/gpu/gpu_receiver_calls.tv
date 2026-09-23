@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0
+import "device_receiver_library.tv";
+import "device_closure_library.tv";
+
+#[kernel]
+#[export]
+fn receiver_map(index: i32, input: *i64, output: *i64) {
+    output[index] = receiver_algorithm(input[index]);
+}
+
+#[kernel]
+#[export]
+fn receiver_branch_map(index: i32, input: *i64, output: *i64) {
+    output[index] = receiver_branch(input[index]);
+}
+
+#[kernel]
+#[export]
+fn closure_snapshot_map(index: i32, input: *i64, output: *i64) {
+    output[index] = closure_snapshot(input[index]) + closure_snapshot(input[index] + 2);
+}
+
+#[kernel]
+#[export]
+fn closure_guard_map(index: i32, input: *i64, output: *i64) {
+    output[index] = closure_guard(input[index]);
+}
+
+#[kernel]
+#[export]
+fn closure_inline_map(index: i32, input: *i64, output: *i64) {
+    output[index] = closure_inline(input[index]);
+}
+
+#[kernel]
+#[export]
+fn closure_unsigned_map(index: i32, input: *u64, output: *u64) {
+    output[index] = closure_unsigned(input[index]);
+}

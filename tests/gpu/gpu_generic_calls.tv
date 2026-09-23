@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: Apache-2.0
+import "device_generic_library.tv";
+
+#[export]
+fn generic_i64(input: *i64, output: *i64) {
+    for value in 0..2048 {
+        output[value] = device_nested(input[value]);
+    }
+}
+
+#[export]
+fn generic_u64(input: *u64, output: *u64) {
+    for value in 0..2048 {
+        output[value] = device_nested(input[value]);
+    }
+}
+
+#[export]
+fn generic_mixed(input: *i64, output: *i64) {
+    for value in 0..2048 {
+        output[value] = device_convert(input[value] as i16, device_mutable(input[value]));
+    }
+}
+
+#[export]
+fn generic_guarded(input: *i64, output: *i64) {
+    for value in 0..2048 {
+        output[value] = device_guarded(input[value]) + device_branch_local(input[value]);
+    }
+}
+
+#[kernel]
+#[export]
+fn explicit_guarded(index: i32, input: *i64, output: *i64) {
+    output[index] = device_guarded(input[index]) + device_branch_local(input[index]);
+}
+
+#[kernel]
+#[export]
+fn explicit_direct(index: i32, input: *i64, output: *i64) {
+    output[index] = (input[index] * 3 + 1) ^ (input[index] >> 5);
+}
+
+#[kernel]
+#[export]
+fn explicit_aggregate(index: i32, input: *i64, output: *i64) {
+    output[index] = device_aggregate(input[index]);
+}
+
+#[kernel]
+#[export]
+fn explicit_array(index: i32, input: *i64, output: *i64) {
+    output[index] = device_array(input[index]);
+}
+
+#[kernel]
+#[export]
+fn explicit_static(index: i32, input: *i64, output: *i64) {
+    output[index] = DeviceTransform__DevicePair__apply(input[index]);
+}
+
+#[kernel]
+#[export]
+fn explicit_generic_direct(index: i32, input: *i64, output: *i64) {
+    output[index] = (input[index] * 3 + 1) ^ ((input[index] * 3) >> 5);
+}
+
+#[kernel]
+#[export]
+fn explicit_generic_factored(index: i32, input: *i64, output: *i64) {
+    output[index] = device_round(input[index]);
+}

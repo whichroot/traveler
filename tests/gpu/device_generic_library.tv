@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: Apache-2.0
+fn device_round<T>(value: T) -> T {
+    let value: T = value * 3;
+    let result: T = value + 1;
+    return result ^ (value >> 5);
+}
+
+fn device_nested<T>(value: T) -> T {
+    let first: T = device_round(value);
+    let narrow: i16 = value as i16;
+    let second: i16 = device_round(narrow);
+    return first + ((second as T) << 20);
+}
+
+fn device_convert<A, B>(value: A, addend: B) -> B {
+    let converted: B = value as B;
+    return converted + addend;
+}
+
+fn device_mutable(value: i64) -> i64 {
+    var result: i64 = value * 3;
+    result = result + 1;
+    return result ^ (value >> 5);
+}
+
+fn device_branch_local(value: i64) -> i64 {
+    var result: i64 = value + 3;
+    if value == 0 {
+        result = result + 7;
+        return result;
+    } else {
+        result = result - 2;
+        return result;
+    }
+}
+
+fn device_guarded<T>(value: T) -> T {
+    if value == 0 {
+        return 19;
+    } else {
+        if value == 1 {
+            return 23;
+        } else {
+            let denominator: T = value - 1;
+            return value / denominator + device_round(value);
+        }
+    }
+}
+
+struct DevicePair {
+    left: i64,
+    right: i16,
+}
+
+fn device_aggregate(value: i64) -> i64 {
+    var pair: DevicePair = DevicePair { right: value as i16, left: value * 3 };
+    var words: [i64; 4] = 0;
+    words[0] = pair.left;
+    words[3] = pair.right as i64;
+    pair.left = words[0] + words[3];
+    if value == 0 {
+        words[1] = pair.left + 11;
+        pair.right = 7;
+        return words[1] + (pair.right as i64);
+    } else {
+        words[1] = pair.left - 5;
+        pair.right = pair.right ^ 3;
+        return words[1] + (pair.right as i64);
+    }
+}
+
+fn device_array<T>(value: T) -> T {
+    var words: [T; 16] = 0;
+    words[0] = value;
+    words[15] = words[0] * 3;
+    return words[15] + words[1];
+}
+
+trait DeviceTransform {
+    fn apply(value: i64) -> i64;
+}
+
+impl DeviceTransform for DevicePair {
+    fn apply(value: i64) -> i64 {
+        var words: [i64; 2] = 0;
+        words[0] = value * 5;
+        return words[0] ^ 17;
+    }
+}

@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: Apache-2.0
+fn shadow(value: i64) -> i64 {
+    return value * 99;
+}
+
+fn closure_apply<C>(callback: C, value: i64) -> i64 {
+    return callback(value);
+}
+
+fn closure_twice<C>(callback: C, value: i64) -> i64 {
+    return closure_apply(callback, value) + closure_apply(callback, value + 1);
+}
+
+fn closure_snapshot(value: i64) -> i64 {
+    var bias: i64 = value * 3;
+    let transform = |x: i64| -> i64 {
+        let shifted: i64 = x + bias;
+        return shifted ^ 17;
+    };
+    bias = bias + 99;
+    let first: i64 = transform(value);
+    let second: i64 = closure_twice(transform, value);
+    let shadow = |bias: i64| -> i64 bias + 1;
+    let mask_bias = |bias: i64| -> i64 bias + 1;
+    let transform = |x: i64| -> i64 x - bias;
+    return first + second + shadow(bias) + transform(value) + mask_bias(bias);
+}
+
+fn closure_guard(value: i64) -> i64 {
+    let bias: i16 = value as i16;
+    let choose = |x: i64| -> i64 {
+        if x == 0 {
+            return (bias as i64) + 7;
+        } else {
+            let denominator: i64 = x;
+            return 30 / denominator + (bias as i64);
+        }
+    };
+    return choose(value as i16) + closure_apply(choose, value);
+}
+
+fn closure_inline(value: i64) -> i64 {
+    let zero = | | -> i64 value + 4;
+    let narrow = |x: i8| -> i64 x as i64;
+    return closure_apply(|x: i64| -> i64 x * 5, value) + zero() + narrow(value);
+}
+
+fn closure_unsigned(value: u64) -> u64 {
+    var bias: u64 = value >> 7;
+    let transform = |x: u64| -> u64 (x >> 5) ^ bias;
+    bias = bias + 77;
+    return transform(value) + transform(value + 3) + transform(value as u16);
+}

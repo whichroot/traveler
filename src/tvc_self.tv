@@ -4531,13 +4531,23 @@ fn parse_program() -> i32 {
     var pending_wave2: i32 = 0;   // set to 1 when #[wave2] is parsed
     var pending_readonly: i32 = 0; // set to 1 when #[readonly] is parsed
     var pending_prefetch: i32 = 0; // set to 1 when #[prefetch] is parsed
+    var pending_kernel: i32 = 0;
 
     while p_peek() != TOK_EOF {
         let k: i32 = p_peek();
         var decl_node: i32 = NULL_NODE;
 
+        if pending_kernel == 1 && k != TOK_KW_FN && k != TOK_KW_PUB && k != TOK_HASH_LBRACKET {
+            diag_error_at(p_cur_line(), p_cur_col(), "kernel attribute requires a function");
+            pending_kernel = 0;
+        }
+
         if k == TOK_KW_FN {
             decl_node = parse_fn_decl();
+            if pending_kernel == 1 {
+                g_nodes[decl_node].flags = g_nodes[decl_node].flags | 32768;
+                pending_kernel = 0;
+            }
             if pending_export == 1 {
                 g_nodes[decl_node].flags = g_nodes[decl_node].flags | 4;  // bit2 = is_export
                 pending_export = 0;
@@ -4745,6 +4755,12 @@ fn parse_program() -> i32 {
                     if str_eq(&g_tokens[g_tok_pos].text[0], "export") == 1 {
                         pending_export = 1;
                     }
+                    if str_eq(&g_tokens[g_tok_pos].text[0], "kernel") == 1 {
+                        pending_kernel = 1;
+                        if g_tokens[g_tok_pos + 1].kind != TOK_RBRACKET {
+                            diag_error_at(p_cur_line(), p_cur_col(), "kernel attribute takes no arguments");
+                        }
+                    }
                     if str_eq(&g_tokens[g_tok_pos].text[0], "zk") == 1 {
                         pending_zk = 1;
                     }
@@ -4795,6 +4811,10 @@ fn parse_program() -> i32 {
 
         tmp_decls[ndecls] = decl_node;
         ndecls = ndecls + 1;
+    }
+
+    if pending_kernel == 1 {
+        diag_error_at(p_cur_line(), p_cur_col(), "kernel attribute requires a function");
     }
 
     // Bulk-copy to g_args
@@ -10436,6 +10456,9 @@ fn lw_sym_type(name: i32) -> i32 {
 }
 
 fn arg_value_type(arg_nd: i32) -> i32 {
+    if g_nodes[arg_nd].kind == AST_CLOSURE {
+        return clo_type_string(g_nodes[arg_nd].name2);
+    }
     if g_nodes[arg_nd].kind == AST_IDENT {
         let si: i32 = sym_find(g_nodes[arg_nd].name0);
         if si >= 0 { return resolve_type_sub(g_syms[si].type_off); }
@@ -10804,18 +10827,26 @@ fn codegen_operator_overload(node: i32, mangled: i32, lhs_ty: i32) -> IRValue {
     let rhs_v: IRValue = codegen_expr(rhs_node, rhs_ctx);
     // RHS aggregate-by-value: load from alloca.
     var rhs_reg: i32 = rhs_v.reg;
+    var rhs_type: i32 = rhs_v.type_off;
     if resolve_struct_type(rhs_v.type_off) >= 0 || find_enum(rhs_v.type_off) >= 0 {
         let ld: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(ld); ir_wr(" = load ");
         ir_wr_type(rhs_v.type_off); ir_wr(", ptr "); ir_wr_reg(rhs_v.reg); ir_wr("\n");
         rhs_reg = ld;
+    } else if rhs_ctx != NULL_STR && type_is_ptr(rhs_ctx) == 0
+        && resolve_struct_type(rhs_ctx) < 0 && resolve_enum_type(rhs_ctx) < 0 {
+        if rhs_type != rhs_ctx {
+            check_family_coercion(rhs_type, rhs_ctx, g_nodes[node].line, g_nodes[node].col);
+            rhs_reg = emit_implicit_convert(rhs_reg, rhs_type, rhs_ctx);
+            rhs_type = rhs_ctx;
+        }
     }
     let ret_ty: i32 = g_funcs[fci].ret_type;
     let r: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(r); ir_wr(" = call ");
     ir_wr_type(ret_ty); ir_wr(" @"); ir_wr_sym(mangled); ir_wr("(ptr ");
     ir_wr_reg(lhs_v.reg); ir_wr(", ");
-    ir_wr_type(rhs_v.type_off); ir_wr(" "); ir_wr_reg(rhs_reg); ir_wr(")\n");
+    ir_wr_type(rhs_type); ir_wr(" "); ir_wr_reg(rhs_reg); ir_wr(")\n");
     // Struct/enum result: store to an alloca so downstream gets reference
     // semantics (`let c = a + b; c.x`). Mirrors the struct-return call path.
     if resolve_struct_type(ret_ty) >= 0 || resolve_enum_type(ret_ty) >= 0 {
@@ -11318,6 +11349,11 @@ fn codegen_closure_call(node: i32, clovar: i32, clotype: i32) -> IRValue {
         if ai < nparams { pctx = resolve_type_sub(g_nodes[g_args[pbase + ai]].name1); }
         let av: IRValue = codegen_expr(g_args[g_nodes[node].args_start + ai], pctx);
         arg_regs[ai] = av.reg;
+        if pctx != NULL_STR && pctx != av.type_off && type_is_ptr(pctx) == 0
+            && resolve_struct_type(pctx) < 0 && resolve_enum_type(pctx) < 0 {
+            check_family_coercion(av.type_off, pctx, g_nodes[node].line, g_nodes[node].col);
+            arg_regs[ai] = emit_implicit_convert(av.reg, av.type_off, pctx);
+        }
         if pctx != NULL_STR { arg_irs[ai] = type_to_ir(pctx); }
         else { arg_irs[ai] = type_to_ir(av.type_off); }
         ai = ai + 1;
@@ -14145,6 +14181,15 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         var fci: i32 = find_func(call_name);
         var actual_call_name: i32 = call_name;
         let saved_nsub: i32 = g_gen_nsub;
+        let saved_sub_names: *i32 = alloc(saved_nsub + 1);
+        let saved_sub_types: *i32 = alloc(saved_nsub + 1);
+        let caller_ctx: i32 = resolve_type_sub(ctx_type);
+        var saved_si: i32 = 0;
+        while saved_si < saved_nsub {
+            saved_sub_names[saved_si] = g_gen_sub_names[saved_si];
+            saved_sub_types[saved_si] = g_gen_sub_types[saved_si];
+            saved_si = saved_si + 1;
+        }
         // Generic function: monomorphize if needed
         if fci >= 0 && g_funcs[fci].is_generic == 1 {
             // Infer EACH generic param independently (multi-param <K,V>); the
@@ -14172,7 +14217,6 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             actual_call_name = monomorphize_n(fci, inf_tuple, inf_ngen);
             // Temporarily set up substitution context for argument type resolution
-            let saved_nsub: i32 = g_gen_nsub;
             g_gen_nsub = inf_ngen;
             var sgi: i32 = 0;
             while sgi < g_gen_nsub {
@@ -14181,6 +14225,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 sgi = sgi + 1;
             }
             fci = find_func(actual_call_name);
+            free(inf_tuple);
         }
         if fci >= 0 {
             // Mono-instance call: substitution context from the mono cache. Dyn
@@ -14245,19 +14290,34 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     exit(1);
                 }
             }
-            // Evaluate arguments with parameter types as context
+            // Resolve the signature in the callee environment, then evaluate
+            // argument expressions in the restored caller environment.
+            let arg_contexts: *i32 = alloc(64);
+            var ci: i32 = 0;
+            while ci < call_nargs {
+                var concrete_ctx: i32 = caller_ctx;
+                if callee_arg_shift == 1 && ci == 0 {
+                    concrete_ctx = str_intern("Field");
+                } else if ci - callee_arg_shift < fn_np {
+                    let param: i32 = g_args[fn_pbase + (ci - callee_arg_shift)];
+                    concrete_ctx = resolve_type_sub(g_nodes[param].name1);
+                }
+                arg_contexts[ci] = concrete_ctx;
+                ci = ci + 1;
+            }
+            g_gen_nsub = saved_nsub;
+            saved_si = 0;
+            while saved_si < saved_nsub {
+                g_gen_sub_names[saved_si] = saved_sub_names[saved_si];
+                g_gen_sub_types[saved_si] = saved_sub_types[saved_si];
+                saved_si = saved_si + 1;
+            }
+            free(saved_sub_names); free(saved_sub_types);
             var arg_regs: *i32 = alloc(64);
             var arg_types: *i32 = alloc(64);
             var ai: i32 = 0;
             while ai < call_nargs {
-                var a_ctx: i32 = resolve_type_sub(ctx_type);
-                if callee_arg_shift == 1 && ai == 0 {
-                    // Dyn instance: arg 0 is the Field carrier
-                    a_ctx = str_intern("Field");
-                } else if ai - callee_arg_shift < fn_np {
-                    let p_nd: i32 = g_args[fn_pbase + (ai - callee_arg_shift)];
-                    a_ctx = resolve_type_sub(g_nodes[p_nd].name1);
-                }
+                let a_ctx: i32 = arg_contexts[ai];
                 let a_val: IRValue = codegen_expr(g_args[call_abase + ai], a_ctx);
                 arg_regs[ai] = a_val.reg;
                 arg_types[ai] = a_val.type_off;
@@ -14288,6 +14348,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ai = ai + 1;
             }
             // Struct/enum-by-value args: load aggregate from alloca
+            free(arg_contexts);
             ai = 0;
             while ai < call_nargs {
                 if resolve_struct_type(arg_types[ai]) >= 0 || resolve_enum_type(arg_types[ai]) >= 0 {
@@ -26800,6 +26861,8 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
 
 // (design-notes/device-call-expansion.md "Required semantic contract")
 // A private, ordered EIR arena keeps failed expansion out of other workers.
+let DEVICE_CLOSURE: i32 = 1001;
+
 struct DeviceScalarPlan {
     nodes: *EIRNode,
     count: i32,
@@ -26812,12 +26875,23 @@ struct DeviceScalarPlan {
     calls: i32,
     reason: i32,
     source: i32,
+    mutable: *i32,
+    gen_names: *i32,
+    gen_types: *i32,
+    ngen: i32,
+    components: *i32,
+    ncomponents: i32,
+    closure_names: *i32,
+    closure_values: *i32,
+    closure_caps: i32,
+    closures: i32,
+    closure_depth: i32,
 }
 
 fn device_scalar_type(t: i32) -> i32 {
     if t == NULL_STR { return 0; }
     let s: *u8 = &g_strings[t];
-    if str_eq(s, "i1") == 1 || str_eq(s, "i8") == 1 || str_eq(s, "u8") == 1
+    if str_eq(s, "bool") == 1 || str_eq(s, "i1") == 1 || str_eq(s, "i8") == 1 || str_eq(s, "u8") == 1
         || str_eq(s, "i16") == 1 || str_eq(s, "u16") == 1
         || str_eq(s, "i32") == 1 || str_eq(s, "u32") == 1
         || str_eq(s, "i64") == 1 || str_eq(s, "u64") == 1
@@ -26852,6 +26926,7 @@ fn device_scalar_bind(P: *DeviceScalarPlan, name: i32, value: i32) -> i32 {
     if P.bindings >= 256 { device_scalar_fail(P, 4, 0); return 0; }
     P.names[P.bindings] = name;
     P.values[P.bindings] = value;
+    P.mutable[P.bindings] = 0;
     P.bindings = P.bindings + 1;
     return 1;
 }
@@ -26863,6 +26938,396 @@ fn device_scalar_find(P: *DeviceScalarPlan, name: i32) -> i32 {
         i = i - 1;
     }
     return 0 - 1;
+}
+
+fn device_scalar_resolve(P: *DeviceScalarPlan, t: i32) -> i32 {
+    var i: i32 = 0;
+    while i < P.ngen {
+        if P.gen_names[i] == t { return P.gen_types[i]; }
+        i = i + 1;
+    }
+    return t;
+}
+
+// A borrow names an immutable aggregate version, not a device address.
+fn device_scalar_borrow(P: *DeviceScalarPlan, value: i32, source: i32) -> i32 {
+    if value < 0 || P.nodes[value].kind != EIR_STRUCT_LIT || P.nodes[value].alg < 0 {
+        return device_scalar_fail(P, 2, source);
+    }
+    let name: *u8 = &g_strings[P.nodes[value].type_off];
+    let size: i32 = str_len(name);
+    let text: *u8 = alloc(size + 2);
+    text[0] = 42;
+    var i: i32 = 0;
+    while i < size { text[i + 1] = name[i]; i = i + 1; }
+    text[size + 1] = 0;
+    let t: i32 = str_intern(text);
+    free(text);
+    let e: i32 = device_scalar_node(P, EIR_ADDR_LOCAL, t, source);
+    if e >= 0 { P.nodes[e].a = value; }
+    return e;
+}
+
+fn device_scalar_argument_type(t: i32) -> i32 {
+    if type_is_closure(t) == 1 { return 1; }
+    if device_scalar_type(t) == 1 || find_struct(t) >= 0 { return 1; }
+    if type_is_ptr(t) == 1 && find_struct(type_pointee(t)) >= 0 { return 1; }
+    return 0;
+}
+
+fn device_scalar_argument(P: *DeviceScalarPlan, value: i32, t: i32, source: i32) -> i32 {
+    if value < 0 { return value; }
+    if P.nodes[value].type_off == t {
+        if P.nodes[value].kind == DEVICE_CLOSURE { return value; }
+        if P.nodes[value].kind == EIR_ADDR_LOCAL { return value; }
+        if P.nodes[value].kind == EIR_STRUCT_LIT && P.nodes[value].alg >= 0 { return value; }
+    }
+    return device_scalar_convert(P, value, t, source);
+}
+
+fn device_closure_scalar(t: i32) -> i32 {
+    if device_scalar_type(t) == 1 && type_bits(t) <= 64 { return 1; }
+    return 0;
+}
+
+// Snapshot the frontend's free-variable list into private scalar definitions.
+fn device_closure_value(P: *DeviceScalarPlan, node: i32) -> i32 {
+    if P.ngen != 0 || P.closure_depth != 0 { return device_scalar_fail(P, 3, node); }
+    if P.closures >= 16 { return device_scalar_fail(P, 4, node); }
+    let n: i32 = g_nodes[node].nargs;
+    let rt: i32 = g_nodes[node].name1;
+    if n > 16 || device_closure_scalar(rt) == 0 { return device_scalar_fail(P, 2, node); }
+    var i: i32 = 0;
+    while i < n {
+        let param: i32 = g_args[g_nodes[node].args_start + i];
+        if device_closure_scalar(g_nodes[param].name1) == 0 { return device_scalar_fail(P, 2, node); }
+        i = i + 1;
+    }
+    var off: i32 = 0;
+    var record: i32 = 0 - 1;
+    i = 0;
+    while i < g_nclosures && record < 0 {
+        if g_closures[off + 1] == node && g_closures[off + 4] == 0 { record = off; }
+        off = off + 5 + g_closures[off + 4] * 2 + g_closures[off + 3] * 2;
+        i = i + 1;
+    }
+    if record < 0 { return device_scalar_fail(P, 3, node); }
+    let ncaps: i32 = g_closures[record + 3];
+    if ncaps > 16 || P.closure_caps > 256 - ncaps { return device_scalar_fail(P, 4, node); }
+    let base: i32 = P.closure_caps;
+    i = 0;
+    while i < ncaps {
+        let name: i32 = g_closures[record + 5 + i * 2];
+        let t: i32 = g_closures[record + 6 + i * 2];
+        let value: i32 = device_scalar_find(P, name);
+        if value < 0 || device_closure_scalar(t) == 0 { return device_scalar_fail(P, 2, node); }
+        if P.nodes[value].type_off != t { return device_scalar_fail(P, 2, node); }
+        P.closure_names[P.closure_caps] = name;
+        P.closure_values[P.closure_caps] = value;
+        P.closure_caps = P.closure_caps + 1; i = i + 1;
+    }
+    let value: i32 = device_scalar_node(P, DEVICE_CLOSURE, clo_type_string(g_nodes[node].name2), node);
+    if value < 0 { return value; }
+    P.nodes[value].a = node; P.nodes[value].aux_type = rt;
+    P.nodes[value].args_start = base; P.nodes[value].nargs = ncaps;
+    P.closures = P.closures + 1;
+    return value;
+}
+
+fn device_closure_call(P: *DeviceScalarPlan, call: i32, closure: i32, depth: i32) -> i32 {
+    let decl: i32 = P.nodes[closure].a;
+    let n: i32 = g_nodes[decl].nargs;
+    if n != g_nodes[call].nargs { return device_scalar_fail(P, 2, call); }
+    if depth > 64 || P.calls >= 16 { return device_scalar_fail(P, 4, call); }
+    let tag: i32 = 0 - decl - 1;
+    var i: i32 = 0;
+    while i < P.calls {
+        if P.stack[i] == tag { return device_scalar_fail(P, 1, call); }
+        i = i + 1;
+    }
+    var args: [i32; 16] = 0;
+    i = 0;
+    while i < n {
+        let param: i32 = g_args[g_nodes[decl].args_start + i];
+        let t: i32 = g_nodes[param].name1;
+        args[i] = device_scalar_convert(P,
+            device_scalar_expr(P, g_args[g_nodes[call].args_start + i], t, depth + 1), t, call);
+        if args[i] < 0 { return 0 - 1; }
+        i = i + 1;
+    }
+    let saved: i32 = P.bindings;
+    let floor: i32 = P.floor;
+    let ngen: i32 = P.ngen;
+    var names: [i32; 16] = 0;
+    var types: [i32; 16] = 0;
+    i = 0;
+    while i < ngen { names[i] = P.gen_names[i]; types[i] = P.gen_types[i]; i = i + 1; }
+    P.floor = saved; P.ngen = 0;
+    P.stack[P.calls] = tag; P.calls = P.calls + 1;
+    P.closure_depth = P.closure_depth + 1;
+    i = 0;
+    while i < P.nodes[closure].nargs {
+        let slot: i32 = P.nodes[closure].args_start + i;
+        device_scalar_bind(P, P.closure_names[slot], P.closure_values[slot]);
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        let param: i32 = g_args[g_nodes[decl].args_start + i];
+        device_scalar_bind(P, g_nodes[param].name0, args[i]); i = i + 1;
+    }
+    let rt: i32 = P.nodes[closure].aux_type;
+    let body: i32 = g_nodes[decl].child0;
+    var result: i32 = 0 - 1;
+    if g_nodes[body].kind == AST_BLOCK { result = device_scalar_body(P, body, rt, depth + 1); }
+    else { result = device_scalar_convert(P, device_scalar_expr(P, body, rt, depth + 1), rt, call); }
+    P.calls = P.calls - 1; P.closure_depth = P.closure_depth - 1;
+    P.bindings = saved; P.floor = floor; P.ngen = ngen;
+    i = 0;
+    while i < ngen { P.gen_names[i] = names[i]; P.gen_types[i] = types[i]; i = i + 1; }
+    return result;
+}
+
+// Aggregate versions contain scalar node IDs, never addresses or aliases.
+fn device_aggregate_node(P: *DeviceScalarPlan, t: i32, si: i32, elem: i32,
+                         values: *i32, count: i32, source: i32) -> i32 {
+    if count < 1 || count > 16 || P.ncomponents > 4096 - count {
+        return device_scalar_fail(P, 4, source);
+    }
+    let e: i32 = device_scalar_node(P, EIR_STRUCT_LIT, t, source);
+    if e < 0 { return e; }
+    P.nodes[e].alg = si; P.nodes[e].aux_type = elem;
+    P.nodes[e].args_start = P.ncomponents; P.nodes[e].nargs = count;
+    var i: i32 = 0;
+    while i < count {
+        P.components[P.ncomponents] = values[i];
+        P.ncomponents = P.ncomponents + 1; i = i + 1;
+    }
+    return e;
+}
+
+fn device_array_count(t: i32) -> i32 {
+    if type_is_array(t) == 0 { return 0; }
+    let text: *u8 = &g_strings[t];
+    var pos: i32 = 0;
+    while text[pos] != 59 && text[pos] != 0 { pos = pos + 1; }
+    if text[pos] == 0 { return 0; }
+    pos = pos + 1;
+    while text[pos] == 32 { pos = pos + 1; }
+    var count: i32 = 0;
+    while text[pos] >= 48 && text[pos] <= 57 {
+        count = count * 10 + (text[pos] as i32 - 48);
+        if count > 16 { return 0; }
+        pos = pos + 1;
+    }
+    while text[pos] == 32 { pos = pos + 1; }
+    if text[pos] != 93 || text[pos + 1] != 0 { return 0; }
+    return count;
+}
+
+fn device_array_type(elem: i32, count: i32) -> i32 {
+    let text: *u8 = alloc(32);
+    text[0] = 91;
+    var i: i32 = 0;
+    while g_strings[elem + i] != 0 { text[i + 1] = g_strings[elem + i]; i = i + 1; }
+    i = i + 1; text[i] = 59; i = i + 1;
+    if count >= 10 { text[i] = 49; i = i + 1; }
+    text[i] = (48 + count % 10) as u8;
+    text[i + 1] = 93; text[i + 2] = 0;
+    let t: i32 = str_intern(text);
+    free(text); return t;
+}
+
+fn device_aggregate_let(P: *DeviceScalarPlan, stmt: i32, depth: i32) -> i32 {
+    let init: i32 = g_nodes[stmt].child0;
+    let t: i32 = device_scalar_resolve(P, g_nodes[stmt].name1);
+    var values: [i32; 16] = 0;
+    var i: i32 = 0;
+    while i < 16 { values[i] = 0 - 1; i = i + 1; }
+    if type_is_array(t) == 1 {
+        let elem: i32 = device_scalar_resolve(P, type_array_elem(t));
+        let count: i32 = device_array_count(t);
+        if count < 1 || device_scalar_type(elem) == 0 || init <= 0
+            || g_nodes[init].kind != AST_LIT_INT || g_nodes[init].int_val != 0 {
+            return device_scalar_fail(P, 2, stmt);
+        }
+        if g_nodes[init].name0 != NULL_STR
+            && lit_text_overflows_u64(&g_strings[g_nodes[init].name0]) == 1 {
+            return device_scalar_fail(P, 2, stmt);
+        }
+        let zero: i32 = device_scalar_node(P, EIR_CONST, elem, stmt);
+        if zero < 0 { return zero; }
+        i = 0;
+        while i < count { values[i] = zero; i = i + 1; }
+        return device_aggregate_node(P, device_array_type(elem, count), 0 - 1, elem, &values[0], count, stmt);
+    }
+    if init <= 0 || g_nodes[init].kind != AST_STRUCT_LIT { return device_scalar_fail(P, 3, stmt); }
+    let si: i32 = find_struct(g_nodes[init].name0);
+    if si < 0 || g_structs[si].ngen != 0 { return device_scalar_fail(P, 2, stmt); }
+    let st: i32 = g_structs[si].name;
+    if t != NULL_STR && t != st { return device_scalar_fail(P, 2, stmt); }
+    let count: i32 = g_structs[si].nfields;
+    if count < 1 || count > 16 || g_nodes[init].nargs != count { return device_scalar_fail(P, 2, stmt); }
+    i = 0;
+    while i < count {
+        let member: i32 = struct_field_index(si, g_args[g_nodes[init].args_start + i * 2]);
+        if member < 0 || member >= count || values[member] >= 0 { return device_scalar_fail(P, 2, stmt); }
+        let ft: i32 = struct_field_type(si, member);
+        if device_scalar_type(ft) == 0 { return device_scalar_fail(P, 2, stmt); }
+        let value: i32 = device_scalar_expr(P, g_args[g_nodes[init].args_start + i * 2 + 1], ft, depth + 1);
+        values[member] = device_scalar_convert(P, value, ft, stmt);
+        if values[member] < 0 { return 0 - 1; }
+        i = i + 1;
+    }
+    return device_aggregate_node(P, st, si, NULL_STR, &values[0], count, stmt);
+}
+
+fn device_aggregate_slot(P: *DeviceScalarPlan, aggregate: i32, access: i32) -> i32 {
+    if aggregate < 0 || P.nodes[aggregate].kind != EIR_STRUCT_LIT { return device_scalar_fail(P, 3, access); }
+    if P.nodes[aggregate].alg >= 0 {
+        if g_nodes[access].kind != AST_MEMBER_ACCESS && g_nodes[access].kind != AST_FIELD_ACCESS
+            && g_nodes[access].kind != AST_MEMBER_ASSIGN { return device_scalar_fail(P, 3, access); }
+        let member: i32 = struct_field_index(P.nodes[aggregate].alg, g_nodes[access].name0);
+        if member < 0 || member >= P.nodes[aggregate].nargs { return device_scalar_fail(P, 2, access); }
+        return member;
+    }
+    if g_nodes[access].kind != AST_INDEX && g_nodes[access].kind != AST_INDEX_ASSIGN {
+        return device_scalar_fail(P, 3, access);
+    }
+    let index: i32 = g_nodes[access].child1;
+    if index <= 0 || g_nodes[index].kind != AST_LIT_INT
+        || g_nodes[index].int_val >= P.nodes[aggregate].nargs as u64 {
+        return device_scalar_fail(P, 3, access);
+    }
+    if g_nodes[index].name0 != NULL_STR
+        && lit_text_overflows_u64(&g_strings[g_nodes[index].name0]) == 1 {
+        return device_scalar_fail(P, 2, access);
+    }
+    return g_nodes[index].int_val as i32;
+}
+
+fn device_aggregate_set(P: *DeviceScalarPlan, stmt: i32, depth: i32) -> i32 {
+    let object: i32 = g_nodes[stmt].child0;
+    if object <= 0 || g_nodes[object].kind != AST_IDENT { return device_scalar_fail(P, 3, stmt); }
+    var binding: i32 = P.bindings - 1;
+    while binding >= P.floor && P.names[binding] != g_nodes[object].name0 { binding = binding - 1; }
+    if binding < P.floor || P.mutable[binding] == 0 { return device_scalar_fail(P, 3, stmt); }
+    let old: i32 = P.values[binding];
+    let slot: i32 = device_aggregate_slot(P, old, stmt);
+    if slot < 0 { return slot; }
+    let previous: i32 = P.components[P.nodes[old].args_start + slot];
+    let t: i32 = P.nodes[previous].type_off;
+    var rhs: i32 = g_nodes[stmt].child1;
+    if g_nodes[stmt].kind == AST_INDEX_ASSIGN { rhs = g_nodes[stmt].child2; }
+    let value: i32 = device_scalar_convert(P, device_scalar_expr(P, rhs, t, depth + 1), t, stmt);
+    if value < 0 { return value; }
+    var values: [i32; 16] = 0;
+    var i: i32 = 0;
+    while i < P.nodes[old].nargs { values[i] = P.components[P.nodes[old].args_start + i]; i = i + 1; }
+    values[slot] = value;
+    let version: i32 = device_aggregate_node(P, P.nodes[old].type_off, P.nodes[old].alg,
+        P.nodes[old].aux_type, &values[0], P.nodes[old].nargs, stmt);
+    if version < 0 { return version; }
+    P.values[binding] = version;
+    return version;
+}
+
+// Locals rename to value nodes; assignments update only the active call frame.
+fn device_scalar_body(P: *DeviceScalarPlan, body: i32, rt: i32, depth: i32) -> i32 {
+    if depth > 64 { return device_scalar_fail(P, 4, body); }
+    if body <= 0 || g_nodes[body].kind != AST_BLOCK { return device_scalar_fail(P, 3, body); }
+    var i: i32 = 0;
+    while i < g_nodes[body].nargs && P.reason == 0 {
+        let stmt: i32 = g_args[g_nodes[body].args_start + i];
+        P.work = P.work + 1;
+        if P.work > 4096 { return device_scalar_fail(P, 4, stmt); }
+        let kind: i32 = g_nodes[stmt].kind;
+        if kind == AST_RETURN && i == g_nodes[body].nargs - 1 {
+            return device_scalar_convert(P, device_scalar_expr(P, g_nodes[stmt].child0, rt, depth + 1), rt, stmt);
+        }
+        if kind == AST_IF && i == g_nodes[body].nargs - 1 {
+            return device_scalar_if(P, stmt, rt, depth + 1);
+        }
+        if kind == AST_LET {
+            let init: i32 = g_nodes[stmt].child0;
+            if init > 0 && g_nodes[init].kind == AST_CLOSURE {
+                if g_nodes[stmt].name1 != NULL_STR { return device_scalar_fail(P, 2, stmt); }
+                let closure: i32 = device_closure_value(P, init);
+                if device_scalar_bind(P, g_nodes[stmt].name0, closure) == 0 { return 0 - 1; }
+                i = i + 1; continue;
+            }
+            if type_is_array(g_nodes[stmt].name1) == 1
+                || (init > 0 && g_nodes[init].kind == AST_STRUCT_LIT) {
+                let aggregate: i32 = device_aggregate_let(P, stmt, depth + 1);
+                if device_scalar_bind(P, g_nodes[stmt].name0, aggregate) == 0 { return 0 - 1; }
+                P.mutable[P.bindings - 1] = g_nodes[stmt].flags & 1;
+                i = i + 1; continue;
+            }
+            var t: i32 = device_scalar_resolve(P, g_nodes[stmt].name1);
+            let value: i32 = device_scalar_expr(P, g_nodes[stmt].child0, t, depth + 1);
+            if value < 0 { return value; }
+            if t == NULL_STR { t = P.nodes[value].type_off; }
+            let converted: i32 = device_scalar_convert(P, value, t, stmt);
+            if device_scalar_bind(P, g_nodes[stmt].name0, converted) == 0 { return 0 - 1; }
+            P.mutable[P.bindings - 1] = g_nodes[stmt].flags & 1;
+        } else if kind == AST_MEMBER_ASSIGN || kind == AST_INDEX_ASSIGN {
+            if device_aggregate_set(P, stmt, depth + 1) < 0 { return 0 - 1; }
+        } else if kind == AST_ASSIGN {
+            var slot: i32 = P.bindings - 1;
+            while slot >= P.floor && P.names[slot] != g_nodes[stmt].name0 { slot = slot - 1; }
+            if slot < P.floor || P.mutable[slot] == 0 { return device_scalar_fail(P, 3, stmt); }
+            let t: i32 = P.nodes[P.values[slot]].type_off;
+            let value: i32 = device_scalar_expr(P, g_nodes[stmt].child0, t, depth + 1);
+            let converted: i32 = device_scalar_convert(P, value, t, stmt);
+            if converted < 0 { return converted; }
+            P.values[slot] = converted;
+        } else { return device_scalar_fail(P, 3, stmt); }
+        i = i + 1;
+    }
+    return device_scalar_fail(P, 3, body);
+}
+
+// Branch markers delimit lazy ranges; the merge owns the returned value.
+fn device_scalar_if(P: *DeviceScalarPlan, stmt: i32, rt: i32, depth: i32) -> i32 {
+    if depth > 64 { return device_scalar_fail(P, 4, stmt); }
+    if g_nodes[stmt].child2 <= 0 { return device_scalar_fail(P, 3, stmt); }
+    var cond: i32 = device_scalar_expr(P, g_nodes[stmt].child0, NULL_STR, depth + 1);
+    if cond < 0 { return cond; }
+    let ct: i32 = P.nodes[cond].type_off;
+    if device_scalar_type(ct) == 0 { return device_scalar_fail(P, 2, stmt); }
+    if ct != str_intern("i1") {
+        let zero: i32 = device_scalar_node(P, EIR_CONST, ct, stmt);
+        let test: i32 = device_scalar_node(P, EIR_BIN, str_intern("i1"), stmt);
+        if zero < 0 || test < 0 { return 0 - 1; }
+        P.nodes[test].op = OP_NEQ; P.nodes[test].a = cond;
+        P.nodes[test].b = zero; P.nodes[test].aux_type = ct;
+        cond = test;
+    }
+    let branch: i32 = device_scalar_node(P, EIR_IF, NULL_STR, stmt);
+    if branch < 0 { return branch; }
+    P.nodes[branch].a = cond;
+    let saved: i32 = P.bindings;
+    var values: [i32; 256] = 0;
+    var i: i32 = 0;
+    while i < saved { values[i] = P.values[i]; i = i + 1; }
+    let yes: i32 = device_scalar_body(P, g_nodes[stmt].child1, rt, depth + 1);
+    P.bindings = saved;
+    i = 0;
+    while i < saved { P.values[i] = values[i]; i = i + 1; }
+    if yes < 0 { return yes; }
+    let other: i32 = device_scalar_node(P, EIR_BLOCK, NULL_STR, stmt);
+    if other < 0 { return other; }
+    P.nodes[other].a = branch; P.nodes[branch].b = other;
+    let no: i32 = device_scalar_body(P, g_nodes[stmt].child2, rt, depth + 1);
+    P.bindings = saved;
+    i = 0;
+    while i < saved { P.values[i] = values[i]; i = i + 1; }
+    if no < 0 { return no; }
+    let merge: i32 = device_scalar_node(P, EIR_RET, rt, stmt);
+    if merge < 0 { return merge; }
+    P.nodes[merge].a = yes; P.nodes[merge].b = no;
+    P.nodes[merge].c = branch; P.nodes[branch].c = merge;
+    return merge;
 }
 
 fn device_scalar_convert(P: *DeviceScalarPlan, e: i32, t: i32, source: i32) -> i32 {
@@ -26884,6 +27349,7 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
     if depth > 64 || P.work > 4096 { return device_scalar_fail(P, 4, node); }
     if node <= 0 { return device_scalar_fail(P, 3, 0); }
     let kind: i32 = g_nodes[node].kind;
+    if kind == AST_CLOSURE { return device_closure_value(P, node); }
     if kind == AST_IDENT {
         let e: i32 = device_scalar_find(P, g_nodes[node].name0);
         if e < 0 { return device_scalar_fail(P, 3, node); }
@@ -26904,7 +27370,7 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
         return e;
     }
     if kind == AST_CAST {
-        let t: i32 = g_nodes[node].name0;
+        let t: i32 = device_scalar_resolve(P, g_nodes[node].name0);
         if device_scalar_type(t) == 0 { return device_scalar_fail(P, 2, node); }
         let inner: i32 = g_nodes[node].child0;
         var inner_ctx: i32 = NULL_STR;
@@ -26913,6 +27379,15 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
         return device_scalar_convert(P, device_scalar_expr(P, inner, inner_ctx, depth + 1), t, node);
     }
     if kind == AST_INDEX {
+        let object: i32 = g_nodes[node].child0;
+        if object > 0 && g_nodes[object].kind == AST_IDENT {
+            let aggregate: i32 = device_scalar_find(P, g_nodes[object].name0);
+            if aggregate >= 0 && P.nodes[aggregate].kind == EIR_STRUCT_LIT {
+                let slot: i32 = device_aggregate_slot(P, aggregate, node);
+                if slot < 0 { return slot; }
+                return P.components[P.nodes[aggregate].args_start + slot];
+            }
+        }
         if P.calls != 0 || g_nodes[g_nodes[node].child0].kind != AST_IDENT {
             return device_scalar_fail(P, 3, node);
         }
@@ -26929,6 +27404,24 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
     }
     if kind == AST_BINARY {
         let op: i32 = g_nodes[node].op;
+        let left: i32 = g_nodes[node].child0;
+        if op_overload_trait(op) != NULL_STR && g_nodes[left].kind == AST_IDENT {
+            let value: i32 = device_scalar_find(P, g_nodes[left].name0);
+            if value >= 0 && P.nodes[value].kind == EIR_STRUCT_LIT && P.nodes[value].alg >= 0 {
+                let method: i32 = resolve_trait_method(op_overload_method(op), P.nodes[value].type_off);
+                if method == NULL_STR { return device_scalar_fail(P, 1, node); }
+                let target: i32 = find_func(method);
+                if target < 0 || g_funcs[target].is_generic == 1 { return device_scalar_fail(P, 1, node); }
+                let decl: i32 = g_funcs[target].node;
+                if g_nodes[decl].nargs != 2 { return device_scalar_fail(P, 2, node); }
+                let param: i32 = g_args[g_nodes[decl].args_start + 1];
+                var args: [i32; 2] = 0;
+                args[0] = device_scalar_borrow(P, value, node);
+                args[1] = device_scalar_expr(P, g_nodes[node].child1, g_nodes[param].name1, depth + 1);
+                if args[0] < 0 || args[1] < 0 { return 0 - 1; }
+                return device_scalar_apply(P, node, depth + 1, target, &args[0], 2);
+            }
+        }
         if op == OP_POW || op == OP_AND || op == OP_OR {
             return device_scalar_fail(P, 3, node);
         }
@@ -26961,6 +27454,11 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
     }
     if kind == AST_UNARY {
         let op: i32 = g_nodes[node].op;
+        if op == OP_ADDR {
+            let object: i32 = g_nodes[node].child0;
+            if g_nodes[object].kind != AST_IDENT { return device_scalar_fail(P, 3, node); }
+            return device_scalar_borrow(P, device_scalar_find(P, g_nodes[object].name0), node);
+        }
         if op != OP_NEG && op != OP_BITNOT && op != OP_NOT { return device_scalar_fail(P, 3, node); }
         let a: i32 = device_scalar_expr(P, g_nodes[node].child0, ctx, depth + 1);
         if a < 0 { return a; }
@@ -26972,48 +27470,125 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
         if e >= 0 { P.nodes[e].a = a; P.nodes[e].op = op; }
         return e;
     }
+    if kind == AST_MEMBER_ACCESS || kind == AST_FIELD_ACCESS {
+        var aggregate: i32 = device_scalar_expr(P, g_nodes[node].child0, NULL_STR, depth + 1);
+        if aggregate >= 0 && P.nodes[aggregate].kind == EIR_ADDR_LOCAL { aggregate = P.nodes[aggregate].a; }
+        let slot: i32 = device_aggregate_slot(P, aggregate, node);
+        if slot < 0 { return slot; }
+        return P.components[P.nodes[aggregate].args_start + slot];
+    }
     if kind == AST_CALL { return device_scalar_call(P, node, depth + 1); }
     return device_scalar_fail(P, 3, node);
 }
 
 fn device_scalar_call(P: *DeviceScalarPlan, node: i32, depth: i32) -> i32 {
-    let fi: i32 = find_func(g_nodes[node].name0);
+    var fi: i32 = find_func(g_nodes[node].name0);
+    let closure: i32 = device_scalar_find(P, g_nodes[node].name0);
+    if fi < 0 && closure >= 0 && P.nodes[closure].kind == DEVICE_CLOSURE {
+        if call_may_use_builtin_precedence(node) == 1 { return device_scalar_fail(P, 1, node); }
+        return device_closure_call(P, node, closure, depth);
+    }
+    if fi < 0 && g_nodes[node].nargs > 0 {
+        var recv: i32 = g_args[g_nodes[node].args_start];
+        if g_nodes[recv].kind == AST_UNARY && g_nodes[recv].op == OP_ADDR { recv = g_nodes[recv].child0; }
+        if g_nodes[recv].kind == AST_IDENT {
+            let value: i32 = device_scalar_find(P, g_nodes[recv].name0);
+            if value >= 0 {
+                var t: i32 = P.nodes[value].type_off;
+                if P.nodes[value].kind == EIR_ADDR_LOCAL { t = type_pointee(t); }
+                let method: i32 = resolve_trait_method(g_nodes[node].name0, t);
+                if method != NULL_STR { fi = find_func(method); }
+            }
+        }
+    }
+    return device_scalar_apply(P, node, depth, fi, null, g_nodes[node].nargs);
+}
+
+fn device_scalar_apply(P: *DeviceScalarPlan, node: i32, depth: i32,
+                       target: i32, provided: *i32, n: i32) -> i32 {
+    var fi: i32 = target;
     if fi < 0 { return device_scalar_fail(P, 1, node); }
-    if g_funcs[fi].is_extern == 1 || g_funcs[fi].is_generic == 1
-        || g_funcs[fi].mono_concrete != NULL_STR || g_funcs[fi].purity_computed == 0
-        || g_funcs[fi].is_pure == 0 || g_funcs[fi].writes_arrays == 1
-        || g_funcs[fi].reads_arrays == 1 { return device_scalar_fail(P, 1, node); }
-    if P.calls >= 16 { return device_scalar_fail(P, 4, node); }
+    var concrete: [i32; 16] = 0;
     var i: i32 = 0;
+    while i < 16 { concrete[i] = NULL_STR; i = i + 1; }
+    if g_funcs[fi].mono_concrete != NULL_STR {
+        var mi: i32 = 0;
+        while mi < g_nmono && g_mono[mi].mangled_name != g_funcs[fi].name { mi = mi + 1; }
+        if mi >= g_nmono || g_mono[mi].nconc > 16 { return device_scalar_fail(P, 1, node); }
+        fi = g_mono[mi].base_func;
+        i = 0;
+        while i < g_mono[mi].nconc {
+            concrete[i] = g_mono_types[g_mono[mi].conc_start + i];
+            i = i + 1;
+        }
+    }
+    if g_funcs[fi].is_extern == 1 || (g_nodes[node].kind == AST_CALL && call_may_use_builtin_precedence(node) == 1) {
+        return device_scalar_fail(P, 1, node);
+    }
+    if P.calls >= 16 { return device_scalar_fail(P, 4, node); }
+    i = 0;
     while i < P.calls {
         if P.stack[i] == fi { return device_scalar_fail(P, 1, node); }
         i = i + 1;
     }
     let decl: i32 = g_funcs[fi].node;
     let body: i32 = g_nodes[decl].child0;
-    let n: i32 = g_nodes[node].nargs;
-    let rt: i32 = g_funcs[fi].ret_type;
-    if n != g_nodes[decl].nargs || n > 16 || device_scalar_type(rt) == 0 {
+    let ngen: i32 = g_funcs[fi].ngen;
+    let gen_start: i32 = g_funcs[fi].gen_start;
+    if n != g_nodes[decl].nargs || n > 16 || ngen > 16 {
         return device_scalar_fail(P, 2, node);
     }
-    if g_nodes[body].kind != AST_BLOCK || g_nodes[body].nargs != 1 {
-        return device_scalar_fail(P, 3, node);
+    i = 0;
+    while i < ngen {
+        let bound: i32 = g_gen_bounds[gen_start + i];
+        if g_gen_is_const[gen_start + i] != 0 || (bound != 0 && bound != NULL_STR) {
+            return device_scalar_fail(P, 2, node);
+        }
+        i = i + 1;
     }
-    let ret: i32 = g_args[g_nodes[body].args_start];
-    if g_nodes[ret].kind != AST_RETURN { return device_scalar_fail(P, 3, node); }
     var actual: [i32; 16] = 0;
     i = 0;
     while i < n {
         let param: i32 = g_args[g_nodes[decl].args_start + i];
-        let t: i32 = g_nodes[param].name1;
-        if device_scalar_type(t) == 0 { return device_scalar_fail(P, 2, node); }
-        let a: i32 = device_scalar_expr(P, g_args[g_nodes[node].args_start + i], t, depth + 1);
-        actual[i] = device_scalar_convert(P, a, t, node);
+        var t: i32 = g_nodes[param].name1;
+        var gp: i32 = 0;
+        while gp < ngen && g_gen_names[gen_start + gp] != t { gp = gp + 1; }
+        if gp < ngen { t = concrete[gp]; }
+        if t != NULL_STR && device_scalar_argument_type(t) == 0 { return device_scalar_fail(P, 2, node); }
+        var a: i32 = 0 - 1;
+        if provided != null { a = provided[i]; }
+        else { a = device_scalar_expr(P, g_args[g_nodes[node].args_start + i], t, depth + 1); }
+        if a < 0 { return a; }
+        if gp < ngen && t == NULL_STR {
+            t = P.nodes[a].type_off;
+            concrete[gp] = t;
+        }
+        actual[i] = device_scalar_argument(P, a, t, node);
         if actual[i] < 0 { return 0 - 1; }
         i = i + 1;
     }
     let saved: i32 = P.bindings;
     let floor: i32 = P.floor;
+    let saved_ngen: i32 = P.ngen;
+    var saved_names: [i32; 16] = 0;
+    var saved_types: [i32; 16] = 0;
+    i = 0;
+    while i < ngen {
+        if device_scalar_argument_type(concrete[i]) == 0 { return device_scalar_fail(P, 2, node); }
+        i = i + 1;
+    }
+    i = 0;
+    while i < saved_ngen {
+        saved_names[i] = P.gen_names[i]; saved_types[i] = P.gen_types[i];
+        i = i + 1;
+    }
+    P.ngen = ngen;
+    i = 0;
+    while i < ngen {
+        P.gen_names[i] = g_gen_names[gen_start + i]; P.gen_types[i] = concrete[i];
+        i = i + 1;
+    }
+    let rt: i32 = device_scalar_resolve(P, g_funcs[fi].ret_type);
     P.floor = saved;
     P.stack[P.calls] = fi;
     P.calls = P.calls + 1;
@@ -27023,26 +27598,164 @@ fn device_scalar_call(P: *DeviceScalarPlan, node: i32, depth: i32) -> i32 {
         device_scalar_bind(P, g_nodes[param].name0, actual[i]);
         i = i + 1;
     }
-    let value: i32 = device_scalar_expr(P, g_nodes[ret].child0, rt, depth + 1);
-    let result: i32 = device_scalar_convert(P, value, rt, node);
+    var result: i32 = 0 - 1;
+    if device_scalar_type(rt) == 0 { device_scalar_fail(P, 2, node); }
+    else { result = device_scalar_body(P, body, rt, depth + 1); }
     P.calls = P.calls - 1;
     P.bindings = saved;
     P.floor = floor;
+    P.ngen = saved_ngen;
+    i = 0;
+    while i < saved_ngen {
+        P.gen_names[i] = saved_names[i]; P.gen_types[i] = saved_types[i];
+        i = i + 1;
+    }
     return result;
 }
 
 fn device_scalar_free(P: *DeviceScalarPlan) {
     free(P.nodes); free(P.names); free(P.values); free(P.stack);
+    free(P.mutable); free(P.gen_names); free(P.gen_types);
+    free(P.components);
+    free(P.closure_names); free(P.closure_values);
 }
 
-fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
+fn device_scalar_scope_contains(scopes: *i32, parents: *i32, value: i32, region: i32) -> i32 {
+    var at: i32 = region;
+    while at != scopes[value] {
+        if at == 0 { return 0; }
+        at = parents[at];
+    }
+    return 1;
+}
+
+// Definitions must dominate their uses, including each incoming phi edge.
+fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32) -> i32 {
+    var stack: [i32; 64] = 0;
+    var depth: i32 = 0;
+    var region: i32 = 0;
     var i: i32 = 0;
     while i < P.count {
         let k: i32 = P.nodes[i].kind;
-        if k != EIR_LOCAL && k != EIR_CONST {
+        scopes[i] = region;
+        if k == EIR_BLOCK {
+            if depth == 0 { return 0; }
+            let branch: i32 = stack[depth - 1];
+            if P.nodes[i].a != branch || P.nodes[branch].b != i
+                || region != branch * 2 + 1 { return 0; }
+            region = branch * 2 + 2;
+        } else if k == EIR_RET {
+            if depth == 0 { return 0; }
+            let branch: i32 = stack[depth - 1];
+            let a: i32 = P.nodes[i].a;
+            let b: i32 = P.nodes[i].b;
+            if P.nodes[i].c != branch || P.nodes[branch].c != i
+                || region != branch * 2 + 2 { return 0; }
+            if a < 0 || a >= P.nodes[branch].b || b < 0 || b >= i { return 0; }
+            if device_scalar_scope_contains(scopes, parents, a, branch * 2 + 1) == 0
+                || device_scalar_scope_contains(scopes, parents, b, region) == 0 { return 0; }
+            region = parents[region]; depth = depth - 1;
+            scopes[i] = region;
+        } else {
+            var n: i32 = 0;
+            if k == DEVICE_CLOSURE {
+                n = P.nodes[i].nargs;
+                if n < 0 || n > 16 || P.nodes[i].args_start < 0
+                    || P.nodes[i].args_start > P.closure_caps - n { return 0; }
+            } else if k == EIR_STRUCT_LIT {
+                n = P.nodes[i].nargs;
+                if n < 1 || n > 16 || P.nodes[i].args_start < 0
+                    || P.nodes[i].args_start > P.ncomponents - n { return 0; }
+            }
+            else if k == EIR_CAST || k == EIR_UN || k == EIR_IF || k == EIR_ADDR_LOCAL { n = 1; }
+            else if k == EIR_BIN || k == EIR_INDEX { n = 2; }
+            else if k == EIR_INDEX_ST { n = 3; }
+            else if k != EIR_LOCAL && k != EIR_CONST { return 0; }
+            var j: i32 = 0;
+            while j < n {
+                var value: i32 = P.nodes[i].a;
+                if j == 1 { value = P.nodes[i].b; }
+                if j == 2 { value = P.nodes[i].c; }
+                if k == EIR_STRUCT_LIT { value = P.components[P.nodes[i].args_start + j]; }
+                if k == DEVICE_CLOSURE { value = P.closure_values[P.nodes[i].args_start + j]; }
+                if value < 0 || value >= i { return 0; }
+                if device_scalar_scope_contains(scopes, parents, value, region) == 0 { return 0; }
+                j = j + 1;
+            }
+            if k == EIR_IF {
+                let other: i32 = P.nodes[i].b;
+                let merge: i32 = P.nodes[i].c;
+                if depth >= 64 || other <= i || merge <= other || merge >= P.count { return 0; }
+                if P.nodes[other].kind != EIR_BLOCK || P.nodes[merge].kind != EIR_RET { return 0; }
+                parents[i * 2 + 1] = region; parents[i * 2 + 2] = region;
+                stack[depth] = i; depth = depth + 1; region = i * 2 + 1;
+            }
+        }
+        i = i + 1;
+    }
+    if depth != 0 { return 0; }
+    return 1;
+}
+
+fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
+    let scopes: *i32 = alloc(4096);
+    let parents: *i32 = alloc(8193);
+    let scoped: i32 = device_scalar_verify_scopes(P, scopes, parents);
+    free(scopes); free(parents);
+    if scoped == 0 { return 0; }
+    var i: i32 = 0;
+    while i < P.count {
+        let k: i32 = P.nodes[i].kind;
+        if k == DEVICE_CLOSURE {
+            let decl: i32 = P.nodes[i].a;
+            if decl <= 0 || decl >= g_nnodes || g_nodes[decl].kind != AST_CLOSURE
+                || device_closure_scalar(P.nodes[i].aux_type) == 0
+                || P.nodes[i].aux_type != g_nodes[decl].name1 || g_nodes[decl].nargs > 16
+                || P.nodes[i].type_off != clo_type_string(g_nodes[decl].name2) { return 0; }
+            var c: i32 = 0;
+            while c < g_nodes[decl].nargs {
+                let param: i32 = g_args[g_nodes[decl].args_start + c];
+                if device_closure_scalar(g_nodes[param].name1) == 0 { return 0; }
+                c = c + 1;
+            }
+            c = 0;
+            while c < P.nodes[i].nargs {
+                let value: i32 = P.closure_values[P.nodes[i].args_start + c];
+                if device_closure_scalar(P.nodes[value].type_off) == 0 { return 0; }
+                c = c + 1;
+            }
+        } else if k == EIR_ADDR_LOCAL {
+            let value: i32 = P.nodes[i].a;
+            if P.nodes[value].kind != EIR_STRUCT_LIT || P.nodes[value].alg < 0
+                || type_is_ptr(P.nodes[i].type_off) == 0
+                || type_pointee(P.nodes[i].type_off) != P.nodes[value].type_off { return 0; }
+        } else if k == EIR_STRUCT_LIT {
+            let si: i32 = P.nodes[i].alg;
+            if si >= 0 {
+                if si >= g_nstructs || g_structs[si].name != P.nodes[i].type_off
+                    || g_structs[si].nfields != P.nodes[i].nargs { return 0; }
+            } else {
+                if device_array_count(P.nodes[i].type_off) != P.nodes[i].nargs
+                    || type_array_elem(P.nodes[i].type_off) != P.nodes[i].aux_type { return 0; }
+            }
+            var f: i32 = 0;
+            while f < P.nodes[i].nargs {
+                var t: i32 = P.nodes[i].aux_type;
+                if si >= 0 { t = struct_field_type(si, f); }
+                let value: i32 = P.components[P.nodes[i].args_start + f];
+                if device_scalar_type(t) == 0 || P.nodes[value].type_off != t { return 0; }
+                f = f + 1;
+            }
+        } else if k == EIR_RET {
+            if device_scalar_type(P.nodes[i].type_off) == 0
+                || P.nodes[P.nodes[i].a].type_off != P.nodes[i].type_off
+                || P.nodes[P.nodes[i].b].type_off != P.nodes[i].type_off { return 0; }
+        } else if k != EIR_LOCAL && k != EIR_CONST && k != EIR_BLOCK {
             let a: i32 = P.nodes[i].a;
             if a < 0 || a >= i { return 0; }
-            if k == EIR_CAST {
+            if k == EIR_IF {
+                if P.nodes[a].type_off != str_intern("i1") { return 0; }
+            } else if k == EIR_CAST {
                 if P.nodes[i].aux_type != P.nodes[a].type_off { return 0; }
             } else if k == EIR_BIN || k == EIR_INDEX || k == EIR_INDEX_ST {
                 let b: i32 = P.nodes[i].b;
@@ -27069,8 +27782,18 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
 fn device_scalar_prepare(P: *DeviceScalarPlan, body: i32, loop_name: i32,
                          ncaps: i32, caps_base: i32) -> i32 {
     P.nodes = alloc(4096); P.names = alloc(256); P.values = alloc(256); P.stack = alloc(16);
+    P.mutable = alloc(256); P.gen_names = alloc(16); P.gen_types = alloc(16); P.ngen = 0;
+    P.components = alloc(4096); P.ncomponents = 0;
+    P.closure_names = alloc(256); P.closure_values = alloc(256);
+    P.closure_caps = 0; P.closures = 0; P.closure_depth = 0;
     P.count = 0; P.work = 0; P.bindings = 0; P.floor = 0; P.calls = 0; P.reason = 0; P.source = body;
-    if g_gen_nsub != 0 || ncaps >= 255 { device_scalar_fail(P, 2, body); return 0; }
+    if g_gen_nsub > 16 || ncaps >= 255 { device_scalar_fail(P, 2, body); return 0; }
+    P.ngen = g_gen_nsub;
+    var gi: i32 = 0;
+    while gi < P.ngen {
+        P.gen_names[gi] = g_gen_sub_names[gi]; P.gen_types[gi] = g_gen_sub_types[gi];
+        gi = gi + 1;
+    }
     var ci: i32 = 0;
     while ci < ncaps {
         let t: i32 = g_pfor_workers[caps_base + ci * 4 + 1];
@@ -27109,13 +27832,43 @@ fn device_scalar_prepare(P: *DeviceScalarPlan, body: i32, loop_name: i32,
 
 // Nodes are topologically ordered; even unused arguments execute once.
 // Capture and iterator nodes bind to the existing kernel envelope's registers.
+fn device_scalar_label(label: i32) {
+    ir_wr("ds"); ir_wr_int(label as i64);
+}
+
 fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32) {
     let regs: *i32 = alloc(P.count);
+    let predecessors: *i32 = alloc(P.count);
+    var current: i32 = 0;
     var i: i32 = 0;
     while i < P.count {
         let kind: i32 = P.nodes[i].kind;
         let t: i32 = P.nodes[i].type_off;
-        if kind == EIR_LOCAL {
+        if kind == EIR_STRUCT_LIT || kind == EIR_ADDR_LOCAL || kind == DEVICE_CLOSURE {
+            i = i + 1; continue;
+        } else if kind == EIR_IF {
+            ir_wr("  br i1 "); ir_wr_reg(regs[P.nodes[i].a]);
+            ir_wr(", label %"); device_scalar_label(i * 3 + 1);
+            ir_wr(", label %"); device_scalar_label(i * 3 + 2); ir_wr("\n");
+            current = i * 3 + 1;
+            device_scalar_label(current); ir_wr(":\n");
+        } else if kind == EIR_BLOCK {
+            let branch: i32 = P.nodes[i].a;
+            predecessors[branch] = current;
+            ir_wr("  br label %"); device_scalar_label(branch * 3 + 3); ir_wr("\n");
+            current = branch * 3 + 2;
+            device_scalar_label(current); ir_wr(":\n");
+        } else if kind == EIR_RET {
+            let branch: i32 = P.nodes[i].c;
+            ir_wr("  br label %"); device_scalar_label(branch * 3 + 3); ir_wr("\n");
+            device_scalar_label(branch * 3 + 3); ir_wr(":\n");
+            regs[i] = ir_tmp();
+            ir_wr("  "); ir_wr_reg(regs[i]); ir_wr(" = phi "); ir_wr_type(t);
+            ir_wr(" [ "); ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", %");
+            device_scalar_label(predecessors[branch]); ir_wr(" ], [ ");
+            ir_wr_reg(regs[P.nodes[i].b]); ir_wr(", %"); device_scalar_label(current); ir_wr(" ]\n");
+            current = branch * 3 + 3;
+        } else if kind == EIR_LOCAL {
             let slot: i32 = P.nodes[i].a;
             if slot == ncaps { regs[i] = idx; }
             else { regs[i] = g_syms[sym_find(g_pfor_workers[caps_base + slot * 4])].reg; }
@@ -27175,7 +27928,7 @@ fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32
         }
         i = i + 1;
     }
-    free(regs);
+    free(regs); free(predecessors);
 }
 
 var g_gpu_emitted: i32 = 0;
@@ -27302,21 +28055,32 @@ fn gpu_interface_access(node: i32, lv: i32, ncaps: i32, base: i32,
 }
 
 // Capture records are the signature authority; lo/hi follow those records.
-fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base: i32) -> i32 {
+fn gpu_kernel_symbol(wid: i32, origin: i32) {
+    if origin == 1 { ir_wr("__traveler_kernel_"); }
+    else { ir_wr("__pfor_gpu_worker_"); }
+    ir_wr_int(wid as i64);
+}
+
+fn gpu_interface_validate(body: i32, lv: i32, ncaps: i32, base: i32, roles: *i32) -> i32 {
     if pfor_body_all_index_assign(body) == 0 { return 0; }
-    let roles: *i32 = alloc((ncaps + 1) as i64);
     var i: i32 = 0;
     while i < ncaps {
         roles[i] = 0;
         let t: i32 = g_pfor_workers[base + i * 4 + 1];
         var bits: i32 = gpu_interface_width(t);
         if type_is_ptr(t) == 1 { bits = gpu_interface_element_width(type_pointee(t)); }
-        if bits == 0 { free(roles); return 0; }
+        if bits == 0 { return 0; }
         i = i + 1;
     }
-    if gpu_interface_access(body, lv, ncaps, base, roles, 2, 0) == 0 { free(roles); return 0; }
-    ir_wr("; traveler.kernel.v1 {\"schema\":\"traveler.kernel.v1\",\"abi\":1,\"stage\":\"semantic-ir\",\"compiler\":\"tvc_self\",\"target\":\"nvptx64-nvidia-cuda\",\"artifact\":null,\"symbol\":\"__pfor_gpu_worker_");
-    ir_wr_int(wid as i64); ir_wr("\",\"owner\":"); gpu_interface_string(&g_strings[owner]);
+    return gpu_interface_access(body, lv, ncaps, base, roles, 2, 0);
+}
+
+fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base: i32, origin: i32) -> i32 {
+    let roles: *i32 = alloc(ncaps + 1);
+    if gpu_interface_validate(body, lv, ncaps, base, roles) == 0 { free(roles); return 0; }
+    var i: i32 = 0;
+    ir_wr("; traveler.kernel.v1 {\"schema\":\"traveler.kernel.v1\",\"abi\":1,\"stage\":\"semantic-ir\",\"compiler\":\"tvc_self\",\"target\":\"nvptx64-nvidia-cuda\",\"artifact\":null,\"symbol\":\"");
+    gpu_kernel_symbol(wid, origin); ir_wr("\",\"owner\":"); gpu_interface_string(&g_strings[owner]);
     ir_wr(",\"specialization\":[");
     i = 0;
     while i < g_gen_nsub {
@@ -27327,7 +28091,9 @@ fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base
     }
     ir_wr("],\"line\":"); ir_wr_int(g_nodes[body].line as i64);
     ir_wr(",\"column\":"); ir_wr_int(g_nodes[body].col as i64);
-    ir_wr(",\"execution\":\"independent-pfor\",\"profile\":\"direct-index-v1\",\"block\":[256,1,1],\"dimensions\":1,\"lanes_per_cell\":1,\"dynamic_shared_bytes\":0,\"index_bits\":32,\"domain\":{\"min_lo\":0,\"max_hi\":2147483392,\"empty\":\"no-launch\"},\"parameters\":[");
+    ir_wr(",\"execution\":\"");
+    if origin == 1 { ir_wr("independent-kernel"); } else { ir_wr("independent-pfor"); }
+    ir_wr("\",\"profile\":\"direct-index-v1\",\"block\":[256,1,1],\"dimensions\":1,\"lanes_per_cell\":1,\"dynamic_shared_bytes\":0,\"index_bits\":32,\"domain\":{\"min_lo\":0,\"max_hi\":2147483392,\"empty\":\"no-launch\"},\"parameters\":[");
     i = 0;
     while i < ncaps + 2 {
         if i > 0 { ir_wr(","); }
@@ -27389,12 +28155,106 @@ fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base
     return 1;
 }
 
+struct DeviceKernelEntry {
+    origin: i32,
+    worker: i32,
+    owner: i32,
+    body: i32,
+    index_name: i32,
+    index_bits: i32,
+    capture_count: i32,
+    capture_base: i32,
+    generic_count: i32,
+    generic_base: i32,
+}
+
+// Both entry origins share capture storage and typed lowering; only pfor
+// entries originate in the CPU loop-proof registry.
+fn device_kernel_entries(entries: *DeviceKernelEntry) -> i32 {
+    var count: i32 = 0;
+    var off: i32 = 0;
+    var next: i32 = 0;
+    while count < g_npfor_workers {
+        let ngen: i32 = g_pfor_workers[off + 4];
+        let ncaps: i32 = g_pfor_workers[off + 3];
+        let wid: i32 = g_pfor_workers[off];
+        entries[count] = DeviceKernelEntry { origin: 0, worker: wid,
+            owner: g_pfor_workers[off + 6], body: g_pfor_workers[off + 1],
+            index_name: g_pfor_workers[off + 2], index_bits: g_pfor_workers[off + 5],
+            capture_count: ncaps, capture_base: off + 7 + ngen * 2,
+            generic_count: ngen, generic_base: off + 7 };
+        if wid >= next { next = wid + 1; }
+        off = off + 7 + ngen * 2 + ncaps * 4;
+        count = count + 1;
+    }
+    var fi: i32 = 0;
+    while fi < g_nfuncs {
+        let decl: i32 = g_funcs[fi].node;
+        if (g_nodes[decl].flags & 32768) != 0 {
+            let n: i32 = g_nodes[decl].nargs;
+            let body: i32 = g_nodes[decl].child0;
+            var valid: i32 = 1;
+            if g_gpu_target > 1 || g_funcs[fi].is_generic == 1
+                || g_funcs[fi].is_extern == 1 || g_funcs[fi].ret_type != NULL_STR
+                || n < 2 || n > 33 || count >= MAX_PFOR { valid = 0; }
+            if body <= 0 || pfor_body_all_index_assign(body) == 0 { valid = 0; }
+            if valid == 1 {
+                let index: i32 = g_args[g_nodes[decl].args_start];
+                if g_nodes[index].name1 != str_intern("i32") { valid = 0; }
+                var p: i32 = 0;
+                while p < n {
+                    let param: i32 = g_args[g_nodes[decl].args_start + p];
+                    var q: i32 = 0;
+                    while q < p {
+                        let earlier: i32 = g_args[g_nodes[decl].args_start + q];
+                        if g_nodes[param].name0 == g_nodes[earlier].name0 { valid = 0; }
+                        q = q + 1;
+                    }
+                    p = p + 1;
+                }
+                if off > MAX_PFOR_WORKER_INTS - (n - 1) * 4 { valid = 0; }
+                if valid == 1 {
+                    entries[count] = DeviceKernelEntry { origin: 1, worker: next,
+                        owner: g_funcs[fi].name, body: body, index_name: g_nodes[index].name0,
+                        index_bits: 32, capture_count: n - 1, capture_base: off,
+                        generic_count: 0, generic_base: 0 };
+                    p = 1;
+                    while p < n {
+                        let param: i32 = g_args[g_nodes[decl].args_start + p];
+                        g_pfor_workers[off] = g_nodes[param].name0;
+                        g_pfor_workers[off + 1] = g_nodes[param].name1;
+                        g_pfor_workers[off + 2] = 0; g_pfor_workers[off + 3] = 0;
+                        off = off + 4; p = p + 1;
+                    }
+                    count = count + 1; next = next + 1;
+                }
+            }
+            if valid == 0 {
+                diag_error_at(g_nodes[decl].line, g_nodes[decl].col,
+                    "provisional kernel requires a concrete void function with an i32 index and direct-index stores on NVPTX or AMDGCN");
+            }
+        }
+        fi = fi + 1;
+    }
+    return count;
+}
+
 fn emit_gpu_module() {
+    let old_captures: *i32 = g_pfor_workers;
+    g_pfor_workers = alloc(MAX_PFOR_WORKER_INTS);
+    var copy: i32 = 0;
+    while copy < g_pfor_woff {
+        g_pfor_workers[copy] = old_captures[copy]; copy = copy + 1;
+    }
+    let entries: *DeviceKernelEntry = alloc(MAX_PFOR);
+    let nentries: i32 = device_kernel_entries(entries);
     if g_gpu_target == 2 {
+        free(g_pfor_workers); g_pfor_workers = old_captures; free(entries);
         emit_agx_module();
         return;
     }
     if g_gpu_target == 3 {
+        free(g_pfor_workers); g_pfor_workers = old_captures; free(entries);
         emit_vulkan_module();
         return;
     }
@@ -27403,12 +28263,8 @@ fn emit_gpu_module() {
     // device-authority fence pins their hashes).
     var any_wave: i32 = 0;
     var wscan: i32 = 0;
-    var soff: i32 = 0;
-    while wscan < g_npfor_workers {
-        let sbody: i32 = g_pfor_workers[soff + 1];
-        let sncaps: i32 = g_pfor_workers[soff + 3];
-        let sngen: i32 = g_pfor_workers[soff + 4];
-        soff = soff + 7 + sngen * 2 + sncaps * 4;
+    while wscan < nentries {
+        let sbody: i32 = entries[wscan].body;
         if pfor_body_gpu_dot(sbody) == 1
             && gpu_dot_uses_wave(sbody, 0) == 1 { any_wave = 1; }
         wscan = wscan + 1;
@@ -27449,15 +28305,16 @@ fn emit_gpu_module() {
     var nemitted: i32 = 0;
     g_gpu_used_udot4 = 0;
     g_gpu_used_readonly = 0;
-    while w < g_npfor_workers {
-        let wid: i32 = g_pfor_workers[roff];
-        let body_node: i32 = g_pfor_workers[roff + 1];
-        let loop_var_name: i32 = g_pfor_workers[roff + 2];
-        let ncaps: i32 = g_pfor_workers[roff + 3];
-        let wngen: i32 = g_pfor_workers[roff + 4];
-        let wbw: i32 = g_pfor_workers[roff + 5];  // #54: iterator width
-        let owner_fn: i32 = g_pfor_workers[roff + 6];
-        roff = roff + 7;
+    while w < nentries {
+        let wid: i32 = entries[w].worker;
+        let body_node: i32 = entries[w].body;
+        let loop_var_name: i32 = entries[w].index_name;
+        let ncaps: i32 = entries[w].capture_count;
+        let wngen: i32 = entries[w].generic_count;
+        let wbw: i32 = entries[w].index_bits;
+        let owner_fn: i32 = entries[w].owner;
+        let origin: i32 = entries[w].origin;
+        roff = entries[w].generic_base;
 
         // Restore the generic substitution context (mirrors emit_pfor_workers)
         // so resolve_type_sub / body codegen resolve generic annotations.
@@ -27471,7 +28328,7 @@ fn emit_gpu_module() {
             wgi = wgi + 1;
         }
 
-        let caps_base: i32 = roff;
+        let caps_base: i32 = entries[w].capture_base;
         // Eligibility: elementwise body AND no dyn (__field) carrier capture
         // (the dyn carrier needs the %__Field kernarg — Stage 3). i64-wide
         // iterators (#54) are Stage-3-deferred: the SIMT identity is i32.
@@ -27486,10 +28343,15 @@ fn emit_gpu_module() {
         var eligible: i32 = pfor_body_all_index_assign(body_node);
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
         if wbw == 64 { eligible = 0; skip_reason = 1; }
+        if origin == 1 {
+            let roles: *i32 = alloc(ncaps + 1);
+            if gpu_interface_validate(body_node, loop_var_name, ncaps, caps_base, roles) == 0 { eligible = 0; }
+            free(roles);
+        }
         // The closed dot classes already exclude calls; the flat elementwise
         // class must not emit a call the device module does not carry.
         if eligible == 1 && k8_private_dot == 0 && blocked_dot == 0 {
-            if pfor_body_elem_call_free(body_node) == 0 {
+            if origin == 1 || pfor_body_elem_call_free(body_node) == 0 {
                 scalar_attempted = 1;
                 scalar_prepared = device_scalar_prepare(scalar_plan, body_node, loop_var_name, ncaps, caps_base);
                 if scalar_prepared == 0 { eligible = 0; skip_reason = 3; }
@@ -27544,8 +28406,8 @@ fn emit_gpu_module() {
             g_block_terminated = 0;
             g_body_mode = 0;
 
-            if g_gpu_interface == 1 {
-                if gpu_interface_emit(wid, owner_fn, body_node, loop_var_name, ncaps, caps_base) == 0 {
+            if g_gpu_interface == 1 || (origin == 1 && g_gpu_target == 1) {
+                if gpu_interface_emit(wid, owner_fn, body_node, loop_var_name, ncaps, caps_base, origin) == 0 {
                     diag_error_at(g_nodes[body_node].line, g_nodes[body_node].col,
                         "kernel interface requires direct iterator indexes and supported integer layouts");
                 }
@@ -27553,11 +28415,11 @@ fn emit_gpu_module() {
             // Signature: temps allocate in order from 0, so cap i = %t{i}, lo =
             // %t{ncaps}, hi = %t{ncaps+1}. Arrays are ptr addrspace(1) kernargs.
             if g_gpu_target == 1 {
-                ir_wr("\ndefine ptx_kernel void @__pfor_gpu_worker_");
+                ir_wr("\ndefine ptx_kernel void @");
             } else {
-                ir_wr("\ndefine amdgpu_kernel void @__pfor_gpu_worker_");
+                ir_wr("\ndefine amdgpu_kernel void @");
             }
-            ir_wr_int(wid as i64);
+            gpu_kernel_symbol(wid, origin);
             ir_wr("(");
             ci = 0;
             while ci < ncaps {
@@ -27686,6 +28548,10 @@ fn emit_gpu_module() {
             g_body_mode = saved_bm;
             nemitted = nemitted + 1;
         } else {
+            if origin == 1 {
+                diag_error_at(g_nodes[body_node].line, g_nodes[body_node].col,
+                    "explicit kernel body failed typed device verification");
+            }
             ir_wr("; skipped __pfor_gpu_worker_");
             ir_wr_int(wid as i64);
             if skip_reason == 3 {
@@ -27731,12 +28597,13 @@ fn emit_gpu_module() {
     }
     g_gpu_emitted = nemitted;
     gpu_decision_prefix("module");
-    wr(2, ",\"candidates\":"); wr_int(2, g_npfor_workers as i64);
+    wr(2, ",\"candidates\":"); wr_int(2, nentries as i64);
     wr(2, ",\"emitted\":"); wr_int(2, nemitted as i64);
-    wr(2, ",\"refused\":"); wr_int(2, (g_npfor_workers - nemitted) as i64);
+    wr(2, ",\"refused\":"); wr_int(2, (nentries - nemitted) as i64);
     wr(2, ",\"reason\":\"");
     if nemitted == 0 { wr(2, "no-usable-workers"); }
     wr(2, "\"}\n");
+    free(g_pfor_workers); g_pfor_workers = old_captures; free(entries);
 }
 
 // ===== CLOSURE LIFTED-FN EMISSION (deferred) =====
@@ -43883,6 +44750,17 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
         }
         codegen_program(prog);
         close(g_ir_fd);
+        if g_gpu_target > 1 {
+            var entry: i32 = 0;
+            while entry < g_nfuncs {
+                let decl: i32 = g_funcs[entry].node;
+                if (g_nodes[decl].flags & 32768) != 0 {
+                    diag_error_at(g_nodes[decl].line, g_nodes[decl].col,
+                        "provisional kernel entries require NVPTX or AMDGCN");
+                }
+                entry = entry + 1;
+            }
+        }
         if g_diag_count > 0 {
             exit(1);
         }
