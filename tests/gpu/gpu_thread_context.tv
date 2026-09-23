@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/thread.tv";
+
+fn coordinate_value(thread: GpuThread, value: u64) -> u64 {
+    return value + gpu_global_x(thread) + gpu_global_y(thread) * 17
+        + gpu_global_z(thread) * 257 + gpu_local_index(thread) * 65537
+        + gpu_block_index(thread) * 1048576;
+}
+
+#[kernel]
+fn coordinate_map(thread: GpuThread, input: *u64, output: *u64) {
+    output[gpu_global_index(thread)] = coordinate_value(thread, input[gpu_global_index(thread)]);
+}
+
+#[kernel]
+fn extent_map(thread: GpuThread, input: *u64, output: *u64) {
+    output[gpu_global_index(thread)] = input[gpu_global_index(thread)]
+        ^ (gpu_global_size_x(thread) + (gpu_global_size_y(thread) << 20) + (gpu_global_size_z(thread) << 40));
+}
+
+#[export]
+fn context_cpu(thread: *GpuThread, input: *u64, output: *u64, extent: i32) {
+    if extent == 0 { coordinate_map(thread[0], input, output); }
+    else { extent_map(thread[0], input, output); }
+}

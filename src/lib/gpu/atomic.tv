@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Orders: 0 relaxed, 1 acquire, 2 release, 3 acquire-release. Scope 1 is device.
+// The count names a u64 launch capture. Out-of-range operations return zero.
+extern "C" fn gpu_atomic_add_u32(buffer: *u32, count: u64, index: u64, value: u32, order: i32, scope: i32) -> u32;
+extern "C" fn gpu_atomic_add_u64(buffer: *u64, count: u64, index: u64, value: u64, order: i32, scope: i32) -> u64;
+extern "C" fn gpu_atomic_exchange_u32(buffer: *u32, count: u64, index: u64, value: u32, order: i32, scope: i32) -> u32;
+extern "C" fn gpu_atomic_exchange_u64(buffer: *u64, count: u64, index: u64, value: u64, order: i32, scope: i32) -> u64;
+extern "C" fn gpu_atomic_compare_exchange_u32(buffer: *u32, count: u64, index: u64, value: u32, order: i32, scope: i32, expected: u32) -> u32;
+extern "C" fn gpu_atomic_compare_exchange_u64(buffer: *u64, count: u64, index: u64, value: u64, order: i32, scope: i32, expected: u64) -> u64;
+// Shared operations use the initialized u64 arena and literal scope 0 (block).
+extern "C" fn gpu_shared_atomic_add_u64(index: u64, value: u64, order: i32, scope: i32) -> u64;
+extern "C" fn gpu_shared_atomic_exchange_u64(index: u64, value: u64, order: i32, scope: i32) -> u64;
+extern "C" fn gpu_shared_atomic_compare_exchange_u64(index: u64, value: u64, order: i32, scope: i32, expected: u64) -> u64;

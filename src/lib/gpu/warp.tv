@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// The initial warp profile requires literal full masks and complete physical warps.
+import "thread.tv";
+
+extern "C" fn gpu_warp_shuffle_u32(mask: u32, value: u32, source_lane: u32) -> u32;
+extern "C" fn gpu_warp_shuffle_xor_u32(mask: u32, value: u32, lane_delta: u32) -> u32;
+extern "C" fn gpu_warp_ballot(mask: u32, predicate: bool) -> u32;
+extern "C" fn gpu_warp_any(mask: u32, predicate: bool) -> bool;
+extern "C" fn gpu_warp_all(mask: u32, predicate: bool) -> bool;
+extern "C" fn gpu_warp_sync(mask: u32);

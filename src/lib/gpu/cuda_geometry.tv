@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+// Geometry uses wide host values; validate before narrowing to the driver ABI.
+
+struct CudaDeviceLimits {
+    threads: u64,
+    block_x: u64,
+    block_y: u64,
+    block_z: u64,
+    grid_x: u64,
+    grid_y: u64,
+    grid_z: u64,
+    shared_bytes: u64,
+    warp_size: u64,
+}
+
+struct CudaGeometry {
+    grid_x: u64,
+    grid_y: u64,
+    grid_z: u64,
+    block_x: u64,
+    block_y: u64,
+    block_z: u64,
+    shared_bytes: u64,
+}
+
+// A zero dimension is invalid; empty logical domains skip submission separately.
+fn cuda_geometry_status(limits: *CudaDeviceLimits, geometry: CudaGeometry,
+                        function_threads: u64, static_shared: u64) -> i32 {
+    if geometry.grid_x == 0 || geometry.grid_y == 0 || geometry.grid_z == 0
+        || geometry.block_x == 0 || geometry.block_y == 0 || geometry.block_z == 0 { return 0 - 1; }
+    if geometry.grid_x > 4294967295 || geometry.grid_y > 4294967295 || geometry.grid_z > 4294967295
+        || geometry.block_x > 4294967295 || geometry.block_y > 4294967295
+        || geometry.block_z > 4294967295 || geometry.shared_bytes > 4294967295 { return 0 - 1; }
+    if geometry.grid_x > limits.grid_x || geometry.grid_y > limits.grid_y || geometry.grid_z > limits.grid_z
+        || geometry.block_x > limits.block_x || geometry.block_y > limits.block_y
+        || geometry.block_z > limits.block_z { return 0 - 3; }
+    var threads: u64 = limits.threads;
+    if function_threads < threads { threads = function_threads; }
+    if geometry.block_x > threads / geometry.block_y { return 0 - 3; }
+    let plane: u64 = geometry.block_x * geometry.block_y;
+    if plane > threads / geometry.block_z { return 0 - 3; }
+    let block: u64 = plane * geometry.block_z;
+    if static_shared > limits.shared_bytes { return 0 - 3; }
+    if geometry.shared_bytes > limits.shared_bytes - static_shared { return 0 - 3; }
+    let max_index: u64 = 9223372036854775807;
+    if geometry.grid_x > max_index / geometry.grid_y { return 0 - 1; }
+    let grid_plane: u64 = geometry.grid_x * geometry.grid_y;
+    if grid_plane > max_index / geometry.grid_z { return 0 - 1; }
+    let grid: u64 = grid_plane * geometry.grid_z;
+    if grid > max_index / block { return 0 - 1; }
+    return 0;
+}

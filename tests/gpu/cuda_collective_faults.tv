@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident_checks.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+
+fn collective_fault(result: Result<u64, CudaError>) {
+    match result {
+        Result::Ok(value) => { exit(1); },
+        Result::Err(error) => {
+            var e: CudaError = error;
+            if e.boundary != 5 || e.status != 811 { exit(2); }
+            cuda_error_close(&e);
+        },
+    }
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; }
+    var query: i32 = 0;
+    while query < 3 {
+        let device: u64 = resident_need(cuda_device_open(0));
+        let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+        mock_fail(11, query);
+        collective_fault(cuda_kernel_get_owner(module, "dynamic_peer"));
+        resident_need(cuda_kernel_get_owner(module, "dynamic_peer"));
+        resident_need(cuda_module_close(module)); resident_need(cuda_device_close(device));
+        if mock_clean() == 0 { return 3; }
+        query = query + 1;
+    }
+    return 0;
+}

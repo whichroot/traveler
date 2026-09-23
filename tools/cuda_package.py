@@ -39,17 +39,19 @@ def validate_kernel(k):
                        "symbol", "owner", "specialization", "line", "column", "execution",
                        "profile", "block", "dimensions", "lanes_per_cell", "dynamic_shared_bytes",
                        "index_bits", "domain", "parameters", "disjoint"}, "kernel fields")
+    cooperative = k["profile"] in ("cooperative-grid-v1", "cooperative-warp-v1", "cooperative-atomic-v1")
     for key, value in {"schema": "traveler.kernel.v1", "abi": 1, "stage": "semantic-ir",
                        "compiler": "tvc_self", "target": "nvptx64-nvidia-cuda", "artifact": None,
-                       "profile": "direct-index-v1",
-                       "block": [256, 1, 1], "dimensions": 1, "lanes_per_cell": 1,
-                       "dynamic_shared_bytes": 0, "index_bits": 32,
-                       "domain": {"min_lo": 0, "max_hi": 2147483392, "empty": "no-launch"}}.items():
+                       "profile": k["profile"] if cooperative else "direct-index-v1",
+                       "block": None if cooperative else [256, 1, 1], "dimensions": 3 if cooperative else 1,
+                       "lanes_per_cell": 1, "index_bits": 64 if cooperative else 32,
+                       "domain": {"min_lo": 0, "max_hi": (1 << 63) - 1 if cooperative else 2147483392, "empty": "no-launch"}}.items():
         require(k[key] == value and type(k[key]) is type(value), f"unsupported {key}")
-    require(all(type(v) is int for v in k["block"]), "block dimensions")
+    if not cooperative:
+        require(all(type(v) is int for v in k["block"]), "block dimensions")
     require(type(k["domain"]["min_lo"]) is int and type(k["domain"]["max_hi"]) is int, "domain integers")
-    require(k["execution"] in ("independent-pfor", "independent-kernel"), "unsupported execution")
-    prefix = "__traveler_kernel_" if k["execution"] == "independent-kernel" else "__pfor_gpu_worker_"
+    require(k["execution"] in (("cooperative-kernel",) if cooperative else ("independent-pfor", "independent-kernel")), "unsupported execution")
+    prefix = "__pfor_gpu_worker_" if k["execution"] == "independent-pfor" else "__traveler_kernel_"
     require(isinstance(k["symbol"], str) and re.fullmatch(prefix + r"[0-9]+", k["symbol"]), "entry symbol")
     require(isinstance(k["owner"], str) and 0 < len(k["owner"]) <= 255, "owner")
     require(integer(k["line"], 1, 2147483647) and integer(k["column"], 0, 2147483647), "location")
@@ -59,6 +61,14 @@ def validate_kernel(k):
         require(all(type(v) is str and 0 < len(v) <= 255 for v in sub.values()), "specialization types")
     params = k["parameters"]
     require(type(params) is list and 3 <= len(params) <= 34, "parameter limit")
+    shared = k["dynamic_shared_bytes"]
+    if type(shared) is dict:
+        require(cooperative and set(shared) == {"parameter", "byte_scale", "max_count"}, "dynamic shared fields")
+        require(integer(shared["parameter"], 0, len(params) - 3), "dynamic shared parameter")
+        require(type(shared["byte_scale"]) is int and shared["byte_scale"] == 8
+                and type(shared["max_count"]) is int and shared["max_count"] == 1024, "dynamic shared layout")
+    else:
+        require(type(shared) is int and shared == 0, "dynamic shared bytes")
     base = {"ordinal", "name", "source_type", "synthetic", "kind", "llvm_type", "size", "alignment"}
     for i, p in enumerate(params):
         require(type(p) is dict and base <= p.keys(), "parameter fields")
@@ -66,7 +76,7 @@ def validate_kernel(k):
         require(type(p["synthetic"]) is bool and p["synthetic"] == (i >= len(params) - 2), "synthetic parameter")
         require(type(p["name"]) is str and 0 < len(p["name"]) <= 255, "parameter name")
         if p["synthetic"]:
-            require(p["name"] == ("lo" if i == len(params) - 2 else "hi") and p["source_type"] == "i32", "bounds ABI")
+            require(p["name"] == ("lo" if i == len(params) - 2 else "hi") and p["source_type"] == ("u64" if cooperative else "i32"), "bounds ABI")
         if p["kind"] == "integer":
             require(set(p) == base | {"bits", "signed"}, "integer fields")
             require(type(p["source_type"]) is str and re.fullmatch(r"(?:bool|[iu](?:8|16|32|64))", p["source_type"]), "integer type")
@@ -84,10 +94,24 @@ def validate_kernel(k):
             require(type(p["address_space"]) is int and p["address_space"] == 1, "address space")
             require(type(p["element_size"]) is int and p["element_size"] == elem and type(p["element_alignment"]) is int and p["element_alignment"] == min(elem, 16), "element layout")
             require(p["access"] in ("read", "write", "read-write"), "pointer effect")
-            require(p["footprint"] == {"start_parameter": len(params) - 2, "end_parameter": len(params) - 1, "byte_scale": elem}, "footprint")
+            fp = p["footprint"]
+            if type(fp) is dict and "count_parameter" in fp:
+                require(cooperative and set(fp) == {"count_parameter", "byte_scale"}, "bounded footprint fields")
+                require(integer(fp["count_parameter"], 0, len(params) - 3), "bounded count parameter")
+                require((p["element_type"] in ("u32", "u64") and p["access"] == "read-write"
+                         or p["element_type"] == "u64" and p["access"] == "read")
+                        and fp["byte_scale"] == elem, "bounded buffer layout")
+            else:
+                require(fp == {"start_parameter": len(params) - 2, "end_parameter": len(params) - 1, "byte_scale": elem}, "footprint")
             require(all(type(v) is int for v in p["footprint"].values()), "footprint integers")
         require(type(p["size"]) is int and type(p["alignment"]) is int and p["size"] == p["alignment"] == size, "ABI layout")
     require(len({p["name"] for p in params[:-2]}) == len(params) - 2, "duplicate capture name")
+    for p in params:
+        fp = p.get("footprint", {})
+        if "count_parameter" in fp:
+            require(params[fp["count_parameter"]]["source_type"] == "u64", "bounded count type")
+    if type(shared) is dict:
+        require(params[shared["parameter"]]["source_type"] == "u64", "dynamic shared count type")
     pairs = [[i, j] for i, p in enumerate(params) for j, q in enumerate(params)
              if i < j and p["kind"] == q["kind"] == "pointer" and
              ("write" in p["access"] or "write" in q["access"])]
@@ -100,7 +124,7 @@ def descriptors(ir):
     require(1 <= len(entries) <= 64, "entry limit")
     for k in entries:
         validate_kernel(k)
-    signatures = dict(re.findall(r"define ptx_kernel void @(\w+)\(([^\n]*)\) #0", ir))
+    signatures = dict(re.findall(r"define ptx_kernel void @(\w+)\(([^\n]*)\) #[01]", ir))
     require(len(signatures) == len(entries) == len({k["symbol"] for k in entries}), "entry table mismatch")
     for k in entries:
         signature = ", ".join(f'{p["llvm_type"]} %t{i}' for i, p in enumerate(k["parameters"]))
@@ -112,6 +136,9 @@ def build(ir_path, output, llc, sm):
     require(integer(sm, 50, 999), "invalid target SM")
     ir = Path(ir_path).read_text()
     entries = descriptors(ir)
+    require(sm >= 70 or not any(k["profile"] in ("cooperative-warp-v1", "cooperative-atomic-v1") for k in entries), "collective profile requires SM70")
+    require(sm >= 70 or not any("count_parameter" in p.get("footprint", {})
+                               for k in entries for p in k["parameters"]), "bounded profile requires SM70")
     with tempfile.TemporaryDirectory() as temp:
         source = Path(temp) / "module.ll"
         target = Path(temp) / "module.ptx"

@@ -3,6 +3,7 @@
 
 import "cuda_ffi.tv";
 import "cuda_package.tv";
+import "cuda_geometry.tv";
 
 extern "C" fn sched_yield() -> i32;
 
@@ -35,6 +36,10 @@ struct CudaResource {
     poisoned: i32,
     package: *CudaPackage,
     entry: i32,
+    limits: *CudaDeviceLimits,
+    threads: u64,
+    shared_bytes: u64,
+    dynamic_bytes: u64,
 }
 
 var g_cuda_res_lock: i32 = 0;
@@ -87,6 +92,8 @@ fn cuda_res_slot() -> *CudaResource {
             r.owner = 0; r.parent = 0; r.native = null; r.bytes = 0;
             r.ordinal = 0; r.sm = 0; r.grid = 0; r.poisoned = 0;
             r.package = null; r.entry = 0;
+            r.limits = null; r.threads = 0; r.shared_bytes = 0;
+            r.dynamic_bytes = 0;
             return r;
         }
         i = i + 1;
@@ -123,6 +130,24 @@ fn cuda_res_leave(d: *CudaResource, previous: *u8, status: i32) -> i32 {
     return status;
 }
 
+fn cuda_res_query_limits(device: i32, limits: *CudaDeviceLimits) -> i32 {
+    var values: [i32; 9] = 0;
+    var i: i32 = 0;
+    while i < 9 {
+        var attribute: i32 = i + 1;
+        if i == 8 { attribute = 10; }
+        let status: i32 = cuDeviceGetAttribute(&values[i], attribute, device);
+        if status != 0 { return status; }
+        if values[i] < 0 || (values[i] == 0 && i != 7) { return 0 - 3; }
+        i = i + 1;
+    }
+    limits[0] = CudaDeviceLimits { threads: values[0] as u64,
+        block_x: values[1] as u64, block_y: values[2] as u64, block_z: values[3] as u64,
+        grid_x: values[4] as u64, grid_y: values[5] as u64, grid_z: values[6] as u64,
+        shared_bytes: values[7] as u64, warp_size: values[8] as u64 };
+    return 0;
+}
+
 fn cuda_device_open(ordinal: i32) -> Result<u64, CudaError> {
     cuda_res_lock();
     if ordinal < 0 { return cuda_res_fail(1, 0 - 1, 0); }
@@ -132,19 +157,29 @@ fn cuda_device_open(ordinal: i32) -> Result<u64, CudaError> {
     var status: i32 = cuInit(0);
     if status == 0 { status = cuDeviceGet(&device, ordinal); }
     var major: i32 = 0; var minor: i32 = 0;
-    var threads: i32 = 0; var block: i32 = 0; var grid: i32 = 0;
     if status == 0 { status = cuDeviceGetAttribute(&major, 75, device); }
     if status == 0 { status = cuDeviceGetAttribute(&minor, 76, device); }
-    if status == 0 { status = cuDeviceGetAttribute(&threads, 1, device); }
-    if status == 0 { status = cuDeviceGetAttribute(&block, 2, device); }
-    if status == 0 { status = cuDeviceGetAttribute(&grid, 5, device); }
     if status != 0 { return cuda_res_fail(1, status, 0); }
-    if major < 5 || threads < 256 || block < 256 || grid < 1 { return cuda_res_fail(1, 0 - 3, 0); }
+    let limits: *CudaDeviceLimits = alloc(1);
+    status = cuda_res_query_limits(device, limits);
+    if status == 0 && (major < 5 || limits.threads < 256 || limits.block_x < 256) { status = 0 - 3; }
+    if status != 0 { free(limits); return cuda_res_fail(1, status, 0); }
     var context: *u8 = null;
     status = cuDevicePrimaryCtxRetain(&context, device);
-    if status != 0 { return cuda_res_fail(1, status, 0); }
-    r.kind = 1; r.native = context; r.ordinal = device; r.sm = major * 10 + minor; r.grid = grid;
+    if status != 0 { free(limits); return cuda_res_fail(1, status, 0); }
+    r.kind = 1; r.native = context; r.ordinal = device; r.sm = major * 10 + minor;
+    r.grid = limits.grid_x as i32; r.limits = limits;
     return cuda_res_ok(r.id);
+}
+
+fn cuda_device_limits(device: u64) -> Result<CudaDeviceLimits, CudaError> {
+    cuda_res_lock();
+    let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null {
+        cuda_res_unlock(); return Result::Err(cuda_res_error(2, 0 - 1, device));
+    }
+    let limits: CudaDeviceLimits = d.limits[0];
+    cuda_res_unlock(); return Result::Ok(limits);
 }
 
 fn cuda_device_sm(device: u64) -> Result<u64, CudaError> {
@@ -235,13 +270,23 @@ fn cuda_kernel_get(module: u64, symbol: *u8) -> Result<u64, CudaError> {
     var previous: *u8 = null;
     var status: i32 = cuda_res_enter(d, &previous);
     if status != 0 { return cuda_res_fail(5, status, module); }
-    var function: *u8 = null; var threads: i32 = 0;
+    var function: *u8 = null; var threads: i32 = 0; var shared: i32 = 0; var dynamic: i32 = 0;
     status = cuModuleGetFunction(&function, m.native, symbol);
     if status == 0 { status = cuFuncGetAttribute(&threads, 0, function); }
-    if status == 0 && threads < 256 { status = 0 - 3; }
+    if status == 0 { status = cuFuncGetAttribute(&shared, 1, function); }
+    if status == 0 && json_kind(doc, json_get(doc, entry, "dynamic_shared_bytes")) == JSON_OBJ {
+        status = cuFuncGetAttribute(&dynamic, 8, function);
+        if status == 0 && dynamic < 0 { status = 0 - 3; }
+    }
+    var minimum_threads: i32 = 256;
+    if cuda_json_string(doc, entry, "execution", "cooperative-kernel") == 1 { minimum_threads = 1; }
+    if status == 0 && threads < minimum_threads { status = 0 - 3; }
+    if status == 0 && (shared < 0 || shared as u64 > d.limits.shared_bytes) { status = 0 - 3; }
     status = cuda_res_leave(d, previous, status);
     if status != 0 { return cuda_res_fail(5, status, module); }
     r.kind = 4; r.owner = m.owner; r.parent = module; r.native = function; r.entry = entry;
+    r.threads = threads as u64; r.shared_bytes = shared as u64;
+    r.dynamic_bytes = dynamic as u64;
     return cuda_res_ok(r.id);
 }
 
@@ -339,18 +384,50 @@ fn cuda_transfer(view: CudaArgument, host: *u8, bytes: u64, download: i32) -> Re
 fn cuda_upload(view: CudaArgument, host: *u8, bytes: u64) -> Result<u64, CudaError> { return cuda_transfer(view, host, bytes, 0); }
 fn cuda_download(host: *u8, view: CudaArgument, bytes: u64) -> Result<u64, CudaError> { return cuda_transfer(view, host, bytes, 1); }
 
-fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
+fn cuda_res_launch(kernel: u64, start: u64, end: u64, args: *CudaArgument, count: i32,
+                   shape: CudaGeometry, cooperative: i32) -> Result<u64, CudaError> {
     cuda_res_lock();
+    var lo: u64 = start; var hi: u64 = end;
+    var geometry: CudaGeometry = shape;
     let k: *CudaResource = cuda_res_find(kernel, 4);
-    if k == null || args == null || count < 1 || count > 32 || lo < 0 || hi < lo || hi > 2147483392 { return cuda_res_fail(8, 0 - 1, kernel); }
+    if k == null || args == null || count < 1 || count > 32 || hi < lo { return cuda_res_fail(8, 0 - 1, kernel); }
     let m: *CudaResource = cuda_res_find(k.parent, 3);
     let d: *CudaResource = cuda_res_find(k.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(8, 0 - 4, kernel); }
     let doc: *Json = m.package.document;
+    if cuda_json_string(doc, k.entry, "execution", "cooperative-kernel") != cooperative { return cuda_res_fail(8, 0 - 1, kernel); }
     let params: i32 = json_get(doc, k.entry, "parameters");
     if json_len(doc, params) != count + 2 { return cuda_res_fail(8, 0 - 1, kernel); }
-    let groups: u64 = (((hi - lo) as u64) + 255) / 256;
-    if groups > d.grid as u64 { return cuda_res_fail(8, 0 - 1, kernel); }
+    if cooperative == 1 {
+        let shared: i32 = json_get(doc, k.entry, "dynamic_shared_bytes");
+        var expected: u64 = 0;
+        if json_kind(doc, shared) == JSON_OBJ {
+            let slot: i32 = json_as_int(doc, json_get(doc, shared, "parameter")) as i32;
+            if args[slot].kind != 1 || args[slot].type_code != 0 - 64 || args[slot].value < 1 || args[slot].value > 1024 {
+                return cuda_res_fail(8, 0 - 1, kernel);
+            }
+            expected = args[slot].value * 8;
+        }
+        if geometry.shared_bytes != expected || geometry.shared_bytes > k.dynamic_bytes
+            || cuda_geometry_status(d.limits, geometry, k.threads, k.shared_bytes) != 0 {
+            return cuda_res_fail(8, 0 - 1, kernel);
+        }
+        if cuda_json_string(doc, k.entry, "profile", "cooperative-warp-v1") == 1 {
+            if d.limits.warp_size != 32 || (geometry.block_x * geometry.block_y * geometry.block_z) % 32 != 0 {
+                return cuda_res_fail(8, 0 - 1, kernel);
+            }
+        }
+        lo = 0;
+        hi = geometry.grid_x * geometry.grid_y * geometry.grid_z * geometry.block_x * geometry.block_y * geometry.block_z;
+    } else {
+        if hi > 2147483392 { return cuda_res_fail(8, 0 - 1, kernel); }
+        geometry.grid_x = (hi - lo + 255) / 256;
+    }
+    if hi > lo {
+        if cuda_geometry_status(d.limits, geometry, k.threads, k.shared_bytes) != 0 {
+            return cuda_res_fail(8, 0 - 1, kernel);
+        }
+    }
     let values: *u64 = alloc(count + 2);
     let pointers: **u8 = alloc(count + 2);
     var valid: i32 = 1;
@@ -374,10 +451,17 @@ fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i
             let t: i32 = cuda_parameter_type(doc, p, "element_type");
             let size: u64 = json_as_int(doc, json_get(doc, p, "element_size")) as u64;
             let alignment: u64 = json_as_int(doc, json_get(doc, p, "element_alignment")) as u64;
+            var extent: u64 = hi;
+            let bound: i32 = json_get(doc, json_get(doc, p, "footprint"), "count_parameter");
+            if bound >= 0 {
+                let slot: i32 = json_as_int(doc, bound) as i32;
+                if args[slot].kind != 1 || args[slot].type_code != 0 - 64 { valid = 0; }
+                extent = args[slot].value;
+            }
             if args[i].kind != 2 || args[i].type_code != t || b == null { valid = 0; }
             else if b.owner != k.owner || args[i].offset > b.bytes || args[i].bytes > b.bytes - args[i].offset
                 || args[i].offset % alignment != 0 || args[i].bytes % size != 0
-                || (hi as u64) * size > args[i].bytes { valid = 0; }
+                || extent > args[i].bytes / size { valid = 0; }
             else { values[i] = (b.native as u64) + args[i].offset; }
         }
         pointers[i] = (&values[i]) as *u8;
@@ -392,8 +476,13 @@ fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i
         if args[a].buffer == args[b].buffer {
             let sa: u64 = json_as_int(doc, json_get(doc, json_at(doc, params, a), "element_size")) as u64;
             let sb: u64 = json_as_int(doc, json_get(doc, json_at(doc, params, b), "element_size")) as u64;
-            if args[a].offset + (lo as u64) * sa < args[b].offset + (hi as u64) * sb
-                && args[b].offset + (lo as u64) * sb < args[a].offset + (hi as u64) * sa { valid = 0; }
+            var alo: u64 = lo; var ahi: u64 = hi; var blo: u64 = lo; var bhi: u64 = hi;
+            let ac: i32 = json_get(doc, json_get(doc, json_at(doc, params, a), "footprint"), "count_parameter");
+            let bc: i32 = json_get(doc, json_get(doc, json_at(doc, params, b), "footprint"), "count_parameter");
+            if ac >= 0 { alo = 0; ahi = args[json_as_int(doc, ac) as i32].value; }
+            if bc >= 0 { blo = 0; bhi = args[json_as_int(doc, bc) as i32].value; }
+            if ahi > alo && bhi > blo && args[a].offset + alo * sa < args[b].offset + bhi * sb
+                && args[b].offset + blo * sb < args[a].offset + ahi * sa { valid = 0; }
         }
         i = i + 1;
     }
@@ -404,13 +493,25 @@ fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i
     var previous: *u8 = null;
     var status: i32 = cuda_res_enter(d, &previous);
     if status != 0 { free(values); free(pointers); return cuda_res_fail(8, status, kernel); }
-    status = cuLaunchKernel(k.native, groups as u32, 1, 1, 256, 1, 1, 0, null, pointers, null);
+    status = cuLaunchKernel(k.native, geometry.grid_x as u32, geometry.grid_y as u32, geometry.grid_z as u32,
+        geometry.block_x as u32, geometry.block_y as u32, geometry.block_z as u32, geometry.shared_bytes as u32, null, pointers, null);
     if status == 0 { status = cuCtxSynchronize(); }
     if status != 0 { cuda_res_poison(d); }
     free(values); free(pointers);
     status = cuda_res_leave(d, previous, status);
     if status != 0 { return cuda_res_fail(8, status, kernel); }
     return cuda_res_ok(0);
+}
+
+fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
+    if lo < 0 || hi < lo { return Result::Err(cuda_res_error(8, 0 - 1, kernel)); }
+    let geometry: CudaGeometry = CudaGeometry { grid_x: 1, grid_y: 1, grid_z: 1,
+        block_x: 256, block_y: 1, block_z: 1, shared_bytes: 0 };
+    return cuda_res_launch(kernel, lo as u64, hi as u64, args, count, geometry, 0);
+}
+
+fn cuda_launch_grid_sync(kernel: u64, geometry: CudaGeometry, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
+    return cuda_res_launch(kernel, 0, 0, args, count, geometry, 1);
 }
 
 fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
@@ -425,6 +526,7 @@ fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
         }
         let status: i32 = cuDevicePrimaryCtxRelease(r.ordinal);
         if status != 0 { return cuda_res_fail(9, status, id); }
+        free(r.limits); r.limits = null;
         r.kind = 0; return cuda_res_ok(0);
     }
     let d: *CudaResource = cuda_res_find(r.owner, 1);

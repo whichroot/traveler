@@ -26862,6 +26862,19 @@ fn codegen_gpu_blocked_dot(body: i32, wave_mapped: i32, lane_reg: i32) {
 // (design-notes/device-call-expansion.md "Required semantic contract")
 // A private, ordered EIR arena keeps failed expansion out of other workers.
 let DEVICE_CLOSURE: i32 = 1001;
+let DEVICE_THREAD_ID: i32 = 1002;
+let DEVICE_SHARED_INIT: i32 = 1003;
+let DEVICE_SHARED_LOAD: i32 = 1004;
+let DEVICE_SHARED_STORE: i32 = 1005;
+let DEVICE_BLOCK_BARRIER: i32 = 1006;
+let DEVICE_MASKED_LOAD: i32 = 1007;
+let DEVICE_MASKED_STORE: i32 = 1008;
+let DEVICE_WARP_SHUFFLE: i32 = 1009;
+let DEVICE_WARP_VOTE: i32 = 1010;
+let DEVICE_WARP_SYNC: i32 = 1011;
+let DEVICE_ATOMIC_ADD: i32 = 1012;
+let DEVICE_SHARED_ATOMIC: i32 = 1013;
+let DEVICE_BOUNDED_LOAD: i32 = 1014;
 
 struct DeviceScalarPlan {
     nodes: *EIRNode,
@@ -26886,6 +26899,85 @@ struct DeviceScalarPlan {
     closure_caps: i32,
     closures: i32,
     closure_depth: i32,
+    cooperative: i32,
+    global_index: i32,
+    local_index: i32,
+    block_threads: i32,
+    shared_count: i32,
+    shared_dirty: i32,
+    shared_reads: i32,
+    kernel_id: i32,
+    shared_dynamic: i32,
+    shared_size: i32,
+    warp_used: i32,
+}
+
+fn device_thread_member(i: i32) -> *u8 {
+    if i == 0 { return "thread_x"; } if i == 1 { return "thread_y"; } if i == 2 { return "thread_z"; }
+    if i == 3 { return "block_x"; } if i == 4 { return "block_y"; } if i == 5 { return "block_z"; }
+    if i == 6 { return "block_dim_x"; } if i == 7 { return "block_dim_y"; } if i == 8 { return "block_dim_z"; }
+    if i == 9 { return "grid_dim_x"; } if i == 10 { return "grid_dim_y"; } return "grid_dim_z";
+}
+
+fn device_thread_intrinsic(i: i32) {
+    ir_wr("llvm.nvvm.read.ptx.sreg.");
+    if i < 3 { ir_wr("tid."); } else if i < 6 { ir_wr("ctaid."); }
+    else if i < 9 { ir_wr("ntid."); } else { ir_wr("nctaid."); }
+    if i % 3 == 0 { ir_wr("x"); } else if i % 3 == 1 { ir_wr("y"); } else { ir_wr("z"); }
+}
+
+fn device_thread_binary(P: *DeviceScalarPlan, op: i32, a: i32, b: i32, source: i32) -> i32 {
+    let e: i32 = device_scalar_node(P, EIR_BIN, str_intern("u64"), source);
+    if e >= 0 { P.nodes[e].op = op; P.nodes[e].a = a; P.nodes[e].b = b; P.nodes[e].aux_type = str_intern("u64"); }
+    return e;
+}
+
+// The canonical coordinate tree is also the full-grid footprint witness.
+fn device_thread_context(P: *DeviceScalarPlan, source: i32) -> i32 {
+    let t: i32 = str_intern("GpuThread");
+    let si: i32 = find_struct(t);
+    if si < 0 { return device_scalar_fail(P, 2, source); }
+    if g_structs[si].ngen != 0 || g_structs[si].nfields != 12 { return device_scalar_fail(P, 2, source); }
+    var fields: [i32; 12] = 0;
+    var i: i32 = 0;
+    while i < 12 {
+        if struct_field_index(si, str_intern(device_thread_member(i))) != i
+            || struct_field_type(si, i) != str_intern("u64") { return device_scalar_fail(P, 2, source); }
+        fields[i] = device_scalar_node(P, DEVICE_THREAD_ID, str_intern("u64"), source);
+        if fields[i] < 0 { return 0 - 1; }
+        P.nodes[fields[i]].a = i;
+        i = i + 1;
+    }
+    var coords: [i32; 3] = 0;
+    var sizes: [i32; 3] = 0;
+    i = 0;
+    while i < 3 {
+        let base: i32 = device_thread_binary(P, OP_MUL, fields[i + 3], fields[i + 6], source);
+        coords[i] = device_thread_binary(P, OP_ADD, base, fields[i], source);
+        sizes[i] = device_thread_binary(P, OP_MUL, fields[i + 9], fields[i + 6], source);
+        i = i + 1;
+    }
+    let z: i32 = device_thread_binary(P, OP_MUL, sizes[1], coords[2], source);
+    let yz: i32 = device_thread_binary(P, OP_ADD, coords[1], z, source);
+    let offset: i32 = device_thread_binary(P, OP_MUL, sizes[0], yz, source);
+    P.global_index = device_thread_binary(P, OP_ADD, coords[0], offset, source);
+    let local_z: i32 = device_thread_binary(P, OP_MUL, fields[7], fields[2], source);
+    let local_yz: i32 = device_thread_binary(P, OP_ADD, fields[1], local_z, source);
+    let local_offset: i32 = device_thread_binary(P, OP_MUL, fields[6], local_yz, source);
+    P.local_index = device_thread_binary(P, OP_ADD, fields[0], local_offset, source);
+    let plane: i32 = device_thread_binary(P, OP_MUL, fields[6], fields[7], source);
+    P.block_threads = device_thread_binary(P, OP_MUL, plane, fields[8], source);
+    return device_aggregate_node(P, t, si, NULL_STR, &fields[0], 12, source);
+}
+
+fn device_thread_same(P: *DeviceScalarPlan, a: i32, b: i32, depth: i32) -> i32 {
+    if a < 0 || b < 0 || depth > 64 { return 0; }
+    if a == b { return 1; }
+    if P.nodes[a].kind != EIR_BIN || P.nodes[b].kind != EIR_BIN
+        || P.nodes[a].op != P.nodes[b].op || P.nodes[a].type_off != P.nodes[b].type_off
+        || P.nodes[a].aux_type != P.nodes[b].aux_type { return 0; }
+    if device_thread_same(P, P.nodes[a].a, P.nodes[b].a, depth + 1) == 0 { return 0; }
+    return device_thread_same(P, P.nodes[a].b, P.nodes[b].b, depth + 1);
 }
 
 fn device_scalar_type(t: i32) -> i32 {
@@ -27391,7 +27483,12 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
         if P.calls != 0 || g_nodes[g_nodes[node].child0].kind != AST_IDENT {
             return device_scalar_fail(P, 3, node);
         }
-        let idx: i32 = device_scalar_expr(P, g_nodes[node].child1, str_intern("i32"), depth + 1);
+        var index_type: i32 = str_intern("i32");
+        if P.cooperative == 1 { index_type = str_intern("u64"); }
+        let idx: i32 = device_scalar_expr(P, g_nodes[node].child1, index_type, depth + 1);
+        if P.cooperative == 1 && device_thread_same(P, idx, P.global_index, 0) == 0 {
+            return device_scalar_fail(P, 3, node);
+        }
         let i64idx: i32 = device_scalar_convert(P, idx, str_intern("i64"), node);
         let base: i32 = device_scalar_expr(P, g_nodes[node].child0, NULL_STR, depth + 1);
         if base < 0 || i64idx < 0 { return 0 - 1; }
@@ -27482,6 +27579,25 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
 }
 
 fn device_scalar_call(P: *DeviceScalarPlan, node: i32, depth: i32) -> i32 {
+    let atomic_type: i32 = device_atomic_type(g_nodes[node].name0);
+    if str_eq(&g_strings[g_nodes[node].name0], "gpu_bounded_load_u64") == 1 { return device_bounded_load(P, node, depth); }
+    if atomic_type != NULL_STR { return device_atomic_call(P, node, atomic_type, depth); }
+    if device_shared_atomic_operation(g_nodes[node].name0) >= 0 { return device_shared_atomic_call(P, node, depth); }
+    let warp: i32 = device_warp_operation(g_nodes[node].name0);
+    if warp >= 0 { return device_warp_call(P, node, warp, depth); }
+    if str_eq(&g_strings[g_nodes[node].name0], "gpu_masked_load_u64") == 1 {
+        return device_masked_memory(P, node, 0, depth);
+    }
+    if str_eq(&g_strings[g_nodes[node].name0], "gpu_shared_load_u64") == 1 {
+        if P.cooperative != 1 || P.calls != 0 || P.shared_count == 0 || P.shared_dirty != 0
+            || g_nodes[node].nargs != 1 { return device_scalar_fail(P, 3, node); }
+        let index: i32 = device_scalar_expr(P, g_args[g_nodes[node].args_start], str_intern("u64"), depth + 1);
+        let converted: i32 = device_scalar_convert(P, index, str_intern("u64"), node);
+        if converted < 0 { return converted; }
+        let e: i32 = device_scalar_node(P, DEVICE_SHARED_LOAD, str_intern("u64"), node);
+        if e >= 0 { P.nodes[e].a = converted; P.shared_reads = 1; }
+        return e;
+    }
     var fi: i32 = find_func(g_nodes[node].name0);
     let closure: i32 = device_scalar_find(P, g_nodes[node].name0);
     if fi < 0 && closure >= 0 && P.nodes[closure].kind == DEVICE_CLOSURE {
@@ -27667,15 +27783,31 @@ fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32
                 if n < 1 || n > 16 || P.nodes[i].args_start < 0
                     || P.nodes[i].args_start > P.ncomponents - n { return 0; }
             }
-            else if k == EIR_CAST || k == EIR_UN || k == EIR_IF || k == EIR_ADDR_LOCAL { n = 1; }
+            else if k == DEVICE_WARP_SHUFFLE || k == DEVICE_WARP_VOTE { n = 1; }
+            else if k == DEVICE_WARP_SYNC { n = 0; }
+            else if k == DEVICE_MASKED_LOAD || k == DEVICE_BOUNDED_LOAD { n = 3; }
+            else if k == DEVICE_MASKED_STORE || k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC { n = 4; }
+            else if k == DEVICE_SHARED_INIT || k == DEVICE_SHARED_STORE {
+                n = 2;
+                if k == DEVICE_SHARED_INIT && P.shared_dynamic == 1 { n = 3; }
+            }
+            else if k == DEVICE_BLOCK_BARRIER { n = 0; }
+            else if k == EIR_CAST || k == EIR_UN || k == EIR_IF || k == EIR_ADDR_LOCAL || k == DEVICE_SHARED_LOAD { n = 1; }
             else if k == EIR_BIN || k == EIR_INDEX { n = 2; }
             else if k == EIR_INDEX_ST { n = 3; }
-            else if k != EIR_LOCAL && k != EIR_CONST { return 0; }
+            else if k != EIR_LOCAL && k != EIR_CONST && k != DEVICE_THREAD_ID { return 0; }
+            if k >= DEVICE_SHARED_INIT && k <= DEVICE_BLOCK_BARRIER && region != 0 { return 0; }
+            if k >= DEVICE_WARP_SHUFFLE && k <= DEVICE_WARP_SYNC && region != 0 { return 0; }
+            if (k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC) && region != 0 { return 0; }
+            if k == DEVICE_BOUNDED_LOAD && region != 0 { return 0; }
+            if (k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC) && P.nodes[i].nargs == 2 { n = 5; }
             var j: i32 = 0;
             while j < n {
                 var value: i32 = P.nodes[i].a;
                 if j == 1 { value = P.nodes[i].b; }
                 if j == 2 { value = P.nodes[i].c; }
+                if j == 3 && (k == DEVICE_MASKED_STORE || k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC) { value = P.nodes[i].op; }
+                if j == 4 && (k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC) { value = P.nodes[i].args_start; }
                 if k == EIR_STRUCT_LIT { value = P.components[P.nodes[i].args_start + j]; }
                 if k == DEVICE_CLOSURE { value = P.closure_values[P.nodes[i].args_start + j]; }
                 if value < 0 || value >= i { return 0; }
@@ -27703,10 +27835,77 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
     let scoped: i32 = device_scalar_verify_scopes(P, scopes, parents);
     free(scopes); free(parents);
     if scoped == 0 { return 0; }
+    var initialized: i32 = 0; var dirty: i32 = 0; var reads: i32 = 0;
     var i: i32 = 0;
     while i < P.count {
         let k: i32 = P.nodes[i].kind;
-        if k == DEVICE_CLOSURE {
+        if k == DEVICE_BOUNDED_LOAD {
+            if P.cooperative != 1 || P.nodes[i].type_off != str_intern("u64")
+                || P.nodes[P.nodes[i].a].kind != EIR_LOCAL || P.nodes[P.nodes[i].a].type_off != str_intern("*u64")
+                || P.nodes[P.nodes[i].b].kind != EIR_LOCAL || P.nodes[P.nodes[i].b].type_off != str_intern("u64")
+                || P.nodes[P.nodes[i].c].type_off != str_intern("u64") { return 0; }
+        } else if k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC {
+            let t: i32 = P.nodes[i].type_off;
+            if P.cooperative != 1 || (t != str_intern("u32") && t != str_intern("u64"))
+                || P.nodes[P.nodes[i].b].type_off != str_intern("u64")
+                || P.nodes[P.nodes[i].c].type_off != str_intern("u64")
+                || P.nodes[P.nodes[i].op].type_off != t || P.nodes[i].ival > 3 { return 0; }
+            if P.nodes[i].nargs < 0 || P.nodes[i].nargs > 2 { return 0; }
+            if P.nodes[i].nargs == 2 && P.nodes[P.nodes[i].args_start].type_off != t { return 0; }
+            if k == DEVICE_ATOMIC_ADD {
+                if P.nodes[P.nodes[i].a].kind != EIR_LOCAL || P.nodes[P.nodes[i].b].kind != EIR_LOCAL
+                    || type_pointee(P.nodes[P.nodes[i].a].type_off) != t { return 0; }
+            } else {
+                if initialized == 0 || dirty == 1 || reads != 0 || t != str_intern("u64") || P.nodes[i].a != P.nodes[i].c { return 0; }
+                let bound: i32 = P.nodes[i].b;
+                if P.shared_dynamic == 1 { if bound != P.shared_size { return 0; } }
+                else if P.nodes[bound].kind != EIR_CONST || P.nodes[bound].ival != P.shared_count as u64 { return 0; }
+                dirty = 2;
+            }
+        } else if k >= DEVICE_WARP_SHUFFLE && k <= DEVICE_WARP_SYNC {
+            if P.cooperative != 1 || P.warp_used != 1 { return 0; }
+            if k == DEVICE_WARP_SHUFFLE {
+                if P.nodes[i].op < 0 || P.nodes[i].op > 1 || P.nodes[i].ival > 31
+                    || P.nodes[i].type_off != str_intern("u32")
+                    || P.nodes[P.nodes[i].a].type_off != str_intern("u32") { return 0; }
+            } else if k == DEVICE_WARP_VOTE {
+                if P.nodes[i].op < 0 || P.nodes[i].op > 2 || P.nodes[P.nodes[i].a].type_off != str_intern("i1") { return 0; }
+                var t: i32 = str_intern("bool"); if P.nodes[i].op == 0 { t = str_intern("u32"); }
+                if P.nodes[i].type_off != t { return 0; }
+            }
+        } else if k == DEVICE_MASKED_LOAD || k == DEVICE_MASKED_STORE {
+            if P.cooperative != 1 || P.nodes[i].type_off != str_intern("u64")
+                || P.nodes[P.nodes[i].a].type_off != str_intern("*u64")
+                || P.nodes[P.nodes[i].b].type_off != str_intern("i64")
+                || P.nodes[P.nodes[i].c].type_off != str_intern("i1") { return 0; }
+            if k == DEVICE_MASKED_STORE && P.nodes[P.nodes[i].op].type_off != str_intern("u64") { return 0; }
+        } else if k >= DEVICE_SHARED_INIT && k <= DEVICE_BLOCK_BARRIER {
+            if P.cooperative != 1 { return 0; }
+            if k == DEVICE_BLOCK_BARRIER { dirty = 0; reads = 0; }
+            else if k == DEVICE_SHARED_INIT {
+                if initialized != 0 || P.shared_count < 1 || P.shared_count > 1024
+                    || P.nodes[i].a != P.local_index || P.nodes[i].b != P.block_threads { return 0; }
+                if P.shared_dynamic == 1 {
+                    if P.shared_size < 0 || P.shared_size >= i || P.nodes[P.shared_size].kind != EIR_LOCAL
+                        || P.nodes[P.shared_size].type_off != str_intern("u64") || P.nodes[i].c != P.shared_size { return 0; }
+                }
+                initialized = 1;
+            } else {
+                if initialized == 0 || P.nodes[i].type_off != str_intern("u64")
+                    || P.nodes[P.nodes[i].a].type_off != str_intern("u64") { return 0; }
+                if k == DEVICE_SHARED_LOAD {
+                    if dirty != 0 { return 0; }
+                    reads = 1;
+                } else {
+                    if reads != 0 || dirty == 2 || P.nodes[P.nodes[i].b].type_off != str_intern("u64")
+                        || device_thread_same(P, P.nodes[i].a, P.local_index, 0) == 0 { return 0; }
+                    dirty = 1;
+                }
+            }
+        } else if k == DEVICE_THREAD_ID {
+            if P.cooperative != 1 || P.nodes[i].a < 0 || P.nodes[i].a >= 12
+                || P.nodes[i].type_off != str_intern("u64") { return 0; }
+        } else if k == DEVICE_CLOSURE {
             let decl: i32 = P.nodes[i].a;
             if decl <= 0 || decl >= g_nnodes || g_nodes[decl].kind != AST_CLOSURE
                 || device_closure_scalar(P.nodes[i].aux_type) == 0
@@ -27780,13 +27979,17 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
 }
 
 fn device_scalar_prepare(P: *DeviceScalarPlan, body: i32, loop_name: i32,
-                         ncaps: i32, caps_base: i32) -> i32 {
+                         ncaps: i32, caps_base: i32, cooperative: i32) -> i32 {
     P.nodes = alloc(4096); P.names = alloc(256); P.values = alloc(256); P.stack = alloc(16);
     P.mutable = alloc(256); P.gen_names = alloc(16); P.gen_types = alloc(16); P.ngen = 0;
     P.components = alloc(4096); P.ncomponents = 0;
     P.closure_names = alloc(256); P.closure_values = alloc(256);
     P.closure_caps = 0; P.closures = 0; P.closure_depth = 0;
     P.count = 0; P.work = 0; P.bindings = 0; P.floor = 0; P.calls = 0; P.reason = 0; P.source = body;
+    P.cooperative = cooperative; P.global_index = 0 - 1;
+    P.local_index = 0 - 1; P.block_threads = 0 - 1;
+    P.shared_count = 0; P.shared_dirty = 0; P.shared_reads = 0; P.kernel_id = 0;
+    P.shared_dynamic = 0; P.shared_size = 0 - 1; P.warp_used = 0;
     if g_gen_nsub > 16 || ncaps >= 255 { device_scalar_fail(P, 2, body); return 0; }
     P.ngen = g_gen_nsub;
     var gi: i32 = 0;
@@ -27805,14 +28008,54 @@ fn device_scalar_prepare(P: *DeviceScalarPlan, body: i32, loop_name: i32,
         device_scalar_bind(P, g_pfor_workers[caps_base + ci * 4], e);
         ci = ci + 1;
     }
-    let iter: i32 = device_scalar_node(P, EIR_LOCAL, str_intern("i32"), body);
-    P.nodes[iter].a = ncaps;
+    var iter: i32 = 0 - 1;
+    if cooperative == 1 { iter = device_thread_context(P, body); }
+    else {
+        iter = device_scalar_node(P, EIR_LOCAL, str_intern("i32"), body);
+        if iter >= 0 { P.nodes[iter].a = ncaps; }
+    }
+    if iter < 0 { return 0; }
     device_scalar_bind(P, loop_name, iter);
     var si: i32 = 0;
     while si < g_nodes[body].nargs && P.reason == 0 {
         let st: i32 = g_args[g_nodes[body].args_start + si];
+        if cooperative == 1 && g_nodes[st].kind == AST_EXPR_STMT {
+            if device_shared_statement(P, g_nodes[st].child0, si) < 0 { return 0; }
+            si = si + 1; continue;
+        }
+        if cooperative == 1 && g_nodes[st].kind == AST_LET {
+            let init: i32 = g_nodes[st].child0;
+            var value: i32 = 0 - 1;
+            if type_is_array(g_nodes[st].name1) == 1 || g_nodes[init].kind == AST_STRUCT_LIT {
+                value = device_aggregate_let(P, st, 0);
+            } else {
+                var t: i32 = g_nodes[st].name1;
+                value = device_scalar_expr(P, init, t, 0);
+                if value < 0 { return 0; }
+                if t == NULL_STR { t = P.nodes[value].type_off; }
+                value = device_scalar_convert(P, value, t, st);
+            }
+            if device_scalar_bind(P, g_nodes[st].name0, value) == 0 { return 0; }
+            P.mutable[P.bindings - 1] = g_nodes[st].flags & 1;
+            si = si + 1; continue;
+        }
+        if cooperative == 1 && (g_nodes[st].kind == AST_INDEX_ASSIGN || g_nodes[st].kind == AST_MEMBER_ASSIGN) {
+            let object: i32 = g_nodes[st].child0;
+            if g_nodes[object].kind == AST_IDENT {
+                let local: i32 = device_scalar_find(P, g_nodes[object].name0);
+                if local >= 0 && P.nodes[local].kind == EIR_STRUCT_LIT {
+                    if device_aggregate_set(P, st, 0) < 0 { return 0; }
+                    si = si + 1; continue;
+                }
+            }
+        }
         if g_nodes[st].kind != AST_INDEX_ASSIGN { device_scalar_fail(P, 3, st); return 0; }
-        let index: i32 = device_scalar_expr(P, g_nodes[st].child1, str_intern("i32"), 0);
+        var index_type: i32 = str_intern("i32");
+        if cooperative == 1 { index_type = str_intern("u64"); }
+        let index: i32 = device_scalar_expr(P, g_nodes[st].child1, index_type, 0);
+        if cooperative == 1 && device_thread_same(P, index, P.global_index, 0) == 0 {
+            device_scalar_fail(P, 3, st); return 0;
+        }
         let idx: i32 = device_scalar_convert(P, index, str_intern("i64"), st);
         let base: i32 = device_scalar_expr(P, g_nodes[st].child0, NULL_STR, 0);
         if base < 0 || idx < 0 { return 0; }
@@ -27836,6 +28079,379 @@ fn device_scalar_label(label: i32) {
     ir_wr("ds"); ir_wr_int(label as i64);
 }
 
+// Shared writes are lane-owned; barriers separate write/read and read/write phases.
+fn device_shared_statement(P: *DeviceScalarPlan, call: i32, statement: i32) -> i32 {
+    if call <= 0 || g_nodes[call].kind != AST_CALL { return device_scalar_fail(P, 3, call); }
+    let name: *u8 = &g_strings[g_nodes[call].name0];
+    let atomic_type: i32 = device_atomic_type(g_nodes[call].name0);
+    if atomic_type != NULL_STR { return device_atomic_call(P, call, atomic_type, 0); }
+    if device_shared_atomic_operation(g_nodes[call].name0) >= 0 { return device_shared_atomic_call(P, call, 0); }
+    if str_eq(name, "gpu_warp_sync") == 1 { return device_warp_call(P, call, 5, 0); }
+    if str_eq(name, "gpu_masked_store_u64") == 1 { return device_masked_memory(P, call, 1, 0); }
+    if str_eq(name, "gpu_shared_dynamic_init_u64") == 1 {
+        if statement != 0 || P.shared_count != 0 || g_nodes[call].nargs != 1 { return device_scalar_fail(P, 3, call); }
+        let n: i32 = g_args[g_nodes[call].args_start];
+        if g_nodes[n].kind != AST_IDENT { return device_scalar_fail(P, 2, call); }
+        let count: i32 = device_scalar_find(P, g_nodes[n].name0);
+        if count < 0 || P.nodes[count].kind != EIR_LOCAL || P.nodes[count].type_off != str_intern("u64") {
+            return device_scalar_fail(P, 2, call);
+        }
+        P.shared_dynamic = 1; P.shared_count = 1024; P.shared_size = count;
+        let e: i32 = device_scalar_node(P, DEVICE_SHARED_INIT, NULL_STR, call);
+        if e >= 0 { P.nodes[e].a = P.local_index; P.nodes[e].b = P.block_threads; P.nodes[e].c = count; }
+        return e;
+    }
+    if str_eq(name, "gpu_shared_init_u64") == 1 {
+        if statement != 0 || P.shared_count != 0 || g_nodes[call].nargs != 1 { return device_scalar_fail(P, 3, call); }
+        let n: i32 = g_args[g_nodes[call].args_start];
+        if g_nodes[n].kind != AST_LIT_INT || g_nodes[n].int_val < 1 || g_nodes[n].int_val > 1024 { return device_scalar_fail(P, 4, call); }
+        if g_nodes[n].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[n].name0]) == 1 { return device_scalar_fail(P, 4, call); }
+        P.shared_count = g_nodes[n].int_val as i32;
+        let e: i32 = device_scalar_node(P, DEVICE_SHARED_INIT, NULL_STR, call);
+        if e >= 0 { P.nodes[e].a = P.local_index; P.nodes[e].b = P.block_threads; }
+        return e;
+    }
+    if str_eq(name, "gpu_block_barrier") == 1 {
+        if g_nodes[call].nargs != 0 { return device_scalar_fail(P, 2, call); }
+        P.shared_dirty = 0; P.shared_reads = 0;
+        return device_scalar_node(P, DEVICE_BLOCK_BARRIER, NULL_STR, call);
+    }
+    if str_eq(name, "gpu_shared_store_u64") == 1 {
+        if P.shared_count == 0 || P.shared_reads != 0 || P.shared_dirty == 2 || g_nodes[call].nargs != 2 { return device_scalar_fail(P, 3, call); }
+        let index: i32 = device_scalar_expr(P, g_args[g_nodes[call].args_start], str_intern("u64"), 0);
+        if device_thread_same(P, index, P.local_index, 0) == 0 { return device_scalar_fail(P, 3, call); }
+        let value: i32 = device_scalar_expr(P, g_args[g_nodes[call].args_start + 1], str_intern("u64"), 0);
+        let converted: i32 = device_scalar_convert(P, value, str_intern("u64"), call);
+        if converted < 0 || P.shared_reads != 0 { return device_scalar_fail(P, 3, call); }
+        let e: i32 = device_scalar_node(P, DEVICE_SHARED_STORE, str_intern("u64"), call);
+        if e >= 0 { P.nodes[e].a = index; P.nodes[e].b = converted; P.shared_dirty = 1; }
+        return e;
+    }
+    return device_scalar_fail(P, 3, call);
+}
+
+fn device_bounded_load(P: *DeviceScalarPlan, call: i32, depth: i32) -> i32 {
+    if depth > 64 || P.cooperative != 1 || P.calls != 0 || g_nodes[call].nargs != 3 { return device_scalar_fail(P, 3, call); }
+    let base: i32 = g_nodes[call].args_start;
+    let pointer: i32 = device_scalar_expr(P, g_args[base], NULL_STR, depth + 1);
+    let count: i32 = device_scalar_expr(P, g_args[base + 1], str_intern("u64"), depth + 1);
+    let index: i32 = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 2], str_intern("u64"), depth + 1), str_intern("u64"), call);
+    if pointer < 0 || count < 0 || index < 0 { return 0 - 1; }
+    if g_nodes[g_args[base + 1]].kind != AST_IDENT || P.nodes[pointer].kind != EIR_LOCAL
+        || P.nodes[pointer].type_off != str_intern("*u64") || P.nodes[count].kind != EIR_LOCAL
+        || P.nodes[count].type_off != str_intern("u64") { return device_scalar_fail(P, 2, call); }
+    let e: i32 = device_scalar_node(P, DEVICE_BOUNDED_LOAD, str_intern("u64"), call);
+    if e >= 0 { P.nodes[e].a = pointer; P.nodes[e].b = count; P.nodes[e].c = index; }
+    return e;
+}
+
+fn device_shared_atomic_operation(name: i32) -> i32 {
+    let s: *u8 = &g_strings[name];
+    if str_eq(s, "gpu_shared_atomic_add_u64") == 1 { return 0; }
+    if str_eq(s, "gpu_shared_atomic_exchange_u64") == 1 { return 1; }
+    if str_eq(s, "gpu_shared_atomic_compare_exchange_u64") == 1 { return 2; }
+    return 0 - 1;
+}
+
+fn device_shared_atomic_call(P: *DeviceScalarPlan, call: i32, depth: i32) -> i32 {
+    let operation: i32 = device_shared_atomic_operation(g_nodes[call].name0);
+    var argc: i32 = 4; if operation == 2 { argc = 5; }
+    if depth > 64 || P.cooperative != 1 || P.calls != 0 || P.shared_count == 0
+        || P.shared_reads != 0 || P.shared_dirty == 1 || g_nodes[call].nargs != argc { return device_scalar_fail(P, 3, call); }
+    let base: i32 = g_nodes[call].args_start;
+    let order: i32 = g_args[base + 2]; let scope: i32 = g_args[base + 3];
+    if g_nodes[order].kind != AST_LIT_INT || g_nodes[order].int_val > 3
+        || g_nodes[scope].kind != AST_LIT_INT || g_nodes[scope].int_val != 0 { return device_scalar_fail(P, 3, call); }
+    if (g_nodes[order].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[order].name0]) == 1)
+        || (g_nodes[scope].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[scope].name0]) == 1) { return device_scalar_fail(P, 3, call); }
+    let t: i32 = str_intern("u64");
+    let index: i32 = device_scalar_convert(P, device_scalar_expr(P, g_args[base], t, depth + 1), t, call);
+    let value: i32 = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 1], t, depth + 1), t, call);
+    var expected: i32 = value;
+    if operation == 2 { expected = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 4], t, depth + 1), t, call); }
+    if index < 0 || value < 0 || expected < 0 || P.shared_reads != 0 || P.shared_dirty == 1 { return device_scalar_fail(P, 3, call); }
+    var bound: i32 = P.shared_size;
+    if P.shared_dynamic == 0 {
+        bound = device_scalar_node(P, EIR_CONST, t, call);
+        if bound < 0 { return bound; } P.nodes[bound].ival = P.shared_count as u64;
+    }
+    let e: i32 = device_scalar_node(P, DEVICE_SHARED_ATOMIC, t, call);
+    if e >= 0 {
+        P.nodes[e].a = index; P.nodes[e].b = bound; P.nodes[e].c = index;
+        P.nodes[e].op = value; P.nodes[e].ival = g_nodes[order].int_val;
+        P.nodes[e].nargs = operation; P.nodes[e].args_start = expected; P.shared_dirty = 2;
+    }
+    return e;
+}
+
+fn device_atomic_type(name: i32) -> i32 {
+    let s: *u8 = &g_strings[name];
+    if str_eq(s, "gpu_atomic_add_u32") == 1 || str_eq(s, "gpu_atomic_exchange_u32") == 1
+        || str_eq(s, "gpu_atomic_compare_exchange_u32") == 1 { return str_intern("u32"); }
+    if str_eq(s, "gpu_atomic_add_u64") == 1 || str_eq(s, "gpu_atomic_exchange_u64") == 1
+        || str_eq(s, "gpu_atomic_compare_exchange_u64") == 1 { return str_intern("u64"); }
+    return NULL_STR;
+}
+
+fn device_atomic_call(P: *DeviceScalarPlan, call: i32, t: i32, depth: i32) -> i32 {
+    let name: *u8 = &g_strings[g_nodes[call].name0];
+    var operation: i32 = 0;
+    if str_eq(name, "gpu_atomic_exchange_u32") == 1 || str_eq(name, "gpu_atomic_exchange_u64") == 1 { operation = 1; }
+    if str_eq(name, "gpu_atomic_compare_exchange_u32") == 1 || str_eq(name, "gpu_atomic_compare_exchange_u64") == 1 { operation = 2; }
+    var argc: i32 = 6; if operation == 2 { argc = 7; }
+    if depth > 64 || P.cooperative != 1 || P.calls != 0 || g_nodes[call].nargs != argc {
+        return device_scalar_fail(P, 3, call);
+    }
+    let base: i32 = g_nodes[call].args_start;
+    let order: i32 = g_args[base + 4]; let scope: i32 = g_args[base + 5];
+    if g_nodes[order].kind != AST_LIT_INT || g_nodes[order].int_val > 3
+        || g_nodes[scope].kind != AST_LIT_INT || g_nodes[scope].int_val != 1 { return device_scalar_fail(P, 3, call); }
+    if (g_nodes[order].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[order].name0]) == 1)
+        || (g_nodes[scope].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[scope].name0]) == 1) {
+        return device_scalar_fail(P, 3, call);
+    }
+    let pointer: i32 = device_scalar_expr(P, g_args[base], NULL_STR, depth + 1);
+    let count: i32 = device_scalar_expr(P, g_args[base + 1], str_intern("u64"), depth + 1);
+    if pointer < 0 || count < 0 { return 0 - 1; }
+    if g_nodes[g_args[base + 1]].kind != AST_IDENT || P.nodes[pointer].kind != EIR_LOCAL
+        || P.nodes[count].kind != EIR_LOCAL || P.nodes[count].type_off != str_intern("u64")
+        || type_pointee(P.nodes[pointer].type_off) != t { return device_scalar_fail(P, 2, call); }
+    let index: i32 = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 2], str_intern("u64"), depth + 1), str_intern("u64"), call);
+    let value: i32 = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 3], t, depth + 1), t, call);
+    if index < 0 || value < 0 { return 0 - 1; }
+    var expected: i32 = value;
+    if operation == 2 {
+        expected = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 6], t, depth + 1), t, call);
+        if expected < 0 { return 0 - 1; }
+    }
+    let e: i32 = device_scalar_node(P, DEVICE_ATOMIC_ADD, t, call);
+    if e >= 0 {
+        P.nodes[e].a = pointer; P.nodes[e].b = count; P.nodes[e].c = index;
+        P.nodes[e].op = value; P.nodes[e].ival = g_nodes[order].int_val;
+        P.nodes[e].nargs = operation; P.nodes[e].args_start = expected;
+    }
+    return e;
+}
+
+fn device_atomic_emit(P: *DeviceScalarPlan, i: i32, regs: *i32) -> i32 {
+    let label: i32 = 80000 + i * 4;
+    let predicate: i32 = ir_tmp(); let pointer: i32 = ir_tmp(); let old: i32 = ir_tmp(); let global: i32 = ir_tmp();
+    var t: *u8 = "i32"; var alignment: i32 = 4;
+    if P.nodes[i].type_off == str_intern("u64") { t = "i64"; alignment = 8; }
+    ir_wr("  br label %"); device_scalar_label(label); ir_wr("\n"); device_scalar_label(label); ir_wr(":\n  ");
+    ir_wr_reg(predicate); ir_wr(" = icmp ult i64 "); ir_wr_reg(regs[P.nodes[i].c]);
+    ir_wr(", "); ir_wr_reg(regs[P.nodes[i].b]); ir_wr("\n  br i1 "); ir_wr_reg(predicate);
+    ir_wr(", label %"); device_scalar_label(label + 1); ir_wr(", label %"); device_scalar_label(label + 2); ir_wr("\n");
+    device_scalar_label(label + 1); ir_wr(":\n");
+    if P.nodes[i].kind == DEVICE_SHARED_ATOMIC {
+        device_shared_pointer(P, global, regs[P.nodes[i].c]); ir_wr("  ");
+    } else {
+    ir_wr("  "); ir_wr_reg(pointer); ir_wr(" = getelementptr "); ir_wr(t);
+    ir_wr(", ptr "); ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", i64 "); ir_wr_reg(regs[P.nodes[i].c]); ir_wr("\n  ");
+    ir_wr_reg(global); ir_wr(" = addrspacecast ptr "); ir_wr_reg(pointer); ir_wr(" to ptr addrspace(1)\n  ");
+    }
+    if P.nodes[i].kind == DEVICE_BOUNDED_LOAD {
+        ir_wr_reg(old); ir_wr(" = load i64, ptr addrspace(1) "); ir_wr_reg(global); ir_wr(", align 8\n");
+    } else {
+    ir_wr_reg(old); ir_wr(" = call "); ir_wr(t); ir_wr(" asm sideeffect \"atom.");
+    if P.nodes[i].ival == 0 { ir_wr("relaxed"); }
+    else if P.nodes[i].ival == 1 { ir_wr("acquire"); }
+    else if P.nodes[i].ival == 2 { ir_wr("release"); }
+    else { ir_wr("acq_rel"); }
+    if P.nodes[i].kind == DEVICE_SHARED_ATOMIC { ir_wr(".cta.shared."); } else { ir_wr(".gpu.global."); }
+    if P.nodes[i].nargs == 0 { ir_wr("add.u"); }
+    else if P.nodes[i].nargs == 1 { ir_wr("exch.b"); } else { ir_wr("cas.b"); }
+    ir_wr_int((alignment * 8) as i64); ir_wr(" $0, [$1], $2");
+    if P.nodes[i].nargs == 2 { ir_wr(", $3"); }
+    ir_wr(";\", \"");
+    if alignment == 4 { ir_wr("=r,l,r"); } else { ir_wr("=l,l,l"); }
+    if P.nodes[i].nargs == 2 { if alignment == 4 { ir_wr(",r"); } else { ir_wr(",l"); } }
+    ir_wr(",~{memory}\"(ptr addrspace(");
+    if P.nodes[i].kind == DEVICE_SHARED_ATOMIC { ir_wr("3"); } else { ir_wr("1"); }
+    ir_wr(") "); ir_wr_reg(global); ir_wr(", "); ir_wr(t); ir_wr(" ");
+    if P.nodes[i].nargs == 2 {
+        ir_wr_reg(regs[P.nodes[i].args_start]); ir_wr(", "); ir_wr(t); ir_wr(" ");
+    }
+    ir_wr_reg(regs[P.nodes[i].op]); ir_wr(")\n");
+    }
+    ir_wr("  br label %"); device_scalar_label(label + 2); ir_wr("\n");
+    device_scalar_label(label + 2); ir_wr(":\n  "); regs[i] = ir_tmp(); ir_wr_reg(regs[i]); ir_wr(" = phi "); ir_wr(t);
+    ir_wr(" [ 0, %"); device_scalar_label(label); ir_wr(" ], [ "); ir_wr_reg(old); ir_wr(", %");
+    device_scalar_label(label + 1); ir_wr(" ]\n"); return label + 2;
+}
+
+fn device_warp_operation(name: i32) -> i32 {
+    let s: *u8 = &g_strings[name];
+    if str_eq(s, "gpu_warp_shuffle_u32") == 1 { return 0; }
+    if str_eq(s, "gpu_warp_shuffle_xor_u32") == 1 { return 1; }
+    if str_eq(s, "gpu_warp_ballot") == 1 { return 2; }
+    if str_eq(s, "gpu_warp_any") == 1 { return 3; }
+    if str_eq(s, "gpu_warp_all") == 1 { return 4; }
+    return 0 - 1;
+}
+
+fn device_scalar_predicate(P: *DeviceScalarPlan, active: i32, source: i32) -> i32 {
+    if active < 0 { return active; }
+    if P.nodes[active].type_off == str_intern("i1") { return active; }
+    if P.nodes[active].type_off != str_intern("bool") { return device_scalar_fail(P, 2, source); }
+    let zero: i32 = device_scalar_node(P, EIR_CONST, str_intern("bool"), source);
+    let mask: i32 = device_scalar_node(P, EIR_BIN, str_intern("i1"), source);
+    if zero < 0 || mask < 0 { return 0 - 1; }
+    P.nodes[mask].a = active; P.nodes[mask].b = zero; P.nodes[mask].op = OP_NEQ;
+    P.nodes[mask].aux_type = str_intern("bool");
+    return mask;
+}
+
+// Full masks plus block-multiple admission prove every physical lane participates.
+fn device_warp_call(P: *DeviceScalarPlan, call: i32, op: i32, depth: i32) -> i32 {
+    if depth > 64 { return device_scalar_fail(P, 4, call); }
+    if P.cooperative != 1 || P.calls != 0 { return device_scalar_fail(P, 3, call); }
+    var n: i32 = 2; if op < 2 { n = 3; } if op == 5 { n = 1; }
+    if g_nodes[call].nargs != n { return device_scalar_fail(P, 2, call); }
+    let base: i32 = g_nodes[call].args_start;
+    let mask: i32 = g_args[base];
+    if g_nodes[mask].kind != AST_LIT_INT || g_nodes[mask].int_val != 4294967295 { return device_scalar_fail(P, 3, call); }
+    if g_nodes[mask].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[mask].name0]) == 1 { return device_scalar_fail(P, 3, call); }
+    P.warp_used = 1;
+    if op == 5 { return device_scalar_node(P, DEVICE_WARP_SYNC, NULL_STR, call); }
+    var t: i32 = str_intern("u32"); if op >= 2 { t = str_intern("bool"); }
+    let value: i32 = device_scalar_expr(P, g_args[base + 1], t, depth + 1);
+    var converted: i32 = 0 - 1;
+    if op < 2 { converted = device_scalar_convert(P, value, t, call); }
+    else { converted = device_scalar_predicate(P, value, call); }
+    if converted < 0 { return converted; }
+    if op < 2 {
+        let lane: i32 = g_args[base + 2];
+        if g_nodes[lane].kind != AST_LIT_INT || g_nodes[lane].int_val > 31 { return device_scalar_fail(P, 3, call); }
+        if g_nodes[lane].name0 != NULL_STR && lit_text_overflows_u64(&g_strings[g_nodes[lane].name0]) == 1 { return device_scalar_fail(P, 3, call); }
+        let e: i32 = device_scalar_node(P, DEVICE_WARP_SHUFFLE, str_intern("u32"), call);
+        if e >= 0 { P.nodes[e].a = converted; P.nodes[e].op = op; P.nodes[e].ival = g_nodes[lane].int_val; }
+        return e;
+    }
+    var rt: i32 = str_intern("bool"); if op == 2 { rt = str_intern("u32"); }
+    let e: i32 = device_scalar_node(P, DEVICE_WARP_VOTE, rt, call);
+    if e >= 0 { P.nodes[e].a = converted; P.nodes[e].op = op - 2; }
+    return e;
+}
+
+fn device_warp_emit(P: *DeviceScalarPlan, i: i32, regs: *i32) {
+    let k: i32 = P.nodes[i].kind;
+    if k == DEVICE_WARP_SYNC { ir_wr("  call void @llvm.nvvm.bar.warp.sync(i32 -1)\n"); return; }
+    let result: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(result); ir_wr(" = call ");
+    if k == DEVICE_WARP_SHUFFLE {
+        ir_wr("i32 @llvm.nvvm.shfl.sync.");
+        if P.nodes[i].op == 0 { ir_wr("idx"); } else { ir_wr("bfly"); }
+        ir_wr(".i32(i32 -1, i32 "); ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", i32 ");
+        ir_wr_int(P.nodes[i].ival as i64); ir_wr(", i32 31)\n");
+    } else {
+        if P.nodes[i].op == 0 { ir_wr("i32 @llvm.nvvm.vote.ballot.sync"); }
+        else if P.nodes[i].op == 1 { ir_wr("i1 @llvm.nvvm.vote.any.sync"); }
+        else { ir_wr("i1 @llvm.nvvm.vote.all.sync"); }
+        ir_wr("(i32 -1, i1 "); ir_wr_reg(regs[P.nodes[i].a]); ir_wr(")\n");
+    }
+    regs[i] = result;
+    if k == DEVICE_WARP_VOTE && P.nodes[i].op != 0 {
+        regs[i] = ir_tmp(); ir_wr("  "); ir_wr_reg(regs[i]);
+        ir_wr(" = zext i1 "); ir_wr_reg(result); ir_wr(" to i8\n");
+    }
+}
+
+fn device_shared_symbol(wid: i32) { ir_wr("__traveler_shared_"); ir_wr_int(wid as i64); }
+
+fn device_masked_memory(P: *DeviceScalarPlan, call: i32, store: i32, depth: i32) -> i32 {
+    if depth > 64 { return device_scalar_fail(P, 4, call); }
+    if P.cooperative != 1 || P.calls != 0 || g_nodes[call].nargs != 3 + store { return device_scalar_fail(P, 3, call); }
+    let base: i32 = g_nodes[call].args_start;
+    let pointer: i32 = device_scalar_expr(P, g_args[base], NULL_STR, depth + 1);
+    if pointer < 0 || P.nodes[pointer].kind != EIR_LOCAL || P.nodes[pointer].type_off != str_intern("*u64") {
+        return device_scalar_fail(P, 2, call);
+    }
+    let index: i32 = device_scalar_expr(P, g_args[base + 1], str_intern("u64"), depth + 1);
+    if device_thread_same(P, index, P.global_index, 0) == 0 { return device_scalar_fail(P, 3, call); }
+    let idx: i32 = device_scalar_convert(P, index, str_intern("i64"), call);
+    var value: i32 = 0 - 1;
+    if store == 1 {
+        value = device_scalar_convert(P, device_scalar_expr(P, g_args[base + 2], str_intern("u64"), depth + 1), str_intern("u64"), call);
+        if value < 0 { return value; }
+    }
+    let active: i32 = device_scalar_expr(P, g_args[base + 2 + store], str_intern("bool"), depth + 1);
+    if active < 0 { return active; }
+    if P.nodes[active].type_off != str_intern("bool") && P.nodes[active].type_off != str_intern("i1") { return device_scalar_fail(P, 2, call); }
+    let mask: i32 = device_scalar_predicate(P, active, call);
+    if idx < 0 || mask < 0 { return 0 - 1; }
+    var kind: i32 = DEVICE_MASKED_LOAD; if store == 1 { kind = DEVICE_MASKED_STORE; }
+    let e: i32 = device_scalar_node(P, kind, str_intern("u64"), call);
+    if e >= 0 { P.nodes[e].a = pointer; P.nodes[e].b = idx; P.nodes[e].c = mask; P.nodes[e].op = value; }
+    return e;
+}
+
+fn device_shared_pointer(P: *DeviceScalarPlan, pointer: i32, index: i32) {
+    ir_wr("  "); ir_wr_reg(pointer); ir_wr(" = getelementptr [");
+    if P.shared_dynamic == 1 { ir_wr("0"); } else { ir_wr_int(P.shared_count as i64); }
+    ir_wr(" x i64], ptr addrspace(3) @");
+    if P.shared_dynamic == 1 { ir_wr("__traveler_shared_dynamic"); } else { device_shared_symbol(P.kernel_id); }
+    ir_wr(", i64 0, i64 "); ir_wr_reg(index); ir_wr("\n");
+}
+
+fn device_shared_bound(P: *DeviceScalarPlan, regs: *i32) {
+    if P.shared_dynamic == 1 { ir_wr_reg(regs[P.shared_size]); }
+    else { ir_wr_int(P.shared_count as i64); }
+}
+
+fn device_shared_emit(P: *DeviceScalarPlan, i: i32, regs: *i32) -> i32 {
+    let k: i32 = P.nodes[i].kind;
+    let label: i32 = 40000 + i * 8;
+    let predicate: i32 = ir_tmp(); let pointer: i32 = ir_tmp();
+    if k == DEVICE_SHARED_INIT {
+        let counter: i32 = ir_tmp(); let next: i32 = ir_tmp();
+        ir_wr("  br label %"); device_scalar_label(label); ir_wr("\n");
+        device_scalar_label(label); ir_wr(":\n  "); ir_wr_reg(counter); ir_wr(" = phi i64 [ ");
+        ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", %entry ], [ "); ir_wr_reg(next); ir_wr(", %");
+        device_scalar_label(label + 1); ir_wr(" ]\n  "); ir_wr_reg(predicate); ir_wr(" = icmp ult i64 ");
+        ir_wr_reg(counter); ir_wr(", "); device_shared_bound(P, regs); ir_wr("\n  br i1 ");
+        ir_wr_reg(predicate); ir_wr(", label %"); device_scalar_label(label + 1);
+        ir_wr(", label %"); device_scalar_label(label + 2); ir_wr("\n");
+        device_scalar_label(label + 1); ir_wr(":\n"); device_shared_pointer(P, pointer, counter);
+        ir_wr("  store i64 0, ptr addrspace(3) "); ir_wr_reg(pointer); ir_wr(", align 8\n  ");
+        ir_wr_reg(next); ir_wr(" = add i64 "); ir_wr_reg(counter); ir_wr(", ");
+        ir_wr_reg(regs[P.nodes[i].b]); ir_wr("\n  br label %"); device_scalar_label(label); ir_wr("\n");
+        device_scalar_label(label + 2); ir_wr(":\n  call void @llvm.nvvm.barrier0()\n");
+        return label + 2;
+    }
+    ir_wr("  br label %"); device_scalar_label(label); ir_wr("\n"); device_scalar_label(label); ir_wr(":\n  ");
+    if k == DEVICE_MASKED_LOAD || k == DEVICE_MASKED_STORE {
+        ir_wr_reg(predicate); ir_wr(" = or i1 "); ir_wr_reg(regs[P.nodes[i].c]); ir_wr(", false\n  br i1 ");
+    } else {
+        ir_wr_reg(predicate); ir_wr(" = icmp ult i64 "); ir_wr_reg(regs[P.nodes[i].a]);
+        ir_wr(", "); device_shared_bound(P, regs); ir_wr("\n  br i1 ");
+    }
+    ir_wr_reg(predicate);
+    ir_wr(", label %"); device_scalar_label(label + 1); ir_wr(", label %"); device_scalar_label(label + 2); ir_wr("\n");
+    device_scalar_label(label + 1); ir_wr(":\n");
+    var address: *u8 = "ptr addrspace(3) ";
+    if k == DEVICE_MASKED_LOAD || k == DEVICE_MASKED_STORE {
+        address = "ptr ";
+        ir_wr("  "); ir_wr_reg(pointer); ir_wr(" = getelementptr i64, ptr "); ir_wr_reg(regs[P.nodes[i].a]);
+        ir_wr(", i64 "); ir_wr_reg(regs[P.nodes[i].b]); ir_wr("\n");
+    } else { device_shared_pointer(P, pointer, regs[P.nodes[i].a]); }
+    let loaded: i32 = ir_tmp();
+    if k == DEVICE_SHARED_LOAD || k == DEVICE_MASKED_LOAD {
+        ir_wr("  "); ir_wr_reg(loaded); ir_wr(" = load i64, "); ir_wr(address); ir_wr_reg(pointer); ir_wr(", align 8\n");
+    } else {
+        var value: i32 = P.nodes[i].b;
+        if k == DEVICE_MASKED_STORE { value = P.nodes[i].op; }
+        ir_wr("  store i64 "); ir_wr_reg(regs[value]); ir_wr(", "); ir_wr(address); ir_wr_reg(pointer); ir_wr(", align 8\n");
+    }
+    ir_wr("  br label %"); device_scalar_label(label + 2); ir_wr("\n"); device_scalar_label(label + 2); ir_wr(":\n");
+    if k == DEVICE_SHARED_LOAD || k == DEVICE_MASKED_LOAD {
+        regs[i] = ir_tmp(); ir_wr("  "); ir_wr_reg(regs[i]); ir_wr(" = phi i64 [ 0, %");
+        device_scalar_label(label); ir_wr(" ], [ "); ir_wr_reg(loaded); ir_wr(", %");
+        device_scalar_label(label + 1); ir_wr(" ]\n");
+    }
+    return label + 2;
+}
+
 fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32) {
     let regs: *i32 = alloc(P.count);
     let predecessors: *i32 = alloc(P.count);
@@ -27844,7 +28460,22 @@ fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32
     while i < P.count {
         let kind: i32 = P.nodes[i].kind;
         let t: i32 = P.nodes[i].type_off;
-        if kind == EIR_STRUCT_LIT || kind == EIR_ADDR_LOCAL || kind == DEVICE_CLOSURE {
+        if kind == DEVICE_ATOMIC_ADD || kind == DEVICE_SHARED_ATOMIC || kind == DEVICE_BOUNDED_LOAD {
+            current = device_atomic_emit(P, i, regs);
+        } else if kind >= DEVICE_WARP_SHUFFLE && kind <= DEVICE_WARP_SYNC {
+            device_warp_emit(P, i, regs);
+        } else if kind == DEVICE_BLOCK_BARRIER {
+            ir_wr("  call void @llvm.nvvm.barrier0()\n");
+        } else if (kind >= DEVICE_SHARED_INIT && kind <= DEVICE_SHARED_STORE)
+            || kind == DEVICE_MASKED_LOAD || kind == DEVICE_MASKED_STORE {
+            current = device_shared_emit(P, i, regs);
+        } else if kind == DEVICE_THREAD_ID {
+            let raw: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(raw); ir_wr(" = call i32 @");
+            device_thread_intrinsic(P.nodes[i].a); ir_wr("()\n");
+            regs[i] = ir_tmp(); ir_wr("  "); ir_wr_reg(regs[i]);
+            ir_wr(" = zext i32 "); ir_wr_reg(raw); ir_wr(" to i64\n");
+        } else if kind == EIR_STRUCT_LIT || kind == EIR_ADDR_LOCAL || kind == DEVICE_CLOSURE {
             i = i + 1; continue;
         } else if kind == EIR_IF {
             ir_wr("  br i1 "); ir_wr_reg(regs[P.nodes[i].a]);
@@ -28007,20 +28638,21 @@ fn gpu_interface_element_width(t: i32) -> i32 {
 
 // Roles are read=1/write=2. Only direct iterator indexes have a v1 footprint.
 fn gpu_interface_access(node: i32, lv: i32, ncaps: i32, base: i32,
-                        roles: *i32, write_role: i32, depth: i32) -> i32 {
+                        roles: *i32, write_role: i32, depth: i32, cooperative: i32) -> i32 {
     if node <= 0 || depth > 64 { return 0; }
     let k: i32 = g_nodes[node].kind;
     if k == AST_INDEX || k == AST_INDEX_ASSIGN {
         let arr: i32 = g_nodes[node].child0;
         let idx: i32 = g_nodes[node].child1;
-        if g_nodes[arr].kind != AST_IDENT || g_nodes[idx].kind != AST_IDENT
-            || g_nodes[idx].name0 != lv { return 0; }
+        if g_nodes[arr].kind != AST_IDENT { return 0; }
+        if cooperative == 0 && (g_nodes[idx].kind != AST_IDENT || g_nodes[idx].name0 != lv) { return 0; }
         let cap: i32 = gpu_interface_capture(g_nodes[arr].name0, ncaps, base);
         if cap < 0 { return 0; }
         if type_is_ptr(g_pfor_workers[base + cap * 4 + 1]) == 0 { return 0; }
         roles[cap] = roles[cap] | write_role;
+        if cooperative == 1 && gpu_interface_access(idx, lv, ncaps, base, roles, 1, depth + 1, cooperative) == 0 { return 0; }
         if k == AST_INDEX_ASSIGN {
-            return gpu_interface_access(g_nodes[node].child2, lv, ncaps, base, roles, 1, depth + 1);
+            return gpu_interface_access(g_nodes[node].child2, lv, ncaps, base, roles, 1, depth + 1, cooperative);
         }
         return 1;
     }
@@ -28031,22 +28663,25 @@ fn gpu_interface_access(node: i32, lv: i32, ncaps: i32, base: i32,
         return 1 - type_is_ptr(g_pfor_workers[base + cap * 4 + 1]);
     }
     if k == AST_LIT_INT || k == AST_LIT_BOOL { return 1; }
+    if cooperative == 1 && (k == AST_MEMBER_ACCESS || k == AST_FIELD_ACCESS) {
+        return gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1, cooperative);
+    }
     if k == AST_CAST || k == AST_UNARY {
         if k == AST_CAST && device_scalar_type(resolve_type_sub(g_nodes[node].name0)) == 0 { return 0; }
         if k == AST_UNARY && g_nodes[node].op != OP_NEG
             && g_nodes[node].op != OP_NOT && g_nodes[node].op != OP_BITNOT { return 0; }
-        return gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1);
+        return gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1, cooperative);
     }
     if k == AST_BINARY {
-        if gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1) == 0 { return 0; }
-        return gpu_interface_access(g_nodes[node].child1, lv, ncaps, base, roles, 1, depth + 1);
+        if gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1, cooperative) == 0 { return 0; }
+        return gpu_interface_access(g_nodes[node].child1, lv, ncaps, base, roles, 1, depth + 1, cooperative);
     }
     if k == AST_CALL || k == AST_BLOCK {
         var i: i32 = 0;
         while i < g_nodes[node].nargs {
             var role: i32 = 1;
             if k == AST_BLOCK { role = 2; }
-            if gpu_interface_access(g_args[g_nodes[node].args_start + i], lv, ncaps, base, roles, role, depth + 1) == 0 { return 0; }
+            if gpu_interface_access(g_args[g_nodes[node].args_start + i], lv, ncaps, base, roles, role, depth + 1, cooperative) == 0 { return 0; }
             i = i + 1;
         }
         return 1;
@@ -28056,12 +28691,12 @@ fn gpu_interface_access(node: i32, lv: i32, ncaps: i32, base: i32,
 
 // Capture records are the signature authority; lo/hi follow those records.
 fn gpu_kernel_symbol(wid: i32, origin: i32) {
-    if origin == 1 { ir_wr("__traveler_kernel_"); }
+    if origin != 0 { ir_wr("__traveler_kernel_"); }
     else { ir_wr("__pfor_gpu_worker_"); }
     ir_wr_int(wid as i64);
 }
 
-fn gpu_interface_validate(body: i32, lv: i32, ncaps: i32, base: i32, roles: *i32) -> i32 {
+fn gpu_interface_validate(body: i32, lv: i32, ncaps: i32, base: i32, roles: *i32, cooperative: i32) -> i32 {
     if pfor_body_all_index_assign(body) == 0 { return 0; }
     var i: i32 = 0;
     while i < ncaps {
@@ -28072,12 +28707,61 @@ fn gpu_interface_validate(body: i32, lv: i32, ncaps: i32, base: i32, roles: *i32
         if bits == 0 { return 0; }
         i = i + 1;
     }
-    return gpu_interface_access(body, lv, ncaps, base, roles, 2, 0);
+    return gpu_interface_access(body, lv, ncaps, base, roles, 2, 0, cooperative);
 }
 
-fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base: i32, origin: i32) -> i32 {
+fn device_atomic_count(P: *DeviceScalarPlan, slot: i32) -> i32 {
+    var count: i32 = 0 - 1; var i: i32 = 0;
+    while i < P.count {
+        if (P.nodes[i].kind == DEVICE_ATOMIC_ADD || P.nodes[i].kind == DEVICE_BOUNDED_LOAD) && P.nodes[P.nodes[i].a].a == slot {
+            let next: i32 = P.nodes[P.nodes[i].b].a;
+            if count >= 0 && count != next { return 0 - 2; }
+            count = next;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn device_scalar_roles(P: *DeviceScalarPlan, ncaps: i32, base: i32, roles: *i32) -> i32 {
+    var i: i32 = 0;
+    while i < ncaps { roles[i] = 0; i = i + 1; }
+    i = 0;
+    while i < P.count {
+        let k: i32 = P.nodes[i].kind;
+        if k == EIR_INDEX || k == EIR_INDEX_ST || k == DEVICE_MASKED_LOAD || k == DEVICE_MASKED_STORE || k == DEVICE_ATOMIC_ADD || k == DEVICE_BOUNDED_LOAD {
+            let pointer: i32 = P.nodes[i].a;
+            if P.nodes[pointer].kind != EIR_LOCAL { return 0; }
+            let slot: i32 = P.nodes[pointer].a;
+            if slot < 0 || slot >= ncaps { return 0; }
+            var role: i32 = 1; if k == EIR_INDEX_ST || k == DEVICE_MASKED_STORE { role = 2; }
+            if k == DEVICE_ATOMIC_ADD || k == DEVICE_BOUNDED_LOAD {
+                var required: i32 = 7; if k == DEVICE_BOUNDED_LOAD { required = 9; }
+                if roles[slot] != 0 && roles[slot] != required { return 0; }
+                let count: i32 = device_atomic_count(P, slot);
+                if count < 0 || count >= ncaps || g_pfor_workers[base + count * 4 + 1] != str_intern("u64") { return 0; }
+                role = required;
+            } else if roles[slot] == 7 || roles[slot] == 9 { return 0; }
+            roles[slot] = roles[slot] | role;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < ncaps {
+        let t: i32 = g_pfor_workers[base + i * 4 + 1];
+        if type_is_ptr(t) == 1 {
+            if roles[i] == 0 || gpu_interface_element_width(type_pointee(t)) == 0 { return 0; }
+        } else if gpu_interface_width(t) == 0 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base: i32, origin: i32, P: *DeviceScalarPlan) -> i32 {
     let roles: *i32 = alloc(ncaps + 1);
-    if gpu_interface_validate(body, lv, ncaps, base, roles) == 0 { free(roles); return 0; }
+    if origin == 2 {
+        if device_scalar_roles(P, ncaps, base, roles) == 0 { free(roles); return 0; }
+    } else if gpu_interface_validate(body, lv, ncaps, base, roles, 0) == 0 { free(roles); return 0; }
     var i: i32 = 0;
     ir_wr("; traveler.kernel.v1 {\"schema\":\"traveler.kernel.v1\",\"abi\":1,\"stage\":\"semantic-ir\",\"compiler\":\"tvc_self\",\"target\":\"nvptx64-nvidia-cuda\",\"artifact\":null,\"symbol\":\"");
     gpu_kernel_symbol(wid, origin); ir_wr("\",\"owner\":"); gpu_interface_string(&g_strings[owner]);
@@ -28092,12 +28776,28 @@ fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base
     ir_wr("],\"line\":"); ir_wr_int(g_nodes[body].line as i64);
     ir_wr(",\"column\":"); ir_wr_int(g_nodes[body].col as i64);
     ir_wr(",\"execution\":\"");
-    if origin == 1 { ir_wr("independent-kernel"); } else { ir_wr("independent-pfor"); }
-    ir_wr("\",\"profile\":\"direct-index-v1\",\"block\":[256,1,1],\"dimensions\":1,\"lanes_per_cell\":1,\"dynamic_shared_bytes\":0,\"index_bits\":32,\"domain\":{\"min_lo\":0,\"max_hi\":2147483392,\"empty\":\"no-launch\"},\"parameters\":[");
+    if origin == 2 {
+        ir_wr("cooperative-kernel\",\"profile\":\"");
+        var shared_atomic: i32 = 0; var ai: i32 = 0;
+        while ai < P.count { if P.nodes[ai].kind == DEVICE_SHARED_ATOMIC { shared_atomic = 1; } ai = ai + 1; }
+        if P.warp_used == 1 { ir_wr("cooperative-warp-v1"); }
+        else if shared_atomic == 1 { ir_wr("cooperative-atomic-v1"); } else { ir_wr("cooperative-grid-v1"); }
+        ir_wr("\",\"block\":null,\"dimensions\":3,\"lanes_per_cell\":1,\"dynamic_shared_bytes\":");
+        if P.shared_dynamic == 1 {
+            ir_wr("{\"parameter\":"); ir_wr_int(P.nodes[P.shared_size].a as i64);
+            ir_wr(",\"byte_scale\":8,\"max_count\":1024}");
+        } else { ir_wr("0"); }
+        ir_wr(",\"index_bits\":64,");
+        ir_wr("\"domain\":{\"min_lo\":0,\"max_hi\":9223372036854775807,\"empty\":\"no-launch\"},\"parameters\":[");
+    } else {
+        if origin == 1 { ir_wr("independent-kernel"); } else { ir_wr("independent-pfor"); }
+        ir_wr("\",\"profile\":\"direct-index-v1\",\"block\":[256,1,1],\"dimensions\":1,\"lanes_per_cell\":1,\"dynamic_shared_bytes\":0,\"index_bits\":32,\"domain\":{\"min_lo\":0,\"max_hi\":2147483392,\"empty\":\"no-launch\"},\"parameters\":[");
+    }
     i = 0;
     while i < ncaps + 2 {
         if i > 0 { ir_wr(","); }
         var t: i32 = str_intern("i32");
+        if origin == 2 { t = str_intern("u64"); }
         var name: *u8 = "lo";
         if i == ncaps + 1 { name = "hi"; }
         if i < ncaps { t = g_pfor_workers[base + i * 4 + 1]; name = &g_strings[g_pfor_workers[base + i * 4]]; }
@@ -28116,12 +28816,16 @@ fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base
             ir_wr(",\"element_size\":"); ir_wr_int(bytes as i64);
             ir_wr(",\"element_alignment\":"); ir_wr_int(alignment as i64);
             ir_wr(",\"access\":");
-            if roles[i] == 1 { ir_wr("\"read\""); }
+            if roles[i] == 1 || roles[i] == 9 { ir_wr("\"read\""); }
             else if roles[i] == 2 { ir_wr("\"write\""); }
-            else if roles[i] == 3 { ir_wr("\"read-write\""); }
+            else if roles[i] == 3 || roles[i] == 7 { ir_wr("\"read-write\""); }
             else { ir_wr("\"none\""); }
             ir_wr(",\"footprint\":");
             if roles[i] == 0 { ir_wr("null"); }
+            else if roles[i] == 7 || roles[i] == 9 {
+                ir_wr("{\"count_parameter\":"); ir_wr_int(device_atomic_count(P, i) as i64);
+                ir_wr(",\"byte_scale\":"); ir_wr_int(bytes as i64); ir_wr("}");
+            }
             else { ir_wr("{\"start_parameter\":"); ir_wr_int(ncaps as i64);
                 ir_wr(",\"end_parameter\":"); ir_wr_int((ncaps + 1) as i64);
                 ir_wr(",\"byte_scale\":"); ir_wr_int(bytes as i64); ir_wr("}"); }
@@ -28194,13 +28898,18 @@ fn device_kernel_entries(entries: *DeviceKernelEntry) -> i32 {
             let n: i32 = g_nodes[decl].nargs;
             let body: i32 = g_nodes[decl].child0;
             var valid: i32 = 1;
+            var origin: i32 = 1;
             if g_gpu_target > 1 || g_funcs[fi].is_generic == 1
                 || g_funcs[fi].is_extern == 1 || g_funcs[fi].ret_type != NULL_STR
                 || n < 2 || n > 33 || count >= MAX_PFOR { valid = 0; }
-            if body <= 0 || pfor_body_all_index_assign(body) == 0 { valid = 0; }
+            if body <= 0 { valid = 0; }
             if valid == 1 {
                 let index: i32 = g_args[g_nodes[decl].args_start];
-                if g_nodes[index].name1 != str_intern("i32") { valid = 0; }
+                if g_nodes[index].name1 == str_intern("GpuThread") {
+                    origin = 2;
+                    if g_gpu_target != 1 { valid = 0; }
+                } else if g_nodes[index].name1 != str_intern("i32") { valid = 0; }
+                if origin != 2 && pfor_body_all_index_assign(body) == 0 { valid = 0; }
                 var p: i32 = 0;
                 while p < n {
                     let param: i32 = g_args[g_nodes[decl].args_start + p];
@@ -28214,9 +28923,11 @@ fn device_kernel_entries(entries: *DeviceKernelEntry) -> i32 {
                 }
                 if off > MAX_PFOR_WORKER_INTS - (n - 1) * 4 { valid = 0; }
                 if valid == 1 {
-                    entries[count] = DeviceKernelEntry { origin: 1, worker: next,
+                    var index_bits: i32 = 32;
+                    if origin == 2 { index_bits = 64; }
+                    entries[count] = DeviceKernelEntry { origin: origin, worker: next,
                         owner: g_funcs[fi].name, body: body, index_name: g_nodes[index].name0,
-                        index_bits: 32, capture_count: n - 1, capture_base: off,
+                        index_bits: index_bits, capture_count: n - 1, capture_base: off,
                         generic_count: 0, generic_base: 0 };
                     p = 1;
                     while p < n {
@@ -28248,6 +28959,13 @@ fn emit_gpu_module() {
     }
     let entries: *DeviceKernelEntry = alloc(MAX_PFOR);
     let nentries: i32 = device_kernel_entries(entries);
+    var any_cooperative: i32 = 0;
+    var emitted_dynamic: i32 = 0;
+    var scan: i32 = 0;
+    while scan < nentries {
+        if entries[scan].origin == 2 { any_cooperative = 1; }
+        scan = scan + 1;
+    }
     if g_gpu_target == 2 {
         free(g_pfor_workers); g_pfor_workers = old_captures; free(entries);
         emit_agx_module();
@@ -28274,7 +28992,23 @@ fn emit_gpu_module() {
         ir_wr("target triple = \"nvptx64-nvidia-cuda\"\n\n");
         ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.tid.x()\n");
         ir_wr("declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n");
-        if any_wave == 1 {
+        if any_cooperative == 1 {
+            ir_wr("declare void @llvm.nvvm.barrier0()\n");
+            ir_wr("declare void @llvm.nvvm.bar.warp.sync(i32)\n");
+            ir_wr("declare i32 @llvm.nvvm.shfl.sync.idx.i32(i32, i32, i32, i32)\n");
+            ir_wr("declare i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32)\n");
+            ir_wr("declare i32 @llvm.nvvm.vote.ballot.sync(i32, i1)\n");
+            ir_wr("declare i1 @llvm.nvvm.vote.any.sync(i32, i1)\n");
+            ir_wr("declare i1 @llvm.nvvm.vote.all.sync(i32, i1)\n");
+            var axis: i32 = 0;
+            while axis < 12 {
+                if axis != 0 && axis != 3 {
+                    ir_wr("declare i32 @"); device_thread_intrinsic(axis); ir_wr("()\n");
+                }
+                axis = axis + 1;
+            }
+        }
+        if any_wave == 1 && any_cooperative == 0 {
             ir_wr("declare i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32)\n");
         }
         ir_wr("\n");
@@ -28341,20 +29075,22 @@ fn emit_gpu_module() {
         let k8_private_dot: i32 = pfor_body_k8_private_dot(body_node);
         let blocked_dot: i32 = pfor_body_gpu_dot(body_node);
         var eligible: i32 = pfor_body_all_index_assign(body_node);
+        if origin == 2 { eligible = 1; }
         if k8_private_dot == 1 || blocked_dot == 1 { eligible = 1; }
-        if wbw == 64 { eligible = 0; skip_reason = 1; }
+        if wbw == 64 && origin != 2 { eligible = 0; skip_reason = 1; }
         if origin == 1 {
             let roles: *i32 = alloc(ncaps + 1);
-            if gpu_interface_validate(body_node, loop_var_name, ncaps, caps_base, roles) == 0 { eligible = 0; }
+            if gpu_interface_validate(body_node, loop_var_name, ncaps, caps_base, roles, (origin == 2) as i32) == 0 { eligible = 0; }
             free(roles);
         }
         // The closed dot classes already exclude calls; the flat elementwise
         // class must not emit a call the device module does not carry.
-        if eligible == 1 && k8_private_dot == 0 && blocked_dot == 0 {
-            if origin == 1 || pfor_body_elem_call_free(body_node) == 0 {
+        if eligible == 1 && (origin == 2 || (k8_private_dot == 0 && blocked_dot == 0)) {
+            if origin != 0 || pfor_body_elem_call_free(body_node) == 0 {
                 scalar_attempted = 1;
-                scalar_prepared = device_scalar_prepare(scalar_plan, body_node, loop_var_name, ncaps, caps_base);
+                scalar_prepared = device_scalar_prepare(scalar_plan, body_node, loop_var_name, ncaps, caps_base, (origin == 2) as i32);
                 if scalar_prepared == 0 { eligible = 0; skip_reason = 3; }
+                scalar_plan.kernel_id = wid;
             }
         }
         // #[wave_pipe]/#[fits_i32]/#[unroll2]/#[wave2]/#[readonly]/
@@ -28406,14 +29142,22 @@ fn emit_gpu_module() {
             g_block_terminated = 0;
             g_body_mode = 0;
 
-            if g_gpu_interface == 1 || (origin == 1 && g_gpu_target == 1) {
-                if gpu_interface_emit(wid, owner_fn, body_node, loop_var_name, ncaps, caps_base, origin) == 0 {
+            if g_gpu_interface == 1 || (origin != 0 && g_gpu_target == 1) {
+                if gpu_interface_emit(wid, owner_fn, body_node, loop_var_name, ncaps, caps_base, origin, scalar_plan) == 0 {
                     diag_error_at(g_nodes[body_node].line, g_nodes[body_node].col,
                         "kernel interface requires direct iterator indexes and supported integer layouts");
                 }
             }
             // Signature: temps allocate in order from 0, so cap i = %t{i}, lo =
             // %t{ncaps}, hi = %t{ncaps+1}. Arrays are ptr addrspace(1) kernargs.
+            if scalar_prepared == 1 && scalar_plan.shared_dynamic == 1 && emitted_dynamic == 0 {
+                ir_wr("@__traveler_shared_dynamic = external addrspace(3) global [0 x i64], align 8\n");
+                emitted_dynamic = 1;
+            }
+            if scalar_prepared == 1 && scalar_plan.shared_count > 0 && scalar_plan.shared_dynamic == 0 {
+                ir_wr("@"); device_shared_symbol(wid); ir_wr(" = internal addrspace(3) global [");
+                ir_wr_int(scalar_plan.shared_count as i64); ir_wr(" x i64] undef, align 8\n");
+            }
             if g_gpu_target == 1 {
                 ir_wr("\ndefine ptx_kernel void @");
             } else {
@@ -28436,10 +29180,12 @@ fn emit_gpu_module() {
             }
             let lo_reg: i32 = ir_tmp();
             if ncaps > 0 { ir_wr(", "); }
-            ir_wr("i32 "); ir_wr_reg(lo_reg);
+            if origin == 2 { ir_wr("i64 "); } else { ir_wr("i32 "); }
+            ir_wr_reg(lo_reg);
             let hi_reg: i32 = ir_tmp();
-            ir_wr(", i32 "); ir_wr_reg(hi_reg);
-            ir_wr(") #0 {\nentry:\n");
+            if origin == 2 { ir_wr(", i64 "); } else { ir_wr(", i32 "); }
+            ir_wr_reg(hi_reg);
+            if origin == 2 { ir_wr(") #1 {\nentry:\n"); } else { ir_wr(") #0 {\nentry:\n"); }
 
             sym_push_scope();
             // Bind captures to kernarg registers (is_alloca 0); arrays
@@ -28460,6 +29206,10 @@ fn emit_gpu_module() {
                 ci = ci + 1;
             }
 
+            if origin == 2 {
+                device_scalar_emit(scalar_plan, ncaps, caps_base, 0);
+                ir_wr("  ret void\n}\n");
+            } else {
             // SIMT index: idx = workgroup.id.x * WGSIZE + workitem.id.x + lo.
             let widr: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(widr);
@@ -28540,6 +29290,7 @@ fn emit_gpu_module() {
             }
             ir_wr_label_def(lbl_done);
             ir_wr("  ret void\n}\n");
+            }
             sym_pop_scope();
 
             g_tmp = saved_tmp;
@@ -28548,7 +29299,7 @@ fn emit_gpu_module() {
             g_body_mode = saved_bm;
             nemitted = nemitted + 1;
         } else {
-            if origin == 1 {
+            if origin != 0 {
                 diag_error_at(g_nodes[body_node].line, g_nodes[body_node].col,
                     "explicit kernel body failed typed device verification");
             }
@@ -28589,6 +29340,7 @@ fn emit_gpu_module() {
     }
     if g_gpu_target == 1 {
         ir_wr("\nattributes #0 = { \"nvvm.maxntid\"=\"256\" }\n");
+        if any_cooperative == 1 { ir_wr("attributes #1 = { nounwind }\n"); }
     } else {
         ir_wr("\nattributes #0 = { \"amdgpu-flat-work-group-size\"=\"1,256\" }\n");
     }

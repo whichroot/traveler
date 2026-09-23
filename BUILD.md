@@ -444,13 +444,13 @@ name (`guarded_map`), with the same typed views, footprint checks, and fixed
 `[256,1,1]` block geometry as `direct-index-v1`. Ordinary CPU calls execute the
 function for the supplied single index; they do not launch a GPU grid.
 
-NVPTX explicit entries always include semantic descriptors. Their `execution`
+NVPTX independent entries always include semantic descriptors. Their `execution`
 field is `independent-kernel`, and their symbols start with `__traveler_kernel_`.
 Existing pfor entries retain `independent-pfor` and their existing symbols.
 Both use the shared typed entry representation and device verifier. An invalid
 explicit entry prevents publication of the whole device module, including mixed
-modules containing otherwise valid pfor workers. Cooperative geometry, shared
-memory, and barriers are later profiles.
+modules containing otherwise valid pfor workers. The cooperative context profile
+below adds geometry, static shared memory, and block barriers.
 
 `tests/gpu/check_generic_calls.py` checks CPU/Python parity, both LLVM device
 backends, lazy branches, and explicit-entry refusals. To include native SM120
@@ -464,6 +464,243 @@ python3 tests/gpu/check_receiver_calls.py "$TVC" "$LLC" "$OPT" cc /path/to/libcu
 The K2 acceptance fixtures cover 17 kernels across these two modules, including
 direct/factored generic equivalence, local aggregates, read-only receivers,
 operators, closure snapshots, and generic callbacks.
+
+#### Cooperative geometry (provisional K3 profile)
+
+On NVPTX, a leading `GpuThread` parameter selects `cooperative-grid-v1`:
+
+```traveler
+import "src/lib/gpu/thread.tv";
+
+#[kernel]
+fn copy_grid(thread: GpuThread, input: *u64, output: *u64) {
+    output[gpu_global_index(thread)] = input[gpu_global_index(thread)];
+}
+```
+
+The compiler constructs the twelve context fields from thread/block identity and
+block/grid dimension intrinsics. Each value widens to u64 before multiplication.
+Context fields and imported helpers use the shared typed device plan; the context
+is compiler metadata, with no packed struct or device allocation. Ordinary CPU
+calls execute one explicitly supplied context.
+
+Descriptors use `execution: "cooperative-kernel"`, `block: null`, three dimensions,
+and 64-bit indexing. Captures retain declaration order, followed by synthetic u64
+`lo`/`hi` bounds. `cuda_launch_grid_sync(kernel, geometry, arguments, count)` supplies
+`lo=0` and `hi=grid_x*grid_y*grid_z*block_x*block_y*block_z`. Ordinary buffer views must
+cover that full physical grid; bounded views use the explicit counts below.
+The runtime checks the geometry, byte extents, and
+disjointness before submission; footprint checks divide the available bytes by
+element size before comparing the lane count.
+
+The profile accepts direct-index stores, scalar locals, bounded flat aggregates,
+and the shared-memory operations below. Ordinary global buffer accesses must
+lower to the canonical x-fastest global coordinate tree used by
+`gpu_global_index(thread)`. Factored calls are allowed; arbitrary offsets and
+unproved index reassociations refuse. Index-call arguments contribute memory
+effects even when a callee does not use their values. All physical threads execute
+the body, with no K2-style per-thread early return. Other device backends
+refuse this context profile before publishing output.
+
+`tests/gpu/check_cooperative_geometry.py` checks two kernels across five launch
+shapes against CPU, Python, and retargeted-device oracles, then exercises resident
+launches and refusals with the driver double. Native acceptance uses:
+
+```sh
+python3 tests/gpu/check_cooperative_geometry.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+```
+
+#### Static shared storage and predicated accesses
+
+`src/lib/gpu/shared.tv` provides the initial u64 block-storage operations for
+cooperative NVPTX entries. These names denote device operations in typed lowering.
+
+| Operation | Contract |
+| --- | --- |
+| `gpu_shared_init_u64(count)` | First kernel statement; one literal-sized arena of 1–1024 slots. Zeroes every slot cooperatively and synchronizes the block. |
+| `gpu_shared_load_u64(index)` | Returns the slot value, or zero for an out-of-range unsigned index. |
+| `gpu_shared_store_u64(index, value)` | Index must lower to `gpu_local_index(thread)`; an out-of-range lane performs no store. |
+| `gpu_block_barrier()` | Full-block shared-memory visibility and participation boundary. |
+| `gpu_masked_load_u64(input, index, active)` | Loads only when active; otherwise returns zero without accessing memory. |
+| `gpu_masked_store_u64(output, index, value, active)` | Stores only when active; otherwise leaves memory unchanged. |
+
+Shared storage has block lifetime and is initialized on every invocation. It emits
+static address-space-3 storage; its bytes count against the driver-reported static
+shared-memory limit. Static-only entries require zero dynamic launch bytes. Kernel-local fixed
+arrays use the bounded scalarized private-array rules described under K2, with
+literal indexes and no shared aliasing.
+
+The initial convergence rule admits shared operations and barriers only in the
+straight-line entry body. Pure scalar helpers can still contain lazy branches.
+Early returns, conditional barriers, and collectives inside helpers refuse. The
+typed verifier requires a barrier between shared writes and reads, and between
+reads and subsequent writes. Stores are lane-owned, so arbitrary cross-lane writes
+refuse. A read/modify/write phase takes scalar snapshots, synchronizes, writes each
+lane's slot, then synchronizes before the next read phase.
+
+Masked global accesses retain the canonical global-index footprint. The active
+argument has boolean semantics; arguments evaluate once before the guarded memory
+operation. Threads with false masks still participate in block barriers. This
+supports partial logical tiles with neutral inputs and preserved inactive outputs.
+The current runtime requires buffer capacity for the full physical grid; masks
+do not yet permit shorter views. Shared primitives are device-only and cannot be
+modeled by sequential ordinary CPU calls.
+
+`tests/gpu/check_shared.py` verifies peer exchange, inclusive block scan, and block
+reduction against exact Python oracles. Retargeted kernels run with host threads
+and phase barriers, including null global pointers in all-masked cases. Native
+SM120 acceptance covers 1D/2D/3D shapes, odd block sizes, 1024-thread blocks,
+partial/all-masked tiles, nonzero-offset views, and repeated launches:
+
+```sh
+python3 tests/gpu/check_shared.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+```
+
+#### Dynamic shared storage and warp collectives
+
+`gpu_shared_dynamic_init_u64(count)` selects one runtime-sized u64 arena instead
+of a static arena. It must be the first entry statement, and `count` must name a
+declared `u64` scalar parameter directly. The checked count is 1–1024 slots.
+Initialization, bounds behavior, lane-owned stores, and block phase rules match
+static storage. Static and dynamic arenas cannot be combined in one entry.
+
+The descriptor binds `dynamic_shared_bytes` to that parameter with
+`{"parameter": capture_slot, "byte_scale": 8, "max_count": 1024}`.
+The launch must supply exactly `count * 8` dynamic shared bytes. The runtime checks
+the parameter type, device shared-memory limits, and the function's maximum
+dynamic shared-memory size before forwarding the byte count to the driver.
+
+`src/lib/gpu/warp.tv` provides the following device-only operations:
+
+| Operation | Result |
+| --- | --- |
+| `gpu_warp_shuffle_u32(mask, value, source_lane)` | Value from the selected lane in the current physical warp. |
+| `gpu_warp_shuffle_xor_u32(mask, value, lane_delta)` | Value from the lane whose index is XORed with the delta. |
+| `gpu_warp_ballot(mask, predicate)` | u32 bitset of lanes with a true predicate. |
+| `gpu_warp_any(mask, predicate)` | Whether any lane has a true predicate. |
+| `gpu_warp_all(mask, predicate)` | Whether every lane has a true predicate. |
+| `gpu_warp_sync(mask)` | Warp participation and memory synchronization. |
+
+The initial profile requires the literal full mask `4294967295`, literal shuffle
+lane/delta values from 0 through 31, and operations in the straight-line entry
+body. Boolean predicates use nonzero truth. Logical inactive lanes still execute
+the collectives, using predicated global accesses where appropriate.
+
+Entries using these operations select `cooperative-warp-v1`. Packaging and loading
+require SM70 or newer; launches require a device warp size of 32 and a physical
+block volume divisible by 32. Warp synchronization does not satisfy the typed
+verifier's block-wide shared-memory phase boundary.
+
+`tests/gpu/check_warp_dynamic.py` checks threaded exchange/vote/synchronization
+oracles, arena bounds, schema and capability refusals, and driver attribute-query
+failures. Native SM120 acceptance covers three kernels, four 1D/2D/3D launch
+shapes including 1024-thread blocks, arena sizes 1/19/1024, partial/all-masked
+tiles, offset views, and repeated launches:
+
+```sh
+python3 tests/gpu/check_warp_dynamic.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+```
+
+#### Explicit bounded atomic buffers
+
+`src/lib/gpu/atomic.tv` provides unsigned atomic add, exchange, and compare-exchange:
+
+```traveler
+import "src/lib/gpu/thread.tv";
+import "src/lib/gpu/atomic.tv";
+
+#[kernel]
+fn count_threads(thread: GpuThread, counters: *u64, counter_count: u64) {
+    gpu_atomic_add_u64(counters, counter_count, 0, 1, 0, 1);
+}
+```
+
+Both `gpu_atomic_add_u32` and `gpu_atomic_add_u64` take
+`(buffer, count, index, value, order, scope)` and return the old value. Addition
+wraps at the element width. The unsigned index is guarded by `index < count`;
+an out-of-range operation returns zero without accessing memory. Arguments
+evaluate once before that guard. Zero counts are supported.
+
+`gpu_atomic_exchange_u32/u64` use the same arguments and replace the value.
+`gpu_atomic_compare_exchange_u32/u64` append an `expected` argument after `scope`;
+they replace the value only when it equals `expected`, and return the observed
+old value. Compare-exchange is strong, without spurious failure. A failed
+comparison has acquire ordering for orders 1/3 and relaxed ordering for 0/2;
+the PTX operation may provide stronger ordering. The bounds guard still applies.
+
+The count must lower directly to a declared `u64` scalar capture. The compiler
+binds that capture to the pointer's footprint as
+`{"count_parameter": ordinal, "byte_scale": element_size}`. The runtime checks
+the count's type and buffer capacity before launch, using division to avoid
+byte-product overflow. A one-element counter needs only a one-element view,
+regardless of physical grid volume. Disjointness checks use each buffer's actual
+declared extent, permitting adjacent counter and output views in one allocation.
+
+The initial matrix is:
+
+| Element types | Operation | Literal order | Literal scope |
+| --- | --- | --- | --- |
+| Global `u32`, `u64` | add, exchange, compare-exchange | `0`: relaxed | `1`: device |
+| Global `u32`, `u64` | add, exchange, compare-exchange | `1`: acquire | `1`: device |
+| Global `u32`, `u64` | add, exchange, compare-exchange | `2`: release | `1`: device |
+| Global `u32`, `u64` | add, exchange, compare-exchange | `3`: acquire-release | `1`: device |
+| Shared `u64` | add, exchange, compare-exchange | `0`, `1`, `2`, `3` as above | `0`: block |
+
+These operations require cooperative NVPTX entries and SM70 or newer. They emit
+explicit PTX order/scope instructions with compiler memory clobbers. Calls must
+be in the straight-line entry body; discarding the return value is supported.
+Each atomic buffer has one count binding and cannot also have ordinary accesses
+in the same entry. Other orders/scopes refuse, including system scope. Additional
+widths and global block-scoped operations are not admitted by this profile.
+
+`tests/gpu/check_atomic.py` pins all 24 global instruction combinations at SM70/SM90
+and checks contended tickets, exchange chains, and successful/failed comparisons
+against integer oracles. Native SM120
+acceptance covers four 1D/2D/3D geometries, including two 1024-thread blocks,
+counts 0/1/3/19, unsigned wraparound, guarded accesses, adjacent views, repeated
+launches, and capacity/type/alias refusals:
+
+```sh
+python3 tests/gpu/check_atomic.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+```
+
+The shared variants `gpu_shared_atomic_add_u64` and
+`gpu_shared_atomic_exchange_u64` take `(index, value, order, scope)`.
+`gpu_shared_atomic_compare_exchange_u64` appends `expected`. They operate on the
+initialized static or dynamic u64 arena, with its existing bounds and lifetime.
+Out-of-range operations return zero. Shared atomics may contend across block
+threads, and their old values can be used within the atomic phase. A block barrier
+is required between atomic and ordinary shared-access phases in either direction;
+an atomic's memory order does not replace that participation boundary.
+Shared-atomic entries select `cooperative-atomic-v1`, or `cooperative-warp-v1` when
+they also use warp collectives. Both require SM70 or newer.
+
+#### Transpose and boundary acceptance
+
+`gpu_bounded_load_u64(buffer, count, index)` in `src/lib/gpu/shared.tv` provides a
+guarded read for non-canonical indexes. It binds a direct u64 count capture to a
+read-only bounded footprint, using the same capacity checks as atomic buffers.
+It returns zero when `index >= count`. The initial bounded-read profile requires
+SM70 and straight-line entry calls; its buffer cannot also have ordinary or atomic
+accesses in that entry. Output stores retain their canonical full-grid footprint.
+
+`tests/gpu/check_block_atomic_transpose.py` checks 24 shared atomic kernels
+(three operations, four orders, static/dynamic arenas) and two parameterized
+matrix transpose kernels. The direct and shared-tile variants use an imported
+generic bounds helper and agree with an independent matrix oracle. Input views
+hold only the logical matrix; output views cover the physical grid, and padding
+is preserved. Acceptance covers empty matrices, single rows/columns, non-square
+dimensions around 31/33, rectangular and 3D tiles, offset views, output canaries,
+and repeated launches. Shared atomic checks include 1024-thread blocks and
+explicit phase/scope/capability refusals.
+
+The scan/reduction gate also checks eight native launch shapes, including blocks
+of 1/31/32/33/1024 threads, with logical cutoffs immediately around block boundaries.
+
+```sh
+python3 tests/gpu/check_block_atomic_transpose.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+python3 tests/gpu/check_shared.py "$TVC" "$LLC" "$OPT" cc /path/to/libcuda.so 120
+```
 
 `--pfor-report` reports CPU worker admission: one JSONL record per loop with
 `dispatched` and a refusal `reason`. An admitted worker may still execute
@@ -591,6 +828,7 @@ the final PTX/JIT compatibility decision and an owned error log on JIT failure.
 | Operation | Result |
 | --- | --- |
 | `cuda_device_open(ordinal)` | Retained primary-context owner; queries capability and launch limits |
+| `cuda_device_limits(device)` | Copy of the queried block/grid axis, thread, shared-memory, and warp limits |
 | `cuda_module_load(device, path)` | Validated, resident module |
 | `cuda_kernel_get(module, symbol)` | Kernel selected by exact descriptor symbol |
 | `cuda_kernel_get_owner(module, owner)` | Kernel selected by an unambiguous logical owner |
@@ -599,15 +837,41 @@ the final PTX/JIT compatibility decision and an owned error log on JIT failure.
 | `cuda_argument_index(kernel, name)` | Capture ordinal from the descriptor, excluding synthetic bounds |
 | `cuda_upload(view, host, bytes)` / `cuda_download(host, view, bytes)` | Explicit synchronous transfers |
 | `cuda_launch_sync(kernel, lo, hi, arguments, count)` | Checked launch and completion, with no implicit copies |
+| `cuda_launch_grid_sync(kernel, geometry, arguments, count)` | Checked full-grid cooperative launch with derived u64 bounds |
 | `cuda_buffer_close` / `cuda_module_close` / `cuda_device_close` | Checked resource release |
 
 Resource operations return `Result<u64, CudaError>`; successful release/transfer/
-launch returns zero. Views return `Result<CudaArgument, CudaError>`. Resource IDs
+launch returns zero. Views return `Result<CudaArgument, CudaError>`; limit queries
+return `Result<CudaDeviceLimits, CudaError>`. Resource IDs
 are opaque generation-checked values, not pointers. Module close invalidates its
 kernels; buffer close invalidates its views. Device close refuses while children
 remain. At most 1024 live resource records exist; closed slots can be reused
 without making old IDs valid. Distinct device owners cannot exchange buffers,
 even if they retain the same physical device's primary context.
+
+`src/lib/gpu/cuda_geometry.tv` provides the K3 geometry-validation foundation.
+`CudaGeometry` holds u64 grid/block dimensions and dynamic shared bytes.
+`cuda_geometry_status(limits, geometry, function_threads, static_shared)` returns
+zero for admissible geometry, `-1` for invalid dimensions/ABI narrowing/index
+overflow, or `-3` for exceeded hardware or function limits. It checks every axis,
+the block volume, total physical lane count, and static plus dynamic shared bytes
+before arithmetic can wrap. Total physical lanes must fit signed 64-bit indexing.
+The shared-memory limit is the queried default, without opt-in enlargement.
+
+Zero physical dimensions are invalid; empty logical launches skip submission
+separately. Geometry validation is independent of descriptor footprint and
+collective-participation validation. The `direct-index-v1` launch API
+continues to use its descriptor's `[256,1,1]` block. It checks queried device and
+function limits through this shared validator. `cooperative-grid-v1` uses the
+caller-supplied geometry with the full-grid footprint contract above.
+
+The provisional cooperative source interface uses a leading `GpuThread` context.
+`src/lib/gpu/thread.tv` defines its u64 thread/block coordinates and block/grid
+dimensions, plus `gpu_global_x/y/z`, `gpu_global_size_x/y/z`, `gpu_local_index`,
+`gpu_block_index`, and `gpu_global_index`. Global linear indexing is x-fastest
+over the full global coordinate lattice, rather than block-major lane ordering.
+These helpers assume valid coordinates within an admitted geometry. The NVPTX
+compiler constructs the context for cooperative entries.
 
 View type codes are positive widths for signed integers, negative widths for
 unsigned integers, and `1` for `bool`. For example, `32` is i32, `-64` is u64,

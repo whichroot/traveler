@@ -1960,8 +1960,29 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if ! python3 "$SCRIPT_DIR/check_cuda_package.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA package contract"; fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_geometry.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA geometry validation"
+        fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/check_cuda_resident.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA resident resource contract"; fail=1
+    fi
+    if [ -n "$OPT" ]; then
+        if ! python3 "$SCRIPT_DIR/check_cooperative_geometry.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: cooperative CUDA geometry"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_shared.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: shared block memory and masks"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_warp_dynamic.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: dynamic shared memory and warp collectives"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_atomic.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: bounded atomic buffers"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_block_atomic_transpose.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: block atomics and transpose boundaries"; fail=1
+        fi
     fi
 fi
 

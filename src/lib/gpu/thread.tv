@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// Coordinates and dimensions are widened before any address arithmetic.
+
+struct GpuThread {
+    thread_x: u64,
+    thread_y: u64,
+    thread_z: u64,
+    block_x: u64,
+    block_y: u64,
+    block_z: u64,
+    block_dim_x: u64,
+    block_dim_y: u64,
+    block_dim_z: u64,
+    grid_dim_x: u64,
+    grid_dim_y: u64,
+    grid_dim_z: u64,
+}
+
+fn gpu_global_x(thread: GpuThread) -> u64 {
+    return thread.block_x * thread.block_dim_x + thread.thread_x;
+}
+
+fn gpu_global_y(thread: GpuThread) -> u64 {
+    return thread.block_y * thread.block_dim_y + thread.thread_y;
+}
+
+fn gpu_global_z(thread: GpuThread) -> u64 {
+    return thread.block_z * thread.block_dim_z + thread.thread_z;
+}
+
+fn gpu_global_size_x(thread: GpuThread) -> u64 {
+    return thread.grid_dim_x * thread.block_dim_x;
+}
+
+fn gpu_global_size_y(thread: GpuThread) -> u64 {
+    return thread.grid_dim_y * thread.block_dim_y;
+}
+
+fn gpu_global_size_z(thread: GpuThread) -> u64 {
+    return thread.grid_dim_z * thread.block_dim_z;
+}
+
+fn gpu_local_index(thread: GpuThread) -> u64 {
+    return thread.thread_x + thread.block_dim_x * (thread.thread_y + thread.block_dim_y * thread.thread_z);
+}
+
+fn gpu_block_index(thread: GpuThread) -> u64 {
+    return thread.block_x + thread.grid_dim_x * (thread.block_y + thread.grid_dim_y * thread.block_z);
+}
+
+// X is the fastest global axis; this differs from block-major lane ordering.
+fn gpu_global_index(thread: GpuThread) -> u64 {
+    return gpu_global_x(thread) + gpu_global_size_x(thread)
+        * (gpu_global_y(thread) + gpu_global_size_y(thread) * gpu_global_z(thread));
+}

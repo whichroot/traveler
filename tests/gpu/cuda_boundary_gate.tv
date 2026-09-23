@@ -1,0 +1,37 @@
+import "cuda_resident_checks.tv";
+extern "C" fn strtoull(text: *u8, end: **u8, base: i32) -> u64;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 14 { return 1; }
+    var input: Str = str_new();
+    match fs_read_to_string(argv[3]) { Result::Ok(data) => { input = data; }, Result::Err(e) => { return 1; } }
+    let g: CudaGeometry = CudaGeometry { grid_x: strtoull(argv[5], null, 10), grid_y: strtoull(argv[6], null, 10),
+        grid_z: strtoull(argv[7], null, 10), block_x: strtoull(argv[8], null, 10),
+        block_y: strtoull(argv[9], null, 10), block_z: strtoull(argv[10], null, 10), shared_bytes: strtoull(argv[13], null, 10) };
+    let bytes: u64 = g.grid_x*g.grid_y*g.grid_z*g.block_x*g.block_y*g.block_z*8;
+    let output: *u8 = alloc(bytes+32);
+    for i in 0..((bytes+32) as i32) { output[i] = 165; }
+    let device: u64 = resident_need(cuda_device_open(0));
+    let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+    let kernel: u64 = resident_need(cuda_kernel_get_owner(module, argv[2]));
+    let ib: u64 = resident_need(cuda_buffer_alloc(device, input.len as u64+32));
+    let ob: u64 = resident_need(cuda_buffer_alloc(device, bytes+32));
+    let iv: CudaArgument = resident_typed_view(ib, 16, input.len as u64, 0-64);
+    let ov: CudaArgument = resident_typed_view(ob, 16, bytes, 0-64);
+    let whole: CudaArgument = resident_typed_view(ob, 0, bytes+32, 0-8);
+    let args: *CudaArgument = alloc(4);
+    resident_bind(kernel, args, "input", iv); resident_bind(kernel, args, "output", ov);
+    resident_bind(kernel, args, "limit", cuda_arg_u64(strtoull(argv[11], null, 10)));
+    resident_bind(kernel, args, "slots", cuda_arg_u64(strtoull(argv[12], null, 10)));
+    resident_need(cuda_upload(iv, input.data, input.len as u64));
+    resident_need(cuda_upload(whole, output, bytes+32));
+    resident_need(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_need(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_need(cuda_download(output, whole, bytes+32));
+    let file: *u8 = fopen(argv[4], "wb"); if file == null { return 1; }
+    let written: i64 = fwrite(output, 1, (bytes+32) as i64, file);
+    if fclose(file) != 0 || written != (bytes+32) as i64 { return 1; }
+    resident_need(cuda_buffer_close(ib)); resident_need(cuda_buffer_close(ob));
+    resident_need(cuda_module_close(module)); resident_need(cuda_device_close(device));
+    str_free(&input); free(output); free(args); return 0;
+}

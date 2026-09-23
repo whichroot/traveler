@@ -48,6 +48,14 @@ fn resident_bind(kernel: u64, args: *CudaArgument, name: *u8, arg: CudaArgument)
 
 fn resident_pipeline(path: *u8) {
     let device: u64 = resident_need(cuda_device_open(0));
+    match cuda_device_limits(device) {
+        Result::Ok(limits) => {
+            if limits.threads < 256 || limits.block_x < 256 || limits.block_y < 1
+                || limits.block_z < 1 || limits.grid_x < 1 || limits.grid_y < 1
+                || limits.grid_z < 1 || limits.warp_size != 32 { exit(7); }
+        },
+        Result::Err(error) => { exit(7); },
+    }
     print(resident_need(cuda_device_sm(device)));
     let module: u64 = resident_need(cuda_module_load(device, path));
     let a: u64 = resident_need(cuda_kernel_get_owner(module, "resident_a"));
@@ -117,6 +125,10 @@ fn resident_pipeline(path: *u8) {
     resident_need(cuda_buffer_close(output)); resident_need(cuda_module_close(module));
     resident_refused(cuda_launch_sync(a, 0, 1024, aa, 3));
     resident_need(cuda_device_close(device)); resident_refused(cuda_device_close(device));
+    match cuda_device_limits(device) {
+        Result::Ok(limits) => { exit(7); },
+        Result::Err(error) => { var e: CudaError = error; cuda_error_close(&e); },
+    }
     free(aa); free(ab); free(host);
     puts("resident pipeline PASS");
 }

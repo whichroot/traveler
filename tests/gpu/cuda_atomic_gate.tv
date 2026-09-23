@@ -1,0 +1,52 @@
+import "cuda_resident_checks.tv";
+extern "C" fn strtoull(text: *u8, end: **u8, base: i32) -> u64;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 13 { return 1; }
+    let bits: u64 = strtoull(argv[4], null, 10);
+    let count: u64 = strtoull(argv[5], null, 10);
+    let modulus: u64 = strtoull(argv[6], null, 10);
+    let g: CudaGeometry = CudaGeometry { grid_x: strtoull(argv[7], null, 10), grid_y: strtoull(argv[8], null, 10),
+        grid_z: strtoull(argv[9], null, 10), block_x: strtoull(argv[10], null, 10),
+        block_y: strtoull(argv[11], null, 10), block_z: strtoull(argv[12], null, 10), shared_bytes: 0 };
+    let lanes: u64 = g.grid_x*g.grid_y*g.grid_z*g.block_x*g.block_y*g.block_z;
+    let out_offset: u64 = 16 + ((count*(bits/8)+7)/8)*8;
+    let bytes: u64 = out_offset + lanes*8 + 16;
+    let data: *u8 = alloc(bytes);
+    for i in 0..(bytes as i32) { data[i] = 165; }
+    for i in 0..(count as i32) {
+        for j in 0..((bits/8) as i32) { data[16+i*((bits/8) as i32)+j] = 255; }
+        data[16+i*((bits/8) as i32)] = 240;
+    }
+    let device: u64 = resident_need(cuda_device_open(0));
+    let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+    let kernel: u64 = resident_need(cuda_kernel_get_owner(module, argv[2]));
+    let buffer: u64 = resident_need(cuda_buffer_alloc(device, bytes));
+    let whole: CudaArgument = resident_typed_view(buffer, 0, bytes, 0-8);
+    let counter: CudaArgument = resident_typed_view(buffer, 16, count*(bits/8), 0-(bits as i32));
+    let output: CudaArgument = resident_typed_view(buffer, out_offset, lanes*8, 0-64);
+    let args: *CudaArgument = alloc(4);
+    resident_bind(kernel, args, "buffer", counter); resident_bind(kernel, args, "output", output);
+    resident_bind(kernel, args, "count", cuda_arg_i64(count as i64));
+    resident_bind(kernel, args, "modulus", cuda_arg_u64(modulus));
+    resident_refused(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_bind(kernel, args, "count", cuda_arg_u64(count+1));
+    resident_refused(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_bind(kernel, args, "count", cuda_arg_u64(18446744073709551615));
+    resident_refused(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_bind(kernel, args, "count", cuda_arg_u64(count));
+    if count > 0 {
+        resident_bind(kernel, args, "output", resident_typed_view(buffer, 16, lanes*8, 0-64));
+        resident_refused(cuda_launch_grid_sync(kernel, g, args, 4));
+        resident_bind(kernel, args, "output", output);
+    }
+    resident_need(cuda_upload(whole, data, bytes));
+    resident_need(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_need(cuda_launch_grid_sync(kernel, g, args, 4));
+    resident_need(cuda_download(data, whole, bytes));
+    let file: *u8 = fopen(argv[3], "wb"); if file == null { return 1; }
+    let written: i64 = fwrite(data, 1, bytes as i64, file);
+    if fclose(file) != 0 || written != bytes as i64 { return 1; }
+    resident_need(cuda_buffer_close(buffer)); resident_need(cuda_module_close(module));
+    resident_need(cuda_device_close(device)); free(args); free(data); return 0;
+}

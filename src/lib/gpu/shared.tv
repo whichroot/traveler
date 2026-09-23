@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Device-only block storage; initialization zeroes all slots and synchronizes.
+import "thread.tv";
+
+extern "C" fn gpu_shared_init_u64(count: u64);
+extern "C" fn gpu_shared_dynamic_init_u64(count: u64);
+extern "C" fn gpu_shared_load_u64(index: u64) -> u64;
+extern "C" fn gpu_shared_store_u64(index: u64, value: u64);
+extern "C" fn gpu_block_barrier();
+
+fn gpu_masked_load_u64(input: *u64, index: u64, active: bool) -> u64 {
+    if active { return input[index]; } else { return 0; }
+}
+
+fn gpu_masked_store_u64(output: *u64, index: u64, value: u64, active: bool) {
+    if active { output[index] = value; }
+}
+
+// The count binds a u64 capture; an out-of-range read returns zero.
+extern "C" fn gpu_bounded_load_u64(buffer: *u64, count: u64, index: u64) -> u64;

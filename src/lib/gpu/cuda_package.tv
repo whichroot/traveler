@@ -71,8 +71,9 @@ fn cuda_json_scan(src: *u8, len: i32) -> i32 {
             var value: i64 = 0;
             let start: i32 = i;
             while i < len && src[i] >= 48 && src[i] <= 57 {
-                value = value * 10 + (src[i] - 48) as i64;
-                if value > 2147483647 { return 0; }
+                let digit: i64 = (src[i] - 48) as i64;
+                if value > (9223372036854775807 - digit) / 10 { return 0; }
+                value = value * 10 + digit;
                 i = i + 1;
             }
             if i - start > 1 && src[start] == 48 { return 0; }
@@ -149,7 +150,9 @@ fn cuda_parameter_valid(d: *Json, p: i32, ordinal: i32, count: i32) -> i32 {
     if expected == 1 {
         var name: *u8 = "lo";
         if ordinal == count - 1 { name = "hi"; }
-        if cuda_json_string(d, p, "name", name) == 0 || cuda_json_string(d, p, "source_type", "i32") == 0 { return 0; }
+        if cuda_json_string(d, p, "name", name) == 0
+            || (cuda_json_string(d, p, "source_type", "i32") == 0
+                && cuda_json_string(d, p, "source_type", "u64") == 0) { return 0; }
     }
     var size: i32 = 8;
     if cuda_json_string(d, p, "kind", "integer") == 1 {
@@ -195,7 +198,15 @@ fn cuda_parameter_valid(d: *Json, p: i32, ordinal: i32, count: i32) -> i32 {
             || cuda_json_int(d, p, "element_alignment", alignment as i64) == 0
             || cuda_parameter_access(d, p) == 0 { return 0; }
         let fp: i32 = json_get(d, p, "footprint");
-        if cuda_json_fields(d, fp, 3) == 0
+        let bound: i32 = json_get(d, fp, "count_parameter");
+        if bound >= 0 {
+            if cuda_json_fields(d, fp, 2) == 0 || json_kind(d, bound) != JSON_INT
+                || json_as_int(d, bound) < 0 || json_as_int(d, bound) >= (count - 2) as i64
+                || (cuda_json_string(d, p, "element_type", "u32") == 0 && cuda_json_string(d, p, "element_type", "u64") == 0)
+                || (cuda_parameter_access(d, p) != 3 && cuda_parameter_access(d, p) != 1)
+                || (cuda_parameter_access(d, p) == 1 && cuda_json_string(d, p, "element_type", "u64") == 0)
+                || cuda_json_int(d, fp, "byte_scale", ((bits + 7) / 8) as i64) == 0 { return 0; }
+        } else if cuda_json_fields(d, fp, 3) == 0
             || cuda_json_int(d, fp, "start_parameter", (count - 2) as i64) == 0
             || cuda_json_int(d, fp, "end_parameter", (count - 1) as i64) == 0
             || cuda_json_int(d, fp, "byte_scale", ((bits + 7) / 8) as i64) == 0 { return 0; }
@@ -206,24 +217,30 @@ fn cuda_parameter_valid(d: *Json, p: i32, ordinal: i32, count: i32) -> i32 {
 
 fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
     if cuda_json_fields(d, k, 21) == 0 { return 0; }
+    let cooperative: i32 = (cuda_json_string(d, k, "profile", "cooperative-grid-v1") == 1
+        || cuda_json_string(d, k, "profile", "cooperative-warp-v1") == 1
+        || cuda_json_string(d, k, "profile", "cooperative-atomic-v1") == 1) as i32;
+    var dimensions: i64 = 1; var index_bits: i64 = 32; var max_hi: i64 = 2147483392;
+    if cooperative == 1 { dimensions = 3; index_bits = 64; max_hi = 9223372036854775807; }
     if cuda_json_string(d, k, "schema", "traveler.kernel.v1") == 0
         || cuda_json_int(d, k, "abi", 1) == 0
         || cuda_json_string(d, k, "stage", "semantic-ir") == 0
         || cuda_json_string(d, k, "compiler", "tvc_self") == 0
         || cuda_json_string(d, k, "target", "nvptx64-nvidia-cuda") == 0
-        || (cuda_json_string(d, k, "execution", "independent-pfor") == 0
-            && cuda_json_string(d, k, "execution", "independent-kernel") == 0)
-        || cuda_json_string(d, k, "profile", "direct-index-v1") == 0
-        || cuda_json_int(d, k, "dimensions", 1) == 0
+        || cuda_json_int(d, k, "dimensions", dimensions) == 0
         || cuda_json_int(d, k, "lanes_per_cell", 1) == 0
-        || cuda_json_int(d, k, "dynamic_shared_bytes", 0) == 0
-        || cuda_json_int(d, k, "index_bits", 32) == 0 { return 0; }
+        || cuda_json_int(d, k, "index_bits", index_bits) == 0 { return 0; }
+    if cooperative == 1 {
+        if cuda_json_string(d, k, "execution", "cooperative-kernel") == 0 { return 0; }
+    } else if cuda_json_string(d, k, "profile", "direct-index-v1") == 0
+        || (cuda_json_string(d, k, "execution", "independent-pfor") == 0
+            && cuda_json_string(d, k, "execution", "independent-kernel") == 0) { return 0; }
     let artifact: i32 = json_get(d, k, "artifact");
     if artifact < 0 || json_kind(d, artifact) != JSON_NULL { return 0; }
     let symbol: i32 = json_get(d, k, "symbol");
     if cuda_json_text(d, symbol, 64) == 0 || cuda_json_text(d, json_get(d, k, "owner"), 255) == 0 { return 0; }
     var prefix: *u8 = "__pfor_gpu_worker_";
-    if cuda_json_string(d, k, "execution", "independent-kernel") == 1 { prefix = "__traveler_kernel_"; }
+    if cooperative == 1 || cuda_json_string(d, k, "execution", "independent-kernel") == 1 { prefix = "__traveler_kernel_"; }
     if d.nodes[symbol].slen <= 18 { return 0; }
     var i: i32 = 0;
     while i < d.nodes[symbol].slen {
@@ -233,7 +250,8 @@ fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
         i = i + 1;
     }
     let line: i32 = json_get(d, k, "line"); let col: i32 = json_get(d, k, "column");
-    if json_kind(d, line) != JSON_INT || json_as_int(d, line) < 1 || json_kind(d, col) != JSON_INT { return 0; }
+    if json_kind(d, line) != JSON_INT || json_as_int(d, line) < 1 || json_as_int(d, line) > 2147483647
+        || json_kind(d, col) != JSON_INT || json_as_int(d, col) < 0 || json_as_int(d, col) > 2147483647 { return 0; }
     let subs: i32 = json_get(d, k, "specialization");
     if json_kind(d, subs) != JSON_ARR || json_len(d, subs) > 32 { return 0; }
     i = 0;
@@ -244,6 +262,9 @@ fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
         i = i + 1;
     }
     let block: i32 = json_get(d, k, "block");
+    if cooperative == 1 {
+        if block < 0 || json_kind(d, block) != JSON_NULL { return 0; }
+    } else {
     if json_len(d, block) != 3 { return 0; }
     i = 0;
     while i < 3 {
@@ -252,17 +273,39 @@ fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
         if json_kind(d, n) != JSON_INT || json_as_int(d, n) != dim { return 0; }
         i = i + 1;
     }
+    }
     let domain: i32 = json_get(d, k, "domain");
     if cuda_json_fields(d, domain, 3) == 0 || cuda_json_int(d, domain, "min_lo", 0) == 0
-        || cuda_json_int(d, domain, "max_hi", 2147483392) == 0
+        || cuda_json_int(d, domain, "max_hi", max_hi) == 0
         || cuda_json_string(d, domain, "empty", "no-launch") == 0 { return 0; }
     let params: i32 = json_get(d, k, "parameters");
     let count: i32 = json_len(d, params);
     if count < 3 || count > 34 { return 0; }
+    let shared: i32 = json_get(d, k, "dynamic_shared_bytes");
+    if json_kind(d, shared) == JSON_OBJ {
+        if cooperative == 0 || cuda_json_fields(d, shared, 3) == 0
+            || cuda_json_int(d, shared, "byte_scale", 8) == 0
+            || cuda_json_int(d, shared, "max_count", 1024) == 0 { return 0; }
+        let parameter: i32 = json_get(d, shared, "parameter");
+        if json_kind(d, parameter) != JSON_INT || json_as_int(d, parameter) < 0
+            || json_as_int(d, parameter) >= (count - 2) as i64 { return 0; }
+        let p: i32 = json_at(d, params, json_as_int(d, parameter) as i32);
+        if cuda_json_string(d, p, "source_type", "u64") == 0 { return 0; }
+    } else if cuda_json_int(d, k, "dynamic_shared_bytes", 0) == 0 { return 0; }
     i = 0;
     while i < count {
         let parameter: i32 = json_at(d, params, i);
         if cuda_parameter_valid(d, parameter, i, count) == 0 { return 0; }
+        let bound: i32 = json_get(d, json_get(d, parameter, "footprint"), "count_parameter");
+        if bound >= 0 {
+            let target: i32 = json_at(d, params, json_as_int(d, bound) as i32);
+            if cooperative == 0 || cuda_json_string(d, target, "source_type", "u64") == 0 { return 0; }
+        }
+        if i >= count - 2 {
+            var bound_type: *u8 = "i32";
+            if cooperative == 1 { bound_type = "u64"; }
+            if cuda_json_string(d, parameter, "source_type", bound_type) == 0 { return 0; }
+        }
         if i < count - 2 {
             var name: Str = json_str_copy(d, json_get(d, parameter, "name")); str_push(&name, 0);
             var j: i32 = 0;
@@ -367,6 +410,15 @@ fn cuda_package_valid(p: *CudaPackage) -> i32 {
     while i < p.count {
         let k: i32 = json_at(d, p.kernels, i);
         if cuda_kernel_valid(d, k) == 0 { return 0; }
+        if p.sm < 70 && (cuda_json_string(d, k, "profile", "cooperative-warp-v1") == 1
+            || cuda_json_string(d, k, "profile", "cooperative-atomic-v1") == 1) { return 0; }
+        if p.sm < 70 {
+            let params: i32 = json_get(d, k, "parameters"); var j: i32 = 0;
+            while j < json_len(d, params) {
+                if json_get(d, json_get(d, json_at(d, params, j), "footprint"), "count_parameter") >= 0 { return 0; }
+                j = j + 1;
+            }
+        }
         var name: Str = json_str_copy(d, json_get(d, k, "symbol")); str_push(&name, 0);
         var j: i32 = 0;
         while j < i {
