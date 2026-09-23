@@ -1986,7 +1986,7 @@ correctly implements unsigned integer arithmetic:
 - **Multiplication**: `(a * b) mod p` — unsigned widening multiply + modular reduction. No rounding.
 - **Inverse**: `a^(p-2) mod p` — repeated squaring of the above. No rounding.
 
-There are no floating-point operations, no FMA (fused multiply-add) variance,
+Field operations have no floating-point operations or FMA variance,
 no rounding modes, no NaN, no denormals. The bit-exact output of every field
 operation is determined solely by the input values and the prime `p`.
 
@@ -2008,6 +2008,14 @@ carry-less multiplication are bitwise-deterministic operations with no
 platform-dependent behavior.
 
 ---
+
+### 8.5 Explicit IEEE Bit-Pattern Operations
+
+The `ieee32_*` and `ieee64_*` numerical boundary operations interpret `u32` and
+`u64` carriers under the fixed `ieee-bits-rne-v1` policy. They do not introduce
+floating-point types or change integer/field operators. See
+[IEEE bit-pattern semantics](ieee-bits.md) for the operation signatures, rounding,
+NaN handling, purity contract, backend dependencies, and admission limits.
 
 ## 9. Polynomial Semantics
 

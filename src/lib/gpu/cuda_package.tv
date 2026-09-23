@@ -216,7 +216,10 @@ fn cuda_parameter_valid(d: *Json, p: i32, ordinal: i32, count: i32) -> i32 {
 }
 
 fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
-    if cuda_json_fields(d, k, 21) == 0 { return 0; }
+    let numerical: i32 = json_get(d, k, "numerical");
+    if numerical >= 0 {
+        if cuda_json_fields(d, k, 22) == 0 || cuda_json_string(d, k, "numerical", "ieee-bits-rne-v1") == 0 { return 0; }
+    } else if cuda_json_fields(d, k, 21) == 0 { return 0; }
     let cooperative: i32 = (cuda_json_string(d, k, "profile", "cooperative-grid-v1") == 1
         || cuda_json_string(d, k, "profile", "cooperative-warp-v1") == 1
         || cuda_json_string(d, k, "profile", "cooperative-atomic-v1") == 1) as i32;

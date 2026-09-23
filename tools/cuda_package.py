@@ -35,7 +35,11 @@ def unique_object(pairs):
 
 def validate_kernel(k):
     require(type(k) is dict, "kernel must be an object")
-    require(set(k) == {"schema", "abi", "stage", "compiler", "target", "artifact",
+    fields = set(k)
+    if "numerical" in k:
+        require(k["numerical"] == "ieee-bits-rne-v1", "unsupported numerical profile")
+        fields.remove("numerical")
+    require(fields == {"schema", "abi", "stage", "compiler", "target", "artifact",
                        "symbol", "owner", "specialization", "line", "column", "execution",
                        "profile", "block", "dimensions", "lanes_per_cell", "dynamic_shared_bytes",
                        "index_bits", "domain", "parameters", "disjoint"}, "kernel fields")

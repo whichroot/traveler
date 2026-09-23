@@ -8497,7 +8497,165 @@ fn type_pointee(type_off: i32) -> i32 {
     return str_intern(&g_strings[type_off + 1]);
 }
 
-// Atomic builtin names: atomic_load/store/add/cas and fence.
+// IEEE operations use integer carriers and fixed numerical semantics.
+fn ieee_operation(name: i32) -> i32 {
+    let s: *u8 = &g_strings[name];
+    if str_eq(s, "ieee32_add") == 1 { return 0; }
+    if str_eq(s, "ieee32_sub") == 1 { return 1; }
+    if str_eq(s, "ieee32_mul") == 1 { return 2; }
+    if str_eq(s, "ieee32_div") == 1 { return 3; }
+    if str_eq(s, "ieee32_sqrt") == 1 { return 4; }
+    if str_eq(s, "ieee32_fma") == 1 { return 5; }
+    if str_eq(s, "ieee64_add") == 1 { return 6; }
+    if str_eq(s, "ieee64_sub") == 1 { return 7; }
+    if str_eq(s, "ieee64_mul") == 1 { return 8; }
+    if str_eq(s, "ieee64_div") == 1 { return 9; }
+    if str_eq(s, "ieee64_sqrt") == 1 { return 10; }
+    if str_eq(s, "ieee64_fma") == 1 { return 11; }
+    if str_eq(s, "ieee32_to_ieee64") == 1 { return 12; }
+    if str_eq(s, "ieee64_to_ieee32") == 1 { return 13; }
+    return 0 - 1;
+}
+
+fn ieee_arity(op: i32) -> i32 {
+    if op >= 12 || op % 6 == 4 { return 1; }
+    if op % 6 == 5 { return 3; }
+    return 2;
+}
+
+fn ieee_builtin_call(node: i32) -> i32 {
+    return (ieee_operation(g_nodes[node].name0) >= 0 && find_func(g_nodes[node].name0) < 0) as i32;
+}
+
+fn ieee_module_used() -> i32 {
+    var node: i32 = 1;
+    while node < g_nnodes {
+        if g_nodes[node].kind == AST_CALL && ieee_builtin_call(node) == 1 { return 1; }
+        node = node + 1;
+    }
+    return 0;
+}
+
+fn ieee_input_type(op: i32) -> i32 {
+    if op < 6 || op == 12 { return str_intern("u32"); }
+    return str_intern("u64");
+}
+
+fn ieee_result_type(op: i32) -> i32 {
+    if op == 12 { return str_intern("u64"); }
+    if op == 13 { return str_intern("u32"); }
+    return ieee_input_type(op);
+}
+
+fn ieee_ir_type(t: i32) -> *u8 {
+    if t == str_intern("u32") { return "float"; }
+    return "double";
+}
+
+fn ieee_asm_class(t: i32) -> *u8 {
+    if t == str_intern("u32") { return "f"; }
+    return "d";
+}
+
+fn ieee_opcode(op: i32) -> *u8 {
+    if op % 6 == 0 { return "add"; }
+    if op % 6 == 1 { return "sub"; }
+    if op % 6 == 2 { return "mul"; }
+    if op % 6 == 3 { return "div"; }
+    if op % 6 == 4 { return "sqrt"; }
+    return "fma";
+}
+
+fn ieee_declarations() {
+    var width: i32 = 32;
+    while width <= 64 {
+        var t: *u8 = "float"; if width == 64 { t = "double"; }
+        var op: i32 = 0;
+        while op < 6 {
+            ir_wr("declare "); ir_wr(t); ir_wr(" @llvm.experimental.constrained.");
+            if op != 4 { ir_wr("f"); }
+            var name: *u8 = ieee_opcode(op);
+            if op == 4 { name = "sqrt"; } else if op == 5 { name = "ma"; }
+            ir_wr(name); ir_wr(".f"); ir_wr_int(width as i64); ir_wr("(");
+            var i: i32 = 0;
+            while i < ieee_arity(op) { if i > 0 { ir_wr(", "); } ir_wr(t); i = i + 1; }
+            ir_wr(", metadata, metadata)\n"); op = op + 1;
+        }
+        width = width + 32;
+    }
+    ir_wr("declare float @llvm.experimental.constrained.fptrunc.f32.f64(double, metadata, metadata)\n");
+}
+
+fn ieee_emit(op: i32, args: *i32, device: i32) -> i32 {
+    // Integer carriers cross the backend boundary through bitcasts.
+    // Constrained host calls and opaque PTX operations retain each rounding step.
+    let input: i32 = ieee_input_type(op); let output: i32 = ieee_result_type(op);
+    let src: *u8 = ieee_ir_type(input); let dst: *u8 = ieee_ir_type(output);
+    let n: i32 = ieee_arity(op); var values: [i32; 3] = 0; var i: i32 = 0;
+    while i < n {
+        values[i] = ir_tmp(); ir_wr("  "); ir_wr_reg(values[i]); ir_wr(" = bitcast ");
+        ir_wr_type(input); ir_wr(" "); ir_wr_reg(args[i]); ir_wr(" to "); ir_wr(src); ir_wr("\n");
+        i = i + 1;
+    }
+    let raw: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(raw); ir_wr(" = ");
+    if device == 1 {
+        ir_wr("call "); ir_wr(dst); ir_wr(" asm \"");
+        if op == 12 { ir_wr("cvt.f64.f32"); }
+        else if op == 13 { ir_wr("cvt.rn.f32.f64"); }
+        else { ir_wr(ieee_opcode(op)); ir_wr(".rn.f"); ir_wr_int(type_bits(input) as i64); }
+        ir_wr(" $0"); i = 0;
+        while i < n { ir_wr(", $"); ir_wr_int((i + 1) as i64); i = i + 1; }
+        ir_wr(";\", \"="); ir_wr(ieee_asm_class(output)); i = 0;
+        while i < n { ir_wr(","); ir_wr(ieee_asm_class(input)); i = i + 1; }
+        ir_wr("\"(");
+    } else if op == 12 {
+        ir_wr("fpext float "); ir_wr_reg(values[0]); ir_wr(" to double\n");
+    } else {
+        ir_wr("call "); ir_wr(dst); ir_wr(" @llvm.experimental.constrained.");
+        if op % 6 != 4 { ir_wr("f"); }
+        if op == 13 { ir_wr("ptrunc.f32.f64"); }
+        else {
+            var name: *u8 = ieee_opcode(op);
+            if op % 6 == 4 { name = "sqrt"; } else if op % 6 == 5 { name = "ma"; }
+            ir_wr(name); ir_wr(".f"); ir_wr_int(type_bits(input) as i64);
+        }
+        ir_wr("(");
+    }
+    if device == 1 || op != 12 {
+        i = 0;
+        while i < n { if i > 0 { ir_wr(", "); } ir_wr(src); ir_wr(" "); ir_wr_reg(values[i]); i = i + 1; }
+        if device == 0 { ir_wr(", metadata !\"round.tonearest\", metadata !\"fpexcept.ignore\""); }
+        ir_wr(")\n");
+    }
+    let bits: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(bits); ir_wr(" = bitcast ");
+    ir_wr(dst); ir_wr(" "); ir_wr_reg(raw); ir_wr(" to "); ir_wr_type(output); ir_wr("\n");
+    let nan: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(nan); ir_wr(" = fcmp uno ");
+    ir_wr(dst); ir_wr(" "); ir_wr_reg(raw); ir_wr(", "); ir_wr_reg(raw); ir_wr("\n");
+    let result: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(result); ir_wr(" = select i1 ");
+    ir_wr_reg(nan); ir_wr(", "); ir_wr_type(output);
+    if output == str_intern("u32") { ir_wr(" 2143289344"); } else { ir_wr(" 9221120237041090560"); }
+    ir_wr(", "); ir_wr_type(output); ir_wr(" "); ir_wr_reg(bits); ir_wr("\n");
+    return result;
+}
+
+fn ieee_codegen(node: i32, op: i32) -> IRValue {
+    let t: i32 = ieee_input_type(op); let n: i32 = ieee_arity(op);
+    if g_nodes[node].nargs != n {
+        diag_error_at(g_nodes[node].line, g_nodes[node].col, "IEEE operation has incorrect argument count");
+        return IRValue { reg: 0, type_off: ieee_result_type(op) };
+    }
+    var args: [i32; 3] = 0; var i: i32 = 0;
+    while i < n {
+        let value: IRValue = codegen_expr(g_args[g_nodes[node].args_start + i], t);
+        if value.type_off != t {
+            diag_error_at(g_nodes[node].line, g_nodes[node].col, "IEEE operation requires exact unsigned bit-carrier types");
+            return IRValue { reg: 0, type_off: ieee_result_type(op) };
+        }
+        args[i] = value.reg; i = i + 1;
+    }
+    return IRValue { reg: ieee_emit(op, &args[0], 0), type_off: ieee_result_type(op) };
+}
+
 fn is_atomic_builtin(name: i32) -> i32 {
     if str_eq(&g_strings[name], "atomic_load") == 1 { return 1; }
     if str_eq(&g_strings[name], "atomic_store") == 1 { return 1; }
@@ -12930,9 +13088,12 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             return IRValue { reg: uacc, type_off: str_intern("i32") };
         }
-        // Atomics: atomic_load(p, ord), atomic_store(p, v, ord),
-        // atomic_add(p, v, ord) -> old, atomic_cas(p, expect, new, ord) -> old,
-        // fence(ord). ord is a bare identifier. (design-notes/atomics.md "surface")
+        if ieee_operation(call_name) >= 0 && find_func(call_name) < 0 {
+            return ieee_codegen(node, ieee_operation(call_name));
+        }
+        // Atomic orders are bare identifiers checked before instruction emission.
+        // (design-notes/atomics.md "surface")
+
         if is_atomic_builtin(call_name) == 1 && find_func(call_name) < 0 {
             let at_ln: i32 = g_nodes[node].line;
             let at_cl: i32 = g_nodes[node].col;
@@ -14960,6 +15121,7 @@ fn call_may_use_builtin_precedence(call: i32) -> i32 {
     if str_eq(&g_strings[name], "exit") == 1 { return 1; }
     if str_eq(&g_strings[name], "read_bytes") == 1 { return 1; }
     if find_func(name) >= 0 { return 0; }
+    if ieee_operation(name) >= 0 { return 1; }
     if str_eq(&g_strings[name], "field") == 1 && nargs >= 1 { return 1; }
     if str_eq(&g_strings[name], "field_wide") == 1 && nargs >= 1 { return 1; }
     if str_eq(&g_strings[name], "wide") == 1 && nargs >= 2 { return 1; }
@@ -15112,6 +15274,15 @@ fn expr_is_pure(node: i32) -> i32 {
     }
     if kind == AST_CALL {
         let fn_name: i32 = g_nodes[node].name0;
+        if ieee_operation(fn_name) >= 0 && find_func(fn_name) < 0 {
+            if g_nodes[node].nargs != ieee_arity(ieee_operation(fn_name)) { return 0; }
+            var arg: i32 = 0;
+            while arg < g_nodes[node].nargs {
+                if expr_is_pure(g_args[g_nodes[node].args_start + arg]) == 0 { return 0; }
+                arg = arg + 1;
+            }
+            return 1;
+        }
         if call_may_use_builtin_precedence(node) == 1 { return 0; }
         let fi: i32 = find_func_idx(fn_name);
         if fi < 0 { return 0; }
@@ -15201,12 +15372,13 @@ fn expr_calls_array_writer(node: i32) -> i32 {
         return expr_calls_array_writer(g_nodes[node].child1);
     }
     if kind == AST_CALL {
-        if call_may_use_builtin_precedence(node) == 1 { return 1; }
-        let fi: i32 = find_func_idx(g_nodes[node].name0);
-        // Unknown/extern callees: assume they may write (conservative)
-        if fi < 0 { return 1; }
-        if g_funcs[fi].is_extern == 1 { return 1; }
-        if g_funcs[fi].writes_arrays == 1 { return 1; }
+        if ieee_builtin_call(node) == 0 {
+            if call_may_use_builtin_precedence(node) == 1 { return 1; }
+            let fi: i32 = find_func_idx(g_nodes[node].name0);
+            if fi < 0 { return 1; }
+            if g_funcs[fi].is_extern == 1 { return 1; }
+            if g_funcs[fi].writes_arrays == 1 { return 1; }
+        }
         let nargs: i32 = g_nodes[node].nargs;
         let abase: i32 = g_nodes[node].args_start;
         var ai: i32 = 0;
@@ -15277,10 +15449,12 @@ fn expr_reads_arrays(node: i32) -> i32 {
         return expr_reads_arrays(g_nodes[node].child0);
     }
     if kind == AST_CALL {
-        if call_may_use_builtin_precedence(node) == 1 { return 1; }
-        let fi: i32 = find_func_idx(g_nodes[node].name0);
-        if fi < 0 || g_funcs[fi].is_extern == 1 { return 1; }
-        if g_funcs[fi].reads_arrays == 1 { return 1; }
+        if ieee_builtin_call(node) == 0 {
+            if call_may_use_builtin_precedence(node) == 1 { return 1; }
+            let fi: i32 = find_func_idx(g_nodes[node].name0);
+            if fi < 0 || g_funcs[fi].is_extern == 1 { return 1; }
+            if g_funcs[fi].reads_arrays == 1 { return 1; }
+        }
         var ai: i32 = 0;
         while ai < g_nodes[node].nargs {
             if expr_reads_arrays(
@@ -15539,6 +15713,14 @@ fn expr_read_effect(node: i32, fn_node: i32, mask: *u64,
     if kind == AST_CALL {
         // A context-sensitive builtin can execute even when a same-named user
         // function exists. Never borrow that declaration's read footprint.
+        if ieee_builtin_call(node) == 1 {
+            var ai: i32 = 0;
+            while ai < g_nodes[node].nargs {
+                expr_read_effect(g_args[g_nodes[node].args_start + ai], fn_node, mask, nonparam, depth + 1);
+                ai = ai + 1;
+            }
+            return;
+        }
         if call_may_use_builtin_precedence(node) == 1 {
             nonparam[0] = 1;
             return;
@@ -16695,6 +16877,15 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
     // are opaque to this loop's affine hazard tables just like callee writes.
     if kind == AST_CALL {
         let fn_name: i32 = g_nodes[expr].name0;
+        if ieee_builtin_call(expr) == 1 {
+            if g_nodes[expr].nargs != ieee_arity(ieee_operation(fn_name)) { pfor_refuse(PFR_EXTERN_CALL); return 0; }
+            var ai: i32 = 0;
+            while ai < g_nodes[expr].nargs {
+                if pfor_walk_expr(pf, g_args[g_nodes[expr].args_start + ai], loop_var) == 0 { return 0; }
+                ai = ai + 1;
+            }
+            return 1;
+        }
         // udot4: pure packed-byte dot builtin — its three argument expressions
         // are the whole footprint.
         if str_eq(&g_strings[fn_name], "udot4") == 1
@@ -22238,6 +22429,7 @@ fn emit_preamble() {
     ir_wr("@.fmt_lld = private constant [5 x i8] c\"%ld\\0A\\00\"\n");
     ir_wr("\n");
     // External declarations
+    if ieee_module_used() == 1 { ieee_declarations(); }
     ir_wr("declare i32 @printf(ptr, ...)\n");
     ir_wr("declare i32 @puts(ptr)\n");
     ir_wr("declare ptr @malloc(i64)\n");
@@ -26875,6 +27067,7 @@ let DEVICE_WARP_SYNC: i32 = 1011;
 let DEVICE_ATOMIC_ADD: i32 = 1012;
 let DEVICE_SHARED_ATOMIC: i32 = 1013;
 let DEVICE_BOUNDED_LOAD: i32 = 1014;
+let DEVICE_IEEE_BITS: i32 = 1015;
 
 struct DeviceScalarPlan {
     nodes: *EIRNode,
@@ -27579,6 +27772,20 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
 }
 
 fn device_scalar_call(P: *DeviceScalarPlan, node: i32, depth: i32) -> i32 {
+    let numeric: i32 = ieee_operation(g_nodes[node].name0);
+    if numeric >= 0 && find_func(g_nodes[node].name0) < 0 {
+        if g_gpu_target != 1 || g_nodes[node].nargs != ieee_arity(numeric) { return device_scalar_fail(P, 3, node); }
+        var values: [i32; 3] = 0; var i: i32 = 0;
+        while i < ieee_arity(numeric) {
+            values[i] = device_scalar_expr(P, g_args[g_nodes[node].args_start + i], ieee_input_type(numeric), depth + 1);
+            if values[i] < 0 { return 0 - 1; }
+            if P.nodes[values[i]].type_off != ieee_input_type(numeric) { return device_scalar_fail(P, 2, node); }
+            i = i + 1;
+        }
+        let e: i32 = device_scalar_node(P, DEVICE_IEEE_BITS, ieee_result_type(numeric), node);
+        if e >= 0 { P.nodes[e].op = numeric; P.nodes[e].a = values[0]; P.nodes[e].b = values[1]; P.nodes[e].c = values[2]; }
+        return e;
+    }
     let atomic_type: i32 = device_atomic_type(g_nodes[node].name0);
     if str_eq(&g_strings[g_nodes[node].name0], "gpu_bounded_load_u64") == 1 { return device_bounded_load(P, node, depth); }
     if atomic_type != NULL_STR { return device_atomic_call(P, node, atomic_type, depth); }
@@ -27783,6 +27990,7 @@ fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32
                 if n < 1 || n > 16 || P.nodes[i].args_start < 0
                     || P.nodes[i].args_start > P.ncomponents - n { return 0; }
             }
+            else if k == DEVICE_IEEE_BITS { n = ieee_arity(P.nodes[i].op); }
             else if k == DEVICE_WARP_SHUFFLE || k == DEVICE_WARP_VOTE { n = 1; }
             else if k == DEVICE_WARP_SYNC { n = 0; }
             else if k == DEVICE_MASKED_LOAD || k == DEVICE_BOUNDED_LOAD { n = 3; }
@@ -27839,7 +28047,13 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
     var i: i32 = 0;
     while i < P.count {
         let k: i32 = P.nodes[i].kind;
-        if k == DEVICE_BOUNDED_LOAD {
+        if k == DEVICE_IEEE_BITS {
+            let op: i32 = P.nodes[i].op;
+            if op < 0 || op > 13 || P.nodes[i].type_off != ieee_result_type(op) { return 0; }
+            if P.nodes[P.nodes[i].a].type_off != ieee_input_type(op) { return 0; }
+            if ieee_arity(op) >= 2 && P.nodes[P.nodes[i].b].type_off != ieee_input_type(op) { return 0; }
+            if ieee_arity(op) == 3 && P.nodes[P.nodes[i].c].type_off != ieee_input_type(op) { return 0; }
+        } else if k == DEVICE_BOUNDED_LOAD {
             if P.cooperative != 1 || P.nodes[i].type_off != str_intern("u64")
                 || P.nodes[P.nodes[i].a].kind != EIR_LOCAL || P.nodes[P.nodes[i].a].type_off != str_intern("*u64")
                 || P.nodes[P.nodes[i].b].kind != EIR_LOCAL || P.nodes[P.nodes[i].b].type_off != str_intern("u64")
@@ -28460,7 +28674,13 @@ fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32
     while i < P.count {
         let kind: i32 = P.nodes[i].kind;
         let t: i32 = P.nodes[i].type_off;
-        if kind == DEVICE_ATOMIC_ADD || kind == DEVICE_SHARED_ATOMIC || kind == DEVICE_BOUNDED_LOAD {
+        if kind == DEVICE_IEEE_BITS {
+            var args: [i32; 3] = 0;
+            args[0] = regs[P.nodes[i].a];
+            if ieee_arity(P.nodes[i].op) >= 2 { args[1] = regs[P.nodes[i].b]; }
+            if ieee_arity(P.nodes[i].op) == 3 { args[2] = regs[P.nodes[i].c]; }
+            regs[i] = ieee_emit(P.nodes[i].op, &args[0], 1);
+        } else if kind == DEVICE_ATOMIC_ADD || kind == DEVICE_SHARED_ATOMIC || kind == DEVICE_BOUNDED_LOAD {
             current = device_atomic_emit(P, i, regs);
         } else if kind >= DEVICE_WARP_SHUFFLE && kind <= DEVICE_WARP_SYNC {
             device_warp_emit(P, i, regs);
@@ -28765,6 +28985,11 @@ fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base
     var i: i32 = 0;
     ir_wr("; traveler.kernel.v1 {\"schema\":\"traveler.kernel.v1\",\"abi\":1,\"stage\":\"semantic-ir\",\"compiler\":\"tvc_self\",\"target\":\"nvptx64-nvidia-cuda\",\"artifact\":null,\"symbol\":\"");
     gpu_kernel_symbol(wid, origin); ir_wr("\",\"owner\":"); gpu_interface_string(&g_strings[owner]);
+    if P != null {
+        var numeric: i32 = 0; var ni: i32 = 0;
+        while ni < P.count { if P.nodes[ni].kind == DEVICE_IEEE_BITS { numeric = 1; } ni = ni + 1; }
+        if numeric == 1 { ir_wr(",\"numerical\":\"ieee-bits-rne-v1\""); }
+    }
     ir_wr(",\"specialization\":[");
     i = 0;
     while i < g_gen_nsub {
@@ -44914,7 +45139,7 @@ fn drv_emit(raw_path: *u8, out_path: *u8, mode: i32) -> i32 {
     close(exe_fd[0]);
     var cc: *u8 = g_cc_path;
     if cc == null { cc = "cc"; }
-    // cc [-no-pie] <staged-object> -o <staged-executable>
+    // cc [-no-pie] <staged-object> [-lm] -o <staged-executable>
     let cc_argv: **u8 = alloc(7);
     var cargc: i32 = 0;
     cc_argv[cargc] = cc; cargc = cargc + 1;
@@ -44922,6 +45147,7 @@ fn drv_emit(raw_path: *u8, out_path: *u8, mode: i32) -> i32 {
         cc_argv[cargc] = "-no-pie"; cargc = cargc + 1;
     }
     cc_argv[cargc] = obj_path; cargc = cargc + 1;
+    if ieee_module_used() == 1 { cc_argv[cargc] = "-lm"; cargc = cargc + 1; }
     cc_argv[cargc] = "-o"; cargc = cargc + 1;
     cc_argv[cargc] = exe_path; cargc = cargc + 1;
     cc_argv[cargc] = null;

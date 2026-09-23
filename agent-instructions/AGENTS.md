@@ -10,9 +10,10 @@ it.
 
 - A general-purpose systems language. File extension `.tv`. Compiles to native
   code through emitting LLVM IR.
-- **Integer/field arithmetic only: there are no floating-point types.** Exact
-  arithmetic is the point. Floats enter only as bit-patterns decoded into exact
-  values (`src/lib/float/`).
+- **Integer/field numeric types only: there are no floating-point types.** Exact
+  arithmetic is the point. Floats enter as bit patterns decoded into exact values
+  (`src/lib/float/`) or passed to explicit IEEE boundary operations. The fixed
+  bit-carrier numerical contract is in [`spec/ieee-bits.md`](../spec/ieee-bits.md).
 - The prime field is a first-class type (`Field<p>`), monomorphized to branchless
   modular arithmetic.
 - `for` loops auto-parallelize when the compiler can prove the iterations

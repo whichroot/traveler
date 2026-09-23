@@ -1072,6 +1072,34 @@ device-resident during timing; downloading and checking them occurs afterward.
 Full-residency preload costs are recorded separately. See the
 [placement measurements and controls](tests/gpu/cuda-expert-measurements.md).
 
+**IEEE bit-pattern numerical boundary (K5 foundation)**
+
+Explicit `ieee32_*` and `ieee64_*` operations provide binary32/binary64 arithmetic
+over `u32`/`u64` carriers. The `ieee-bits-rne-v1` profile fixes nearest-even
+rounding, gradual underflow, canonical NaN results, and explicit FMA. Separate
+operations retain their rounding boundaries. Integer/field operators and CUDA
+argument layouts keep their existing meanings. See the
+[numerical contract](spec/ieee-bits.md) for signatures and supported boundaries.
+
+Host lowering uses constrained LLVM intrinsics and may require system `libm`.
+Manual links use `-lm`; `--emit exe` adds it for numerical modules. CUDA lowering
+uses explicit PTX instructions and has no device-math library dependency.
+Kernel descriptors carry the numerical profile; package readers reject unknown
+policies. SM90 and SM120 PTX are covered by the portable gate:
+
+```sh
+python3 tests/gpu/check_ieee_bits.py "$TVC" "$LLC" cc --opt "$OPT"
+# Native driver/JIT execution, including SM90-targeted PTX on newer hardware:
+python3 tests/gpu/check_ieee_bits.py "$TVC" "$LLC" cc --opt "$OPT" \
+  --cuda /run/opengl-driver/lib/libcuda.so --sm 120
+```
+
+For an SM90 device, select `--sm 90`. The native gate uses checked resident
+allocations, typed views, launches, downloads, and cleanup. The
+[validation record](tests/gpu/ieee-bits-validation.md) records the tested hardware
+and exact-oracle results. Further numerical widths and architecture facilities
+remain subsequent K5 work.
+
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the
 next block's addresses (`prefetch.global.L2`, NVPTX only) with no carried

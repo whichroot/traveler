@@ -1980,6 +1980,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
         echo "  FAIL: CUDA expert placement contract"; fail=1
     fi
     if [ -n "$OPT" ]; then
+        if ! python3 "$SCRIPT_DIR/check_ieee_bits.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
+            echo "  FAIL: IEEE bit-pattern numerical profile"; fail=1
+        fi
         if ! python3 "$SCRIPT_DIR/check_cooperative_geometry.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: cooperative CUDA geometry"; fail=1
         fi
