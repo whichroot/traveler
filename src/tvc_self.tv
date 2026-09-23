@@ -1845,6 +1845,7 @@ var g_pfor_proof0_mode: i32 = 0;
 // 1 = --emit-gpu (Stage 0): ride the /dev/null codegen pass to populate the
 // registries, then re-emit each elementwise-class worker as a device kernel.
 var g_emit_gpu_mode: i32 = 0;
+var g_gpu_interface: i32 = 0;
 // Set when a device worker body calls the udot4 builtin: the module gains a
 // trailing @llvm.amdgcn.udot4 declare (declares may follow uses in LLVM IR).
 var g_gpu_used_udot4: i32 = 0;
@@ -27204,6 +27205,190 @@ fn gpu_worker_decision(wid: i32, owner: i32, body: i32, eligible: i32, reason: i
     wr(2, "\"}\n");
 }
 
+// Strings use IR writes so descriptor failures share the output error latch.
+fn gpu_interface_string(s: *u8) {
+    ir_wr("\"");
+    var i: i32 = 0;
+    let b: *u8 = alloc(2);
+    b[1] = 0;
+    while s[i] != 0 {
+        if s[i] == 34 { ir_wr("\\\""); }
+        else if s[i] == 92 { ir_wr("\\\\"); }
+        else if s[i] < 32 { ir_wr("\\u00");
+            let hex: *u8 = "0123456789abcdef";
+            b[0] = hex[(s[i] / 16) as i32]; ir_wr(b);
+            b[0] = hex[(s[i] % 16) as i32]; ir_wr(b);
+        } else { b[0] = s[i]; ir_wr(b); }
+        i = i + 1;
+    }
+    free(b);
+    ir_wr("\"");
+}
+
+fn gpu_interface_width(t: i32) -> i32 {
+    let s: *u8 = &g_strings[t];
+    if str_eq(s, "bool") == 1 { return 8; }
+    if str_eq(s, "i8") == 1 || str_eq(s, "u8") == 1 { return 8; }
+    if str_eq(s, "i16") == 1 || str_eq(s, "u16") == 1 { return 16; }
+    if str_eq(s, "i32") == 1 || str_eq(s, "u32") == 1 { return 32; }
+    if str_eq(s, "i64") == 1 || str_eq(s, "u64") == 1 { return 64; }
+    return 0;
+}
+
+fn gpu_interface_capture(name: i32, ncaps: i32, base: i32) -> i32 {
+    var i: i32 = 0;
+    while i < ncaps {
+        if g_pfor_workers[base + i * 4] == name { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn gpu_interface_element_width(t: i32) -> i32 {
+    let s: *u8 = &g_strings[t];
+    if str_eq(s, "i128") == 1 || str_eq(s, "u128") == 1 { return 128; }
+    if str_eq(s, "i256") == 1 || str_eq(s, "u256") == 1 { return 256; }
+    if str_eq(s, "i512") == 1 || str_eq(s, "u512") == 1 { return 512; }
+    return gpu_interface_width(t);
+}
+
+// Roles are read=1/write=2. Only direct iterator indexes have a v1 footprint.
+fn gpu_interface_access(node: i32, lv: i32, ncaps: i32, base: i32,
+                        roles: *i32, write_role: i32, depth: i32) -> i32 {
+    if node <= 0 || depth > 64 { return 0; }
+    let k: i32 = g_nodes[node].kind;
+    if k == AST_INDEX || k == AST_INDEX_ASSIGN {
+        let arr: i32 = g_nodes[node].child0;
+        let idx: i32 = g_nodes[node].child1;
+        if g_nodes[arr].kind != AST_IDENT || g_nodes[idx].kind != AST_IDENT
+            || g_nodes[idx].name0 != lv { return 0; }
+        let cap: i32 = gpu_interface_capture(g_nodes[arr].name0, ncaps, base);
+        if cap < 0 { return 0; }
+        if type_is_ptr(g_pfor_workers[base + cap * 4 + 1]) == 0 { return 0; }
+        roles[cap] = roles[cap] | write_role;
+        if k == AST_INDEX_ASSIGN {
+            return gpu_interface_access(g_nodes[node].child2, lv, ncaps, base, roles, 1, depth + 1);
+        }
+        return 1;
+    }
+    if k == AST_IDENT {
+        if g_nodes[node].name0 == lv { return 1; }
+        let cap: i32 = gpu_interface_capture(g_nodes[node].name0, ncaps, base);
+        if cap < 0 { return 0; }
+        return 1 - type_is_ptr(g_pfor_workers[base + cap * 4 + 1]);
+    }
+    if k == AST_LIT_INT || k == AST_LIT_BOOL { return 1; }
+    if k == AST_CAST || k == AST_UNARY {
+        if k == AST_CAST && device_scalar_type(resolve_type_sub(g_nodes[node].name0)) == 0 { return 0; }
+        if k == AST_UNARY && g_nodes[node].op != OP_NEG
+            && g_nodes[node].op != OP_NOT && g_nodes[node].op != OP_BITNOT { return 0; }
+        return gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1);
+    }
+    if k == AST_BINARY {
+        if gpu_interface_access(g_nodes[node].child0, lv, ncaps, base, roles, 1, depth + 1) == 0 { return 0; }
+        return gpu_interface_access(g_nodes[node].child1, lv, ncaps, base, roles, 1, depth + 1);
+    }
+    if k == AST_CALL || k == AST_BLOCK {
+        var i: i32 = 0;
+        while i < g_nodes[node].nargs {
+            var role: i32 = 1;
+            if k == AST_BLOCK { role = 2; }
+            if gpu_interface_access(g_args[g_nodes[node].args_start + i], lv, ncaps, base, roles, role, depth + 1) == 0 { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// Capture records are the signature authority; lo/hi follow those records.
+fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base: i32) -> i32 {
+    if pfor_body_all_index_assign(body) == 0 { return 0; }
+    let roles: *i32 = alloc((ncaps + 1) as i64);
+    var i: i32 = 0;
+    while i < ncaps {
+        roles[i] = 0;
+        let t: i32 = g_pfor_workers[base + i * 4 + 1];
+        var bits: i32 = gpu_interface_width(t);
+        if type_is_ptr(t) == 1 { bits = gpu_interface_element_width(type_pointee(t)); }
+        if bits == 0 { free(roles); return 0; }
+        i = i + 1;
+    }
+    if gpu_interface_access(body, lv, ncaps, base, roles, 2, 0) == 0 { free(roles); return 0; }
+    ir_wr("; traveler.kernel.v1 {\"schema\":\"traveler.kernel.v1\",\"abi\":1,\"stage\":\"semantic-ir\",\"compiler\":\"tvc_self\",\"target\":\"nvptx64-nvidia-cuda\",\"artifact\":null,\"symbol\":\"__pfor_gpu_worker_");
+    ir_wr_int(wid as i64); ir_wr("\",\"owner\":"); gpu_interface_string(&g_strings[owner]);
+    ir_wr(",\"specialization\":[");
+    i = 0;
+    while i < g_gen_nsub {
+        if i > 0 { ir_wr(","); }
+        ir_wr("{\"name\":"); gpu_interface_string(&g_strings[g_gen_sub_names[i]]);
+        ir_wr(",\"type\":"); gpu_interface_string(&g_strings[g_gen_sub_types[i]]); ir_wr("}");
+        i = i + 1;
+    }
+    ir_wr("],\"line\":"); ir_wr_int(g_nodes[body].line as i64);
+    ir_wr(",\"column\":"); ir_wr_int(g_nodes[body].col as i64);
+    ir_wr(",\"execution\":\"independent-pfor\",\"profile\":\"direct-index-v1\",\"block\":[256,1,1],\"dimensions\":1,\"lanes_per_cell\":1,\"dynamic_shared_bytes\":0,\"index_bits\":32,\"domain\":{\"min_lo\":0,\"max_hi\":2147483392,\"empty\":\"no-launch\"},\"parameters\":[");
+    i = 0;
+    while i < ncaps + 2 {
+        if i > 0 { ir_wr(","); }
+        var t: i32 = str_intern("i32");
+        var name: *u8 = "lo";
+        if i == ncaps + 1 { name = "hi"; }
+        if i < ncaps { t = g_pfor_workers[base + i * 4 + 1]; name = &g_strings[g_pfor_workers[base + i * 4]]; }
+        ir_wr("{\"ordinal\":"); ir_wr_int(i as i64);
+        ir_wr(",\"name\":"); gpu_interface_string(name);
+        ir_wr(",\"source_type\":"); gpu_interface_string(&g_strings[t]);
+        ir_wr(",\"synthetic\":");
+        if i < ncaps { ir_wr("false"); } else { ir_wr("true"); }
+        if type_is_ptr(t) == 1 {
+            let elem: i32 = type_pointee(t);
+            let bytes: i32 = (gpu_interface_element_width(elem) + 7) / 8;
+            var alignment: i32 = bytes;
+            if alignment > 16 { alignment = 16; }
+            ir_wr(",\"kind\":\"pointer\",\"llvm_type\":\"ptr addrspace(1)\",\"size\":8,\"alignment\":8,\"address_space\":1,\"element_type\":");
+            gpu_interface_string(&g_strings[elem]);
+            ir_wr(",\"element_size\":"); ir_wr_int(bytes as i64);
+            ir_wr(",\"element_alignment\":"); ir_wr_int(alignment as i64);
+            ir_wr(",\"access\":");
+            if roles[i] == 1 { ir_wr("\"read\""); }
+            else if roles[i] == 2 { ir_wr("\"write\""); }
+            else if roles[i] == 3 { ir_wr("\"read-write\""); }
+            else { ir_wr("\"none\""); }
+            ir_wr(",\"footprint\":");
+            if roles[i] == 0 { ir_wr("null"); }
+            else { ir_wr("{\"start_parameter\":"); ir_wr_int(ncaps as i64);
+                ir_wr(",\"end_parameter\":"); ir_wr_int((ncaps + 1) as i64);
+                ir_wr(",\"byte_scale\":"); ir_wr_int(bytes as i64); ir_wr("}"); }
+        } else {
+            let bits: i32 = gpu_interface_width(t);
+            ir_wr(",\"kind\":\"integer\",\"llvm_type\":\"i"); ir_wr_int(bits as i64);
+            ir_wr("\",\"bits\":"); ir_wr_int(bits as i64);
+            ir_wr(",\"signed\":"); if type_is_signed(t) == 1 { ir_wr("true"); } else { ir_wr("false"); }
+            ir_wr(",\"size\":"); ir_wr_int(((bits + 7) / 8) as i64);
+            ir_wr(",\"alignment\":"); ir_wr_int(((bits + 7) / 8) as i64);
+        }
+        ir_wr("}"); i = i + 1;
+    }
+    ir_wr("],\"disjoint\":[");
+    i = 0;
+    var pairs: i32 = 0;
+    while i < ncaps {
+        var j: i32 = i + 1;
+        while j < ncaps {
+            if roles[i] != 0 && roles[j] != 0 && ((roles[i] | roles[j]) & 2) != 0 {
+                if pairs > 0 { ir_wr(","); }
+                ir_wr("["); ir_wr_int(i as i64); ir_wr(","); ir_wr_int(j as i64); ir_wr("]");
+                pairs = pairs + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    ir_wr("]}\n");
+    free(roles);
+    return 1;
+}
+
 fn emit_gpu_module() {
     if g_gpu_target == 2 {
         emit_agx_module();
@@ -27359,6 +27544,12 @@ fn emit_gpu_module() {
             g_block_terminated = 0;
             g_body_mode = 0;
 
+            if g_gpu_interface == 1 {
+                if gpu_interface_emit(wid, owner_fn, body_node, loop_var_name, ncaps, caps_base) == 0 {
+                    diag_error_at(g_nodes[body_node].line, g_nodes[body_node].col,
+                        "kernel interface requires direct iterator indexes and supported integer layouts");
+                }
+            }
             // Signature: temps allocate in order from 0, so cap i = %t{i}, lo =
             // %t{ncaps}, hi = %t{ncaps+1}. Arrays are ptr addrspace(1) kernargs.
             if g_gpu_target == 1 {
@@ -43217,6 +43408,8 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
             // --repl: a persistent session over the same evaluator
             // (@internal-note: plan-eval-engine, E3).
             g_repl_mode = 1;
+        } else if str_eq(argv[ai], "--gpu-interface") == 1 {
+            g_gpu_interface = 1;
         } else if str_eq(argv[ai], "--emit-gpu") == 1 {
             // --emit-gpu (Stage 0): emit an AMDGPU device module of the
             // elementwise-class pfor workers. Rides the /dev/null codegen pass.
@@ -43314,6 +43507,14 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
         exit(1);
     }
 
+    if g_gpu_interface == 1 {
+        if g_emit_gpu_mode != 1 || g_gpu_target != 1 || g_eval_mode == 1
+            || g_repl_mode == 1 || g_diag_json == 1 || g_pfor_report_mode == 1
+            || g_emit_requested == 1 || g_target_explicit == 1 {
+            wr(2, "error: --gpu-interface requires standalone --emit-gpu-nvptx\n");
+            exit(1);
+        }
+    }
     if g_opt_level != 0 {
         if g_emit_gpu_mode == 1 {
             wr(2, "error: CPU optimization profiles do not apply to GPU-only emission\n");

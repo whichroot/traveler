@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+fn resident_a(input: *i32, middle: *i32, scale: i32) {
+    for i in 0..1024 { middle[i] = input[i] * scale; }
+}
+
+fn resident_b(middle: *i32, accumulated: *i32, output: *i32, bias: i32) {
+    for i in 0..1024 {
+        accumulated[i] = accumulated[i] + middle[i];
+        output[i] = accumulated[i] + bias;
+    }
+}

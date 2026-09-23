@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident_checks.tv";
+import "../../src/lib/mem/dax.tv";
+
+fn dax_stage(path: *u8, staging: *i32, expected: *i32) -> i32 {
+    match dax_open(path) {
+        Result::Err(error) => { return 1; },
+        Result::Ok(device) => {
+            var d: DaxDevice = device;
+            match dax_map(&d, 0, d.align) {
+                Result::Err(error) => { dax_close(&d); return 2; },
+                Result::Ok(region) => {
+                    var r: DaxRegion = region;
+                    match dax_view(&r, 0, 1024) {
+                        Result::Err(error) => { dax_unmap(&r); dax_close(&d); return 3; },
+                        Result::Ok(view) => {
+                            var v: DaxView = view;
+                            var i: i32 = 0;
+                            while i < 1024 {
+                                let value: i32 = dax_load_u8(&v, i as i64) as i32;
+                                staging[i] = value; expected[i] = value + 1;
+                                i = i + 1;
+                            }
+                        },
+                    }
+                    match dax_unmap(&r) {
+                        Result::Err(error) => { dax_close(&d); return 4; },
+                        Result::Ok(value) => {},
+                    }
+                },
+            }
+            dax_close(&d); return 0;
+        },
+    }
+    return 1;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 3 { return 1; }
+    var ordinal: i32 = 0;
+    var previous: *u8 = null; var context: *u8 = null; var pinned: *u8 = null;
+    if cuInit(0) != 0 || cuDeviceGet(&ordinal, 0) != 0 || cuCtxGetCurrent(&previous) != 0 { return 2; }
+    if cuDevicePrimaryCtxRetain(&context, ordinal) != 0 || cuCtxSetCurrent(context) != 0 { return 2; }
+    if cuMemHostAlloc(&pinned, 4096, 0) != 0 { return 2; }
+    let expected: *i32 = alloc(1024);
+    if dax_stage(argv[2], pinned as *i32, expected) != 0 { return 3; }
+    let device: u64 = resident_need(cuda_device_open(0));
+    let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+    let kernel: u64 = resident_need(cuda_kernel_get(module, "__pfor_gpu_worker_0"));
+    let input: u64 = resident_need(cuda_buffer_alloc(device, 4096));
+    let output: u64 = resident_need(cuda_buffer_alloc(device, 4096));
+    let vi: CudaArgument = resident_view(input, 0, 4096);
+    let vo: CudaArgument = resident_view(output, 0, 4096);
+    let args: *CudaArgument = alloc(3);
+    resident_bind(kernel, args, "input", vi); resident_bind(kernel, args, "output", vo);
+    resident_bind(kernel, args, "flag", cuda_arg_bool(true));
+    resident_need(cuda_upload(vi, pinned, 4096));
+    resident_need(cuda_launch_sync(kernel, 0, 1024, args, 3));
+    resident_need(cuda_download(pinned, vo, 4096));
+    let actual: *i32 = pinned as *i32;
+    var i: i32 = 0;
+    while i < 1024 { if actual[i] != expected[i] { return 4; } i = i + 1; }
+    resident_need(cuda_buffer_close(input)); resident_need(cuda_buffer_close(output));
+    resident_need(cuda_module_close(module)); resident_need(cuda_device_close(device));
+    free(args); free(expected);
+    if cuMemFreeHost(pinned) != 0 || cuCtxSetCurrent(previous) != 0 || cuDevicePrimaryCtxRelease(ordinal) != 0 { return 5; }
+    puts("resident DAX staging PASS");
+    return 0;
+}

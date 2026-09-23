@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: Apache-2.0
+// FIPS 180-4 SHA-256. Output is 32 bytes in network byte order.
+
+fn sha256_rotr(x: u32, n: u32) -> u32 { return (x >> n) | (x << (32 - n)); }
+
+fn sha256_hex_word(s: *u8) -> u32 {
+    var v: u32 = 0;
+    var i: i32 = 0;
+    while i < 8 {
+        var c: u32 = s[i] as u32;
+        if c >= 97 { c = c - 87; } else { c = c - 48; }
+        v = (v << 4) | c;
+        i = i + 1;
+    }
+    return v;
+}
+
+fn sha256(data: *u8, len: usize, out: *u8) {
+    let k0: *u8 = "428a2f98 71374491 b5c0fbcf e9b5dba5 3956c25b 59f111f1 923f82a4 ab1c5ed5 d807aa98 12835b01 243185be 550c7dc3 72be5d74 80deb1fe 9bdc06a7 c19bf174";
+    let k1: *u8 = "e49b69c1 efbe4786 0fc19dc6 240ca1cc 2de92c6f 4a7484aa 5cb0a9dc 76f988da 983e5152 a831c66d b00327c8 bf597fc7 c6e00bf3 d5a79147 06ca6351 14292967";
+    let k2: *u8 = "27b70a85 2e1b2138 4d2c6dfc 53380d13 650a7354 766a0abb 81c2c92e 92722c85 a2bfe8a1 a81a664b c24b8b70 c76c51a3 d192e819 d6990624 f40e3585 106aa070";
+    let k3: *u8 = "19a4c116 1e376c08 2748774c 34b0bcb5 391c0cb3 4ed8aa4a 5b9cca4f 682e6ff3 748f82ee 78a5636f 84c87814 8cc70208 90befffa a4506ceb bef9a3f7 c67178f2";
+    let initial: *u8 = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19";
+    let k: *u32 = alloc(64);
+    let h: *u32 = alloc(8);
+    let w: *u32 = alloc(64);
+    var i: i32 = 0;
+    while i < 64 {
+        var s: *u8 = k0;
+        if i >= 16 { s = k1; }
+        if i >= 32 { s = k2; }
+        if i >= 48 { s = k3; }
+        k[i] = sha256_hex_word(&s[(i % 16) * 9]); i = i + 1;
+    }
+    i = 0;
+    while i < 8 { h[i] = sha256_hex_word(&initial[i * 8]); i = i + 1; }
+    let blocks: usize = len / 64 + 1 + ((len % 64 + 8) / 64);
+    var block: usize = 0;
+    while block < blocks {
+        i = 0;
+        while i < 16 {
+            var value: u32 = 0;
+            var j: i32 = 0;
+            while j < 4 {
+                let pos: usize = block * 64 + (i * 4 + j) as usize;
+                var byte: u32 = 0;
+                if pos < len { byte = data[pos] as u32; }
+                else if pos == len { byte = 128; }
+                else if block == blocks - 1 && i >= 14 {
+                    byte = (((len as u64) * 8) >> (((15 - i) * 4 + 3 - j) * 8) as u64) as u32 & 255;
+                }
+                value = (value << 8) | byte;
+                j = j + 1;
+            }
+            w[i] = value; i = i + 1;
+        }
+        while i < 64 {
+            let x: u32 = w[i - 15]; let y: u32 = w[i - 2];
+            w[i] = w[i - 16] + (sha256_rotr(x, 7) ^ sha256_rotr(x, 18) ^ (x >> 3))
+                 + w[i - 7] + (sha256_rotr(y, 17) ^ sha256_rotr(y, 19) ^ (y >> 10));
+            i = i + 1;
+        }
+        var a: u32 = h[0]; var b: u32 = h[1]; var c: u32 = h[2]; var d: u32 = h[3];
+        var e: u32 = h[4]; var f: u32 = h[5]; var g: u32 = h[6]; var z: u32 = h[7];
+        i = 0;
+        while i < 64 {
+            let t1: u32 = z + (sha256_rotr(e, 6) ^ sha256_rotr(e, 11) ^ sha256_rotr(e, 25))
+                         + ((e & f) ^ ((~e) & g)) + k[i] + w[i];
+            let t2: u32 = (sha256_rotr(a, 2) ^ sha256_rotr(a, 13) ^ sha256_rotr(a, 22))
+                         + ((a & b) ^ (a & c) ^ (b & c));
+            z = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+            i = i + 1;
+        }
+        h[0] = h[0] + a; h[1] = h[1] + b; h[2] = h[2] + c; h[3] = h[3] + d;
+        h[4] = h[4] + e; h[5] = h[5] + f; h[6] = h[6] + g; h[7] = h[7] + z;
+        block = block + 1;
+    }
+    i = 0;
+    while i < 32 { out[i] = (h[i / 4] >> ((3 - i % 4) * 8) as u32) as u8; i = i + 1; }
+    free(k); free(h); free(w);
+}

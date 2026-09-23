@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: Apache-2.0
+// Resident synchronous CUDA resources. Public IDs never expose owner pointers.
+
+import "cuda_ffi.tv";
+import "cuda_package.tv";
+
+extern "C" fn sched_yield() -> i32;
+
+struct CudaError {
+    boundary: i32,
+    status: i32,
+    resource: u64,
+    log: *u8,
+}
+
+struct CudaArgument {
+    kind: i32,
+    type_code: i32,
+    value: u64,
+    buffer: u64,
+    offset: u64,
+    bytes: u64,
+}
+
+struct CudaResource {
+    id: u64,
+    kind: i32,
+    owner: u64,
+    parent: u64,
+    native: *u8,
+    bytes: u64,
+    ordinal: i32,
+    sm: i32,
+    grid: i32,
+    poisoned: i32,
+    package: *CudaPackage,
+    entry: i32,
+}
+
+var g_cuda_res_lock: i32 = 0;
+var g_cuda_res_table: *CudaResource = null;
+var g_cuda_res_generation: u64 = 1;
+
+fn cuda_res_lock() {
+    while atomic_cas(&g_cuda_res_lock, 0, 1, acquire) != 0 { sched_yield(); }
+    if g_cuda_res_table == null {
+        g_cuda_res_table = alloc(1024);
+        var i: i32 = 0;
+        while i < 1024 { g_cuda_res_table[i].kind = 0; i = i + 1; }
+    }
+}
+
+fn cuda_res_unlock() { atomic_store(&g_cuda_res_lock, 0, release); }
+
+fn cuda_error_close(error: *CudaError) {
+    if error.log != null { free(error.log); error.log = null; }
+}
+
+fn cuda_res_error(boundary: i32, status: i32, id: u64) -> CudaError {
+    return CudaError { boundary: boundary, status: status, resource: id, log: null };
+}
+
+fn cuda_res_fail(boundary: i32, status: i32, id: u64) -> Result<u64, CudaError> {
+    cuda_res_unlock();
+    return Result::Err(cuda_res_error(boundary, status, id));
+}
+
+fn cuda_res_ok(id: u64) -> Result<u64, CudaError> {
+    cuda_res_unlock(); return Result::Ok(id);
+}
+
+fn cuda_res_find(id: u64, kind: i32) -> *CudaResource {
+    if id == 0 { return null; }
+    let r: *CudaResource = &g_cuda_res_table[(id & 1023) as i32];
+    if r.id != id || r.kind != kind { return null; }
+    return r;
+}
+
+fn cuda_res_slot() -> *CudaResource {
+    if g_cuda_res_generation >= 18014398509481983 { return null; }
+    var i: i32 = 0;
+    while i < 1024 {
+        if g_cuda_res_table[i].kind == 0 {
+            let r: *CudaResource = &g_cuda_res_table[i];
+            r.id = (g_cuda_res_generation << 10) | i as u64;
+            g_cuda_res_generation = g_cuda_res_generation + 1;
+            r.owner = 0; r.parent = 0; r.native = null; r.bytes = 0;
+            r.ordinal = 0; r.sm = 0; r.grid = 0; r.poisoned = 0;
+            r.package = null; r.entry = 0;
+            return r;
+        }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn cuda_res_poison(d: *CudaResource) {
+    var i: i32 = 0;
+    while i < 1024 {
+        if g_cuda_res_table[i].kind == 1 && g_cuda_res_table[i].native == d.native { g_cuda_res_table[i].poisoned = 1; }
+        i = i + 1;
+    }
+}
+
+fn cuda_res_enter(d: *CudaResource, previous: **u8) -> i32 {
+    let status: i32 = cuCtxGetCurrent(previous);
+    if status != 0 { return status; }
+    let entered: i32 = cuCtxSetCurrent(d.native);
+    if entered != 0 {
+        let restored: i32 = cuCtxSetCurrent(previous[0]);
+        if restored != 0 { cuda_res_poison(d); return restored; }
+    }
+    return entered;
+}
+
+fn cuda_res_leave(d: *CudaResource, previous: *u8, status: i32) -> i32 {
+    let restored: i32 = cuCtxSetCurrent(previous);
+    if restored != 0 {
+        cuda_res_poison(d);
+        cuCtxSetCurrent(previous);
+        return restored;
+    }
+    return status;
+}
+
+fn cuda_device_open(ordinal: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    if ordinal < 0 { return cuda_res_fail(1, 0 - 1, 0); }
+    let r: *CudaResource = cuda_res_slot();
+    if r == null { return cuda_res_fail(1, 0 - 2, 0); }
+    var device: i32 = 0;
+    var status: i32 = cuInit(0);
+    if status == 0 { status = cuDeviceGet(&device, ordinal); }
+    var major: i32 = 0; var minor: i32 = 0;
+    var threads: i32 = 0; var block: i32 = 0; var grid: i32 = 0;
+    if status == 0 { status = cuDeviceGetAttribute(&major, 75, device); }
+    if status == 0 { status = cuDeviceGetAttribute(&minor, 76, device); }
+    if status == 0 { status = cuDeviceGetAttribute(&threads, 1, device); }
+    if status == 0 { status = cuDeviceGetAttribute(&block, 2, device); }
+    if status == 0 { status = cuDeviceGetAttribute(&grid, 5, device); }
+    if status != 0 { return cuda_res_fail(1, status, 0); }
+    if major < 5 || threads < 256 || block < 256 || grid < 1 { return cuda_res_fail(1, 0 - 3, 0); }
+    var context: *u8 = null;
+    status = cuDevicePrimaryCtxRetain(&context, device);
+    if status != 0 { return cuda_res_fail(1, status, 0); }
+    r.kind = 1; r.native = context; r.ordinal = device; r.sm = major * 10 + minor; r.grid = grid;
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_device_sm(device: u64) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null { return cuda_res_fail(2, 0 - 1, device); }
+    return cuda_res_ok(d.sm as u64);
+}
+
+fn cuda_buffer_alloc(device: u64, bytes: u64) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null || bytes == 0 || bytes > 9223372036854775807 { return cuda_res_fail(3, 0 - 1, device); }
+    if d.poisoned != 0 { return cuda_res_fail(3, 0 - 4, device); }
+    let r: *CudaResource = cuda_res_slot();
+    if r == null { return cuda_res_fail(3, 0 - 2, device); }
+    var previous: *u8 = null;
+    var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(3, status, device); }
+    var pointer: *u8 = null;
+    status = cuMemAlloc_v2(&pointer, bytes as usize);
+    if status == 0 {
+        r.kind = 2; r.owner = device; r.native = pointer; r.bytes = bytes;
+    }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 {
+        return cuda_res_fail(3, status, r.id);
+    }
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_res_package(path: *u8, device: u64) -> Result<CudaPackage, CudaError> {
+    match cuda_package_open(path) {
+        Result::Err(e) => { return Result::Err(cuda_res_error(4, e, device)); },
+        Result::Ok(p) => { return Result::Ok(p); },
+    }
+    return Result::Err(cuda_res_error(4, 2, device));
+}
+
+fn cuda_module_load(device: u64, path: *u8) -> Result<u64, CudaError> {
+    var package: CudaPackage = cuda_res_package(path, device)?;
+    cuda_res_lock();
+    let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null { cuda_package_close(&package); return cuda_res_fail(4, 0 - 1, device); }
+    if d.poisoned != 0 { cuda_package_close(&package); return cuda_res_fail(4, 0 - 4, device); }
+    if package.sm > d.sm { cuda_package_close(&package); return cuda_res_fail(4, 0 - 3, device); }
+    let r: *CudaResource = cuda_res_slot();
+    if r == null { cuda_package_close(&package); return cuda_res_fail(4, 0 - 2, device); }
+    var previous: *u8 = null;
+    var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { cuda_package_close(&package); return cuda_res_fail(4, status, device); }
+    let log: *u8 = alloc(4096);
+    var i: i32 = 0; while i < 4096 { log[i] = 0; i = i + 1; }
+    let options: *i32 = alloc(2); options[0] = 5; options[1] = 6;
+    let values: **u8 = alloc(2); values[0] = log; values[1] = 4096 as *u8;
+    var module: *u8 = null;
+    status = cuModuleLoadDataEx(&module, package.ptx, 2, options, values);
+    free(options); free(values);
+    if status == 0 {
+        r.kind = 3; r.owner = device; r.native = module;
+        r.package = alloc(1); r.package[0] = package;
+    } else { cuda_package_close(&package); }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 {
+        log[4095] = 0;
+        let error: CudaError = CudaError { boundary: 4, status: status, resource: r.id, log: log };
+        cuda_res_unlock(); return Result::Err(error);
+    }
+    free(log); return cuda_res_ok(r.id);
+}
+
+fn cuda_kernel_get(module: u64, symbol: *u8) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let m: *CudaResource = cuda_res_find(module, 3);
+    if m == null || symbol == null { return cuda_res_fail(5, 0 - 1, module); }
+    let d: *CudaResource = cuda_res_find(m.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(5, 0 - 4, module); }
+    let doc: *Json = m.package.document;
+    var i: i32 = 0; var entry: i32 = 0 - 1;
+    while i < m.package.count {
+        let k: i32 = json_at(doc, m.package.kernels, i);
+        if cuda_json_string(doc, k, "symbol", symbol) == 1 { entry = k; }
+        i = i + 1;
+    }
+    if entry < 0 { return cuda_res_fail(5, 0 - 1, module); }
+    let r: *CudaResource = cuda_res_slot();
+    if r == null { return cuda_res_fail(5, 0 - 2, module); }
+    var previous: *u8 = null;
+    var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(5, status, module); }
+    var function: *u8 = null; var threads: i32 = 0;
+    status = cuModuleGetFunction(&function, m.native, symbol);
+    if status == 0 { status = cuFuncGetAttribute(&threads, 0, function); }
+    if status == 0 && threads < 256 { status = 0 - 3; }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(5, status, module); }
+    r.kind = 4; r.owner = m.owner; r.parent = module; r.native = function; r.entry = entry;
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_argument_integer(value: u64, type_code: i32) -> CudaArgument {
+    return CudaArgument { kind: 1, type_code: type_code, value: value, buffer: 0, offset: 0, bytes: 0 };
+}
+
+fn cuda_kernel_get_owner(module: u64, owner: *u8) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let m: *CudaResource = cuda_res_find(module, 3);
+    if m == null || owner == null { return cuda_res_fail(5, 0 - 1, module); }
+    let doc: *Json = m.package.document;
+    var selected: i32 = 0 - 1;
+    var i: i32 = 0;
+    while i < m.package.count {
+        let k: i32 = json_at(doc, m.package.kernels, i);
+        if cuda_json_string(doc, k, "owner", owner) == 1 {
+            if selected >= 0 { return cuda_res_fail(5, 0 - 1, module); }
+            selected = k;
+        }
+        i = i + 1;
+    }
+    if selected < 0 { return cuda_res_fail(5, 0 - 1, module); }
+    var symbol: Str = json_str_copy(doc, json_get(doc, selected, "symbol")); str_push(&symbol, 0);
+    cuda_res_unlock();
+    let result: Result<u64, CudaError> = cuda_kernel_get(module, symbol.data);
+    str_free(&symbol);
+    return result;
+}
+
+fn cuda_argument_index(kernel: u64, name: *u8) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let k: *CudaResource = cuda_res_find(kernel, 4);
+    if k == null || name == null { return cuda_res_fail(5, 0 - 1, kernel); }
+    let m: *CudaResource = cuda_res_find(k.parent, 3);
+    let doc: *Json = m.package.document;
+    let params: i32 = json_get(doc, k.entry, "parameters");
+    var i: i32 = 0;
+    while i < json_len(doc, params) - 2 {
+        if cuda_json_string(doc, json_at(doc, params, i), "name", name) == 1 { return cuda_res_ok(i as u64); }
+        i = i + 1;
+    }
+    return cuda_res_fail(5, 0 - 1, kernel);
+}
+fn cuda_arg_i8(v: i8) -> CudaArgument { return cuda_argument_integer(v as u64, 8); }
+fn cuda_arg_bool(v: bool) -> CudaArgument { return cuda_argument_integer(v as u64, 1); }
+fn cuda_arg_u8(v: u8) -> CudaArgument { return cuda_argument_integer(v as u64, 0 - 8); }
+fn cuda_arg_i16(v: i16) -> CudaArgument { return cuda_argument_integer(v as u64, 16); }
+fn cuda_arg_u16(v: u16) -> CudaArgument { return cuda_argument_integer(v as u64, 0 - 16); }
+fn cuda_arg_i32(v: i32) -> CudaArgument { return cuda_argument_integer(v as u64, 32); }
+fn cuda_arg_u32(v: u32) -> CudaArgument { return cuda_argument_integer(v as u64, 0 - 32); }
+fn cuda_arg_i64(v: i64) -> CudaArgument { return cuda_argument_integer(v as u64, 64); }
+fn cuda_arg_u64(v: u64) -> CudaArgument { return cuda_argument_integer(v, 0 - 64); }
+
+fn cuda_buffer_view(buffer: u64, offset: u64, bytes: u64, type_code: i32) -> Result<CudaArgument, CudaError> {
+    cuda_res_lock();
+    let r: *CudaResource = cuda_res_find(buffer, 2);
+    var bits: i32 = type_code; if bits < 0 { bits = 0 - bits; }
+    var valid: i32 = 1;
+    if type_code == 0 - 1 { valid = 0; }
+    if bits != 1 && bits != 8 && bits != 16 && bits != 32 && bits != 64
+        && bits != 128 && bits != 256 && bits != 512 { valid = 0; }
+    if r == null { valid = 0; }
+    else if offset > r.bytes || bytes > r.bytes - offset { valid = 0; }
+    if valid == 1 {
+        var alignment: i32 = (bits + 7) / 8; if alignment > 16 { alignment = 16; }
+        if offset % alignment as u64 != 0 || bytes % ((bits + 7) / 8) as u64 != 0 { valid = 0; }
+    }
+    cuda_res_unlock();
+    if valid == 0 { return Result::Err(cuda_res_error(6, 0 - 1, buffer)); }
+    return Result::Ok(CudaArgument { kind: 2, type_code: type_code, value: 0, buffer: buffer, offset: offset, bytes: bytes });
+}
+
+fn cuda_transfer(view: CudaArgument, host: *u8, bytes: u64, download: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let r: *CudaResource = cuda_res_find(view.buffer, 2);
+    if r == null || view.kind != 2 || host == null { return cuda_res_fail(7, 0 - 1, view.buffer); }
+    if view.offset > r.bytes || view.bytes > r.bytes - view.offset || bytes > view.bytes { return cuda_res_fail(7, 0 - 1, view.buffer); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(7, 0 - 4, view.buffer); }
+    if bytes == 0 { return cuda_res_ok(0); }
+    var previous: *u8 = null;
+    var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(7, status, view.buffer); }
+    let pointer: *u8 = ((r.native as u64) + view.offset) as *u8;
+    if download == 1 { status = cuMemcpyDtoH_v2(host, pointer, bytes as usize); }
+    else { status = cuMemcpyHtoD_v2(pointer, host, bytes as usize); }
+    if status == 0 { status = cuCtxSynchronize(); }
+    if status != 0 { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(7, status, view.buffer); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_upload(view: CudaArgument, host: *u8, bytes: u64) -> Result<u64, CudaError> { return cuda_transfer(view, host, bytes, 0); }
+fn cuda_download(host: *u8, view: CudaArgument, bytes: u64) -> Result<u64, CudaError> { return cuda_transfer(view, host, bytes, 1); }
+
+fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let k: *CudaResource = cuda_res_find(kernel, 4);
+    if k == null || args == null || count < 1 || count > 32 || lo < 0 || hi < lo || hi > 2147483392 { return cuda_res_fail(8, 0 - 1, kernel); }
+    let m: *CudaResource = cuda_res_find(k.parent, 3);
+    let d: *CudaResource = cuda_res_find(k.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(8, 0 - 4, kernel); }
+    let doc: *Json = m.package.document;
+    let params: i32 = json_get(doc, k.entry, "parameters");
+    if json_len(doc, params) != count + 2 { return cuda_res_fail(8, 0 - 1, kernel); }
+    let groups: u64 = (((hi - lo) as u64) + 255) / 256;
+    if groups > d.grid as u64 { return cuda_res_fail(8, 0 - 1, kernel); }
+    let values: *u64 = alloc(count + 2);
+    let pointers: **u8 = alloc(count + 2);
+    var valid: i32 = 1;
+    var i: i32 = 0;
+    while i < count && valid == 1 {
+        let p: i32 = json_at(doc, params, i);
+        if cuda_json_string(doc, p, "kind", "integer") == 1 {
+            let t: i32 = cuda_parameter_type(doc, p, "source_type");
+            if args[i].kind != 1 || args[i].type_code != t { valid = 0; }
+            var bits: i32 = t; if bits < 0 { bits = 0 - bits; }
+            if bits < 64 {
+                if t < 0 || t == 1 { if args[i].value >= (1 as u64) << bits as u64 { valid = 0; } }
+                else {
+                    let bound: i64 = (1 as i64) << (bits - 1) as i64;
+                    if args[i].value as i64 < 0 - bound || args[i].value as i64 >= bound { valid = 0; }
+                }
+            }
+            values[i] = args[i].value;
+        } else {
+            let b: *CudaResource = cuda_res_find(args[i].buffer, 2);
+            let t: i32 = cuda_parameter_type(doc, p, "element_type");
+            let size: u64 = json_as_int(doc, json_get(doc, p, "element_size")) as u64;
+            let alignment: u64 = json_as_int(doc, json_get(doc, p, "element_alignment")) as u64;
+            if args[i].kind != 2 || args[i].type_code != t || b == null { valid = 0; }
+            else if b.owner != k.owner || args[i].offset > b.bytes || args[i].bytes > b.bytes - args[i].offset
+                || args[i].offset % alignment != 0 || args[i].bytes % size != 0
+                || (hi as u64) * size > args[i].bytes { valid = 0; }
+            else { values[i] = (b.native as u64) + args[i].offset; }
+        }
+        pointers[i] = (&values[i]) as *u8;
+        i = i + 1;
+    }
+    let pairs: i32 = json_get(doc, k.entry, "disjoint");
+    i = 0;
+    while i < json_len(doc, pairs) && valid == 1 && hi > lo {
+        let pair: i32 = json_at(doc, pairs, i);
+        let a: i32 = json_as_int(doc, json_at(doc, pair, 0)) as i32;
+        let b: i32 = json_as_int(doc, json_at(doc, pair, 1)) as i32;
+        if args[a].buffer == args[b].buffer {
+            let sa: u64 = json_as_int(doc, json_get(doc, json_at(doc, params, a), "element_size")) as u64;
+            let sb: u64 = json_as_int(doc, json_get(doc, json_at(doc, params, b), "element_size")) as u64;
+            if args[a].offset + (lo as u64) * sa < args[b].offset + (hi as u64) * sb
+                && args[b].offset + (lo as u64) * sb < args[a].offset + (hi as u64) * sa { valid = 0; }
+        }
+        i = i + 1;
+    }
+    if valid == 0 { free(values); free(pointers); return cuda_res_fail(8, 0 - 1, kernel); }
+    if hi == lo { free(values); free(pointers); return cuda_res_ok(0); }
+    values[count] = lo as u64; values[count + 1] = hi as u64;
+    pointers[count] = (&values[count]) as *u8; pointers[count + 1] = (&values[count + 1]) as *u8;
+    var previous: *u8 = null;
+    var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { free(values); free(pointers); return cuda_res_fail(8, status, kernel); }
+    status = cuLaunchKernel(k.native, groups as u32, 1, 1, 256, 1, 1, 0, null, pointers, null);
+    if status == 0 { status = cuCtxSynchronize(); }
+    if status != 0 { cuda_res_poison(d); }
+    free(values); free(pointers);
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(8, status, kernel); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let r: *CudaResource = cuda_res_find(id, kind);
+    if r == null { return cuda_res_fail(9, 0 - 1, id); }
+    if kind == 1 {
+        var i: i32 = 0;
+        while i < 1024 {
+            if g_cuda_res_table[i].kind != 0 && g_cuda_res_table[i].owner == id { return cuda_res_fail(9, 0 - 5, id); }
+            i = i + 1;
+        }
+        let status: i32 = cuDevicePrimaryCtxRelease(r.ordinal);
+        if status != 0 { return cuda_res_fail(9, status, id); }
+        r.kind = 0; return cuda_res_ok(0);
+    }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    var previous: *u8 = null;
+    var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(9, status, id); }
+    if d.poisoned != 0 { status = cuCtxSynchronize(); }
+    if status == 0 {
+        if kind == 2 { status = cuMemFree_v2(r.native); }
+        else if kind == 3 { status = cuModuleUnload(r.native); }
+    }
+    if status == 0 {
+        if kind == 3 {
+            var i: i32 = 0;
+            while i < 1024 {
+                if g_cuda_res_table[i].kind == 4 && g_cuda_res_table[i].parent == id { g_cuda_res_table[i].kind = 0; }
+                i = i + 1;
+            }
+            cuda_package_close(r.package); free(r.package);
+        }
+        r.kind = 0;
+    }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(9, status, id); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_buffer_close(buffer: u64) -> Result<u64, CudaError> { return cuda_resource_close(buffer, 2); }
+fn cuda_module_close(module: u64) -> Result<u64, CudaError> { return cuda_resource_close(module, 3); }
+fn cuda_device_close(device: u64) -> Result<u64, CudaError> { return cuda_resource_close(device, 1); }

@@ -23,6 +23,11 @@ extern "C" fn cuLaunchKernel(function: *u8,
                              shared_bytes: u32, stream: *u8,
                              kernel_params: **u8, extra: **u8) -> i32;
 extern "C" fn cuCtxSynchronize() -> i32;
+extern "C" fn cuCtxGetCurrent(context_out: **u8) -> i32;
+extern "C" fn cuDeviceGetAttribute(value_out: *i32, attribute: i32, device: i32) -> i32;
+extern "C" fn cuModuleLoadDataEx(module_out: **u8, image: *u8, count: u32,
+                                 options: *i32, values: **u8) -> i32;
+extern "C" fn cuFuncGetAttribute(value_out: *i32, attribute: i32, function: *u8) -> i32;
 
 // Registered host memory: a device reads the pinned host pages directly.
 // flags=2 is CU_MEMHOSTREGISTER_DEVICEMAP, the cuMemHostGetDevicePointer form.

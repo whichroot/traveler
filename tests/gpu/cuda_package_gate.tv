@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/cuda_package.tv";
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 3; }
+    match cuda_package_open(argv[1]) {
+        Result::Err(e) => { return e; },
+        Result::Ok(package) => {
+            var p: CudaPackage = package;
+            print(p.sm); print(p.count);
+            cuda_package_close(&p);
+            return 0;
+        },
+    }
+    return 2;
+}

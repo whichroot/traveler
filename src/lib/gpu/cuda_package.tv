@@ -1,0 +1,416 @@
+// SPDX-License-Identifier: Apache-2.0
+// TVCP0001: eight magic bytes, u32-LE JSON length, JSON, then exact PTX bytes.
+
+import "../json/json_parse.tv";
+import "../fs/fs.tv";
+import "../crypto/sha256.tv";
+
+struct CudaPackage {
+    storage: *u8,
+    document: *Json,
+    ptx: *u8,
+    ptx_bytes: i32,
+    sm: i32,
+    kernels: i32,
+    count: i32,
+}
+
+fn cuda_json_int(d: *Json, obj: i32, key: *u8, value: i64) -> i32 {
+    let n: i32 = json_get(d, obj, key);
+    if json_kind(d, n) != JSON_INT { return 0; }
+    if json_as_int(d, n) != value { return 0; }
+    return 1;
+}
+
+fn cuda_json_string(d: *Json, obj: i32, key: *u8, value: *u8) -> i32 {
+    return json_str_eq(d, json_get(d, obj, key), value);
+}
+
+fn cuda_json_fields(d: *Json, obj: i32, count: i32) -> i32 {
+    if json_kind(d, obj) != JSON_OBJ { return 0; }
+    var n: i32 = d.nodes[obj].first_child;
+    var size: i32 = 0;
+    while n >= 0 { size = size + 1; n = d.nodes[n].next_sibling; }
+    if size != count { return 0; }
+    return 1;
+}
+
+fn cuda_json_text(d: *Json, n: i32, limit: i32) -> i32 {
+    if json_kind(d, n) != JSON_STR { return 0; }
+    if d.nodes[n].slen < 1 || d.nodes[n].slen > limit { return 0; }
+    return 1;
+}
+
+// The package grammar bounds recursion and integers before the shared reader.
+fn cuda_json_scan(src: *u8, len: i32) -> i32 {
+    var i: i32 = 0;
+    var depth: i32 = 0;
+    while i < len {
+        let c: u8 = src[i];
+        if c == 34 {
+            i = i + 1;
+            while i < len && src[i] != 34 {
+                if src[i] < 32 || src[i] > 126 { return 0; }
+                if src[i] == 92 {
+                    i = i + 1;
+                    if i >= len { return 0; }
+                    let e: u8 = src[i];
+                    if e != 34 && e != 92 && e != 47 && e != 98
+                        && e != 102 && e != 110 && e != 114 && e != 116 { return 0; }
+                }
+                i = i + 1;
+            }
+            if i >= len { return 0; }
+        } else if c == 123 || c == 91 {
+            depth = depth + 1;
+            if depth > 16 { return 0; }
+        } else if c == 125 || c == 93 {
+            depth = depth - 1;
+            if depth < 0 { return 0; }
+        } else if c >= 48 && c <= 57 {
+            var value: i64 = 0;
+            let start: i32 = i;
+            while i < len && src[i] >= 48 && src[i] <= 57 {
+                value = value * 10 + (src[i] - 48) as i64;
+                if value > 2147483647 { return 0; }
+                i = i + 1;
+            }
+            if i - start > 1 && src[start] == 48 { return 0; }
+            i = i - 1;
+        } else if c == 45 || c == 0 { return 0; }
+        i = i + 1;
+    }
+    if depth != 0 { return 0; }
+    return 1;
+}
+
+fn cuda_json_unique(d: *Json) -> i32 {
+    var i: i32 = 0;
+    while i < d.nnodes {
+        if d.nodes[i].kind == JSON_OBJ {
+            var a: i32 = d.nodes[i].first_child;
+            var count: i32 = 0;
+            while a >= 0 {
+                count = count + 1;
+                if count > 32 { return 0; }
+                var b: i32 = d.nodes[a].next_sibling;
+                while b >= 0 {
+                    if d.nodes[a].klen == d.nodes[b].klen {
+                        var j: i32 = 0;
+                        while j < d.nodes[a].klen && d.src[d.nodes[a].koff + j] == d.src[d.nodes[b].koff + j] { j = j + 1; }
+                        if j == d.nodes[a].klen { return 0; }
+                    }
+                    b = d.nodes[b].next_sibling;
+                }
+                a = d.nodes[a].next_sibling;
+            }
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Code 1 is bool; other positive/negative codes are signed/unsigned bit widths.
+fn cuda_parameter_type(d: *Json, p: i32, key: *u8) -> i32 {
+    let n: i32 = json_get(d, p, key);
+    if json_str_eq(d, n, "bool") == 1 { return 1; }
+    if json_str_eq(d, n, "i8") == 1 { return 8; }
+    if json_str_eq(d, n, "u8") == 1 { return 0 - 8; }
+    if json_str_eq(d, n, "i16") == 1 { return 16; }
+    if json_str_eq(d, n, "u16") == 1 { return 0 - 16; }
+    if json_str_eq(d, n, "i32") == 1 { return 32; }
+    if json_str_eq(d, n, "u32") == 1 { return 0 - 32; }
+    if json_str_eq(d, n, "i64") == 1 { return 64; }
+    if json_str_eq(d, n, "u64") == 1 { return 0 - 64; }
+    if json_str_eq(d, n, "i128") == 1 { return 128; }
+    if json_str_eq(d, n, "u128") == 1 { return 0 - 128; }
+    if json_str_eq(d, n, "i256") == 1 { return 256; }
+    if json_str_eq(d, n, "u256") == 1 { return 0 - 256; }
+    if json_str_eq(d, n, "i512") == 1 { return 512; }
+    if json_str_eq(d, n, "u512") == 1 { return 0 - 512; }
+    return 0;
+}
+
+fn cuda_parameter_access(d: *Json, p: i32) -> i32 {
+    if cuda_json_string(d, p, "access", "read") == 1 { return 1; }
+    if cuda_json_string(d, p, "access", "write") == 1 { return 2; }
+    if cuda_json_string(d, p, "access", "read-write") == 1 { return 3; }
+    return 0;
+}
+
+fn cuda_parameter_valid(d: *Json, p: i32, ordinal: i32, count: i32) -> i32 {
+    if cuda_json_int(d, p, "ordinal", ordinal as i64) == 0 { return 0; }
+    if cuda_json_text(d, json_get(d, p, "name"), 255) == 0 { return 0; }
+    let synthetic: i32 = json_get(d, p, "synthetic");
+    if json_kind(d, synthetic) != JSON_BOOL { return 0; }
+    var expected: i64 = 0;
+    if ordinal >= count - 2 { expected = 1; }
+    if json_as_int(d, synthetic) != expected { return 0; }
+    if expected == 1 {
+        var name: *u8 = "lo";
+        if ordinal == count - 1 { name = "hi"; }
+        if cuda_json_string(d, p, "name", name) == 0 || cuda_json_string(d, p, "source_type", "i32") == 0 { return 0; }
+    }
+    var size: i32 = 8;
+    if cuda_json_string(d, p, "kind", "integer") == 1 {
+        if cuda_json_fields(d, p, 10) == 0 { return 0; }
+        let t: i32 = cuda_parameter_type(d, p, "source_type");
+        if t == 0 { return 0; }
+        var bits: i32 = t;
+        if bits < 0 { bits = 0 - bits; }
+        if bits == 1 { bits = 8; }
+        if bits > 64 { return 0; }
+        size = (bits + 7) / 8;
+        if cuda_json_int(d, p, "bits", bits as i64) == 0 { return 0; }
+        let signed_node: i32 = json_get(d, p, "signed");
+        if json_kind(d, signed_node) != JSON_BOOL { return 0; }
+        var sign: i64 = 0;
+        if t > 1 { sign = 1; }
+        if json_as_int(d, signed_node) != sign { return 0; }
+        var llvm: *u8 = "i8";
+        if bits == 16 { llvm = "i16"; }
+        if bits == 32 { llvm = "i32"; }
+        if bits == 64 { llvm = "i64"; }
+        if cuda_json_string(d, p, "llvm_type", llvm) == 0 { return 0; }
+    } else {
+        if expected == 1 || cuda_json_fields(d, p, 14) == 0 { return 0; }
+        if cuda_json_string(d, p, "kind", "pointer") == 0
+            || cuda_json_string(d, p, "llvm_type", "ptr addrspace(1)") == 0
+            || cuda_json_int(d, p, "address_space", 1) == 0 { return 0; }
+        var bits: i32 = cuda_parameter_type(d, p, "element_type");
+        if bits == 0 { return 0; }
+        if bits < 0 { bits = 0 - bits; }
+        let elem: i32 = json_get(d, p, "element_type");
+        let source: i32 = json_get(d, p, "source_type");
+        if json_kind(d, source) != JSON_STR { return 0; }
+        if d.nodes[source].slen != d.nodes[elem].slen + 1 || d.src[d.nodes[source].soff] != 42 { return 0; }
+        var i: i32 = 0;
+        while i < d.nodes[elem].slen {
+            if d.src[d.nodes[source].soff + 1 + i] != d.src[d.nodes[elem].soff + i] { return 0; }
+            i = i + 1;
+        }
+        var alignment: i32 = (bits + 7) / 8;
+        if alignment > 16 { alignment = 16; }
+        if cuda_json_int(d, p, "element_size", ((bits + 7) / 8) as i64) == 0
+            || cuda_json_int(d, p, "element_alignment", alignment as i64) == 0
+            || cuda_parameter_access(d, p) == 0 { return 0; }
+        let fp: i32 = json_get(d, p, "footprint");
+        if cuda_json_fields(d, fp, 3) == 0
+            || cuda_json_int(d, fp, "start_parameter", (count - 2) as i64) == 0
+            || cuda_json_int(d, fp, "end_parameter", (count - 1) as i64) == 0
+            || cuda_json_int(d, fp, "byte_scale", ((bits + 7) / 8) as i64) == 0 { return 0; }
+    }
+    if cuda_json_int(d, p, "size", size as i64) == 0 || cuda_json_int(d, p, "alignment", size as i64) == 0 { return 0; }
+    return 1;
+}
+
+fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
+    if cuda_json_fields(d, k, 21) == 0 { return 0; }
+    if cuda_json_string(d, k, "schema", "traveler.kernel.v1") == 0
+        || cuda_json_int(d, k, "abi", 1) == 0
+        || cuda_json_string(d, k, "stage", "semantic-ir") == 0
+        || cuda_json_string(d, k, "compiler", "tvc_self") == 0
+        || cuda_json_string(d, k, "target", "nvptx64-nvidia-cuda") == 0
+        || cuda_json_string(d, k, "execution", "independent-pfor") == 0
+        || cuda_json_string(d, k, "profile", "direct-index-v1") == 0
+        || cuda_json_int(d, k, "dimensions", 1) == 0
+        || cuda_json_int(d, k, "lanes_per_cell", 1) == 0
+        || cuda_json_int(d, k, "dynamic_shared_bytes", 0) == 0
+        || cuda_json_int(d, k, "index_bits", 32) == 0 { return 0; }
+    let artifact: i32 = json_get(d, k, "artifact");
+    if artifact < 0 || json_kind(d, artifact) != JSON_NULL { return 0; }
+    let symbol: i32 = json_get(d, k, "symbol");
+    if cuda_json_text(d, symbol, 64) == 0 || cuda_json_text(d, json_get(d, k, "owner"), 255) == 0 { return 0; }
+    let prefix: *u8 = "__pfor_gpu_worker_";
+    if d.nodes[symbol].slen <= 18 { return 0; }
+    var i: i32 = 0;
+    while i < d.nodes[symbol].slen {
+        let c: u8 = d.src[d.nodes[symbol].soff + i];
+        if i < 18 { if c != prefix[i] { return 0; } }
+        else if c < 48 || c > 57 { return 0; }
+        i = i + 1;
+    }
+    let line: i32 = json_get(d, k, "line"); let col: i32 = json_get(d, k, "column");
+    if json_kind(d, line) != JSON_INT || json_as_int(d, line) < 1 || json_kind(d, col) != JSON_INT { return 0; }
+    let subs: i32 = json_get(d, k, "specialization");
+    if json_kind(d, subs) != JSON_ARR || json_len(d, subs) > 32 { return 0; }
+    i = 0;
+    while i < json_len(d, subs) {
+        let sub: i32 = json_at(d, subs, i);
+        if cuda_json_fields(d, sub, 2) == 0 || cuda_json_text(d, json_get(d, sub, "name"), 255) == 0
+            || cuda_json_text(d, json_get(d, sub, "type"), 255) == 0 { return 0; }
+        i = i + 1;
+    }
+    let block: i32 = json_get(d, k, "block");
+    if json_len(d, block) != 3 { return 0; }
+    i = 0;
+    while i < 3 {
+        let n: i32 = json_at(d, block, i);
+        var dim: i64 = 1; if i == 0 { dim = 256; }
+        if json_kind(d, n) != JSON_INT || json_as_int(d, n) != dim { return 0; }
+        i = i + 1;
+    }
+    let domain: i32 = json_get(d, k, "domain");
+    if cuda_json_fields(d, domain, 3) == 0 || cuda_json_int(d, domain, "min_lo", 0) == 0
+        || cuda_json_int(d, domain, "max_hi", 2147483392) == 0
+        || cuda_json_string(d, domain, "empty", "no-launch") == 0 { return 0; }
+    let params: i32 = json_get(d, k, "parameters");
+    let count: i32 = json_len(d, params);
+    if count < 3 || count > 34 { return 0; }
+    i = 0;
+    while i < count {
+        let parameter: i32 = json_at(d, params, i);
+        if cuda_parameter_valid(d, parameter, i, count) == 0 { return 0; }
+        if i < count - 2 {
+            var name: Str = json_str_copy(d, json_get(d, parameter, "name")); str_push(&name, 0);
+            var j: i32 = 0;
+            while j < i {
+                if cuda_json_string(d, json_at(d, params, j), "name", name.data) == 1 { str_free(&name); return 0; }
+                j = j + 1;
+            }
+            str_free(&name);
+        }
+        i = i + 1;
+    }
+    let pairs: i32 = json_get(d, k, "disjoint");
+    if json_kind(d, pairs) != JSON_ARR { return 0; }
+    var pair_count: i32 = 0;
+    i = 0;
+    while i < count - 2 {
+        let a: i32 = cuda_parameter_access(d, json_at(d, params, i));
+        var j: i32 = i + 1;
+        while j < count - 2 {
+            let b: i32 = cuda_parameter_access(d, json_at(d, params, j));
+            if a != 0 && b != 0 && ((a | b) & 2) != 0 {
+                let pair: i32 = json_at(d, pairs, pair_count);
+                if json_len(d, pair) != 2 { return 0; }
+                let x: i32 = json_at(d, pair, 0); let y: i32 = json_at(d, pair, 1);
+                if json_kind(d, x) != JSON_INT || json_kind(d, y) != JSON_INT
+                    || json_as_int(d, x) != i as i64 || json_as_int(d, y) != j as i64 { return 0; }
+                pair_count = pair_count + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    if json_len(d, pairs) != pair_count { return 0; }
+    return 1;
+}
+
+fn cuda_ptx_directive(p: *CudaPackage, prefix: *u8, expected: i64, minor: i64) -> i32 {
+    var start: i32 = 0;
+    var count: i32 = 0;
+    while start < p.ptx_bytes {
+        var pos: i32 = start;
+        while pos < p.ptx_bytes && (p.ptx[pos] == 32 || p.ptx[pos] == 9) { pos = pos + 1; }
+        var j: i32 = 0;
+        while prefix[j] != 0 && pos + j < p.ptx_bytes && p.ptx[pos + j] == prefix[j] { j = j + 1; }
+        if prefix[j] == 0 {
+            pos = pos + j;
+            var value: i64 = 0;
+            var digits: i32 = 0;
+            while pos < p.ptx_bytes && p.ptx[pos] >= 48 && p.ptx[pos] <= 57 {
+                value = value * 10 + (p.ptx[pos] - 48) as i64;
+                if value > 999 { return 0; }
+                digits = digits + 1; pos = pos + 1;
+            }
+            if digits == 0 || value != expected { return 0; }
+            if minor >= 0 {
+                if pos + 1 >= p.ptx_bytes || p.ptx[pos] != 46 || p.ptx[pos + 1] as i64 != minor + 48 { return 0; }
+                pos = pos + 2;
+            }
+            while pos < p.ptx_bytes && (p.ptx[pos] == 32 || p.ptx[pos] == 9 || p.ptx[pos] == 13) { pos = pos + 1; }
+            if pos < p.ptx_bytes && p.ptx[pos] != 10 { return 0; }
+            count = count + 1;
+        }
+        while start < p.ptx_bytes && p.ptx[start] != 10 { start = start + 1; }
+        start = start + 1;
+    }
+    if count != 1 { return 0; }
+    return 1;
+}
+
+fn cuda_package_valid(p: *CudaPackage) -> i32 {
+    let d: *Json = p.document;
+    let root: i32 = d.root;
+    if cuda_json_unique(d) == 0 || cuda_json_fields(d, root, 8) == 0
+        || cuda_json_string(d, root, "schema", "traveler.cuda.package.v1") == 0
+        || cuda_json_int(d, root, "abi", 1) == 0
+        || cuda_json_int(d, root, "ptx_bytes", p.ptx_bytes as i64) == 0 { return 0; }
+    let sm: i32 = json_get(d, root, "sm");
+    if json_kind(d, sm) != JSON_INT || json_as_int(d, sm) < 50 || json_as_int(d, sm) > 999 { return 0; }
+    p.sm = json_as_int(d, sm) as i32;
+    let major: i32 = json_get(d, root, "ptx_major"); let minor: i32 = json_get(d, root, "ptx_minor");
+    if json_kind(d, major) != JSON_INT || json_kind(d, minor) != JSON_INT
+        || json_as_int(d, major) < 1 || json_as_int(d, major) > 99 || json_as_int(d, minor) > 9 { return 0; }
+    if cuda_ptx_directive(p, ".target sm_", p.sm as i64, 0 - 1) == 0
+        || cuda_ptx_directive(p, ".version ", json_as_int(d, major), json_as_int(d, minor)) == 0 { return 0; }
+    let digest: i32 = json_get(d, root, "ptx_sha256");
+    if json_kind(d, digest) != JSON_STR || d.nodes[digest].slen != 64 { return 0; }
+    let bytes: *u8 = alloc(32);
+    sha256(p.ptx, p.ptx_bytes as usize, bytes);
+    let hex: *u8 = "0123456789abcdef";
+    var i: i32 = 0;
+    while i < 32 {
+        if d.src[d.nodes[digest].soff + i * 2] != hex[(bytes[i] / 16) as i32]
+            || d.src[d.nodes[digest].soff + i * 2 + 1] != hex[(bytes[i] % 16) as i32] { free(bytes); return 0; }
+        i = i + 1;
+    }
+    free(bytes);
+    i = 0;
+    while i < p.ptx_bytes { if p.ptx[i] == 0 { return 0; } i = i + 1; }
+    p.kernels = json_get(d, root, "kernels"); p.count = json_len(d, p.kernels);
+    if p.count < 1 || p.count > 64 { return 0; }
+    i = 0;
+    while i < p.count {
+        let k: i32 = json_at(d, p.kernels, i);
+        if cuda_kernel_valid(d, k) == 0 { return 0; }
+        var name: Str = json_str_copy(d, json_get(d, k, "symbol")); str_push(&name, 0);
+        var j: i32 = 0;
+        while j < i {
+            if cuda_json_string(d, json_at(d, p.kernels, j), "symbol", name.data) == 1 { str_free(&name); return 0; }
+            j = j + 1;
+        }
+        str_free(&name); i = i + 1;
+    }
+    return 1;
+}
+
+fn cuda_package_close(p: *CudaPackage) {
+    json_free(p.document); free(p.document); free(p.storage);
+}
+
+// Error 1 is I/O; error 2 is an invalid or unsupported package.
+fn cuda_package_open(path: *u8) -> Result<CudaPackage, i32> {
+    if path == null { return Result::Err(2); }
+    let f: *u8 = fopen(path, "rb");
+    if f == null { return Result::Err(1); }
+    if fseek(f, 0, 2) != 0 { fclose(f); return Result::Err(1); }
+    let len: i64 = ftell(f);
+    if len < 13 || len > 17039372 { fclose(f); return Result::Err(2); }
+    if fseek(f, 0, 0) != 0 { fclose(f); return Result::Err(1); }
+    let data: *u8 = alloc(len + 1);
+    let got: i64 = fread(data, 1, len, f);
+    let status: i32 = fclose(f);
+    if got != len || status != 0 { free(data); return Result::Err(1); }
+    data[len] = 0;
+    let magic: *u8 = "TVCP0001";
+    var i: i32 = 0;
+    while i < 8 { if data[i] != magic[i] { free(data); return Result::Err(2); } i = i + 1; }
+    let header: u32 = data[8] as u32 | ((data[9] as u32) << 8) | ((data[10] as u32) << 16) | ((data[11] as u32) << 24);
+    if header < 1 || header > 262144 || (header as i64) + 12 >= len || len - 12 - (header as i64) > 16777216 { free(data); return Result::Err(2); }
+    if cuda_json_scan(&data[12], header as i32) == 0 { free(data); return Result::Err(2); }
+    match json_parse(&data[12], header as i32) {
+        Result::Err(e) => { free(data); return Result::Err(2); },
+        Result::Ok(document) => {
+            let doc: *Json = alloc(1);
+            doc[0] = document;
+            var p: CudaPackage = CudaPackage { storage: data, document: doc,
+                ptx: &data[12 + header as i64], ptx_bytes: (len - 12 - header as i64) as i32,
+                sm: 0, kernels: 0, count: 0 };
+            if cuda_package_valid(&p) == 0 { cuda_package_close(&p); return Result::Err(2); }
+            return Result::Ok(p);
+        },
+    }
+    return Result::Err(2);
+}

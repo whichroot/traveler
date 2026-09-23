@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/cuda_resident.tv";
+extern "C" fn puts(s: *u8) -> i32;
+
+fn resident_need(result: Result<u64, CudaError>) -> u64 {
+    match result {
+        Result::Ok(value) => { return value; },
+        Result::Err(error) => {
+            var e: CudaError = error;
+            print(e.boundary); print(e.status);
+            if e.log != null { puts(e.log); }
+            cuda_error_close(&e); exit(1);
+        },
+    }
+    exit(1); return 0;
+}
+
+fn resident_typed_view(buffer: u64, offset: u64, bytes: u64, type_code: i32) -> CudaArgument {
+    match cuda_buffer_view(buffer, offset, bytes, type_code) {
+        Result::Ok(view) => { return view; },
+        Result::Err(error) => { exit(2); },
+    }
+    exit(2); return cuda_arg_i32(0);
+}
+
+fn resident_view(buffer: u64, offset: u64, bytes: u64) -> CudaArgument {
+    return resident_typed_view(buffer, offset, bytes, 32);
+}
+
+fn resident_refused(result: Result<u64, CudaError>) {
+    match result {
+        Result::Ok(value) => { exit(3); },
+        Result::Err(error) => { var e: CudaError = error; cuda_error_close(&e); },
+    }
+}
+
+fn resident_bad_view(result: Result<CudaArgument, CudaError>) {
+    match result {
+        Result::Ok(value) => { exit(6); },
+        Result::Err(error) => { var e: CudaError = error; cuda_error_close(&e); },
+    }
+}
+
+fn resident_bind(kernel: u64, args: *CudaArgument, name: *u8, arg: CudaArgument) {
+    let index: u64 = resident_need(cuda_argument_index(kernel, name));
+    args[index] = arg;
+}
+
+fn resident_pipeline(path: *u8) {
+    let device: u64 = resident_need(cuda_device_open(0));
+    print(resident_need(cuda_device_sm(device)));
+    let module: u64 = resident_need(cuda_module_load(device, path));
+    let a: u64 = resident_need(cuda_kernel_get_owner(module, "resident_a"));
+    let b: u64 = resident_need(cuda_kernel_get_owner(module, "resident_b"));
+    let other: u64 = resident_need(cuda_module_load(device, path));
+    resident_need(cuda_module_close(other));
+    let input: u64 = resident_need(cuda_buffer_alloc(device, 4128));
+    let middle: u64 = resident_need(cuda_buffer_alloc(device, 4128));
+    let accumulated: u64 = resident_need(cuda_buffer_alloc(device, 4128));
+    let output: u64 = resident_need(cuda_buffer_alloc(device, 4128));
+    let vin: CudaArgument = resident_view(input, 16, 4096);
+    let vmid: CudaArgument = resident_view(middle, 16, 4096);
+    let vacc: CudaArgument = resident_view(accumulated, 16, 4096);
+    let vout: CudaArgument = resident_view(output, 16, 4096);
+    let host: *i32 = alloc(1032);
+    var i: i32 = 0;
+    while i < 1032 { host[i] = 0 - 777; i = i + 1; }
+    resident_need(cuda_upload(resident_view(output, 0, 4128), host as *u8, 4128));
+    i = 0; while i < 1024 { host[i] = i - 500; i = i + 1; }
+    resident_need(cuda_upload(vin, host as *u8, 4096));
+    i = 0; while i < 1024 { host[i] = 7; i = i + 1; }
+    resident_need(cuda_upload(vacc, host as *u8, 4096));
+    let aa: *CudaArgument = alloc(3);
+    let ab: *CudaArgument = alloc(4);
+    resident_bind(a, aa, "input", vin); resident_bind(a, aa, "middle", vmid);
+    resident_bind(b, ab, "middle", vmid); resident_bind(b, ab, "accumulated", vacc);
+    resident_bind(b, ab, "output", vout); resident_bind(b, ab, "bias", cuda_arg_i32(11));
+    resident_bind(a, aa, "scale", cuda_arg_i32(2));
+    resident_need(cuda_launch_sync(a, 3, 1021, aa, 3));
+    resident_need(cuda_launch_sync(b, 3, 1021, ab, 4));
+    resident_bind(a, aa, "scale", cuda_arg_i32(3));
+    resident_need(cuda_launch_sync(a, 3, 1021, aa, 3));
+    resident_need(cuda_launch_sync(b, 3, 1021, ab, 4));
+    resident_need(cuda_launch_sync(a, 0, 0, aa, 3));
+    resident_need(cuda_download(host as *u8, resident_view(output, 0, 4128), 4128));
+    i = 0;
+    while i < 1032 {
+        var expected: i32 = 0 - 777;
+        if i >= 7 && i < 1025 { expected = 18 + 5 * (i - 4 - 500); }
+        if host[i] != expected { print(i); print(host[i]); print(expected); exit(4); }
+        i = i + 1;
+    }
+    resident_refused(cuda_device_close(device));
+    resident_bind(a, aa, "middle", vin);
+    resident_refused(cuda_launch_sync(a, 0, 1024, aa, 3));
+    resident_bind(a, aa, "middle", vmid);
+    resident_bind(a, aa, "scale", cuda_arg_u32(3));
+    resident_refused(cuda_launch_sync(a, 0, 1024, aa, 3));
+    resident_bind(a, aa, "scale", cuda_arg_i32(3));
+    resident_refused(cuda_launch_sync(a, 0, 1025, aa, 3));
+    resident_refused(cuda_launch_sync(a, 0, 2147483647, aa, 3));
+    resident_bad_view(cuda_buffer_view(input, 1, 4096, 32));
+    resident_bad_view(cuda_buffer_view(input, 18446744073709551615, 1, 32));
+    resident_bad_view(cuda_buffer_view(input, 0, 18446744073709551615, 32));
+    let other_device: u64 = resident_need(cuda_device_open(0));
+    let foreign: u64 = resident_need(cuda_buffer_alloc(other_device, 4096));
+    resident_bind(a, aa, "input", resident_view(foreign, 0, 4096));
+    resident_refused(cuda_launch_sync(a, 0, 1024, aa, 3));
+    resident_bind(a, aa, "input", vin);
+    resident_need(cuda_buffer_close(foreign)); resident_need(cuda_device_close(other_device));
+    resident_need(cuda_buffer_close(input));
+    let reused: u64 = resident_need(cuda_buffer_alloc(device, 4096));
+    resident_refused(cuda_launch_sync(a, 0, 1024, aa, 3));
+    resident_refused(cuda_buffer_close(input));
+    resident_need(cuda_buffer_close(reused));
+    resident_need(cuda_buffer_close(middle)); resident_need(cuda_buffer_close(accumulated));
+    resident_need(cuda_buffer_close(output)); resident_need(cuda_module_close(module));
+    resident_refused(cuda_launch_sync(a, 0, 1024, aa, 3));
+    resident_need(cuda_device_close(device)); resident_refused(cuda_device_close(device));
+    free(aa); free(ab); free(host);
+    puts("resident pipeline PASS");
+}
+
+fn resident_gate_main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; }
+    var before: *u8 = null; var after: *u8 = null;
+    if cuInit(0) != 0 || cuCtxGetCurrent(&before) != 0 { return 1; }
+    resident_pipeline(argv[1]);
+    if cuCtxGetCurrent(&after) != 0 || before != after { return 5; }
+    return 0;
+}

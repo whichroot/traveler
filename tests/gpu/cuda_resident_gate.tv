@@ -1,0 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident_checks.tv";
+
+fn main(argc: i32, argv: **u8) -> i32 { return resident_gate_main(argc, argv); }

@@ -1,0 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
+fn boolean(input: *i32, output: *i32, flag: bool) {
+    for i in 0..1024 { output[i] = input[i] + (flag as i32); }
+}

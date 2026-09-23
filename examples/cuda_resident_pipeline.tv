@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../src/lib/gpu/cuda_resident.tv";
+
+fn pipeline_need(result: Result<u64, CudaError>) -> u64 {
+    match result {
+        Result::Ok(value) => { return value; },
+        Result::Err(error) => {
+            var e: CudaError = error;
+            print(e.boundary); print(e.status); cuda_error_close(&e); exit(1);
+        },
+    }
+    exit(1); return 0;
+}
+
+fn pipeline_view(buffer: u64) -> CudaArgument {
+    match cuda_buffer_view(buffer, 0, 4096, 32) {
+        Result::Ok(view) => { return view; },
+        Result::Err(error) => { exit(1); },
+    }
+    exit(1); return cuda_arg_i32(0);
+}
+
+fn pipeline_bind(kernel: u64, args: *CudaArgument, name: *u8, value: CudaArgument) {
+    let index: u64 = pipeline_need(cuda_argument_index(kernel, name));
+    args[index] = value;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; }
+    let device: u64 = pipeline_need(cuda_device_open(0));
+    let module: u64 = pipeline_need(cuda_module_load(device, argv[1]));
+    let first: u64 = pipeline_need(cuda_kernel_get_owner(module, "resident_a"));
+    let second: u64 = pipeline_need(cuda_kernel_get_owner(module, "resident_b"));
+    let input: u64 = pipeline_need(cuda_buffer_alloc(device, 4096));
+    let middle: u64 = pipeline_need(cuda_buffer_alloc(device, 4096));
+    let accumulated: u64 = pipeline_need(cuda_buffer_alloc(device, 4096));
+    let output: u64 = pipeline_need(cuda_buffer_alloc(device, 4096));
+    let host: *i32 = alloc(1024);
+    var i: i32 = 0;
+    while i < 1024 { host[i] = i; i = i + 1; }
+    pipeline_need(cuda_upload(pipeline_view(input), host as *u8, 4096));
+    i = 0; while i < 1024 { host[i] = 7; i = i + 1; }
+    pipeline_need(cuda_upload(pipeline_view(accumulated), host as *u8, 4096));
+    let a: *CudaArgument = alloc(3);
+    let b: *CudaArgument = alloc(4);
+    pipeline_bind(first, a, "input", pipeline_view(input));
+    pipeline_bind(first, a, "middle", pipeline_view(middle));
+    pipeline_bind(first, a, "scale", cuda_arg_i32(3));
+    pipeline_bind(second, b, "middle", pipeline_view(middle));
+    pipeline_bind(second, b, "accumulated", pipeline_view(accumulated));
+    pipeline_bind(second, b, "output", pipeline_view(output));
+    pipeline_bind(second, b, "bias", cuda_arg_i32(11));
+    pipeline_need(cuda_launch_sync(first, 0, 1024, a, 3));
+    pipeline_need(cuda_launch_sync(second, 0, 1024, b, 4));
+    pipeline_need(cuda_download(host as *u8, pipeline_view(output), 4096));
+    i = 0;
+    while i < 1024 { if host[i] != i * 3 + 18 { return 2; } i = i + 1; }
+    print(host[1023]);
+    pipeline_need(cuda_buffer_close(input)); pipeline_need(cuda_buffer_close(middle));
+    pipeline_need(cuda_buffer_close(accumulated)); pipeline_need(cuda_buffer_close(output));
+    pipeline_need(cuda_module_close(module)); pipeline_need(cuda_device_close(device));
+    free(a); free(b); free(host);
+    return 0;
+}

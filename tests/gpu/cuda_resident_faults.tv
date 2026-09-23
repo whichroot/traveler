@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident_checks.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+extern "C" fn mock_pipeline() -> i32;
+
+fn fault_status(result: Result<u64, CudaError>, expected: i32) -> u64 {
+    match result {
+        Result::Ok(value) => { exit(10); },
+        Result::Err(error) => {
+            var e: CudaError = error;
+            if e.status != expected { print(e.status); print(expected); exit(11); }
+            if expected == 804 && e.log == null { exit(12); }
+            let id: u64 = e.resource; cuda_error_close(&e); return id;
+        },
+    }
+    exit(10); return 0;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; }
+    resident_pipeline(argv[1]);
+    if mock_pipeline() == 0 { return 20; }
+    var iteration: i32 = 1;
+    while iteration <= 9 {
+        let device: u64 = resident_need(cuda_device_open(0));
+        if iteration <= 3 {
+            mock_fail(iteration, 0);
+            fault_status(cuda_buffer_alloc(device, 4096), 800 + iteration);
+        } else if iteration == 4 {
+            mock_fail(4, 0);
+            fault_status(cuda_module_load(device, argv[1]), 804);
+        } else {
+            let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+            if iteration == 5 {
+                mock_fail(5, 0); fault_status(cuda_kernel_get(module, "__pfor_gpu_worker_0"), 805);
+            } else {
+                let kernel: u64 = resident_need(cuda_kernel_get(module, "__pfor_gpu_worker_0"));
+                let input: u64 = resident_need(cuda_buffer_alloc(device, 4096));
+                let output: u64 = resident_need(cuda_buffer_alloc(device, 4096));
+                let vi: CudaArgument = resident_view(input, 0, 4096);
+                let vo: CudaArgument = resident_view(output, 0, 4096);
+                let host: *i32 = alloc(1024);
+                let args: *CudaArgument = alloc(3);
+                resident_bind(kernel, args, "input", vi); resident_bind(kernel, args, "middle", vo);
+                resident_bind(kernel, args, "scale", cuda_arg_i32(2));
+                mock_fail(iteration, 0);
+                if iteration == 6 { fault_status(cuda_upload(vi, host as *u8, 4096), 806); }
+                else if iteration == 9 { fault_status(cuda_buffer_close(input), 809); }
+                else { fault_status(cuda_launch_sync(kernel, 0, 1024, args, 3), 800 + iteration); }
+                if iteration != 9 {
+                    fault_status(cuda_launch_sync(kernel, 0, 1024, args, 3), 0 - 4);
+                    fault_status(cuda_module_load(device, argv[1]), 0 - 4);
+                }
+                resident_need(cuda_buffer_close(input)); resident_need(cuda_buffer_close(output));
+                free(host); free(args);
+            }
+            resident_need(cuda_module_close(module));
+        }
+        resident_need(cuda_device_close(device));
+        if mock_clean() == 0 { print(iteration); return 21; }
+        iteration = iteration + 1;
+    }
+    let d: u64 = resident_need(cuda_device_open(0));
+    mock_fail(2, 1);
+    let buffer: u64 = fault_status(cuda_buffer_alloc(d, 16), 802);
+    resident_need(cuda_buffer_close(buffer)); resident_need(cuda_device_close(d));
+    if mock_clean() == 0 { return 22; }
+    puts("resident faults PASS");
+    return 0;
+}

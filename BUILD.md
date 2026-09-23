@@ -388,6 +388,149 @@ succeeds if it emits at least one kernel; its refused workers remain named
 in the decisions and module comments. The CPU admission and alias query
 schemas retain their existing contracts.
 
+**Opt-in semantic kernel interfaces**
+
+```sh
+$TVC --emit-gpu-nvptx --gpu-interface tests/gpu/gpu_scalar_calls.tv -o kernels.ll
+```
+
+Each emitted entry has one `; traveler.kernel.v1 ` comment followed by a JSON
+object. The descriptor and LLVM IR share the existing atomic output publication.
+Without `--gpu-interface`, device IR is byte-identical to ordinary emission.
+The option accepts only standalone NVPTX emission.
+
+Schema `traveler.kernel.v1`, ABI 1, records the actual entry symbol, owner,
+generic substitutions, body line/column, target, and parameters in emitted
+signature order. Captures precede synthetic signed-i32 `lo` and `hi`. Parameter
+records include source and LLVM types, target ABI byte size/alignment, and scalar
+signedness or pointer address space, element layout, and read/write role.
+
+The initial `direct-index-v1` profile accepts flat independent workers whose
+accesses are `buffer[i]`, with ordinary signed/unsigned 8/16/32/64-bit integer
+captures, one-byte `bool` captures, and integer pointer elements through 512 bits.
+Booleans use LLVM `i8`, unsigned one-byte storage, and scalar values 0 or 1.
+Wide pointer elements use 16-byte alignment; their byte sizes remain 16/32/64.
+Supported scalar helper expansion can appear in the values. Offset/scaled indexes,
+reductions, wide by-value captures, and other unrepresented footprints fail
+descriptor emission. If any emitted
+worker fails this profile, the entire request fails and preserves an existing
+output file. Ordinary device refusals retain the mixed-module behavior above.
+
+The launch contract requires block `[256,1,1]`, one dimension, one lane per cell,
+and zero dynamic shared memory. Bounds must satisfy
+`0 <= lo <= hi <= 2147483392`; an empty domain submits no launch. This upper
+bound leaves room for padded threads without overflowing the signed-i32 index.
+Each accessed pointer requires bytes `[lo * element_size, hi * element_size)`
+relative to its supplied view. `footprint.start_parameter` and `end_parameter`
+refer to the bound ordinals; `byte_scale` is the element size. Consumers must use
+checked arithmetic, validate view extents/alignment, and require non-overlap for
+every ordinal pair in `disjoint`. This conservatively includes every pair of
+accessed pointers where at least one is written. Read/write pointers are explicit;
+argument position does not identify an output.
+
+These are compiler semantic records (`stage: "semantic-ir"`, `artifact: null`).
+They are not directly loadable CUDA packages. LLVM tools may discard comments;
+`tools/cuda_package.py` retains the records before lowering and binds them to the
+final PTX. The portable regression
+`tests/gpu/check_kernel_interface.py` checks signature/layout agreement, pointer
+effects, bounds metadata, refusal behavior, and atomic publication.
+
+**Resident CUDA packages and launches (K1)**
+
+The resident API is in `src/lib/gpu/cuda_resident.tv`. It targets 64-bit
+little-endian Linux and the CUDA driver API. Build the two-kernel example with:
+
+```sh
+$TVC --emit-gpu-nvptx --gpu-interface examples/cuda_resident_kernels.tv -o kernels.ll
+python3 tools/cuda_package.py kernels.ll --llc "$LLC" --sm 120 -o kernels.tvcp
+$TVC examples/cuda_resident_pipeline.tv -o pipeline.ll
+$LLC -filetype=obj pipeline.ll -o pipeline.o
+cc -no-pie pipeline.o -lcuda -o pipeline
+./pipeline kernels.tvcp
+# prints 3087 after checking all 1024 results
+```
+
+Select the actual target SM explicitly. The builder invokes LLVM, checks emitted
+entry signatures and the PTX target/version, and atomically replaces one package
+file. No `nvcc` or `ptxas` is required. Format `TVCP0001` consists of eight magic
+bytes, a four-byte little-endian JSON length, the JSON manifest, then exact PTX
+bytes. Schema `traveler.cuda.package.v1` records ABI 1, `sm`, `ptx_major`,
+`ptx_minor`, `ptx_bytes`, `ptx_sha256`, and the semantic `kernels` table.
+The digest binds the PTX bytes; it is an integrity check, not a signature or a
+compiler attestation.
+
+The Traveler loader validates schema/ABI, duplicate keys and entries, parameter
+layouts, effects, disjointness, target/version directives, and SHA-256 before any
+CUDA module load. Limits are 256 KiB of ASCII JSON, 16 MiB of PTX, 64 entries,
+and 32 captures per entry. Unknown versions, unsupported profiles, malformed
+records, digest mismatches, and overflowing integers refuse. The driver supplies
+the final PTX/JIT compatibility decision and an owned error log on JIT failure.
+
+| Operation | Result |
+| --- | --- |
+| `cuda_device_open(ordinal)` | Retained primary-context owner; queries capability and launch limits |
+| `cuda_module_load(device, path)` | Validated, resident module |
+| `cuda_kernel_get(module, symbol)` | Kernel selected by exact descriptor symbol |
+| `cuda_kernel_get_owner(module, owner)` | Kernel selected by an unambiguous logical owner |
+| `cuda_buffer_alloc(device, bytes)` | Persistent device allocation |
+| `cuda_buffer_view(buffer, offset, bytes, type_code)` | Checked typed view, represented as `CudaArgument` |
+| `cuda_argument_index(kernel, name)` | Capture ordinal from the descriptor, excluding synthetic bounds |
+| `cuda_upload(view, host, bytes)` / `cuda_download(host, view, bytes)` | Explicit synchronous transfers |
+| `cuda_launch_sync(kernel, lo, hi, arguments, count)` | Checked launch and completion, with no implicit copies |
+| `cuda_buffer_close` / `cuda_module_close` / `cuda_device_close` | Checked resource release |
+
+Resource operations return `Result<u64, CudaError>`; successful release/transfer/
+launch returns zero. Views return `Result<CudaArgument, CudaError>`. Resource IDs
+are opaque generation-checked values, not pointers. Module close invalidates its
+kernels; buffer close invalidates its views. Device close refuses while children
+remain. At most 1024 live resource records exist; closed slots can be reused
+without making old IDs valid. Distinct device owners cannot exchange buffers,
+even if they retain the same physical device's primary context.
+
+View type codes are positive widths for signed integers, negative widths for
+unsigned integers, and `1` for `bool`. For example, `32` is i32, `-64` is u64,
+and `512` is i512. Use `cuda_arg_i8/u8/i16/u16/i32/u32/i64/u64` and
+`cuda_arg_bool` for scalar arguments. Argument arrays contain captures only;
+launch supplies `lo` and `hi`. Packing follows the descriptor, validates exact
+types and extents, and rejects overlapping write/read or write/write ranges.
+Upload data before a kernel reads it, including read/write buffers. Write-only
+arguments do not clear untouched bytes.
+
+Registry and driver operations are serialized by a process-local lock. Each
+context-dependent operation establishes the owner's context and restores the
+calling thread's previous context. Transfer/launch failures poison all resident
+owners sharing that primary context. New submissions then refuse; close first
+attempts to drain the context and retains resources if draining/release fails.
+A context-restoration failure is reported, poisons the owners, and makes one
+best-effort restoration retry. Error recovery must not assume that a persistently
+failing driver restored the calling thread's context.
+
+`CudaError` contains `boundary`, driver/validation `status`, `resource`, and an
+optional owned JIT `log`; release the log once with `cuda_error_close`.
+Boundaries 1–9 identify device-open, capability-query, buffer-allocation,
+module-load, kernel/argument-lookup, view, transfer, launch, and close.
+Negative statuses are invalid argument/handle (`-1`), registry capacity (`-2`),
+unsupported capability (`-3`), poisoned owner (`-4`), and live children (`-5`).
+Module-load statuses 1/2 can also report package I/O/schema failures.
+
+Portable gates are `check_cuda_package.py` and `check_cuda_resident.py` under
+`tests/gpu/`; both run in the Linux GPU suite. The latter links a test-only C
+driver double to check cleanup, failure handling, context restoration, and
+absence of implicit transfers. Production compiler/runtime code remains Traveler.
+Run the hardware lane explicitly with a driver library and the expected native
+SM; it refuses to count a different actual capability as acceptance:
+
+```sh
+python3 tests/gpu/check_cuda_resident.py "$TVC" "$LLC" cc /path/to/libcuda.so 120
+```
+
+This checks resident intermediates, changed scalars, multiple modules/outputs,
+partial domains, nonzero views, stale/cross-owner resources, one-byte booleans,
+and signed/unsigned 512-bit arithmetic against Python. The read-only DAX staging
+gate is `tests/gpu/cuda_resident_dax.tv`; pass a package built from
+`tests/gpu/cuda_boolean_kernel.tv` and the DAX device path. It copies a bounded
+DAX view into driver-allocated pinned host memory before explicit upload.
+
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the
 next block's addresses (`prefetch.global.L2`, NVPTX only) with no carried

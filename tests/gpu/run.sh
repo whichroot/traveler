@@ -1933,6 +1933,9 @@ else
     echo "  ok   AMD Stage-1c batch dot: per-row phis + stores, gfx1100-lowered"
 fi
 # A6. Check named refusals, mixed modules, and transactional publication.
+if ! python3 "$SCRIPT_DIR/check_kernel_interface.py" "$STAGE1"; then
+    echo "  FAIL: semantic kernel interface contract"; fail=1
+fi
 if ! python3 "$SCRIPT_DIR/check_device_emission.py" "$STAGE1"; then
     echo "  FAIL: Stage-0 device emission contract"; fail=1
 fi
@@ -1943,6 +1946,15 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_AMD" = "1" ] && [ -n "$OPT" ] && [ "$HAVE_LI
     fi
 else
     echo "  SKIP: scalar device calls need NVPTX, AMDGCN, opt, and a linker"
+fi
+
+if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
+    if ! python3 "$SCRIPT_DIR/check_cuda_package.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA package contract"; fail=1
+    fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_resident.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA resident resource contract"; fail=1
+    fi
 fi
 
 # A6c. Wide pointer elements (cap-elem Door 1): *i128/*i256 captures admit

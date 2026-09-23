@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident_checks.tv";
+
+fn wide_input(path: *u8) -> Str {
+    match fs_read_to_string(path) {
+        Result::Ok(value) => { return value; },
+        Result::Err(error) => { exit(1); },
+    }
+    exit(1); return str_new();
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 5 { return 1; }
+    var data: Str = wide_input(argv[3]);
+    var type_code: i32 = 512;
+    var size: i32 = 64;
+    var count: i32 = 2;
+    let mode: *u8 = argv[2];
+    if mode[0] == 117 { type_code = 0 - 512; }
+    if mode[0] == 98 { type_code = 32; size = 4; count = 3; }
+    if data.len <= 0 || data.len % size != 0 { return 1; }
+    let device: u64 = resident_need(cuda_device_open(0));
+    let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+    let kernel: u64 = resident_need(cuda_kernel_get(module, "__pfor_gpu_worker_0"));
+    let input: u64 = resident_need(cuda_buffer_alloc(device, data.len as u64 + 16));
+    let output: u64 = resident_need(cuda_buffer_alloc(device, data.len as u64 + 16));
+    let vi: CudaArgument = resident_typed_view(input, 16, data.len as u64, type_code);
+    let vo: CudaArgument = resident_typed_view(output, 16, data.len as u64, type_code);
+    let args: *CudaArgument = alloc(count);
+    resident_bind(kernel, args, "input", vi); resident_bind(kernel, args, "output", vo);
+    if count == 3 { resident_bind(kernel, args, "flag", cuda_arg_bool(true)); }
+    resident_need(cuda_upload(vi, data.data, data.len as u64));
+    resident_need(cuda_launch_sync(kernel, 0, data.len / size, args, count));
+    resident_need(cuda_download(data.data, vo, data.len as u64));
+    let file: *u8 = fopen(argv[4], "wb");
+    if file == null { return 1; }
+    let written: i64 = fwrite(data.data, 1, data.len as i64, file);
+    if fclose(file) != 0 || written != data.len as i64 { return 1; }
+    resident_need(cuda_buffer_close(input)); resident_need(cuda_buffer_close(output));
+    resident_need(cuda_module_close(module)); resident_need(cuda_device_close(device));
+    free(args); str_free(&data);
+    puts("resident wide PASS");
+    return 0;
+}
