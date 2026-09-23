@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident.tv";
+extern "C" fn memcpy(destination: *u8, source: *u8, count: usize) -> *u8;
+
+fn cuda_res_async_create(device: u64, kind: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null { return cuda_res_fail(10, 0-1, device); }
+    if d.poisoned != 0 { return cuda_res_fail(10, 0-4, device); }
+    let r: *CudaResource = cuda_res_slot();
+    if r == null { return cuda_res_fail(10, 0-2, device); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(10, status, device); }
+    var native: *u8 = null;
+    if kind == 5 { status = cuStreamCreate(&native, 1); }
+    else { status = cuEventCreate(&native, 2); }
+    if status == 0 {
+        r.kind = kind; r.owner = device; r.native = native;
+        if kind == 5 {
+            r.uses = alloc(1024); r.uses_at = alloc(1024); var i: i32 = 0;
+            while i < 1024 { r.uses[i] = 0; r.uses_at[i] = 0; i = i + 1; }
+        }
+    }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(10, status, r.id); }
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_stream_create(device: u64) -> Result<u64, CudaError> { return cuda_res_async_create(device, 5); }
+fn cuda_event_create(device: u64) -> Result<u64, CudaError> { return cuda_res_async_create(device, 6); }
+
+fn cuda_res_event_command(stream_id: u64, event_id: u64, record: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let stream: *CudaResource = cuda_res_find(stream_id, 5); let event: *CudaResource = cuda_res_find(event_id, 6);
+    if stream == null || event == null || stream.owner != event.owner { return cuda_res_fail(11, 0-1, event_id); }
+    let d: *CudaResource = cuda_res_find(stream.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(11, 0-4, stream_id); }
+    if record == 1 && event.users != 0 { return cuda_res_fail(11, 0-5, event_id); }
+    if record == 0 && event.recorded == 0 { return cuda_res_fail(11, 0-1, event_id); }
+    if stream.sequence == 18446744073709551615 { return cuda_res_fail(11, 0-2, stream_id); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(11, status, stream_id); }
+    stream.sequence = stream.sequence + 1; cuda_res_stream_hold(stream, event);
+    if record == 1 {
+        event.recorded = 0; status = cuEventRecord(event.native, stream.native);
+        if status == 0 { event.recorded = 1; event.parent = stream.id; event.sequence = stream.sequence; }
+    } else { status = cuStreamWaitEvent(stream.native, event.native, 0); }
+    if status != 0 { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(11, status, event_id); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_event_record(event: u64, stream: u64) -> Result<u64, CudaError> { return cuda_res_event_command(stream, event, 1); }
+fn cuda_stream_wait_event(stream: u64, event: u64) -> Result<u64, CudaError> { return cuda_res_event_command(stream, event, 0); }
+
+// A source ID includes its generation, so an old event cannot release a reused slot.
+fn cuda_res_async_complete(id: u64, kind: i32, query: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let r: *CudaResource = cuda_res_find(id, kind);
+    if r == null { return cuda_res_fail(12, 0-1, id); }
+    if kind == 6 && r.recorded == 0 { return cuda_res_fail(12, 0-1, id); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(12, status, id); }
+    if kind == 5 {
+        if query == 1 { status = cuStreamQuery(r.native); } else { status = cuStreamSynchronize(r.native); }
+    } else {
+        if query == 1 { status = cuEventQuery(r.native); } else { status = cuEventSynchronize(r.native); }
+    }
+    var ready: u64 = 1;
+    if query == 1 && status == 600 { ready = 0; status = 0; }
+    else if status == 0 {
+        if kind == 5 { cuda_res_stream_release(r); }
+        else {
+            let source: *CudaResource = cuda_res_find(r.parent, 5);
+            if source != null { cuda_res_stream_release_prefix(source, r.sequence); }
+        }
+    }
+    else { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(12, status, id); }
+    return cuda_res_ok(ready);
+}
+
+fn cuda_stream_query(stream: u64) -> Result<u64, CudaError> { return cuda_res_async_complete(stream, 5, 1); }
+fn cuda_stream_sync(stream: u64) -> Result<u64, CudaError> { return cuda_res_async_complete(stream, 5, 0); }
+fn cuda_event_query(event: u64) -> Result<u64, CudaError> { return cuda_res_async_complete(event, 6, 1); }
+fn cuda_event_sync(event: u64) -> Result<u64, CudaError> { return cuda_res_async_complete(event, 6, 0); }
+fn cuda_stream_close(stream: u64) -> Result<u64, CudaError> { return cuda_resource_close(stream, 5); }
+fn cuda_event_close(event: u64) -> Result<u64, CudaError> { return cuda_resource_close(event, 6); }
+
+fn cuda_launch_grid_async(kernel: u64, stream: u64, geometry: CudaGeometry, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
+    if stream == 0 { return Result::Err(cuda_res_error(8, 0-1, stream)); }
+    return cuda_res_launch(kernel, 0, 0, args, count, geometry, 1, stream);
+}
+
+fn cuda_launch_async(kernel: u64, stream: u64, lo: i32, hi: i32, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
+    if stream == 0 || lo < 0 || hi < lo { return Result::Err(cuda_res_error(8, 0-1, stream)); }
+    let geometry: CudaGeometry = CudaGeometry { grid_x: 1, grid_y: 1, grid_z: 1, block_x: 256, block_y: 1, block_z: 1, shared_bytes: 0 };
+    return cuda_res_launch(kernel, lo as u64, hi as u64, args, count, geometry, 0, stream);
+}
+
+fn cuda_pinned_alloc(device: u64, bytes: u64) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null || bytes == 0 { return cuda_res_fail(13, 0-1, device); }
+    if d.poisoned != 0 { return cuda_res_fail(13, 0-4, device); }
+    let r: *CudaResource = cuda_res_slot(); if r == null { return cuda_res_fail(13, 0-2, device); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(13, status, device); }
+    var pointer: *u8 = null; status = cuMemHostAlloc(&pointer, bytes as usize, 0);
+    if status == 0 { r.kind = 7; r.owner = device; r.native = pointer; r.bytes = bytes; }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(13, status, r.id); }
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_pinned_view(buffer: u64, offset: u64, bytes: u64) -> Result<CudaArgument, CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(buffer, 7);
+    var valid: i32 = 1;
+    if r == null { valid = 0; }
+    else if offset > r.bytes || bytes > r.bytes-offset { valid = 0; }
+    cuda_res_unlock();
+    if valid == 0 { return Result::Err(cuda_res_error(6, 0-1, buffer)); }
+    return Result::Ok(CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: buffer, offset: offset, bytes: bytes });
+}
+
+fn cuda_res_pinned_copy(view: CudaArgument, host: *u8, bytes: u64, read: i32) -> Result<u64, CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(view.buffer, 7);
+    if r == null || view.kind != 3 || view.type_code != 0-8 || (host == null && bytes != 0) { return cuda_res_fail(14, 0-1, view.buffer); }
+    if view.offset > r.bytes || view.bytes > r.bytes-view.offset || bytes > view.bytes { return cuda_res_fail(14, 0-1, view.buffer); }
+    if bytes == 0 { return cuda_res_ok(0); }
+    if r.users != 0 { return cuda_res_fail(14, 0-5, view.buffer); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(14, 0-4, view.buffer); }
+    let pointer: *u8 = ((r.native as u64)+view.offset) as *u8;
+    if read == 1 { memcpy(host, pointer, bytes as usize); } else { memcpy(pointer, host, bytes as usize); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_pinned_write(view: CudaArgument, source: *u8, bytes: u64) -> Result<u64, CudaError> { return cuda_res_pinned_copy(view, source, bytes, 0); }
+fn cuda_pinned_read(destination: *u8, view: CudaArgument, bytes: u64) -> Result<u64, CudaError> { return cuda_res_pinned_copy(view, destination, bytes, 1); }
+fn cuda_pinned_close(buffer: u64) -> Result<u64, CudaError> { return cuda_resource_close(buffer, 7); }
+
+fn cuda_res_copy_async(stream_id: u64, device_view: CudaArgument, host_view: CudaArgument, bytes: u64, download: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    let stream: *CudaResource = cuda_res_find(stream_id, 5);
+    let device: *CudaResource = cuda_res_find(device_view.buffer, 2);
+    let host: *CudaResource = cuda_res_find(host_view.buffer, 7);
+    if stream == null || device == null || host == null || device_view.kind != 2 || host_view.kind != 3
+        || host_view.type_code != 0-8 { return cuda_res_fail(15, 0-1, stream_id); }
+    if device.owner != stream.owner || host.owner != stream.owner { return cuda_res_fail(15, 0-1, stream_id); }
+    if device_view.offset > device.bytes || device_view.bytes > device.bytes-device_view.offset || bytes > device_view.bytes
+        || host_view.offset > host.bytes || host_view.bytes > host.bytes-host_view.offset || bytes > host_view.bytes { return cuda_res_fail(15, 0-1, stream_id); }
+    let d: *CudaResource = cuda_res_find(stream.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(15, 0-4, stream_id); }
+    if bytes == 0 { return cuda_res_ok(0); }
+    if stream.sequence == 18446744073709551615 { return cuda_res_fail(15, 0-2, stream_id); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(15, status, stream_id); }
+    stream.sequence = stream.sequence + 1;
+    cuda_res_stream_hold(stream, device); cuda_res_stream_hold(stream, host);
+    let dp: *u8 = ((device.native as u64)+device_view.offset) as *u8;
+    let hp: *u8 = ((host.native as u64)+host_view.offset) as *u8;
+    if download == 1 { status = cuMemcpyDtoHAsync_v2(hp, dp, bytes as usize, stream.native); }
+    else { status = cuMemcpyHtoDAsync_v2(dp, hp, bytes as usize, stream.native); }
+    if status != 0 { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(15, status, stream_id); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_upload_async(stream: u64, destination: CudaArgument, source: CudaArgument, bytes: u64) -> Result<u64, CudaError> {
+    return cuda_res_copy_async(stream, destination, source, bytes, 0);
+}
+fn cuda_download_async(stream: u64, destination: CudaArgument, source: CudaArgument, bytes: u64) -> Result<u64, CudaError> {
+    return cuda_res_copy_async(stream, source, destination, bytes, 1);
+}

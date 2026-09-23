@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_staging_checks.tv";
+import "../../src/lib/gpu/cuda_graph.tv";
+extern "C" fn strtoull(text: *u8, end: **u8, base: i32) -> u64;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 3 { return 1; } let sm: u64 = strtoull(argv[2], null, 10);
+    let d: u64 = resident_need(cuda_device_open(0));
+    if sm != 0 && resident_need(cuda_device_sm(d)) != sm { return 2; }
+    let m: u64 = resident_need(cuda_module_load(d, argv[1]));
+    let kernels: *u64 = alloc(4); let graphs: *u64 = alloc(4); let streams: *u64 = alloc(4); let events: *u64 = alloc(4);
+    kernels[0] = resident_need(cuda_kernel_get_owner(m, "async_root")); kernels[1] = resident_need(cuda_kernel_get_owner(m, "async_left"));
+    kernels[2] = resident_need(cuda_kernel_get_owner(m, "async_right")); kernels[3] = resident_need(cuda_kernel_get_owner(m, "async_join"));
+    let buffers: *u64 = alloc(5); let views: *CudaArgument = alloc(5); let args: *CudaArgument = alloc(3); let host: *u64 = alloc(288);
+    for i in 0..5 { buffers[i] = resident_need(cuda_buffer_alloc(d, 2304)); views[i] = resident_typed_view(buffers[i], 0, 2304, 0-64); }
+    let geometry: CudaGeometry = CudaGeometry { grid_x: 9, grid_y: 1, grid_z: 1, block_x: 32, block_y: 1, block_z: 1, shared_bytes: 0 };
+    for i in 0..4 {
+        graphs[i] = resident_need(cuda_graph_create(d)); streams[i] = resident_need(cuda_stream_create(d)); events[i] = resident_need(cuda_event_create(d));
+        var count: i32 = 2;
+        if i == 0 { args[0] = views[0]; args[1] = views[1]; }
+        if i == 1 { args[0] = views[1]; args[1] = views[2]; }
+        if i == 2 { args[0] = views[1]; args[1] = views[3]; }
+        if i == 3 { args[0] = views[2]; args[1] = views[3]; args[2] = views[4]; count = 3; }
+        resident_need(cuda_graph_kernel(graphs[i], kernels[i], 0, 0, geometry, 1, args, count));
+        resident_need(cuda_graph_instantiate(graphs[i]));
+    }
+    let other: u64 = resident_need(cuda_device_open(0)); let foreign: u64 = resident_need(cuda_stream_create(other));
+    resident_refused(cuda_graph_launch(graphs[0], foreign)); resident_need(cuda_stream_close(foreign)); resident_need(cuda_device_close(other));
+    for round in 0..8 {
+        for i in 0..288 { host[i] = (i+round*7) as u64; }
+        resident_need(cuda_upload(views[0], host as *u8, 2304));
+        resident_need(cuda_graph_launch(graphs[0], streams[0])); resident_need(cuda_event_record(events[0], streams[0]));
+        for branch in 1..3 {
+            resident_need(cuda_stream_wait_event(streams[branch], events[0]));
+            resident_need(cuda_graph_launch(graphs[branch], streams[branch])); resident_need(cuda_event_record(events[branch], streams[branch]));
+        }
+        resident_need(cuda_stream_wait_event(streams[3], events[1])); resident_need(cuda_stream_wait_event(streams[3], events[2]));
+        resident_need(cuda_graph_launch(graphs[3], streams[3])); resident_need(cuda_event_record(events[3], streams[3]));
+        resident_refused(cuda_graph_close(graphs[0])); resident_refused(cuda_graph_close(graphs[3]));
+        resident_need(cuda_event_sync(events[3])); resident_need(cuda_download(host as *u8, views[4], 2304));
+        for i in 0..288 { if host[i] != ((i+round*7)*4+8) as u64 { return 3; } }
+        for i in 0..3 { resident_need(cuda_stream_sync(streams[i])); }
+    }
+    for i in 0..4 { resident_need(cuda_graph_close(graphs[i])); resident_need(cuda_stream_close(streams[i])); resident_need(cuda_event_close(events[i])); }
+    for i in 0..5 { resident_need(cuda_buffer_close(buffers[i])); }
+    resident_need(cuda_module_close(m)); resident_need(cuda_device_close(d));
+    free(kernels); free(graphs); free(streams); free(events); free(buffers); free(views); free(args); free(host);
+    puts("graph fork/join PASS: eight event-linked replay rounds"); return 0;
+}

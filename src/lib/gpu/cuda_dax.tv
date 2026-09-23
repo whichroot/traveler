@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_async.tv";
+import "../mem/dax.tv";
+
+// The caller keeps the mapping alive for this synchronous staging copy.
+fn cuda_pinned_stage_dax(destination: CudaArgument, source: *DaxView, offset: u64, bytes: u64) -> Result<u64, CudaError> {
+    if source == null { return Result::Err(cuda_res_error(14, 0-1, destination.buffer)); }
+    if source.length < 0 || offset > source.length as u64 || bytes > (source.length as u64)-offset
+        || (source.ptr == null && bytes != 0) { return Result::Err(cuda_res_error(14, 0-1, destination.buffer)); }
+    return cuda_pinned_write(destination, ((source.ptr as u64)+offset) as *u8, bytes);
+}

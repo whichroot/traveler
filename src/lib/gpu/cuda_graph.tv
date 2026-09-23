@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_async.tv";
+
+extern "C" fn cuStreamBeginCapture_v2(stream: *u8, mode: i32) -> i32;
+extern "C" fn cuStreamEndCapture(stream: *u8, graph: **u8) -> i32;
+extern "C" fn cuGraphInstantiateWithFlags(exec: **u8, graph: *u8, flags: u64) -> i32;
+extern "C" fn cuGraphDestroy(graph: *u8) -> i32;
+extern "C" fn cuGraphExecDestroy(exec: *u8) -> i32;
+extern "C" fn cuGraphLaunch(exec: *u8, stream: *u8) -> i32;
+
+struct CudaGraphCommand {
+    operation: i32,
+    kernel: u64,
+    geometry: *CudaGeometry,
+    lo: i32,
+    hi: i32,
+    count: i32,
+    args: *CudaArgument,
+    destination: *CudaArgument,
+    source: *CudaArgument,
+    bytes: u64,
+}
+
+struct CudaGraphData {
+    commands: *CudaGraphCommand,
+    count: i32,
+    graph: *u8,
+    exec: *u8,
+    stream: u64,
+    capturing: i32,
+}
+
+fn cuda_graph_create(device: u64) -> Result<u64,CudaError> {
+    cuda_res_lock(); let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null { return cuda_res_fail(16, 0-1, device); }
+    if d.poisoned != 0 { return cuda_res_fail(16, 0-4, device); }
+    let r: *CudaResource = cuda_res_slot(); if r == null { return cuda_res_fail(16, 0-2, device); }
+    let data: *CudaGraphData = alloc(1); data.commands = alloc(64); data.count = 0;
+    data.graph = null; data.exec = null; data.stream = 0; data.capturing = 0;
+    r.kind = 8; r.owner = device; r.native = data as *u8; r.uses = alloc(1024);
+    for i in 0..1024 { r.uses[i] = 0; }
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_graph_hold(graph: *CudaResource, resource: *CudaResource) {
+    let slot: i32 = (resource.id & 1023) as i32;
+    if graph.uses[slot] == 0 { graph.uses[slot] = resource.id; resource.graph_users = resource.graph_users + 1; }
+}
+
+// Commands form a bounded ordered chain; arguments and geometry are snapshots.
+fn cuda_graph_add(graph: u64, command: CudaGraphCommand) -> Result<u64,CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(graph, 8);
+    if r == null { return cuda_res_fail(16, 0-1, graph); }
+    if r.users != 0 || r.recorded != 0 { return cuda_res_fail(16, 0-5, graph); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(16, 0-4, graph); }
+    let data: *CudaGraphData = r.native as *CudaGraphData;
+    if data.count == 64 { return cuda_res_fail(16, 0-2, graph); }
+    if command.operation < 0 || command.operation > 3 { return cuda_res_fail(16, 0-1, graph); }
+    if command.operation < 2 {
+        let k: *CudaResource = cuda_res_find(command.kernel, 4);
+        if k == null || command.geometry == null || command.count < 1 || command.count > 32 || command.args == null
+            || command.lo < 0 || command.hi < command.lo { return cuda_res_fail(16, 0-1, graph); }
+        if k.owner != r.owner { return cuda_res_fail(16, 0-1, graph); }
+        for i in 0..command.count {
+            if command.args[i].kind == 2 {
+                let b: *CudaResource = cuda_res_find(command.args[i].buffer, 2);
+                if b == null { return cuda_res_fail(16, 0-1, graph); }
+                if b.owner != r.owner { return cuda_res_fail(16, 0-1, graph); }
+            }
+        }
+        cuda_graph_hold(r, cuda_res_find(k.parent, 3));
+        for i in 0..command.count {
+            if command.args[i].kind == 2 { cuda_graph_hold(r, cuda_res_find(command.args[i].buffer, 2)); }
+        }
+    } else {
+        if command.destination == null || command.source == null { return cuda_res_fail(16, 0-1, graph); }
+        var dk: i32 = 2; var sk: i32 = 7;
+        if command.operation == 3 { dk = 7; sk = 2; }
+        let dest: *CudaResource = cuda_res_find(command.destination.buffer, dk);
+        let source: *CudaResource = cuda_res_find(command.source.buffer, sk);
+        if dest == null || source == null { return cuda_res_fail(16, 0-1, graph); }
+        if dest.owner != r.owner || source.owner != r.owner { return cuda_res_fail(16, 0-1, graph); }
+        cuda_graph_hold(r, dest); cuda_graph_hold(r, source);
+    }
+    let node: *CudaGraphCommand = &data.commands[data.count]; node[0] = command;
+    node.args = null; node.geometry = null; node.destination = null; node.source = null;
+    if command.operation < 2 {
+        node.args = alloc(command.count);
+        node.geometry = alloc(1); node.geometry[0] = command.geometry[0];
+        for i in 0..command.count { node.args[i] = command.args[i]; }
+    } else {
+        node.destination = alloc(1); node.source = alloc(1);
+        node.destination[0] = command.destination[0]; node.source[0] = command.source[0];
+    }
+    data.count = data.count+1; return cuda_res_ok(0);
+}
+
+fn cuda_graph_copy(graph: u64, destination: CudaArgument, source: CudaArgument, bytes: u64, download: i32) -> Result<u64,CudaError> {
+    if download != 0 && download != 1 { return Result::Err(cuda_res_error(16, 0-1, graph)); }
+    return cuda_graph_add(graph, CudaGraphCommand { operation: 2+download, kernel: 0, geometry: null, lo: 0, hi: 0, count: 0, args: null, destination: &destination, source: &source, bytes: bytes });
+}
+
+fn cuda_graph_kernel(graph: u64, kernel: u64, lo: i32, hi: i32, geometry: CudaGeometry, cooperative: i32, args: *CudaArgument, count: i32) -> Result<u64,CudaError> {
+    if cooperative != 0 && cooperative != 1 { return Result::Err(cuda_res_error(16, 0-1, graph)); }
+    return cuda_graph_add(graph, CudaGraphCommand { operation: cooperative, kernel: kernel, geometry: &geometry, lo: lo, hi: hi, count: count, args: args, destination: null, source: null, bytes: 0 });
+}
+
+fn cuda_graph_command_enqueue(node: *CudaGraphCommand, stream: u64) -> Result<u64,CudaError> {
+    if node.operation == 0 { return cuda_launch_async(node.kernel, stream, node.lo, node.hi, node.args, node.count); }
+    if node.operation == 1 { return cuda_launch_grid_async(node.kernel, stream, node.geometry[0], node.args, node.count); }
+    if node.operation == 2 { return cuda_upload_async(stream, node.destination[0], node.source[0], node.bytes); }
+    return cuda_download_async(stream, node.destination[0], node.source[0], node.bytes);
+}
+
+// A private relaxed capture validates commands through the ordinary enqueue path.
+fn cuda_graph_instantiate(graph: u64) -> Result<u64,CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(graph, 8);
+    if r == null { return cuda_res_fail(17, 0-1, graph); }
+    if r.recorded != 0 || r.users != 0 { return cuda_res_fail(17, 0-5, graph); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(17, 0-4, graph); }
+    let data: *CudaGraphData = r.native as *CudaGraphData;
+    if data.count == 0 { return cuda_res_fail(17, 0-1, graph); }
+    r.recorded = 1; r.users = r.users+1; cuda_res_unlock();
+    var status: i32 = 0; var stream: u64 = 0;
+    match cuda_stream_create(r.owner) {
+        Result::Ok(id) => { stream = id; },
+        Result::Err(error) => { var e: CudaError = error; status = e.status; stream = e.resource; cuda_error_close(&e); },
+    }
+    cuda_res_lock(); let s: *CudaResource = cuda_res_find(stream, 5);
+    if s != null { data.stream = stream; }
+    var previous: *u8 = null;
+    var entered: i32 = 0;
+    if status == 0 { status = cuda_res_enter(d, &previous); }
+    if status == 0 { entered = 1; }
+    var capturing: i32 = 0;
+    if status == 0 { status = cuStreamBeginCapture_v2(s.native, 2); if status == 0 { capturing = 1; data.capturing = 1; } }
+    cuda_res_unlock();
+    if capturing == 1 {
+        var i: i32 = 0;
+        while i < data.count && status == 0 {
+            match cuda_graph_command_enqueue(&data.commands[i], stream) {
+                Result::Ok(value) => {},
+                Result::Err(error) => { var e: CudaError = error; status = e.status; cuda_error_close(&e); },
+            }
+            i = i+1;
+        }
+    }
+    cuda_res_lock();
+    if capturing == 1 {
+        var native: *u8 = null; let ended: i32 = cuStreamEndCapture(s.native, &native); data.graph = native;
+        if ended == 0 || ended == 901 { data.capturing = 0; }
+        if ended != 0 { status = ended; cuda_res_poison(d); }
+    }
+    if status == 0 {
+        var exec: *u8 = null; status = cuGraphInstantiateWithFlags(&exec, data.graph, 0); data.exec = exec;
+    }
+    if s != null && data.capturing == 0 { cuda_res_stream_release(s); }
+    if entered == 1 { status = cuda_res_leave(d, previous, status); }
+    r.users = r.users-1;
+    if status != 0 { return cuda_res_fail(17, status, graph); }
+    r.recorded = 2; return cuda_res_ok(0);
+}
+
+fn cuda_graph_launch(graph: u64, stream: u64) -> Result<u64,CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(graph, 8); let s: *CudaResource = cuda_res_find(stream, 5);
+    if r == null || s == null { return cuda_res_fail(18, 0-1, graph); }
+    if r.owner != s.owner || r.recorded != 2 { return cuda_res_fail(18, 0-1, graph); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(18, 0-4, graph); }
+    if s.sequence == 18446744073709551615 { return cuda_res_fail(18, 0-2, graph); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(18, status, graph); }
+    s.sequence = s.sequence+1; cuda_res_stream_hold(s, r);
+    for i in 0..1024 { if r.uses[i] != 0 { cuda_res_stream_hold(s, &g_cuda_res_table[i]); } }
+    let data: *CudaGraphData = r.native as *CudaGraphData; status = cuGraphLaunch(data.exec, s.native);
+    if status != 0 { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(18, status, graph); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_graph_close(graph: u64) -> Result<u64,CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(graph, 8);
+    if r == null { return cuda_res_fail(9, 0-1, graph); }
+    if r.users != 0 { return cuda_res_fail(9, 0-5, graph); }
+    let d: *CudaResource = cuda_res_find(r.owner, 1); let data: *CudaGraphData = r.native as *CudaGraphData;
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(9, status, graph); }
+    if data.capturing != 0 {
+        let s: *CudaResource = cuda_res_find(data.stream, 5); var native: *u8 = null;
+        status = cuStreamEndCapture(s.native, &native);
+        if status == 0 || status == 901 {
+            data.capturing = 0; data.graph = native; cuda_res_stream_release(s); status = 0;
+        }
+    }
+    if status == 0 && data.exec != null { status = cuGraphExecDestroy(data.exec); if status == 0 { data.exec = null; } }
+    if status == 0 && data.graph != null { status = cuGraphDestroy(data.graph); if status == 0 { data.graph = null; } }
+    if status == 0 && data.stream != 0 {
+        let s: *CudaResource = cuda_res_find(data.stream, 5);
+        status = cuStreamDestroy_v2(s.native);
+        if status == 0 { free(s.uses); free(s.uses_at); s.kind = 0; data.stream = 0; }
+    }
+    if status == 0 {
+        for i in 0..1024 { if r.uses[i] != 0 { g_cuda_res_table[i].graph_users = g_cuda_res_table[i].graph_users-1; } }
+        for i in 0..data.count {
+            if data.commands[i].args != null { free(data.commands[i].args); }
+            if data.commands[i].geometry != null { free(data.commands[i].geometry); }
+            if data.commands[i].destination != null { free(data.commands[i].destination); free(data.commands[i].source); }
+        }
+        free(data.commands); free(data); free(r.uses); r.kind = 0;
+    }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(9, status, graph); }
+    return cuda_res_ok(0);
+}

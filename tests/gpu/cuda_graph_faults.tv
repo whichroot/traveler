@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_staging_checks.tv";
+import "../../src/lib/gpu/cuda_graph.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; }
+    for test in 0..14 {
+        let d: u64 = resident_need(cuda_device_open(0)); let m: u64 = resident_need(cuda_module_load(d, argv[1]));
+        let k: u64 = resident_need(cuda_kernel_get_owner(m, "async_root")); let s: u64 = resident_need(cuda_stream_create(d));
+        let g: u64 = resident_need(cuda_graph_create(d));
+        let p: u64 = resident_need(cuda_pinned_alloc(d, 2304)); let q: u64 = resident_need(cuda_pinned_alloc(d, 2304));
+        let b: u64 = resident_need(cuda_buffer_alloc(d, 2304)); let c: u64 = resident_need(cuda_buffer_alloc(d, 2304));
+        let hp: CudaArgument = pinned_need(cuda_pinned_view(p, 0, 2304)); let hq: CudaArgument = pinned_need(cuda_pinned_view(q, 0, 2304));
+        let db: CudaArgument = resident_typed_view(b, 0, 2304, 0-64); let dc: CudaArgument = resident_typed_view(c, 0, 2304, 0-64);
+        let args: *CudaArgument = alloc(2); args[0] = db; args[1] = dc;
+        let host: *u64 = alloc(288); for i in 0..288 { host[i] = 7; }
+        resident_need(cuda_pinned_write(hp, host as *u8, 2304));
+        resident_refused(cuda_graph_launch(g, s)); resident_refused(cuda_graph_instantiate(g));
+        resident_need(cuda_graph_copy(g, db, hp, 2304, 0));
+        let geometry: CudaGeometry = CudaGeometry { grid_x: 2, grid_y: 3, grid_z: 1, block_x: 4, block_y: 3, block_z: 4, shared_bytes: 0 };
+        if test == 13 { args[1] = db; }
+        resident_need(cuda_graph_kernel(g, k, 0, 0, geometry, 1, args, 2));
+        resident_need(cuda_graph_copy(g, hq, dc, 2304, 1));
+        resident_refused(cuda_module_close(m)); resident_refused(cuda_buffer_close(b)); resident_refused(cuda_pinned_close(p));
+        if test >= 1 && test <= 3 { mock_fail(25+test, 0); }
+        if test == 7 { mock_fail(24, 0); }
+        if test == 8 { mock_fail(25, 0); }
+        if test == 9 { mock_fail(2, 2); }
+        if test == 10 { mock_fail(2, 9); }
+        if (test >= 1 && test <= 3) || (test >= 7 && test <= 10) || test == 13 {
+            resident_refused(cuda_graph_instantiate(g));
+        } else {
+            resident_need(cuda_graph_instantiate(g));
+            resident_refused(cuda_graph_copy(g, db, hp, 2304, 0));
+            if test == 4 { mock_fail(31, 0); resident_refused(cuda_graph_launch(g, s)); }
+            else if test == 11 { mock_fail(2, 1); resident_refused(cuda_graph_launch(g, s)); }
+            else { resident_need(cuda_graph_launch(g, s)); }
+            resident_refused(cuda_graph_close(g)); resident_refused(cuda_pinned_write(hp, host as *u8, 2304));
+            if test == 12 { mock_fail(16, 0); resident_refused(cuda_stream_sync(s)); resident_refused(cuda_graph_close(g)); }
+            resident_need(cuda_stream_sync(s));
+            if test == 0 {
+                resident_need(cuda_pinned_read(host as *u8, hq, 2304)); for i in 0..288 { if host[i] != 14 { return 2; } host[i] = 13; }
+                resident_need(cuda_pinned_write(hp, host as *u8, 2304)); resident_need(cuda_graph_launch(g, s)); resident_need(cuda_stream_sync(s));
+                resident_need(cuda_pinned_read(host as *u8, hq, 2304)); for i in 0..288 { if host[i] != 26 { return 3; } }
+            }
+        }
+        if test == 5 { mock_fail(29, 0); resident_refused(cuda_graph_close(g)); }
+        if test == 6 { mock_fail(30, 0); resident_refused(cuda_graph_close(g)); }
+        resident_need(cuda_graph_close(g)); resident_refused(cuda_graph_launch(g, s));
+        resident_need(cuda_stream_close(s)); resident_need(cuda_pinned_close(p)); resident_need(cuda_pinned_close(q));
+        resident_need(cuda_buffer_close(b)); resident_need(cuda_buffer_close(c)); resident_need(cuda_module_close(m)); resident_need(cuda_device_close(d));
+        free(host); free(args); if mock_clean() == 0 { return 4; }
+    }
+    puts("graph failures PASS: capture, validation, instantiate, launch, destroy, restoration, and mutable replay"); return 0;
+}

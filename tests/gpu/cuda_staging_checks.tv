@@ -1,0 +1,109 @@
+import "cuda_resident_checks.tv";
+import "../../src/lib/gpu/cuda_async.tv";
+
+fn pinned_need(result: Result<CudaArgument,CudaError>) -> CudaArgument {
+    match result {
+        Result::Ok(view) => { return view; },
+        Result::Err(error) => { print(error.boundary); print(error.status); exit(30); },
+    }
+    exit(30); return cuda_arg_u64(0);
+}
+
+fn staging_result(host: *u64, view: CudaArgument, round: i32) {
+    resident_need(cuda_pinned_read(host as *u8, view, 2336));
+    if host[0] != 11936128518282651045 || host[1] != 11936128518282651045
+        || host[290] != 11936128518282651045 || host[291] != 11936128518282651045 { exit(31); }
+    for i in 0..288 { if host[i+2] != ((round*1000+i)*2) as u64 { exit(32); } }
+}
+
+fn staging_pipeline(path: *u8, expected_sm: u64) {
+    let d: u64 = resident_need(cuda_device_open(0));
+    if expected_sm != 0 && resident_need(cuda_device_sm(d)) != expected_sm { exit(33); }
+    let m: u64 = resident_need(cuda_module_load(d, path));
+    let k: u64 = resident_need(cuda_kernel_get_owner(m, "async_root"));
+    let independent: u64 = resident_need(cuda_kernel_get_owner(m, "async_independent"));
+    let streams: *u64 = alloc(2); let uploaded: *u64 = alloc(2); let done: *u64 = alloc(2);
+    let pins: *u64 = alloc(4); let buffers: *u64 = alloc(4);
+    let hv: *CudaArgument = alloc(4); let dv: *CudaArgument = alloc(4); let whole: *CudaArgument = alloc(4);
+    let host: *u64 = alloc(292); let args: *CudaArgument = alloc(2);
+    for i in 0..292 { host[i] = 11936128518282651045; }
+    for i in 0..2 {
+        streams[i] = resident_need(cuda_stream_create(d));
+        uploaded[i] = resident_need(cuda_event_create(d)); done[i] = resident_need(cuda_event_create(d));
+    }
+    for i in 0..4 {
+        pins[i] = resident_need(cuda_pinned_alloc(d, 2336)); buffers[i] = resident_need(cuda_buffer_alloc(d, 2336));
+        hv[i] = pinned_need(cuda_pinned_view(pins[i], 16, 2304));
+        whole[i] = pinned_need(cuda_pinned_view(pins[i], 0, 2336));
+        dv[i] = resident_typed_view(buffers[i], 16, 2304, 0-64);
+        resident_need(cuda_pinned_write(whole[i], host as *u8, 2336));
+    }
+    resident_refused(cuda_pinned_alloc(d, 0));
+    resident_refused(cuda_pinned_write(hv[0], host as *u8, 2305));
+    resident_refused(cuda_upload_async(streams[0], dv[0], hv[0], 2305));
+    resident_refused(cuda_upload_async(streams[0], dv[0], dv[1], 8));
+    let empty: CudaArgument = pinned_need(cuda_pinned_view(pins[0], 2336, 0));
+    resident_need(cuda_pinned_write(empty, null, 0)); resident_need(cuda_upload_async(streams[0], dv[0], empty, 0));
+    let forged: CudaArgument = CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: pins[0], offset: 18446744073709551615, bytes: 1 };
+    resident_refused(cuda_pinned_write(forged, host as *u8, 1));
+    resident_refused(cuda_upload_async(streams[0], dv[0], forged, 1));
+    let other: u64 = resident_need(cuda_device_open(0));
+    let foreign: u64 = resident_need(cuda_pinned_alloc(other, 8));
+    let foreign_view: CudaArgument = pinned_need(cuda_pinned_view(foreign, 0, 8));
+    resident_refused(cuda_upload_async(streams[0], dv[0], foreign_view, 8));
+    resident_need(cuda_pinned_close(foreign)); resident_need(cuda_device_close(other));
+    let g: CudaGeometry = CudaGeometry { grid_x: 2, grid_y: 3, grid_z: 1, block_x: 4, block_y: 3, block_z: 4, shared_bytes: 0 };
+    for round in 0..16 {
+        let slot: i32 = round%2; let output: i32 = slot+2;
+        if round >= 2 { resident_need(cuda_event_sync(done[slot])); staging_result(host, whole[output], round-2); }
+        if round < 2 {
+            let entire: CudaArgument = resident_typed_view(buffers[output], 0, 2336, 0-8);
+            resident_need(cuda_upload_async(streams[slot], entire, whole[output], 2336));
+        }
+        for i in 0..288 { host[i] = (round*1000+i) as u64; }
+        resident_need(cuda_pinned_write(hv[slot], host as *u8, 2304));
+        resident_need(cuda_upload_async(streams[slot], dv[slot], hv[slot], 2304));
+        resident_need(cuda_event_record(uploaded[slot], streams[slot]));
+        args[0] = dv[slot]; args[1] = dv[output];
+        if round%4 < 2 { resident_need(cuda_launch_grid_async(k, streams[slot], g, args, 2)); }
+        else { resident_need(cuda_launch_async(independent, streams[slot], 0, 288, args, 2)); }
+        let entire: CudaArgument = resident_typed_view(buffers[output], 0, 2336, 0-8);
+        resident_need(cuda_download_async(streams[slot], whole[output], entire, 2336));
+        resident_need(cuda_event_record(done[slot], streams[slot]));
+        resident_refused(cuda_pinned_close(pins[slot])); resident_refused(cuda_pinned_read(host as *u8, whole[output], 2336));
+        resident_need(cuda_event_sync(uploaded[slot]));
+        resident_refused(cuda_buffer_close(buffers[slot])); resident_refused(cuda_pinned_close(pins[output]));
+        for i in 0..288 { host[i] = 18446744073709551615; }
+        resident_need(cuda_pinned_write(hv[slot], host as *u8, 2304));
+    }
+    for slot in 0..2 {
+        resident_need(cuda_event_sync(done[slot])); staging_result(host, whole[slot+2], 14+slot);
+        resident_need(cuda_stream_close(streams[slot]));
+    }
+    let replacement: u64 = resident_need(cuda_stream_create(d));
+    resident_need(cuda_upload_async(replacement, dv[0], hv[0], 2304));
+    resident_need(cuda_event_sync(done[0]));
+    resident_refused(cuda_pinned_write(hv[0], host as *u8, 2304));
+    resident_need(cuda_stream_sync(replacement));
+    resident_need(cuda_upload_async(replacement, dv[0], hv[0], 2304));
+    resident_need(cuda_event_record(uploaded[0], replacement));
+    resident_need(cuda_upload_async(replacement, dv[0], hv[0], 2304));
+    resident_need(cuda_event_sync(uploaded[0]));
+    resident_refused(cuda_pinned_write(hv[0], host as *u8, 2304));
+    resident_need(cuda_stream_sync(replacement));
+    resident_need(cuda_pinned_write(hv[0], host as *u8, 2304));
+    let second: u64 = resident_need(cuda_stream_create(d));
+    resident_need(cuda_upload_async(replacement, dv[0], hv[0], 2304));
+    resident_need(cuda_event_record(uploaded[0], replacement));
+    resident_need(cuda_upload_async(second, dv[1], hv[0], 2304));
+    resident_need(cuda_event_record(uploaded[1], second));
+    resident_need(cuda_event_sync(uploaded[0])); resident_refused(cuda_pinned_write(hv[0], host as *u8, 2304));
+    resident_need(cuda_event_sync(uploaded[1])); resident_need(cuda_pinned_write(hv[0], host as *u8, 2304));
+    resident_need(cuda_stream_close(second)); resident_need(cuda_stream_close(replacement));
+    for i in 0..2 { resident_need(cuda_event_close(uploaded[i])); resident_need(cuda_event_close(done[i])); }
+    for i in 0..4 { resident_need(cuda_pinned_close(pins[i])); resident_need(cuda_buffer_close(buffers[i])); }
+    resident_refused(cuda_pinned_read(host as *u8, hv[0], 8));
+    resident_need(cuda_module_close(m)); resident_need(cuda_device_close(d));
+    free(streams); free(uploaded); free(done); free(pins); free(buffers); free(hv); free(dv); free(whole); free(host); free(args);
+    puts("pinned staging PASS: 16 slot rounds, prefix reuse, later uses, two readers, and stale source generations");
+}

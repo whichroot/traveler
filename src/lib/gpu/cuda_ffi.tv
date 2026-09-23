@@ -16,7 +16,9 @@ extern "C" fn cuMemFree_v2(pointer: *u8) -> i32;
 extern "C" fn cuMemcpyHtoD_v2(destination: *u8, source: *u8,
                               size: usize) -> i32;
 extern "C" fn cuMemcpyDtoH_v2(destination: *u8, source: *u8,
-                              size: usize) -> i32;
+                               size: usize) -> i32;
+extern "C" fn cuMemcpyHtoDAsync_v2(destination: *u8, source: *u8, size: usize, stream: *u8) -> i32;
+extern "C" fn cuMemcpyDtoHAsync_v2(destination: *u8, source: *u8, size: usize, stream: *u8) -> i32;
 extern "C" fn cuLaunchKernel(function: *u8,
                              grid_x: u32, grid_y: u32, grid_z: u32,
                              block_x: u32, block_y: u32, block_z: u32,
@@ -28,6 +30,16 @@ extern "C" fn cuDeviceGetAttribute(value_out: *i32, attribute: i32, device: i32)
 extern "C" fn cuModuleLoadDataEx(module_out: **u8, image: *u8, count: u32,
                                  options: *i32, values: **u8) -> i32;
 extern "C" fn cuFuncGetAttribute(value_out: *i32, attribute: i32, function: *u8) -> i32;
+extern "C" fn cuStreamCreate(stream_out: **u8, flags: u32) -> i32;
+extern "C" fn cuStreamDestroy_v2(stream: *u8) -> i32;
+extern "C" fn cuStreamSynchronize(stream: *u8) -> i32;
+extern "C" fn cuStreamQuery(stream: *u8) -> i32;
+extern "C" fn cuStreamWaitEvent(stream: *u8, event: *u8, flags: u32) -> i32;
+extern "C" fn cuEventCreate(event_out: **u8, flags: u32) -> i32;
+extern "C" fn cuEventDestroy_v2(event: *u8) -> i32;
+extern "C" fn cuEventRecord(event: *u8, stream: *u8) -> i32;
+extern "C" fn cuEventSynchronize(event: *u8) -> i32;
+extern "C" fn cuEventQuery(event: *u8) -> i32;
 
 // Registered host memory: a device reads the pinned host pages directly.
 // flags=2 is CU_MEMHOSTREGISTER_DEVICEMAP, the cuMemHostGetDevicePointer form.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Resident synchronous CUDA resources. Public IDs never expose owner pointers.
+// Resident CUDA resources. Public IDs never expose owner pointers.
 
 import "cuda_ffi.tv";
 import "cuda_package.tv";
@@ -40,6 +40,12 @@ struct CudaResource {
     threads: u64,
     shared_bytes: u64,
     dynamic_bytes: u64,
+    uses: *u64,
+    uses_at: *u64,
+    sequence: u64,
+    users: u64,
+    graph_users: u64,
+    recorded: i32,
 }
 
 var g_cuda_res_lock: i32 = 0;
@@ -94,12 +100,33 @@ fn cuda_res_slot() -> *CudaResource {
             r.package = null; r.entry = 0;
             r.limits = null; r.threads = 0; r.shared_bytes = 0;
             r.dynamic_bytes = 0;
+            r.uses = null; r.uses_at = null; r.sequence = 0; r.users = 0; r.graph_users = 0; r.recorded = 0;
             return r;
         }
         i = i + 1;
     }
     return null;
 }
+
+// Retention tracks the last queued use, so a completed prefix cannot free a later use.
+fn cuda_res_stream_hold(stream: *CudaResource, resource: *CudaResource) {
+    let slot: i32 = (resource.id & 1023) as i32;
+    if stream.uses[slot] == 0 { stream.uses[slot] = resource.id; resource.users = resource.users + 1; }
+    stream.uses_at[slot] = stream.sequence;
+}
+
+fn cuda_res_stream_release_prefix(stream: *CudaResource, sequence: u64) {
+    var i: i32 = 0;
+    while i < 1024 {
+        if stream.uses[i] != 0 && stream.uses_at[i] <= sequence {
+            g_cuda_res_table[i].users = g_cuda_res_table[i].users - 1;
+            stream.uses[i] = 0;
+        }
+        i = i + 1;
+    }
+}
+
+fn cuda_res_stream_release(stream: *CudaResource) { cuda_res_stream_release_prefix(stream, stream.sequence); }
 
 fn cuda_res_poison(d: *CudaResource) {
     var i: i32 = 0;
@@ -364,6 +391,7 @@ fn cuda_transfer(view: CudaArgument, host: *u8, bytes: u64, download: i32) -> Re
     cuda_res_lock();
     let r: *CudaResource = cuda_res_find(view.buffer, 2);
     if r == null || view.kind != 2 || host == null { return cuda_res_fail(7, 0 - 1, view.buffer); }
+    if r.users != 0 { return cuda_res_fail(7, 0 - 5, view.buffer); }
     if view.offset > r.bytes || view.bytes > r.bytes - view.offset || bytes > view.bytes { return cuda_res_fail(7, 0 - 1, view.buffer); }
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(7, 0 - 4, view.buffer); }
@@ -374,7 +402,7 @@ fn cuda_transfer(view: CudaArgument, host: *u8, bytes: u64, download: i32) -> Re
     let pointer: *u8 = ((r.native as u64) + view.offset) as *u8;
     if download == 1 { status = cuMemcpyDtoH_v2(host, pointer, bytes as usize); }
     else { status = cuMemcpyHtoD_v2(pointer, host, bytes as usize); }
-    if status == 0 { status = cuCtxSynchronize(); }
+    if status == 0 { status = cuStreamSynchronize(null); }
     if status != 0 { cuda_res_poison(d); }
     status = cuda_res_leave(d, previous, status);
     if status != 0 { return cuda_res_fail(7, status, view.buffer); }
@@ -385,7 +413,7 @@ fn cuda_upload(view: CudaArgument, host: *u8, bytes: u64) -> Result<u64, CudaErr
 fn cuda_download(host: *u8, view: CudaArgument, bytes: u64) -> Result<u64, CudaError> { return cuda_transfer(view, host, bytes, 1); }
 
 fn cuda_res_launch(kernel: u64, start: u64, end: u64, args: *CudaArgument, count: i32,
-                   shape: CudaGeometry, cooperative: i32) -> Result<u64, CudaError> {
+                   shape: CudaGeometry, cooperative: i32, stream_id: u64) -> Result<u64, CudaError> {
     cuda_res_lock();
     var lo: u64 = start; var hi: u64 = end;
     var geometry: CudaGeometry = shape;
@@ -393,6 +421,12 @@ fn cuda_res_launch(kernel: u64, start: u64, end: u64, args: *CudaArgument, count
     if k == null || args == null || count < 1 || count > 32 || hi < lo { return cuda_res_fail(8, 0 - 1, kernel); }
     let m: *CudaResource = cuda_res_find(k.parent, 3);
     let d: *CudaResource = cuda_res_find(k.owner, 1);
+    var stream: *CudaResource = null;
+    if stream_id != 0 {
+        stream = cuda_res_find(stream_id, 5);
+        if stream == null || stream.owner != k.owner { return cuda_res_fail(8, 0 - 1, stream_id); }
+        if stream.sequence == 18446744073709551615 { return cuda_res_fail(8, 0 - 2, stream_id); }
+    }
     if d.poisoned != 0 { return cuda_res_fail(8, 0 - 4, kernel); }
     let doc: *Json = m.package.document;
     if cuda_json_string(doc, k.entry, "execution", "cooperative-kernel") != cooperative { return cuda_res_fail(8, 0 - 1, kernel); }
@@ -459,6 +493,7 @@ fn cuda_res_launch(kernel: u64, start: u64, end: u64, args: *CudaArgument, count
                 extent = args[slot].value;
             }
             if args[i].kind != 2 || args[i].type_code != t || b == null { valid = 0; }
+            else if stream == null && b.users != 0 { valid = 0; }
             else if b.owner != k.owner || args[i].offset > b.bytes || args[i].bytes > b.bytes - args[i].offset
                 || args[i].offset % alignment != 0 || args[i].bytes % size != 0
                 || extent > args[i].bytes / size { valid = 0; }
@@ -493,9 +528,19 @@ fn cuda_res_launch(kernel: u64, start: u64, end: u64, args: *CudaArgument, count
     var previous: *u8 = null;
     var status: i32 = cuda_res_enter(d, &previous);
     if status != 0 { free(values); free(pointers); return cuda_res_fail(8, status, kernel); }
+    var native_stream: *u8 = null;
+    if stream != null {
+        stream.sequence = stream.sequence + 1;
+        native_stream = stream.native; cuda_res_stream_hold(stream, m);
+        i = 0;
+        while i < count {
+            if args[i].kind == 2 { cuda_res_stream_hold(stream, cuda_res_find(args[i].buffer, 2)); }
+            i = i + 1;
+        }
+    }
     status = cuLaunchKernel(k.native, geometry.grid_x as u32, geometry.grid_y as u32, geometry.grid_z as u32,
-        geometry.block_x as u32, geometry.block_y as u32, geometry.block_z as u32, geometry.shared_bytes as u32, null, pointers, null);
-    if status == 0 { status = cuCtxSynchronize(); }
+        geometry.block_x as u32, geometry.block_y as u32, geometry.block_z as u32, geometry.shared_bytes as u32, native_stream, pointers, null);
+    if status == 0 && stream == null { status = cuCtxSynchronize(); }
     if status != 0 { cuda_res_poison(d); }
     free(values); free(pointers);
     status = cuda_res_leave(d, previous, status);
@@ -507,17 +552,18 @@ fn cuda_launch_sync(kernel: u64, lo: i32, hi: i32, args: *CudaArgument, count: i
     if lo < 0 || hi < lo { return Result::Err(cuda_res_error(8, 0 - 1, kernel)); }
     let geometry: CudaGeometry = CudaGeometry { grid_x: 1, grid_y: 1, grid_z: 1,
         block_x: 256, block_y: 1, block_z: 1, shared_bytes: 0 };
-    return cuda_res_launch(kernel, lo as u64, hi as u64, args, count, geometry, 0);
+    return cuda_res_launch(kernel, lo as u64, hi as u64, args, count, geometry, 0, 0);
 }
 
 fn cuda_launch_grid_sync(kernel: u64, geometry: CudaGeometry, args: *CudaArgument, count: i32) -> Result<u64, CudaError> {
-    return cuda_res_launch(kernel, 0, 0, args, count, geometry, 1);
+    return cuda_res_launch(kernel, 0, 0, args, count, geometry, 1, 0);
 }
 
 fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
     cuda_res_lock();
     let r: *CudaResource = cuda_res_find(id, kind);
     if r == null { return cuda_res_fail(9, 0 - 1, id); }
+    if r.users != 0 || r.graph_users != 0 { return cuda_res_fail(9, 0 - 5, id); }
     if kind == 1 {
         var i: i32 = 0;
         while i < 1024 {
@@ -537,6 +583,15 @@ fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
     if status == 0 {
         if kind == 2 { status = cuMemFree_v2(r.native); }
         else if kind == 3 { status = cuModuleUnload(r.native); }
+        else if kind == 5 {
+            status = cuStreamSynchronize(r.native);
+            if status == 0 {
+                cuda_res_stream_release(r);
+                status = cuStreamDestroy_v2(r.native);
+            } else { cuda_res_poison(d); }
+        }
+        else if kind == 6 { status = cuEventDestroy_v2(r.native); }
+        else if kind == 7 { status = cuMemFreeHost(r.native); }
     }
     if status == 0 {
         if kind == 3 {
@@ -547,6 +602,7 @@ fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
             }
             cuda_package_close(r.package); free(r.package);
         }
+        if kind == 5 { free(r.uses); free(r.uses_at); r.uses = null; r.uses_at = null; }
         r.kind = 0;
     }
     status = cuda_res_leave(d, previous, status);

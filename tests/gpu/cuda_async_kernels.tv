@@ -1,0 +1,20 @@
+import "../../src/lib/gpu/thread.tv";
+
+#[kernel]
+fn async_root(t: GpuThread, input: *u64, output: *u64) {
+    let i = gpu_global_index(t); output[i] = input[i]*2;
+}
+#[kernel]
+fn async_left(t: GpuThread, input: *u64, output: *u64) {
+    let i = gpu_global_index(t); output[i] = input[i]+3;
+}
+#[kernel]
+fn async_right(t: GpuThread, input: *u64, output: *u64) {
+    let i = gpu_global_index(t); output[i] = input[i]+5;
+}
+#[kernel]
+fn async_join(t: GpuThread, left: *u64, right: *u64, output: *u64) {
+    let i = gpu_global_index(t); output[i] = left[i]+right[i];
+}
+#[kernel]
+fn async_independent(i: i32, input: *u64, output: *u64) { output[i] = input[i]*2; }

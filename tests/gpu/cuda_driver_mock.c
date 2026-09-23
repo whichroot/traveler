@@ -15,10 +15,16 @@ static int fail(int operation) {
     fault = 0;
     return 800 + operation;
 }
+#include "cuda_async_mock.h"
 int mock_clean(void) {
-    return !allocations && !modules && !contexts && current == (void *)0x123;
+    return !allocations && !modules && !contexts && !async_streams && !async_events && !async_pinned && !async_graphs && !async_execs && current == (void *)0x123;
 }
 int mock_pipeline(void) { return uploads == 3 && downloads == 1 && launches == 4 && mock_clean(); }
+#ifdef MOCK_ASYNC_CLEAN
+__attribute__((destructor)) static void mock_async_clean_exit(void) {
+    assert(mock_clean() && !async_context_syncs);
+}
+#endif
 int cuInit(unsigned flags) { (void)flags; return 0; }
 int cuDeviceGet(int *device, int ordinal) { *device = ordinal; return 0; }
 int cuDeviceGetAttribute(int *v, int attribute, int device) {
@@ -60,11 +66,17 @@ int cuModuleLoadDataEx(void **out, void *ptx, unsigned count, int *options, void
     *out = malloc(1);
     *(char *)*out = strstr(ptx, "__traveler_shared_dynamic") != NULL;
     if (strstr(ptx, "atom.")) *(char *)*out = 2;
+    else if (strstr(ptx, "__traveler_kernel_3")) *(char *)*out = 3;
     modules++; return 0;
 }
 int cuModuleUnload(void *module) { free(module); modules--; return 0; }
 int cuModuleGetFunction(void **out, void *module, const char *name) {
     int e = fail(5); if (e) return e;
+    if (*(char *)module == 3) {
+        unsigned entry;
+        if (sscanf(name, "__traveler_kernel_%u", &entry) != 1 || entry >= 5) return 500;
+        *out = (void *)(uintptr_t)(64 + entry); return 0;
+    }
     if (*(char *)module == 2) {
         unsigned entry;
         if (sscanf(name, "__traveler_kernel_%u", &entry) != 1 || entry >= 24) return 500;
@@ -100,11 +112,20 @@ int cuMemcpyHtoD_v2(void *dest, const void *src, size_t bytes) {
 int cuMemcpyDtoH_v2(void *dest, const void *src, size_t bytes) {
     assert(current != (void *)0x123); memcpy(dest, src, bytes); downloads++; return 0;
 }
-int cuCtxSynchronize(void) { return fail(8); }
+int cuCtxSynchronize(void) { async_context_syncs++; return fail(8); }
 int cuLaunchKernel(void *function, unsigned gx, unsigned gy, unsigned gz,
                    unsigned bx, unsigned by, unsigned bz, unsigned shared,
                    void *stream, void **args, void **extra) {
     int e = fail(7); if (e) return e;
+    if ((uintptr_t)function >= 64 && (uintptr_t)function < 69) {
+        assert(stream && !shared && !extra);
+        if ((uintptr_t)function == 68) {
+            assert(bx == 256 && by == 1 && bz == 1 && gy == 1 && gz == 1);
+            assert(*(uint32_t *)args[2] == 0 && gx == (*(uint32_t *)args[3] + 255) / 256);
+            return mock_async_launch(stream, 0, *(uint32_t *)args[3], args);
+        }
+        return mock_async_launch(stream, (uintptr_t)function - 64, (uint64_t)gx*gy*gz*bx*by*bz, args);
+    }
     if ((uintptr_t)function >= 20 && (uintptr_t)function < 44) {
         unsigned entry = (uintptr_t)function - 20;
         unsigned bits = entry % 8 < 4 ? 32 : 64, operation = entry / 8;

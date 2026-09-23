@@ -1,0 +1,80 @@
+import "cuda_async_checks.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+extern "C" fn mock_async_context_syncs() -> i32;
+
+fn async_error(result: Result<u64,CudaError>, boundary: i32, status: i32) -> u64 {
+    match result {
+        Result::Ok(value) => { exit(20); },
+        Result::Err(error) => {
+            var e: CudaError = error;
+            if e.boundary != boundary || e.status != status { print(e.boundary); print(e.status); exit(21); }
+            let id: u64 = e.resource; cuda_error_close(&e); return id;
+        },
+    }
+    exit(22); return 0;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; }
+    async_pipeline(argv[1], 0);
+    if mock_clean() == 0 || mock_async_context_syncs() != 0 { return 23; }
+    for operation in 12..22 {
+        let d: u64 = resident_need(cuda_device_open(0));
+        let s: u64 = resident_need(cuda_stream_create(d));
+        let e: u64 = resident_need(cuda_event_create(d));
+        if operation >= 15 && operation <= 19 { resident_need(cuda_event_record(e, s)); }
+        mock_fail(operation, 0);
+        if operation == 12 { async_error(cuda_stream_create(d), 10, 812); }
+        if operation == 13 { async_error(cuda_event_create(d), 10, 813); }
+        if operation == 14 { async_error(cuda_event_record(e, s), 11, 814); }
+        if operation == 15 { async_error(cuda_stream_wait_event(s, e), 11, 815); }
+        if operation == 16 { async_error(cuda_stream_sync(s), 12, 816); }
+        if operation == 17 { async_error(cuda_stream_query(s), 12, 817); }
+        if operation == 18 { async_error(cuda_event_sync(e), 12, 818); }
+        if operation == 19 { async_error(cuda_event_query(e), 12, 819); }
+        if operation == 20 { async_error(cuda_stream_close(s), 9, 820); }
+        if operation == 21 { async_error(cuda_event_close(e), 9, 821); }
+        resident_need(cuda_stream_close(s)); resident_need(cuda_event_close(e)); resident_need(cuda_device_close(d));
+        if mock_clean() == 0 { return 24; }
+    }
+    for kind in 5..7 {
+        let d: u64 = resident_need(cuda_device_open(0)); mock_fail(2, 1);
+        var id: u64 = 0;
+        if kind == 5 { id = async_error(cuda_stream_create(d), 10, 802); }
+        else { id = async_error(cuda_event_create(d), 10, 802); }
+        resident_need(cuda_resource_close(id, kind)); resident_need(cuda_device_close(d));
+        if mock_clean() == 0 { return 25; }
+    }
+    for test in 0..7 {
+        let d: u64 = resident_need(cuda_device_open(0));
+        let m: u64 = resident_need(cuda_module_load(d, argv[1]));
+        let k: u64 = resident_need(cuda_kernel_get_owner(m, "async_root"));
+        let s: u64 = resident_need(cuda_stream_create(d)); let e: u64 = resident_need(cuda_event_create(d));
+        let input: u64 = resident_need(cuda_buffer_alloc(d, 256)); let output: u64 = resident_need(cuda_buffer_alloc(d, 256));
+        let args: *CudaArgument = alloc(2); let host: *u64 = alloc(32);
+        for i in 0..32 { host[i] = i as u64; }
+        args[0] = resident_typed_view(input, 0, 256, 0-64); args[1] = resident_typed_view(output, 0, 256, 0-64);
+        resident_need(cuda_upload(args[0], host as *u8, 256));
+        let g: CudaGeometry = CudaGeometry { grid_x: 1, grid_y: 1, grid_z: 1, block_x: 32, block_y: 1, block_z: 1, shared_bytes: 0 };
+        if test == 0 {
+            mock_fail(7, 0); async_error(cuda_launch_grid_async(k, s, g, args, 2), 8, 807);
+        } else if test == 6 {
+            mock_fail(2, 1); async_error(cuda_launch_grid_async(k, s, g, args, 2), 8, 802);
+        } else {
+            resident_need(cuda_launch_grid_async(k, s, g, args, 2)); resident_need(cuda_event_record(e, s));
+            if test == 1 { mock_fail(16, 0); async_error(cuda_stream_sync(s), 12, 816); }
+            if test == 2 { mock_fail(17, 0); async_error(cuda_stream_query(s), 12, 817); }
+            if test == 3 { mock_fail(18, 0); async_error(cuda_event_sync(e), 12, 818); }
+            if test == 4 { mock_fail(19, 0); async_error(cuda_event_query(e), 12, 819); }
+            if test == 5 { mock_fail(15, 0); async_error(cuda_stream_wait_event(s, e), 11, 815); }
+        }
+        resident_refused(cuda_buffer_close(input)); resident_refused(cuda_buffer_close(output)); resident_refused(cuda_module_close(m));
+        async_error(cuda_launch_grid_async(k, s, g, args, 2), 8, 0-4);
+        resident_need(cuda_stream_close(s)); resident_need(cuda_event_close(e));
+        resident_need(cuda_buffer_close(input)); resident_need(cuda_buffer_close(output));
+        resident_need(cuda_module_close(m)); resident_need(cuda_device_close(d)); free(args); free(host);
+        if mock_clean() == 0 { return 26; }
+    }
+    puts("async failures PASS"); return 0;
+}

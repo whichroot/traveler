@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_staging_checks.tv";
+import "../../src/lib/gpu/cuda_dax.tv";
+import "../../src/lib/gpu/cuda_graph.tv";
+import "../../src/lib/time/time.tv";
+extern "C" fn strtoull(text: *u8, end: **u8, base: i32) -> u64;
+extern "C" fn strcmp(a: *u8, b: *u8) -> i32;
+
+fn pipeline_now() -> i64 {
+    match time_mono_ns() { Result::Ok(value) => { return value; }, Result::Err(error) => { exit(9); }, }
+    return 0;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 7 { return 1; }
+    let bytes: u64 = strtoull(argv[3], null, 10); let rounds: i32 = strtoull(argv[4], null, 10) as i32;
+    let trials: i32 = strtoull(argv[5], null, 10) as i32; let sm: u64 = strtoull(argv[6], null, 10);
+    if bytes == 0 || bytes%8 != 0 || bytes > 16777216 || rounds < 2 || rounds > 128 || trials < 1 || trials > 15 { return 2; }
+    let words: i32 = (bytes/8) as i32;
+    let reference: *u64 = alloc(words*2); let actual: *u64 = alloc(words);
+    var region: DaxRegion = DaxRegion { base: null, offset: 0, length: 0, align: 0, writable: 0 };
+    var dax: DaxDevice = DaxDevice { fd: 0-1, writable: 0, size: 0, align: 0 };
+    var view: DaxView = DaxView { ptr: reference as *u8, offset: 0, length: (bytes*2) as i64 };
+    if strcmp(argv[2], "-") == 0 {
+        for i in 0..words*2 { reference[i] = (i as u64)*6364136223846793005+1442695040888963407; }
+    } else {
+        let path: *u8 = argv[2];
+        if path[0] == 64 {
+            let fd: i32 = open(((path as u64)+1) as *u8, 0);
+            match dax_attach(fd, 0, (bytes*2) as i64, 4096) { Result::Ok(value) => { dax = value; }, Result::Err(error) => { return 3; }, }
+        } else {
+            match dax_open(path) { Result::Ok(value) => { dax = value; }, Result::Err(error) => { return 3; }, }
+        }
+        let length: i64 = (((bytes*2) as i64 + dax.align-1)/dax.align)*dax.align;
+        match dax_map(&dax, 0, length) { Result::Ok(value) => { region = value; }, Result::Err(error) => { return 4; }, }
+        match dax_view(&region, 0, (bytes*2) as i64) { Result::Ok(value) => { view = value; }, Result::Err(error) => { return 5; }, }
+        memcpy(reference as *u8, view.ptr, (bytes*2) as usize);
+    }
+    let d: u64 = resident_need(cuda_device_open(0));
+    if sm != 0 && resident_need(cuda_device_sm(d)) != sm { return 6; }
+    let m: u64 = resident_need(cuda_module_load(d, argv[1]));
+    let k: u64 = resident_need(cuda_kernel_get_owner(m, "async_independent"));
+    let streams: *u64 = alloc(2); let events: *u64 = alloc(2); let graphs: *u64 = alloc(2);
+    let pins: *u64 = alloc(4); let buffers: *u64 = alloc(4);
+    let hv: *CudaArgument = alloc(4); let dv: *CudaArgument = alloc(4); let args: *CudaArgument = alloc(2);
+    for i in 0..4 {
+        pins[i] = resident_need(cuda_pinned_alloc(d, bytes)); buffers[i] = resident_need(cuda_buffer_alloc(d, bytes));
+        hv[i] = pinned_need(cuda_pinned_view(pins[i], 0, bytes)); dv[i] = resident_typed_view(buffers[i], 0, bytes, 0-64);
+    }
+    let geometry: CudaGeometry = CudaGeometry { grid_x: 1, grid_y: 1, grid_z: 1, block_x: 256, block_y: 1, block_z: 1, shared_bytes: 0 };
+    let setup_start: i64 = pipeline_now();
+    for slot in 0..2 {
+        streams[slot] = resident_need(cuda_stream_create(d)); events[slot] = resident_need(cuda_event_create(d));
+        graphs[slot] = resident_need(cuda_graph_create(d));
+        resident_need(cuda_graph_copy(graphs[slot], dv[slot], hv[slot], bytes, 0));
+        args[0] = dv[slot]; args[1] = dv[slot+2];
+        resident_need(cuda_graph_kernel(graphs[slot], k, 0, words, geometry, 0, args, 2));
+        args[0] = cuda_arg_u64(999);
+        resident_need(cuda_graph_copy(graphs[slot], hv[slot+2], dv[slot+2], bytes, 1));
+        resident_need(cuda_graph_instantiate(graphs[slot]));
+        resident_refused(cuda_pinned_close(pins[slot])); resident_refused(cuda_buffer_close(buffers[slot]));
+        resident_need(cuda_pinned_stage_dax(hv[slot], &view, (slot as u64)*bytes, bytes));
+        resident_need(cuda_graph_launch(graphs[slot], streams[slot]));
+        resident_refused(cuda_graph_close(graphs[slot])); resident_refused(cuda_pinned_read(actual as *u8, hv[slot+2], bytes));
+        resident_need(cuda_stream_sync(streams[slot]));
+    }
+    if sm != 0 {
+        let warm_start: i64 = pipeline_now();
+        while pipeline_now()-warm_start < 250000000 {
+            for slot in 0..2 { resident_need(cuda_graph_launch(graphs[slot], streams[slot])); }
+            for slot in 0..2 { resident_need(cuda_stream_sync(streams[slot])); }
+        }
+    }
+    puts("setup_ns"); print(pipeline_now()-setup_start);
+    resident_refused(cuda_pinned_stage_dax(hv[0], &view, bytes*2, 1));
+    for trial in 0..trials {
+        for position in 0..3 {
+            let mode: i32 = (position+trial)%3;
+            let start: i64 = pipeline_now();
+            for round in 0..rounds {
+                let slot: i32 = round%2;
+                if round >= 2 { resident_need(cuda_event_sync(events[slot])); }
+                resident_need(cuda_pinned_stage_dax(hv[slot], &view, (slot as u64)*bytes, bytes));
+                if mode == 2 { resident_need(cuda_graph_launch(graphs[slot], streams[slot])); }
+                else {
+                    resident_need(cuda_upload_async(streams[slot], dv[slot], hv[slot], bytes));
+                    args[0] = dv[slot]; args[1] = dv[slot+2];
+                    resident_need(cuda_launch_async(k, streams[slot], 0, words, args, 2));
+                    resident_need(cuda_download_async(streams[slot], hv[slot+2], dv[slot+2], bytes));
+                }
+                resident_need(cuda_event_record(events[slot], streams[slot]));
+                if mode == 0 { resident_need(cuda_event_sync(events[slot])); }
+            }
+            for slot in 0..2 { resident_need(cuda_event_sync(events[slot])); }
+            let elapsed: i64 = pipeline_now()-start;
+            puts("sample"); print(mode); print(elapsed);
+            for slot in 0..2 {
+                resident_need(cuda_pinned_read(actual as *u8, hv[slot+2], bytes));
+                for i in 0..words { if actual[i] != reference[slot*words+i]*2 { return 7; } }
+            }
+        }
+    }
+    for slot in 0..2 {
+        resident_need(cuda_graph_close(graphs[slot])); resident_need(cuda_stream_close(streams[slot])); resident_need(cuda_event_close(events[slot]));
+    }
+    for i in 0..4 { resident_need(cuda_pinned_close(pins[i])); resident_need(cuda_buffer_close(buffers[i])); }
+    resident_need(cuda_module_close(m)); resident_need(cuda_device_close(d));
+    if region.base != null { match dax_unmap(&region) { Result::Ok(value) => {}, Result::Err(error) => { return 8; }, } dax_close(&dax); }
+    free(reference); free(actual); free(streams); free(events); free(graphs); free(pins); free(buffers); free(hv); free(dv); free(args);
+    puts("pipeline PASS"); return 0;
+}

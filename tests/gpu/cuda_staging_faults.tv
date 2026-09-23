@@ -1,0 +1,73 @@
+import "cuda_staging_checks.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+extern "C" fn mock_async_context_syncs() -> i32;
+
+fn staging_error(result: Result<u64,CudaError>, boundary: i32, status: i32) -> u64 {
+    match result {
+        Result::Ok(value) => { exit(40); },
+        Result::Err(error) => {
+            var e: CudaError = error;
+            if e.boundary != boundary || e.status != status { print(e.boundary); print(e.status); exit(41); }
+            let id: u64 = e.resource; cuda_error_close(&e); return id;
+        },
+    }
+    exit(42); return 0;
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 2 { return 1; } staging_pipeline(argv[1], 0);
+    if mock_clean() == 0 || mock_async_context_syncs() != 0 { return 43; }
+    for test in 0..3 {
+        let d: u64 = resident_need(cuda_device_open(0));
+        if test == 0 { mock_fail(22, 0); staging_error(cuda_pinned_alloc(d, 64), 13, 822); }
+        if test == 1 {
+            mock_fail(2, 1); let p: u64 = staging_error(cuda_pinned_alloc(d, 64), 13, 802);
+            resident_need(cuda_pinned_close(p));
+        }
+        if test == 2 {
+            let p: u64 = resident_need(cuda_pinned_alloc(d, 64)); mock_fail(23, 0);
+            staging_error(cuda_pinned_close(p), 9, 823); resident_need(cuda_pinned_close(p));
+        }
+        resident_need(cuda_device_close(d)); if mock_clean() == 0 { return 44; }
+    }
+    for test in 0..3 {
+        let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let e: u64 = resident_need(cuda_event_create(d)); let p: u64 = resident_need(cuda_pinned_alloc(d, 64));
+        let b: u64 = resident_need(cuda_buffer_alloc(d, 64));
+        let hv: CudaArgument = pinned_need(cuda_pinned_view(p, 0, 64)); let dv: CudaArgument = resident_typed_view(b, 0, 64, 0-8);
+        let host: *u64 = alloc(8); for i in 0..8 { host[i] = i as u64; }
+        resident_need(cuda_pinned_write(hv, host as *u8, 64)); resident_need(cuda_upload_async(s, dv, hv, 64));
+        resident_need(cuda_event_record(e, s));
+        if test == 0 { mock_fail(24, 0); staging_error(cuda_upload_async(s, dv, hv, 64), 15, 824); }
+        if test == 1 { mock_fail(25, 0); staging_error(cuda_download_async(s, hv, dv, 64), 15, 825); }
+        if test == 2 { mock_fail(2, 1); staging_error(cuda_upload_async(s, dv, hv, 64), 15, 802); }
+        resident_need(cuda_event_sync(e)); resident_refused(cuda_pinned_close(p)); resident_refused(cuda_buffer_close(b));
+        staging_error(cuda_upload_async(s, dv, hv, 64), 15, 0-4);
+        resident_need(cuda_stream_close(s)); resident_need(cuda_event_close(e));
+        resident_need(cuda_pinned_close(p)); resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(host);
+        if mock_clean() == 0 { return 45; }
+    }
+    for test in 0..4 {
+        let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let e: u64 = resident_need(cuda_event_create(d)); let p: u64 = resident_need(cuda_pinned_alloc(d, 64));
+        let b: u64 = resident_need(cuda_buffer_alloc(d, 64));
+        let hv: CudaArgument = pinned_need(cuda_pinned_view(p, 0, 64)); let dv: CudaArgument = resident_typed_view(b, 0, 64, 0-8);
+        let host: *u64 = alloc(8); for i in 0..8 { host[i] = i as u64; }
+        resident_need(cuda_pinned_write(hv, host as *u8, 64)); resident_need(cuda_upload_async(s, dv, hv, 64));
+        resident_need(cuda_event_record(e, s));
+        mock_fail(16+test, 0);
+        if test == 0 { staging_error(cuda_stream_sync(s), 12, 816); }
+        if test == 1 { staging_error(cuda_stream_query(s), 12, 817); }
+        if test == 2 { staging_error(cuda_event_sync(e), 12, 818); }
+        if test == 3 { staging_error(cuda_event_query(e), 12, 819); }
+        resident_refused(cuda_pinned_close(p)); resident_refused(cuda_buffer_close(b));
+        resident_refused(cuda_pinned_write(hv, host as *u8, 64));
+        mock_fail(16, 0); staging_error(cuda_stream_close(s), 9, 816);
+        resident_refused(cuda_pinned_close(p)); resident_refused(cuda_buffer_close(b));
+        resident_need(cuda_stream_close(s)); resident_need(cuda_event_close(e));
+        resident_need(cuda_pinned_close(p)); resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(host);
+        if mock_clean() == 0 { return 46; }
+    }
+    puts("pinned staging failures PASS"); return 0;
+}

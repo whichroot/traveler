@@ -897,6 +897,7 @@ Boundaries 1–9 identify device-open, capability-query, buffer-allocation,
 module-load, kernel/argument-lookup, view, transfer, launch, and close.
 Negative statuses are invalid argument/handle (`-1`), registry capacity (`-2`),
 unsupported capability (`-3`), poisoned owner (`-4`), and live children (`-5`).
+The async extension also uses `-5` for resources retained by pending streams.
 Module-load statuses 1/2 can also report package I/O/schema failures.
 
 Portable gates are `check_cuda_package.py` and `check_cuda_resident.py` under
@@ -916,6 +917,138 @@ and signed/unsigned 512-bit arithmetic against Python. The read-only DAX staging
 gate is `tests/gpu/cuda_resident_dax.tv`; pass a package built from
 `tests/gpu/cuda_boolean_kernel.tv` and the DAX device path. It copies a bounded
 DAX view into driver-allocated pinned host memory before explicit upload.
+
+**Streams, events, and pinned staging (K4 in progress)**
+
+Import `src/lib/gpu/cuda_async.tv` for explicit nonblocking streams and events
+with timing disabled. Handles use the resident registry's generation and device
+ownership checks. The initial API is:
+
+| Operation | Contract |
+| --- | --- |
+| `cuda_stream_create(device)` / `cuda_event_create(device)` | Return owned handles. |
+| `cuda_launch_async(kernel, stream, lo, hi, args, count)` | Enqueue an independent kernel with checked arguments. |
+| `cuda_launch_grid_async(kernel, stream, geometry, args, count)` | Enqueue a cooperative kernel with checked geometry and arguments. |
+| `cuda_event_record(event, stream)` | Record completion of the stream's current prefix. |
+| `cuda_stream_wait_event(stream, event)` | Enqueue a dependency on an already recorded event. |
+| `cuda_stream_query(stream)` / `cuda_event_query(event)` | Return `Ok(0)` while pending and `Ok(1)` when complete. |
+| `cuda_stream_sync(stream)` / `cuda_event_sync(event)` | Wait for completion and return `Ok(1)`. |
+| `cuda_stream_close(stream)` | Drain that stream before destroying it. |
+| `cuda_event_close(event)` | Destroy an event when no pending stream retains it. |
+| `cuda_pinned_alloc(device, bytes)` / `cuda_pinned_close(buffer)` | Allocate nonzero owned pinned storage; close refuses while retained. |
+| `cuda_pinned_view(buffer, offset, bytes)` | Return a checked byte view without exposing a raw pinned pointer. |
+| `cuda_pinned_write(view, source, bytes)` / `cuda_pinned_read(destination, view, bytes)` | Copy between caller memory and idle pinned storage. |
+| `cuda_upload_async(stream, device_view, pinned_view, bytes)` | Enqueue a checked pinned-to-device copy. |
+| `cuda_download_async(stream, pinned_view, device_view, bytes)` | Enqueue a checked device-to-pinned copy. |
+
+Enqueue performs no implicit copies and no context-wide synchronization. Argument
+arrays can be reused once enqueue returns. Buffer contents must remain valid until
+their GPU uses finish. Callers express cross-stream data dependencies with events;
+the runtime does not infer dependencies from shared buffer handles.
+
+Each stream retains its referenced buffers, pinned storage, modules, and events.
+A successful whole-stream query, synchronization, or close releases its holds.
+Successful event completion releases source-stream holds only when their last
+use is within the recorded prefix. Later uses of the same resource remain held;
+other streams retain independent holds. Source handles include their generation,
+so completion of an old event cannot release resources from a reused stream slot.
+Closing retained resources, accessing their pinned storage from the CPU, copying
+their buffers synchronously, and using their buffers in a synchronous launch refuse.
+An event cannot be re-recorded while any stream retains its current recording.
+Queries/waits on unrecorded events refuse. All event/stream pairings require the
+same resident device owner.
+
+Pinned copies check both view bounds and require the stream, device buffer, and
+pinned allocation to share one resident device owner. Zero-byte copies are no-ops
+after handle and view validation; zero-byte host access permits a null caller
+pointer. A staging slot can be rewritten after its upload event completes while
+later kernel/download work remains queued, provided no later use or other stream
+still retains that allocation. Retention is allocation-wide, not per byte range.
+
+Synchronous resident transfers drain the copy's default stream rather than the
+entire context. The nonblocking streams above are explicitly ordered through
+events. A fork/join pipeline can synchronize only the final consumer before
+downloading its result; ancestor streams can subsequently be queried or closed
+to release their retained resources.
+
+Driver enqueue, event-command, and completion errors poison the owning context's
+resident handles. References remain held after an uncertain enqueue or failed
+completion, so cleanup must successfully drain the stream before storage is
+released. Context-restoration errors retain the existing recovery contract.
+New error boundaries are 10 (stream/event creation), 11 (record/wait), 12
+(completion), 13 (pinned allocation), 14 (host access), and 15 (async copy).
+View validation, kernel enqueue, and close retain boundaries 6, 8, and 9.
+
+`tests/gpu/check_cuda_async.py` verifies eight reusable fork/join rounds, both
+kernel profiles, prefix completion, ownership/stale-handle checks, pending-resource
+refusals, and driver failures. Its driver double defers work until completion and
+asserts zero `cuCtxSynchronize` calls on the normal pipeline path. Native SM120
+acceptance verifies the same results and lifetimes:
+
+```sh
+python3 tests/gpu/check_cuda_async.py "$TVC" "$LLC" cc /path/to/libcuda.so 120
+python3 tests/gpu/check_cuda_staging.py "$TVC" "$LLC" cc /path/to/libcuda.so 120
+```
+
+The staging gate verifies 16 rounds across two slots, independent/cooperative
+kernels, output canaries, event-controlled host reuse, later-use retention,
+multiple-stream holds, and stale source generations. The deferred driver double
+checks allocation/free, copy enqueue, completion, cleanup, and context-restoration
+failures, plus zero normal-path context-wide waits. Both gates pass on native
+SM120. Physical overlap is not measured by these correctness gates.
+
+**Read-only DAX staging and graph replay**
+
+`src/lib/gpu/cuda_dax.tv` provides
+`cuda_pinned_stage_dax(destination, source_view, offset, bytes)`. It checks the
+source window and copies synchronously into idle owned pinned storage. The caller
+keeps the DAX mapping alive during this copy; subsequent GPU work refers only to
+the pinned allocation and resident device buffers. The pipeline gate opens and
+maps device DAX read-only, reuses two staging slots, and checks downloaded results.
+A portable file-backed read-only mapping exercises the same mapping/view path.
+
+`src/lib/gpu/cuda_graph.tv` composes up to 64 ordered copy/kernel commands per
+graph, with at most 32 explicit arguments per kernel. Separate graph executions
+compose through the existing stream/event API, including fork/join dependencies.
+
+| Operation | Contract |
+| --- | --- |
+| `cuda_graph_create(device)` | Create a generation-checked, owner-bound graph builder. |
+| `cuda_graph_copy(graph, destination, source, bytes, download)` | Append an upload (`download=0`) or download (`download=1`). |
+| `cuda_graph_kernel(graph, kernel, lo, hi, geometry, cooperative, args, count)` | Append an independent (`cooperative=0`) or cooperative (`cooperative=1`) launch. |
+| `cuda_graph_instantiate(graph)` | Seal the builder, validate commands through private stream capture, and instantiate a CUDA Graph executable. |
+| `cuda_graph_launch(graph, stream)` | Enqueue replay and retain the graph and referenced resources through completion. |
+| `cuda_graph_close(graph)` | Destroy native graph state and release ownership holds; pending replay refuses close. |
+
+Construction snapshots argument arrays, views, and geometry. It retains referenced
+modules, device buffers, and pinned allocations against close. These ownership
+holds permit CPU updates to idle pinned allocations between replays; active replay
+adds ordinary stream-use holds that block CPU access. Graph instantiation performs
+the normal launch/copy shape, bounds, alias, and capability checks without executing
+the captured commands. Once instantiation starts, the builder is sealed even if it
+fails; close releases partial native state, with retry on cleanup failure.
+
+Each graph is an ordered chain. Branches and joins use events between graph launches
+on different streams; internal arbitrary-DAG editing and executable parameter
+updates are outside this profile. Completion retires replay resources at whole-graph
+granularity. Cross-stream read/write ordering remains the caller's obligation.
+Graph boundaries are 16 (construction), 17 (capture/instantiation), and 18 (replay);
+close retains boundary 9. Failed replay retains resources until successful drain.
+
+`tests/gpu/check_cuda_pipeline.py` checks command snapshots, mutable pinned contents
+between replays, read-only staging, exact results, eight event-linked graph fork/join
+rounds, and capture/instantiation/replay/destruction failures. Its normal-path mock
+asserts zero context-wide waits and no resource leaks. Native runs additionally
+measure serialized submission, two-slot pipelining, and two-slot graph replay:
+
+```sh
+python3 tests/gpu/check_cuda_pipeline.py "$TVC" "$LLC" cc /path/to/libcuda.so 120 /dev/dax0.0
+```
+
+For a root-only DAX device, append `--sudo-dax` to run only that native read-only
+fixture with `sudo -n`. Omit the DAX path to measure ordinary-memory staging.
+See [recorded SM120 measurements](tests/gpu/cuda-pipeline-measurements.md) for
+workload, timing boundaries, variability, and before/after results.
 
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the

@@ -1967,6 +1967,15 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if ! python3 "$SCRIPT_DIR/check_cuda_resident.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA resident resource contract"; fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_async.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA asynchronous resource contract"; fail=1
+    fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_staging.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA pinned staging contract"; fail=1
+    fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_pipeline.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA staging pipeline and graph contract"; fail=1
+    fi
     if [ -n "$OPT" ]; then
         if ! python3 "$SCRIPT_DIR/check_cooperative_geometry.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: cooperative CUDA geometry"; fail=1
