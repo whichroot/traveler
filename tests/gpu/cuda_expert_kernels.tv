@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+#[kernel]
+fn expert_first(i: i32, weights: *u64, output: *u64, request: u64) { output[i] = weights[i]*3+request; }
+#[kernel]
+fn expert_second(i: i32, input: *u64, output: *u64) { output[i] = input[i]*5+7; }
+#[kernel]
+fn expert_fused(i: i32, weights: *u64, output: *u64, request: u64) { output[i] = (weights[i]*3+request)*5+7; }

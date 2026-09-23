@@ -1976,6 +1976,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if ! python3 "$SCRIPT_DIR/check_cuda_pipeline.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA staging pipeline and graph contract"; fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_experts.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA expert placement contract"; fail=1
+    fi
     if [ -n "$OPT" ]; then
         if ! python3 "$SCRIPT_DIR/check_cooperative_geometry.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: cooperative CUDA geometry"; fail=1

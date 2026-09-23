@@ -72,6 +72,11 @@ int cuModuleLoadDataEx(void **out, void *ptx, unsigned count, int *options, void
 int cuModuleUnload(void *module) { free(module); modules--; return 0; }
 int cuModuleGetFunction(void **out, void *module, const char *name) {
     int e = fail(5); if (e) return e;
+    if (*(char *)module == 4) {
+        unsigned entry;
+        if (sscanf(name, "__traveler_kernel_%u", &entry) != 1 || entry >= 3) return 500;
+        *out = (void *)(uintptr_t)(80 + entry); return 0;
+    }
     if (*(char *)module == 3) {
         unsigned entry;
         if (sscanf(name, "__traveler_kernel_%u", &entry) != 1 || entry >= 5) return 500;
@@ -117,6 +122,19 @@ int cuLaunchKernel(void *function, unsigned gx, unsigned gy, unsigned gz,
                    unsigned bx, unsigned by, unsigned bz, unsigned shared,
                    void *stream, void **args, void **extra) {
     int e = fail(7); if (e) return e;
+    if ((uintptr_t)function >= 80 && (uintptr_t)function < 83) {
+        unsigned operation = (unsigned)((uintptr_t)function - 80);
+        unsigned count = operation == 1 ? 2 : 3;
+        AsyncStream *s = stream;
+        assert(s && !shared && !extra && bx == 256 && by == 1 && bz == 1 && gy == 1 && gz == 1);
+        assert(*(uint32_t *)args[count] == 0 && gx == (*(uint32_t *)args[count+1] + 255) / 256);
+        assert(s->count < 4096);
+        AsyncCommand *c = &s->commands[s->count++];
+        c->operation = 5 + operation; c->lanes = *(uint32_t *)args[count+1];
+        c->a = *(uint64_t **)args[0]; c->out = *(uint64_t **)args[1];
+        if (count == 3) c->scalar = *(uint64_t *)args[2];
+        launches++; return 0;
+    }
     if ((uintptr_t)function >= 64 && (uintptr_t)function < 69) {
         assert(stream && !shared && !extra);
         if ((uintptr_t)function == 68) {

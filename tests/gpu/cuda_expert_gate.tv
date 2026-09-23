@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_staging_checks.tv";
+import "../../src/lib/time/time.tv";
+extern "C" fn strtoull(text: *u8, end: **u8, base: i32) -> u64;
+
+struct ExpertSlot {
+    expert: i32,
+    reserved: i32,
+    stamp: i32,
+    upload: i32,
+    last_request: i32,
+    used: i32,
+    buffer: u64,
+}
+
+struct ExpertRun {
+    slots: *ExpertSlot,
+    capacity: i32,
+    always_upload: i32,
+    pins: *u64,
+    pin_upload: *i32,
+    pin_count: i32,
+    source: *u64,
+    bytes: u64,
+    words: i32,
+    copy: u64,
+    compute: u64,
+    uploaded: *u64,
+    done: *u64,
+    assigned: *i32,
+    trace: *i32,
+    hits: i32,
+    misses: i32,
+    evictions: i32,
+    prefetched: i32,
+    used_uploads: i32,
+    staging_ns: i64,
+    pin_wait_ns: i64,
+    pin_pending: i32,
+    queue_wait_ns: i64,
+    queue_pending: i32,
+}
+
+fn expert_now() -> i64 {
+    match time_mono_ns() { Result::Ok(value) => { return value; }, Result::Err(error) => { exit(50); }, }
+    return 0;
+}
+
+fn expert_word(expert: i32, index: i32) -> u64 {
+    return ((expert as u64)+1)*1442695040888963407 ^ (index as u64)*6364136223846793005;
+}
+
+fn expert_prepare(run: *ExpertRun, request: i32, position: i32, current: i32) {
+    let expert: i32 = run.trace[request]; var selected: i32 = 0-1;
+    if run.always_upload == 0 {
+        for i in 0..run.capacity { if run.slots[i].expert == expert { selected = i; } }
+    }
+    if selected >= 0 { run.hits = run.hits+1; }
+    else {
+        var oldest: i32 = 2147483647;
+        for i in 0..run.capacity {
+            if run.slots[i].reserved == 0 && run.slots[i].stamp < oldest { selected = i; oldest = run.slots[i].stamp; }
+        }
+        if selected < 0 { exit(51); }
+        let slot: *ExpertSlot = &run.slots[selected];
+        let pin_index: i32 = run.misses%run.pin_count;
+        if run.pin_upload[pin_index] >= 0 {
+            let wait_start: i64 = expert_now();
+            if resident_need(cuda_event_query(run.uploaded[run.pin_upload[pin_index]])) == 0 {
+                run.pin_pending = run.pin_pending+1; resident_need(cuda_event_sync(run.uploaded[run.pin_upload[pin_index]]));
+            }
+            run.pin_wait_ns = run.pin_wait_ns+expert_now()-wait_start;
+        }
+        let host: CudaArgument = pinned_need(cuda_pinned_view(run.pins[pin_index], 0, run.bytes));
+        let target: CudaArgument = resident_typed_view(slot.buffer, 0, run.bytes, 0-64);
+        let source: *u8 = ((run.source as u64)+(expert as u64)*run.bytes) as *u8;
+        let stage_start: i64 = expert_now(); resident_need(cuda_pinned_write(host, source, run.bytes));
+        run.staging_ns = run.staging_ns+expert_now()-stage_start;
+        if slot.last_request >= 0 { resident_need(cuda_stream_wait_event(run.copy, run.done[slot.last_request])); }
+        resident_need(cuda_upload_async(run.copy, target, host, run.bytes));
+        resident_need(cuda_event_record(run.uploaded[request], run.copy));
+        run.pin_upload[pin_index] = request;
+        if slot.expert >= 0 { run.evictions = run.evictions+1; }
+        slot.expert = expert; slot.upload = request; slot.used = 0;
+        run.misses = run.misses+1; if position > current { run.prefetched = run.prefetched+1; }
+    }
+    run.slots[selected].reserved = run.slots[selected].reserved+1;
+    run.slots[selected].stamp = position; run.assigned[request] = selected;
+}
+
+fn expert_retire(run: *ExpertRun, request: i32) -> i64 {
+    let start: i64 = expert_now();
+    if resident_need(cuda_event_query(run.done[request])) == 0 {
+        run.queue_pending = run.queue_pending+1; resident_need(cuda_event_sync(run.done[request]));
+    }
+    let end: i64 = expert_now(); run.queue_wait_ns = run.queue_wait_ns+end-start; return end;
+}
+
+fn expert_sample(device: u64, kernels: *u64, source: *u64, bytes: u64, pattern: i32, mode: i32, trial: i32) {
+    let count: i32 = 32; let words: i32 = (bytes/8) as i32;
+    var capacity: i32 = 4; var ahead: i32 = 1; var depth: i32 = 2; var always: i32 = 0; var fused: i32 = 0;
+    if mode == 0 { capacity = 1; ahead = 0; depth = 1; always = 1; }
+    if mode == 1 { capacity = 2; always = 1; }
+    if mode == 2 { ahead = 0; }
+    if mode == 4 { ahead = 3; depth = 4; }
+    if mode == 5 { depth = 4; }
+    if mode == 7 || mode == 9 { fused = 1; }
+    if mode >= 8 { capacity = 8; ahead = 0; }
+    let trace: *i32 = alloc(count); let order: *i32 = alloc(count); let assigned: *i32 = alloc(count);
+    let completed: *i64 = alloc(count); let uploaded: *u64 = alloc(count); let done: *u64 = alloc(count);
+    for i in 0..count {
+        order[i] = i;
+        if pattern == 0 {
+            if i%8 < 6 { trace[i] = i%2; } else { trace[i] = 2+((i/8)*2+i%2)%6; }
+        }
+        if pattern == 1 { trace[i] = i%8; }
+        if pattern == 2 { trace[i] = i%5; }
+        uploaded[i] = resident_need(cuda_event_create(device)); done[i] = resident_need(cuda_event_create(device));
+    }
+    if mode == 6 {
+        for batch in 0..4 {
+            for i in batch*8..batch*8+8 {
+                var j: i32 = i;
+                while j > batch*8 {
+                    if trace[order[j-1]] <= trace[order[j]] { break; }
+                    let swap: i32 = order[j]; order[j] = order[j-1]; order[j-1] = swap; j = j-1;
+                }
+            }
+        }
+    }
+    let slots: *ExpertSlot = alloc(capacity);
+    for i in 0..capacity {
+        slots[i].expert = 0-1; slots[i].reserved = 0; slots[i].stamp = 0-1;
+        slots[i].upload = 0-1; slots[i].last_request = 0-1; slots[i].used = 0;
+        slots[i].buffer = resident_need(cuda_buffer_alloc(device, bytes));
+    }
+    let pins: *u64 = alloc(depth); let pin_upload: *i32 = alloc(depth);
+    for i in 0..depth { pins[i] = resident_need(cuda_pinned_alloc(device, bytes)); pin_upload[i] = 0-1; }
+    let output: u64 = resident_need(cuda_buffer_alloc(device, bytes*(count as u64)));
+    let temporary: u64 = resident_need(cuda_buffer_alloc(device, bytes));
+    let temp_view: CudaArgument = resident_typed_view(temporary, 0, bytes, 0-64);
+    let compute: u64 = resident_need(cuda_stream_create(device)); let copy: u64 = resident_need(cuda_stream_create(device));
+    var run: ExpertRun = ExpertRun { slots: slots, capacity: capacity, always_upload: always, pins: pins, pin_upload: pin_upload, pin_count: depth, source: source, bytes: bytes, words: words,
+        copy: copy, compute: compute, uploaded: uploaded, done: done, assigned: assigned, trace: trace,
+        hits: 0, misses: 0, evictions: 0, prefetched: 0, used_uploads: 0, staging_ns: 0, pin_wait_ns: 0, pin_pending: 0, queue_wait_ns: 0, queue_pending: 0 };
+    var preload_ns: i64 = 0;
+    if mode >= 8 {
+        let begin: i64 = expert_now();
+        for i in 0..8 {
+            if i >= depth && i%depth == 0 { resident_need(cuda_stream_sync(copy)); }
+            let host: CudaArgument = pinned_need(cuda_pinned_view(pins[i%depth], 0, bytes));
+            let target: CudaArgument = resident_typed_view(slots[i].buffer, 0, bytes, 0-64);
+            resident_need(cuda_pinned_write(host, ((source as u64)+(i as u64)*bytes) as *u8, bytes));
+            resident_need(cuda_upload_async(copy, target, host, bytes)); slots[i].expert = i;
+        }
+        resident_need(cuda_stream_sync(copy)); preload_ns = expert_now()-begin;
+    }
+    let args: *CudaArgument = alloc(3); var prepared: i32 = 0;
+    let start: i64 = expert_now();
+    for position in 0..count {
+        if position >= depth { let retired: i32 = order[position-depth]; completed[retired] = expert_retire(&run, retired)-start; }
+        while prepared < count && prepared <= position+ahead {
+            expert_prepare(&run, order[prepared], prepared, position); prepared = prepared+1;
+        }
+        let request: i32 = order[position]; let slot: *ExpertSlot = &slots[assigned[request]];
+        if slot.expert != trace[request] || slot.reserved == 0 { exit(52); }
+        if slot.upload >= 0 { resident_need(cuda_stream_wait_event(compute, uploaded[slot.upload])); }
+        args[0] = resident_typed_view(slot.buffer, 0, bytes, 0-64);
+        let result: CudaArgument = resident_typed_view(output, (request as u64)*bytes, bytes, 0-64);
+        args[2] = cuda_arg_u64(request as u64);
+        if fused == 1 {
+            args[1] = result; resident_need(cuda_launch_async(kernels[2], compute, 0, words, args, 3));
+        } else {
+            args[1] = temp_view; resident_need(cuda_launch_async(kernels[0], compute, 0, words, args, 3));
+            args[0] = temp_view; args[1] = result; resident_need(cuda_launch_async(kernels[1], compute, 0, words, args, 2));
+        }
+        resident_need(cuda_event_record(done[request], compute)); slot.last_request = request; slot.reserved = slot.reserved-1;
+        if slot.used == 0 { slot.used = 1; run.used_uploads = run.used_uploads+1; }
+    }
+    for position in count-depth..count { let retired: i32 = order[position]; completed[retired] = expert_retire(&run, retired)-start; }
+    resident_need(cuda_stream_sync(compute)); resident_need(cuda_stream_sync(copy));
+    let elapsed: i64 = expert_now()-start;
+    let actual: *u64 = alloc(words);
+    for request in 0..count {
+        let result: CudaArgument = resident_typed_view(output, (request as u64)*bytes, bytes, 0-64);
+        resident_need(cuda_download(actual as *u8, result, bytes));
+        for i in 0..words {
+            let expected: u64 = expert_word(trace[request], i)*15+(request as u64)*5+7;
+            if actual[i] != expected { print(pattern); print(mode); print(request); print(i); exit(53); }
+        }
+    }
+    if run.hits+run.misses != count { exit(54); }
+    if mode < 8 && run.used_uploads != run.misses { exit(55); }
+    puts("sample"); print(pattern); print(mode); print(trial); print(bytes); print(elapsed);
+    print(run.hits); print(run.misses); print(run.evictions); print(run.prefetched); print(run.used_uploads);
+    print(run.staging_ns); print(run.pin_wait_ns); print(run.pin_pending); print(run.queue_wait_ns); print(run.queue_pending); print(preload_ns);
+    for i in 0..count { print(completed[i]); }
+    for i in 0..capacity { resident_need(cuda_buffer_close(slots[i].buffer)); }
+    for i in 0..depth { resident_need(cuda_pinned_close(pins[i])); }
+    for i in 0..count { resident_need(cuda_event_close(uploaded[i])); resident_need(cuda_event_close(done[i])); }
+    resident_need(cuda_stream_close(compute)); resident_need(cuda_stream_close(copy));
+    resident_need(cuda_buffer_close(output)); resident_need(cuda_buffer_close(temporary));
+    free(trace); free(order); free(assigned); free(completed); free(uploaded); free(done); free(slots); free(pins); free(pin_upload); free(args); free(actual);
+}
+
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 5 { return 1; }
+    let bytes: u64 = strtoull(argv[2], null, 10); let trials: i32 = strtoull(argv[3], null, 10) as i32;
+    let sm: u64 = strtoull(argv[4], null, 10);
+    if bytes == 0 || bytes%8 != 0 || bytes > 33554432 || trials < 1 || trials > 7 { return 2; }
+    let device: u64 = resident_need(cuda_device_open(0)); if sm != 0 && resident_need(cuda_device_sm(device)) != sm { return 3; }
+    let begin: i64 = expert_now(); let module: u64 = resident_need(cuda_module_load(device, argv[1]));
+    puts("module_ns"); print(expert_now()-begin);
+    let kernels: *u64 = alloc(3);
+    kernels[0] = resident_need(cuda_kernel_get_owner(module, "expert_first"));
+    kernels[1] = resident_need(cuda_kernel_get_owner(module, "expert_second"));
+    kernels[2] = resident_need(cuda_kernel_get_owner(module, "expert_fused"));
+    let words: i32 = (bytes/8) as i32; let source: *u64 = alloc(words*8);
+    for expert in 0..8 { for i in 0..words { source[expert*words+i] = expert_word(expert, i); } }
+    if sm != 0 {
+        let input: u64 = resident_need(cuda_buffer_alloc(device, bytes)); let output: u64 = resident_need(cuda_buffer_alloc(device, bytes));
+        let stream: u64 = resident_need(cuda_stream_create(device)); let args: *CudaArgument = alloc(3);
+        args[0] = resident_typed_view(input, 0, bytes, 0-64); args[1] = resident_typed_view(output, 0, bytes, 0-64); args[2] = cuda_arg_u64(0);
+        resident_need(cuda_upload(args[0], source as *u8, bytes));
+        let warm: i64 = expert_now();
+        while expert_now()-warm < 250000000 {
+            resident_need(cuda_launch_async(kernels[2], stream, 0, words, args, 3)); resident_need(cuda_stream_sync(stream));
+        }
+        resident_need(cuda_stream_close(stream)); resident_need(cuda_buffer_close(input)); resident_need(cuda_buffer_close(output)); free(args);
+    }
+    for trial in 0..trials {
+        for pattern in 0..3 {
+            for position in 0..10 { expert_sample(device, kernels, source, bytes, pattern, (position+trial*3)%10, trial); }
+        }
+    }
+    resident_need(cuda_module_close(module)); resident_need(cuda_device_close(device)); free(source); free(kernels);
+    puts("expert placement PASS"); return 0;
+}

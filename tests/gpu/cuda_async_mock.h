@@ -3,6 +3,7 @@ typedef struct AsyncStream AsyncStream;
 typedef struct {
     unsigned operation, until;
     uint64_t lanes;
+    uint64_t scalar;
     uint64_t *a, *b, *out;
     AsyncStream *source;
 } AsyncCommand;
@@ -24,6 +25,9 @@ static void async_drain(AsyncStream *s, unsigned until) {
             if (c->operation == 0) c->out[i] = c->a[i] * 2;
             else if (c->operation == 1) c->out[i] = c->a[i] + 3;
             else if (c->operation == 2) c->out[i] = c->a[i] + 5;
+            else if (c->operation == 5) c->out[i] = c->a[i] * 3 + c->scalar;
+            else if (c->operation == 6) c->out[i] = c->a[i] * 5 + 7;
+            else if (c->operation == 7) c->out[i] = (c->a[i] * 3 + c->scalar) * 5 + 7;
             else c->out[i] = c->a[i] + c->b[i];
         }
     }

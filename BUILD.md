@@ -1050,6 +1050,28 @@ fixture with `sudo -n`. Omit the DAX path to measure ordinary-memory staging.
 See [recorded SM120 measurements](tests/gpu/cuda-pipeline-measurements.md) for
 workload, timing boundaries, variability, and before/after results.
 
+**Expert placement benchmark**
+
+`tests/gpu/check_cuda_experts.py` compares ten placement/scheduling variants over
+deterministic hot-expert, uniform, and cache-thrashing traces. It uses exact u64
+arithmetic, a bounded resident cache, separate pinned staging slots, event-ordered
+eviction, lookahead, batching, and split/fused kernels. Portable checks validate
+every output, compare cache counters against a Python model, and check actual mock
+upload volume. The portable gate is included in `tests/gpu/run.sh`.
+
+```sh
+python3 tests/gpu/check_cuda_experts.py "$TVC" "$LLC" cc \
+  --cuda /path/to/libcuda.so --sm 120 --trials 3 \
+  --output /tmp/cuda-experts.jsonl
+```
+
+Native runs cover 64 KiB, 1 MiB, 8 MiB, and 32 MiB per expert. `--sizes` selects a
+subset. The JSONL output contains source hashes, module-load times, raw timing and
+cache counters, and host-observed completion times for all requests. Outputs stay
+device-resident during timing; downloading and checking them occurs afterward.
+Full-residency preload costs are recorded separately. See the
+[placement measurements and controls](tests/gpu/cuda-expert-measurements.md).
+
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the
 next block's addresses (`prefetch.global.L2`, NVPTX only) with no carried
