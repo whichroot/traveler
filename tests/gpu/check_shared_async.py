@@ -8,6 +8,8 @@ import sys
 import tempfile
 
 from check_ieee_bits import ROOT, cuda_package, run
+sys.path.insert(0, str(ROOT/'tools'))
+import cuda_prepare
 
 
 def native_source():
@@ -63,6 +65,9 @@ def main():
         (d/'dynamic.tv').write_text(dynamic)
         run(a.tvc, d/'dynamic.tv', '--emit-gpu-nvptx', '-o', d/'dynamic.ll')
         cuda_package.build(d/'dynamic.ll', d/'dynamic.tvcp', a.llc, 80)
+        cold = cuda_prepare.prepare(ROOT, 'tests/gpu/cuda_shared_async.tv', d/'prepared.tvcp', d/'cache', a.tvc, a.llc, 90, 'validation-toolchain')
+        warm = cuda_prepare.prepare(ROOT, 'tests/gpu/cuda_shared_async.tv', d/'prepared.tvcp', d/'cache', a.tvc, a.llc, 90, 'validation-toolchain')
+        assert cold['cache'] == 'miss' and warm['cache'] == 'hit' and cold['artifact'] == warm['artifact']
         if a.opt:
             run(a.opt, '-passes=default<O1>', '-S', d/'source.ll', '-o', d/'optimized.ll')
             run(a.llc, '-mtriple=nvptx64-nvidia-cuda', '-mcpu=sm_80', d/'optimized.ll', '-o', d/'optimized.ptx')
@@ -94,11 +99,36 @@ def main():
             run(a.tvc, d/'native.tv', '-o', d/'native.ll')
             run(a.llc, '-filetype=obj', d/'native.ll', '-o', d/'native.o')
             run(a.link, '-no-pie', d/'native.o', a.cuda, f'-Wl,-rpath,{Path(a.cuda).resolve().parent}', '-o', d/'native')
-            for name in ('sm80', 'sm90', 'sm120'):
+            for name in ('sm80', 'sm90', 'sm120', 'prepared'):
                 device, _, output = run(d/'native', d/f'{name}.tvcp').stdout.partition('\n')
                 actual = [int(v) for v in output.splitlines()]
                 assert actual == expected, (len(actual), len(expected))
                 print(f'Async shared SM{device}, {name}: 15 launches, {len(expected)} output/guard checks PASS')
+            blob = (d/'prepared.tvcp').read_bytes(); length = struct.unpack('<I', blob[8:12])[0]
+            header = json.loads(blob[12:12+length]); ptx = blob[12+length:]+b'\ntraveler_invalid_ptx;\n'
+            header.update(ptx_bytes=len(ptx), ptx_sha256=hashlib.sha256(ptx).hexdigest())
+            manifest = json.dumps(header, separators=(',', ':')).encode()
+            (d/'jit-bad.tvcp').write_bytes(blob[:8]+struct.pack('<I', len(manifest))+manifest+ptx)
+            (d/'jit.tv').write_text(f'''import "{ROOT}/tests/gpu/cuda_resident_checks.tv";
+fn main(argc: i32, argv: **u8) -> i32 {{
+    let device: u64 = resident_need(cuda_device_open(0));
+    match cuda_module_load(device, argv[1]) {{
+        Result::Ok(value) => {{ return 31; }},
+        Result::Err(error) => {{
+            var e: CudaError = error;
+            if e.boundary != 4 || e.status == 0 || e.log == null {{ return 32; }}
+            if e.log[0] == 0 {{ return 33; }}
+            cuda_error_close(&e);
+        }},
+    }}
+    let module: u64 = resident_need(cuda_module_load(device, argv[2]));
+    resident_need(cuda_module_close(module)); resident_need(cuda_device_close(device)); return 0;
+}}''')
+            run(a.tvc, d/'jit.tv', '-o', d/'jit.ll')
+            run(a.llc, '-filetype=obj', d/'jit.ll', '-o', d/'jit.o')
+            run(a.link, '-no-pie', d/'jit.o', a.cuda, f'-Wl,-rpath,{Path(a.cuda).resolve().parent}', '-o', d/'jit')
+            run(d/'jit', d/'jit-bad.tvcp', d/'prepared.tvcp')
+            print('Prepared package native: warm reuse, JIT diagnostic log, and subsequent valid module load PASS')
         print('Async shared portable: phases, reuse, bounded footprints, SM80/90/120 and O1 lowering PASS')
 
 

@@ -1960,6 +1960,18 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if ! python3 "$SCRIPT_DIR/check_cuda_package.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA package contract"; fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_capabilities.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA capability admission"; fail=1
+    fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_prepare.py" "$STAGE1" "$LLC" "$LINKER"; then
+        echo "  FAIL: CUDA prepared package cache"; fail=1
+    fi
+    if ! python3 "$SCRIPT_DIR/check_shared_async.py" "$STAGE1" "$LLC" "$LINKER" ${OPT:+--opt "$OPT"}; then
+        echo "  FAIL: CUDA asynchronous shared copies"; fail=1
+    fi
+    if ! python3 "$SCRIPT_DIR/check_native_tensor.py" "$STAGE1" "$LLC" "$LINKER" ${OPT:+--opt "$OPT"}; then
+        echo "  FAIL: CUDA native tensor profile"; fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/check_cuda_geometry.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA geometry validation"
         fail=1
@@ -1982,6 +1994,18 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if [ -n "$OPT" ]; then
         if ! python3 "$SCRIPT_DIR/check_ieee_bits.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
             echo "  FAIL: IEEE bit-pattern numerical profile"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_ieee_numeric.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
+            echo "  FAIL: IEEE numerical utilities"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_numeric_projection.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
+            echo "  FAIL: resident numerical projection"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_low_precision.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
+            echo "  FAIL: low-precision numerical utilities"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_low_projection.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
+            echo "  FAIL: low-precision resident projection"; fail=1
         fi
         if ! python3 "$SCRIPT_DIR/check_cooperative_geometry.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: cooperative CUDA geometry"; fail=1

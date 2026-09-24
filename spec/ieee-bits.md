@@ -159,7 +159,7 @@ participation. See [CUDA native tensor operations](cuda-native-tensor.md).
 The `ieee-bits-rne-v1` contract continues to govern scalar IEEE operations and
 the reproducible packed library operations, including in mixed kernels.
 The [asynchronous shared-copy capability](cuda-shared-async.md) adds no arithmetic
-policy.
+policy. [Prepared package identity](cuda-prepare.md) binds all these descriptors.
 
 ## Lowering, dependencies, and admission
 

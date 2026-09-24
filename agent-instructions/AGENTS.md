@@ -93,6 +93,7 @@ Read-only compiler query modes (parse/analyze, no program emitted):
 | Flag | Effect |
 |---|---|
 | `--diagnostics` | Parse + typecheck; JSON-Lines errors (`file:line:col`, message). |
+| `--dependencies` | Resolve imports; emit the entry and transitive source paths as a JSON array. |
 | `--symbols` / `--references` | Enumerate definitions / use-sites. |
 | `--pfor-report` | One JSON record per `for` loop: did it parallelize, and if not, the reason. |
 | `--eval` | Run in a tree-walking interpreter (no LLVM). |

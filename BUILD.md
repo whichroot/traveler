@@ -1100,6 +1100,65 @@ allocations, typed views, launches, downloads, and cleanup. The
 and exact-oracle results. Further numerical widths and architecture facilities
 remain subsequent K5 work.
 
+The integer-library utilities in `src/lib/float/numeric.tv` add numerical
+integer conversion, saturating conversion back, classification, and ordered
+comparison. They preserve the integer-carrier boundary. The resident binary64
+projection fixture uses inner dimensions 1–8 with stride 8, ascending-column
+accumulation, and an explicit fused/separate policy:
+
+```sh
+python3 tests/gpu/check_ieee_numeric.py "$TVC" "$LLC" cc --opt "$OPT"
+python3 tests/gpu/check_numeric_projection.py "$TVC" "$LLC" cc --opt "$OPT"
+```
+
+Both gates accept `--cuda /path/to/libcuda.so` for checked native SM90/SM120 PTX
+execution on an SM120 device. See the
+[utility and projection validation record](tests/gpu/numeric-projection-validation.md).
+
+`src/lib/float/low_precision.tv` adds binary16/bfloat16 conversion and packed
+pairs with explicit binary32 FMA accumulation. The compiler derives composable
+precision/warp/bounded-read requirements; package readers check their SM/PTX
+floors and reject unknown capability names. Run the exhaustive encoding and
+packed-projection gates with:
+
+```sh
+python3 tests/gpu/check_low_precision.py "$TVC" "$LLC" cc --opt "$OPT"
+python3 tests/gpu/check_low_projection.py "$TVC" "$LLC" cc --opt "$OPT"
+```
+
+Both accept `--cuda /path/to/libcuda.so` for native SM120 acceptance using both
+PTX targets. See [low-precision validation](tests/gpu/low-precision-validation.md)
+and the [packing and accumulation contract](spec/ieee-bits.md).
+
+Explicit [native tensor operations](spec/cuda-native-tensor.md) opt in to the
+hardware numerical policy. [Asynchronous shared copies](spec/cuda-shared-async.md)
+have separate device-local issue/commit/wait and visibility rules. Run their
+portable gates and the prepared-package cache gate with:
+
+```sh
+python3 tests/gpu/check_native_tensor.py "$TVC" "$LLC" cc --opt "$OPT"
+python3 tests/gpu/check_shared_async.py "$TVC" "$LLC" cc --opt "$OPT"
+python3 tests/gpu/check_cuda_prepare.py "$TVC" "$LLC" cc
+```
+
+The tensor and shared-copy runners accept `--cuda /path/to/libcuda.so` for native
+execution. The shared-copy runner also checks warm prepared-package execution
+and native JIT diagnostics.
+
+To prepare a source snapshot and reuse its verified PTX package, set
+`TOOLCHAIN_ID` to the immutable identity of the complete toolchain environment:
+
+```sh
+python3 tools/cuda_prepare.py tests/gpu/cuda_shared_async.tv \
+  --root "$PWD" --compiler "$TVC" --llc "$LLC" --sm 120 \
+  --toolchain-id "$TOOLCHAIN_ID" --cache /tmp/traveler-cuda-cache \
+  -o /tmp/shared-async.tvcp
+```
+
+The JSON report identifies cache status, source request, artifact, and preparation
+intervals. See the [identity and reuse contract](spec/cuda-prepare.md) and
+[validation record](tests/gpu/shared-async-prepare-validation.md).
+
 Per-kernel opt-ins travel as owner-fn attributes. `#[wave_pipe]` pipelines the
 wave loads through loop-carried phis; `#[prefetch]` instead warms L2 for the
 next block's addresses (`prefetch.global.L2`, NVPTX only) with no carried
