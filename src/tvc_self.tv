@@ -28983,6 +28983,32 @@ fn device_scalar_roles(P: *DeviceScalarPlan, ncaps: i32, base: i32, roles: *i32)
     return 1;
 }
 
+fn device_capability_mask(P: *DeviceScalarPlan) -> i32 {
+    if P == null { return 0; }
+    var mask: i32 = 0; var i: i32 = 0;
+    if P.warp_used == 1 { mask = mask | 4; }
+    while i < P.count {
+        if P.nodes[i].kind == DEVICE_IEEE_BITS {
+            let op: i32 = P.nodes[i].op;
+            if op >= 12 { mask = mask | 3; }
+            else { if op < 6 { mask = mask | 1; } else { mask = mask | 2; } }
+        }
+        if P.nodes[i].kind == DEVICE_BOUNDED_LOAD { mask = mask | 8; }
+        i = i + 1;
+    }
+    return mask;
+}
+
+fn device_capability_name(index: i32) -> *u8 {
+    if index == 0 { return "ieee32-rne-v1"; }
+    if index == 1 { return "ieee64-rne-v1"; }
+    if index == 2 { return "warp-full32-v1"; }
+    if index == 3 { return "bounded-read-u64-v1"; }
+    if index == 4 { return "mma-f16-m16n8k16-native-v1"; }
+    if index == 5 { return "mma-bf16-m16n8k16-native-v1"; }
+    return "async-shared-u64-v1";
+}
+
 fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base: i32, origin: i32, P: *DeviceScalarPlan) -> i32 {
     let roles: *i32 = alloc(ncaps + 1);
     if origin == 2 {
@@ -28991,10 +29017,19 @@ fn gpu_interface_emit(wid: i32, owner: i32, body: i32, lv: i32, ncaps: i32, base
     var i: i32 = 0;
     ir_wr("; traveler.kernel.v1 {\"schema\":\"traveler.kernel.v1\",\"abi\":1,\"stage\":\"semantic-ir\",\"compiler\":\"tvc_self\",\"target\":\"nvptx64-nvidia-cuda\",\"artifact\":null,\"symbol\":\"");
     gpu_kernel_symbol(wid, origin); ir_wr("\",\"owner\":"); gpu_interface_string(&g_strings[owner]);
-    if P != null {
-        var numeric: i32 = 0; var ni: i32 = 0;
-        while ni < P.count { if P.nodes[ni].kind == DEVICE_IEEE_BITS { numeric = 1; } ni = ni + 1; }
-        if numeric == 1 { ir_wr(",\"numerical\":\"ieee-bits-rne-v1\""); }
+    let capabilities: i32 = device_capability_mask(P);
+    if (capabilities & 3) != 0 { ir_wr(",\"numerical\":\"ieee-bits-rne-v1\""); }
+    if (capabilities & 48) != 0 { ir_wr(",\"tensor\":\"cuda-mma-native-v1\""); }
+    if capabilities != 0 {
+        ir_wr(",\"requires\":["); var feature: i32 = 0; var emitted: i32 = 0;
+        while feature < 7 {
+            if (capabilities & ((1 as i32) << feature)) != 0 {
+                if emitted != 0 { ir_wr(","); }
+                gpu_interface_string(device_capability_name(feature)); emitted = 1;
+            }
+            feature = feature + 1;
+        }
+        ir_wr("]");
     }
     ir_wr(",\"specialization\":[");
     i = 0;

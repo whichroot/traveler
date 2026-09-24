@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+import "numeric.tv";
+
+fn ieee16_to_ieee32(bits: u16) -> u32 {
+    let value: u32 = bits as u32;
+    let sign: u32 = (value & 32768) << 16;
+    let exponent: u32 = (value >> 10) & 31;
+    let mantissa: u32 = value & 1023;
+    if exponent == 31 {
+        if mantissa != 0 { return 2143289344; } else { return sign | 2139095040; }
+    } else {
+        if exponent == 0 {
+            if mantissa == 0 { return sign; }
+            else {
+                let top: u32 = ieee_log2_16(mantissa as u64);
+                return sign | ((top + 103) << 23) | ((mantissa << (23 - top)) & 8388607);
+            }
+        } else { return sign | ((exponent + 112) << 23) | (mantissa << 13); }
+    }
+}
+
+fn ieee32_significand(bits: u32) -> u64 {
+    let mantissa: u64 = (bits & 8388607) as u64;
+    if ((bits >> 23) & 255) == 0 { return mantissa; } else { return mantissa | 8388608; }
+}
+
+fn ieee32_dyadic_exponent(bits: u32) -> i32 {
+    let exponent: i32 = ((bits >> 23) & 255) as i32;
+    if exponent == 0 { return 0 - 149; } else { return exponent - 150; }
+}
+
+fn ieee16_from_ieee32(bits: u32) -> u16 {
+    let kind: u32 = ieee32_classify(bits);
+    if kind == 4 { return 32256; }
+    else {
+        if kind == 3 { return (((bits >> 16) & 32768) | 31744) as u16; }
+        else {
+            return ieee_encode_finite((bits >> 31) as u64, ieee32_significand(bits),
+                                      ieee32_dyadic_exponent(bits), 10, 15) as u16;
+        }
+    }
+}
+
+fn bfloat16_to_ieee32(bits: u16) -> u32 {
+    let value: u32 = (bits as u32) << 16;
+    if ieee32_classify(value) == 4 { return 2143289344; } else { return value; }
+}
+
+fn bfloat16_from_ieee32(bits: u32) -> u16 {
+    if ieee32_classify(bits) == 4 { return 32704; }
+    else { return ((bits + 32767 + ((bits >> 16) & 1)) >> 16) as u16; }
+}
+
+fn ieee_pack_u16x2(low: u16, high: u16) -> u32 {
+    return (low as u32) | ((high as u32) << 16);
+}
+
+// Each packed lane widens exactly and accumulates with binary32 FMA.
+// The result packs two binary32 carriers, with lane zero in the low bits.
+fn ieee16x2_fma32(a: u32, b: u32, accumulators: u64) -> u64 {
+    let low: u32 = ieee32_fma(ieee16_to_ieee32(a as u16), ieee16_to_ieee32(b as u16), accumulators as u32);
+    let high: u32 = ieee32_fma(ieee16_to_ieee32((a >> 16) as u16), ieee16_to_ieee32((b >> 16) as u16), (accumulators >> 32) as u32);
+    return (low as u64) | ((high as u64) << 32);
+}
+
+fn bfloat16x2_fma32(a: u32, b: u32, accumulators: u64) -> u64 {
+    let low: u32 = ieee32_fma(bfloat16_to_ieee32(a as u16), bfloat16_to_ieee32(b as u16), accumulators as u32);
+    let high: u32 = ieee32_fma(bfloat16_to_ieee32((a >> 16) as u16), bfloat16_to_ieee32((b >> 16) as u16), (accumulators >> 32) as u32);
+    return (low as u64) | ((high as u64) << 32);
+}

@@ -215,11 +215,48 @@ fn cuda_parameter_valid(d: *Json, p: i32, ordinal: i32, count: i32) -> i32 {
     return 1;
 }
 
+fn cuda_capability_index(d: *Json, node: i32) -> i32 {
+    if json_str_eq(d, node, "ieee32-rne-v1") == 1 { return 0; }
+    if json_str_eq(d, node, "ieee64-rne-v1") == 1 { return 1; }
+    if json_str_eq(d, node, "warp-full32-v1") == 1 { return 2; }
+    if json_str_eq(d, node, "bounded-read-u64-v1") == 1 { return 3; }
+    if json_str_eq(d, node, "mma-f16-m16n8k16-native-v1") == 1 { return 4; }
+    if json_str_eq(d, node, "mma-bf16-m16n8k16-native-v1") == 1 { return 5; }
+    if json_str_eq(d, node, "async-shared-u64-v1") == 1 { return 6; }
+    return 0 - 1;
+}
+
 fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
     let numerical: i32 = json_get(d, k, "numerical");
+    var fields: i32 = 21;
+    let tensor: i32 = json_get(d, k, "tensor");
+    var native: i32 = 0; var warp: i32 = 0;
+    if tensor >= 0 {
+        if cuda_json_string(d, k, "tensor", "cuda-mma-native-v1") == 0 { return 0; }
+        fields = fields + 1;
+    }
     if numerical >= 0 {
-        if cuda_json_fields(d, k, 22) == 0 || cuda_json_string(d, k, "numerical", "ieee-bits-rne-v1") == 0 { return 0; }
-    } else if cuda_json_fields(d, k, 21) == 0 { return 0; }
+        if cuda_json_string(d, k, "numerical", "ieee-bits-rne-v1") == 0 { return 0; }
+        fields = fields + 1;
+    }
+    let capabilities: i32 = json_get(d, k, "requires");
+    if capabilities >= 0 {
+        fields = fields + 1;
+        if json_kind(d, capabilities) != JSON_ARR || json_len(d, capabilities) < 1 || json_len(d, capabilities) > 7 { return 0; }
+        var ci: i32 = 0; var previous: i32 = 0 - 1;
+        while ci < json_len(d, capabilities) {
+            let feature: i32 = cuda_capability_index(d, json_at(d, capabilities, ci));
+            if feature <= previous { return 0; }
+            if feature < 2 && numerical < 0 { return 0; }
+            if feature == 2 && cuda_json_string(d, k, "profile", "cooperative-warp-v1") == 0 { return 0; }
+            if feature == 2 { warp = 1; }
+            if feature == 4 || feature == 5 { native = 1; }
+            if feature == 6 && cuda_json_string(d, k, "execution", "cooperative-kernel") == 0 { return 0; }
+            previous = feature; ci = ci + 1;
+        }
+    }
+    if (tensor >= 0) != (native == 1) || (native == 1 && warp == 0) { return 0; }
+    if cuda_json_fields(d, k, fields) == 0 { return 0; }
     let cooperative: i32 = (cuda_json_string(d, k, "profile", "cooperative-grid-v1") == 1
         || cuda_json_string(d, k, "profile", "cooperative-warp-v1") == 1
         || cuda_json_string(d, k, "profile", "cooperative-atomic-v1") == 1) as i32;
@@ -413,6 +450,17 @@ fn cuda_package_valid(p: *CudaPackage) -> i32 {
     while i < p.count {
         let k: i32 = json_at(d, p.kernels, i);
         if cuda_kernel_valid(d, k) == 0 { return 0; }
+        var minimum_sm: i32 = 50; var minimum_ptx: i64 = 1;
+        if json_get(d, k, "numerical") >= 0 { minimum_ptx = 4; }
+        let capabilities: i32 = json_get(d, k, "requires"); var ci: i32 = 0;
+        while ci < json_len(d, capabilities) {
+            let feature: i32 = cuda_capability_index(d, json_at(d, capabilities, ci));
+            if feature >= 4 { minimum_sm = 80; minimum_ptx = 7; }
+            else if feature >= 2 { minimum_sm = 70; minimum_ptx = 6; }
+            else { if minimum_ptx < 4 { minimum_ptx = 4; } }
+            ci = ci + 1;
+        }
+        if p.sm < minimum_sm || json_as_int(d, major) < minimum_ptx { return 0; }
         if p.sm < 70 && (cuda_json_string(d, k, "profile", "cooperative-warp-v1") == 1
             || cuda_json_string(d, k, "profile", "cooperative-atomic-v1") == 1) { return 0; }
         if p.sm < 70 {

@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_numeric_projection.tv";
+import "../../src/lib/float/low_precision.tv";
+
+fn low_projection_pair(a: u32, b: u32, accumulator: u64, format: u64) -> u64 {
+    if format == 0 { return ieee16x2_fma32(a, b, accumulator); }
+    else { return bfloat16x2_fma32(a, b, accumulator); }
+}
+
+fn low_projection_lane(column: u64, columns: u64, next: u64, previous: u64) -> u64 {
+    if column < columns { return next; } else { return previous; }
+}
+
+fn low_projection_step(pair: u64, columns: u64, a: u32, b: u32, accumulator: u64, format: u64) -> u64 {
+    let next: u64 = low_projection_pair(a, b, accumulator, format);
+    let low: u64 = low_projection_lane(pair * 2, columns, next & 4294967295, accumulator & 4294967295);
+    let high: u64 = low_projection_lane(pair * 2 + 1, columns, next >> 32, accumulator >> 32);
+    return low | (high << 32);
+}
+
+fn low_projection_output(index: u64, cells: u64, accumulator: u64) -> u64 {
+    if index < cells { return ieee32_add(accumulator as u32, (accumulator >> 32) as u32) as u64; }
+    else { return 0; }
+}
+
+#[kernel]
+fn low_projection(thread: GpuThread, weights: *u64, weights_count: u64,
+                  input: *u64, input_count: u64, output: *u64,
+                  rows: u64, tokens: u64, columns: u64, bias: u64, format: u64) {
+    let index: u64 = gpu_global_index(thread);
+    let row: u64 = index % rows;
+    let token: u64 = index / rows;
+    let w0: u64 = gpu_bounded_load_u64(weights, weights_count, row * 2);
+    let x0: u64 = gpu_bounded_load_u64(input, input_count, token * 2);
+    let w1: u64 = gpu_bounded_load_u64(weights, weights_count, row * 2 + 1);
+    let x1: u64 = gpu_bounded_load_u64(input, input_count, token * 2 + 1);
+    let s0: u64 = low_projection_step(0, columns, w0 as u32, x0 as u32, bias & 4294967295, format);
+    let s1: u64 = low_projection_step(1, columns, (w0 >> 32) as u32, (x0 >> 32) as u32, s0, format);
+    let s2: u64 = low_projection_step(2, columns, w1 as u32, x1 as u32, s1, format);
+    let s3: u64 = low_projection_step(3, columns, (w1 >> 32) as u32, (x1 >> 32) as u32, s2, format);
+    output[index] = low_projection_output(index, rows * tokens, s3);
+}
+
+fn low_projection_valid(rows: u64, tokens: u64, columns: u64, weights_count: u64, input_count: u64, format: u64) -> bool {
+    if rows == 0 || tokens == 0 || columns == 0 || columns > 8 || format > 1 { return false; }
+    if rows > 1152921504606846975 || tokens > 1152921504606846975 { return false; }
+    if weights_count != rows * 2 || input_count != tokens * 2 { return false; }
+    if rows > 9223372036854775807 / tokens { return false; }
+    return true;
+}

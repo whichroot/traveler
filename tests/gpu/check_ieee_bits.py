@@ -148,7 +148,7 @@ def cases():
     return groups
 
 
-def sources(groups, native=False):
+def sources(groups, native=False, sequence_inputs=()):
     kernels, functions, calls = [], [], []
     if native:
         functions.append(f'import "{ROOT}/tests/gpu/cuda_resident_checks.tv";')
@@ -167,7 +167,10 @@ def sources(groups, native=False):
         functions.append(f'fn check{k}(device: u64, module: u64) {{' if native else f'fn check{k}() {{')
         for j in range(arity):
             functions.append(f'let a{j}: *u{width} = alloc({n});')
-            functions.extend(f'a{j}[{i}] = {row[j]};' for i, row in enumerate(inputs))
+            if k in sequence_inputs:
+                functions.append(f'for init{j} in 0..{n} {{ a{j}[init{j}] = init{j} as u{width}; }}')
+            else:
+                functions.extend(f'a{j}[{i}] = {row[j]};' for i, row in enumerate(inputs))
         functions.append(f'let out: *u{output} = alloc({n});')
         if native:
             functions += [f'let kernel: u64 = resident_need(cuda_kernel_get_owner(module, "numeric{k}"));',

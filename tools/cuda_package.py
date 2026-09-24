@@ -14,6 +14,22 @@ MAGIC = b"TVCP0001"
 PREFIX = "; traveler.kernel.v1 "
 MAX_HEADER = 262144
 MAX_PTX = 16777216
+CAPABILITIES = {
+    "ieee32-rne-v1": (50, 4, 0),
+    "ieee64-rne-v1": (50, 4, 0),
+    "warp-full32-v1": (70, 6, 0),
+    "bounded-read-u64-v1": (70, 6, 0),
+    "mma-f16-m16n8k16-native-v1": (80, 7, 0),
+    "mma-bf16-m16n8k16-native-v1": (80, 7, 0),
+    "async-shared-u64-v1": (80, 7, 0),
+}
+
+
+def kernel_requirements(kernel):
+    requirements = [CAPABILITIES[name] for name in kernel.get("requires", [])]
+    if "numerical" in kernel:
+        requirements.append((50, 4, 0))
+    return max((r[0] for r in requirements), default=50), max((r[1:] for r in requirements), default=(1, 0))
 
 
 def require(condition, message):
@@ -36,9 +52,31 @@ def unique_object(pairs):
 def validate_kernel(k):
     require(type(k) is dict, "kernel must be an object")
     fields = set(k)
+    tensor = k.get("tensor")
+    if "tensor" in k:
+        require(tensor == "cuda-mma-native-v1", "unsupported tensor policy")
+        fields.remove("tensor")
+    capabilities = k.get("requires", [])
+    native = type(capabilities) is list and any(
+        type(name) is str and name.startswith("mma-") for name in capabilities)
+    require((tensor is not None) == native, "tensor capability policy")
+    if native:
+        require("warp-full32-v1" in k["requires"], "tensor participation capability")
     if "numerical" in k:
         require(k["numerical"] == "ieee-bits-rne-v1", "unsupported numerical profile")
         fields.remove("numerical")
+    if "requires" in k:
+        capabilities = k["requires"]
+        require(type(capabilities) is list and 1 <= len(capabilities) <= len(CAPABILITIES), "capability list")
+        require(all(type(name) is str and name in CAPABILITIES for name in capabilities), "unsupported capability")
+        require(capabilities == [name for name in CAPABILITIES if name in capabilities], "capability order or duplicate")
+        if any(name.startswith("ieee") for name in capabilities):
+            require(k.get("numerical") == "ieee-bits-rne-v1", "numerical capability policy")
+        if "warp-full32-v1" in capabilities:
+            require(k.get("profile") == "cooperative-warp-v1", "warp capability profile")
+        if "async-shared-u64-v1" in capabilities:
+            require(k.get("execution") == "cooperative-kernel", "async capability profile")
+        fields.remove("requires")
     require(fields == {"schema", "abi", "stage", "compiler", "target", "artifact",
                        "symbol", "owner", "specialization", "line", "column", "execution",
                        "profile", "block", "dimensions", "lanes_per_cell", "dynamic_shared_bytes",
@@ -140,6 +178,7 @@ def build(ir_path, output, llc, sm):
     require(integer(sm, 50, 999), "invalid target SM")
     ir = Path(ir_path).read_text()
     entries = descriptors(ir)
+    require(all(sm >= kernel_requirements(k)[0] for k in entries), "target lacks required capability")
     require(sm >= 70 or not any(k["profile"] in ("cooperative-warp-v1", "cooperative-atomic-v1") for k in entries), "collective profile requires SM70")
     require(sm >= 70 or not any("count_parameter" in p.get("footprint", {})
                                for k in entries for p in k["parameters"]), "bounded profile requires SM70")
@@ -154,6 +193,7 @@ def build(ir_path, output, llc, sm):
     target = re.search(rb"(?m)^\s*\.target sm_(\d+)\s*$", ptx)
     version = re.search(rb"(?m)^\s*\.version (\d+)\.(\d+)\s*$", ptx)
     require(target and int(target[1]) == sm and version, "PTX target/version mismatch")
+    require(all((int(version[1]), int(version[2])) >= kernel_requirements(k)[1] for k in entries), "PTX lacks required capability")
     require(set(re.findall(rb"\.visible \.entry (\w+)\(", ptx)) == {k["symbol"].encode() for k in entries}, "PTX entry mismatch")
     manifest = {"schema": "traveler.cuda.package.v1", "abi": 1, "sm": sm,
                 "ptx_major": int(version[1]), "ptx_minor": int(version[2]),
