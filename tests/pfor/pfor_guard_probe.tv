@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Pointer callees and indirect indices need bounded read footprints.
+// k5 has inline affine accesses, so its alias guard can permit dispatch.
+fn f_affine(a: *u8, i: i64) -> i64 { return a[i] as i64; }
+fn f_datadep(a: *u8, off: i64) -> i64 {
+    var s: i64 = 0;
+    var t: i64 = 0;
+    while t < 4 { s = s + (a[off + t] as i64); t = t + 1; }
+    return s;
+}
+fn f_lut(a: *u8, lut: *i64, i: i64) -> i64 { return lut[a[i] as i64]; }
+fn f_wide(a: *u8, i: i64) -> i128 { return (a[i] as i128) << (70 as i128); }
+
+fn k1(a: *u8, out: *u64, n: i64) { for r in 0..n { out[r] = f_affine(a, r) as u64; } }
+fn k2(a: *u8, idx: *i64, out: *u64, n: i64) { for r in 0..n { out[r] = f_datadep(a, idx[r]) as u64; } }
+fn k3(a: *u8, lut: *i64, out: *u64, n: i64) { for r in 0..n { out[r] = f_lut(a, lut, r) as u64; } }
+fn k4(a: *u8, out: *u64, n: i64) { for r in 0..n { let v: i128 = f_wide(a, r); out[r] = v as u64; } }
+fn k5(a: *u8, lo: *u64, hi: *u64, n: i64) { for r in 0..n { lo[r] = a[r] as u64; hi[r] = a[r] as u64; } }
+fn k6(a: *u8, idx: *i64, out: *u64, n: i64) { for r in 0..n { out[r] = a[idx[r]] as u64; } }
+fn main() -> i32 { return 0; }

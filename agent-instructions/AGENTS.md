@@ -96,7 +96,8 @@ Read-only compiler query modes (parse/analyze, no program emitted):
 | `--diagnostics` | Parse + typecheck; JSON-Lines errors (`file:line:col`, message). |
 | `--dependencies` | Resolve imports; emit the entry and transitive source paths as a JSON array. |
 | `--symbols` / `--references` | Enumerate definitions / use-sites. |
-| `--pfor-report` | One JSON record per `for` loop: did it parallelize, and if not, the reason. |
+| `--pfor-report` | One JSON record per `for` loop: dispatch scaffolding and admission refusals. |
+| `--pfor-alias-report` | Runtime guard status: `serial`, `checked`, `disjoint`, or `not-admitted`, with the refusal reason. |
 | `--eval` | Run in a tree-walking interpreter (no LLVM). |
 | `--emit-gpu` | Re-emit elementwise parallel loops as AMD GCN kernels (early). |
 | `--emit-gpu-nvptx` | Same, NVIDIA target: `nvptx64-nvidia-cuda` PTX kernels (early). |
@@ -295,8 +296,11 @@ src/bootstrap/out/stage1 prog.tv --pfor-report 2>/dev/null
 # {"fn":"main","line":..,"col":..,"var":"i","independent":1,"has_field":1,"ncaps":2,"dispatched":1,"reason":""}
 ```
 
-`dispatched:1` ran parallel. `dispatched:0` with a named `reason` is a soundness
-refusal to design around. `TRAVELER_THREADS` decides worker count at runtime.
+`dispatched:1` means dispatch scaffolding was emitted. Use `--pfor-alias-report`
+to distinguish an always-serial alias guard from a runtime check or proved
+disjointness. Pointer callees and data-dependent reads can have missing read
+footprints even when the loop is admitted. `TRAVELER_THREADS` and the range
+size also affect runtime execution. `dispatched:0` names an admission refusal.
 
 ### The four operations (`src/lib/core/`)
 

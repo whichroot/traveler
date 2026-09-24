@@ -733,6 +733,11 @@ captures, callee/read/write footprints, or missing footprints. A `checked`
 result permits parallel dispatch only when the runtime ranges pass. Pointer
 overlap and address/index overflow select serial execution.
 
+A read-only callee can still force serial fallback when its accessed range is
+unknown: read-only status alone does not establish non-overlap with outputs.
+`tests/pfor/pfor_guard_probe.tv` pins six examples, including affine and
+data-dependent pointer callees, an indirect read, and an inline affine control.
+
 The device module's `; skipped __pfor_gpu_worker_N` records report device-side
 refusals, including body shape, i64 iterator, dynamic field carrier, and calls
 the device module cannot carry. Device admission and CPU alias eligibility

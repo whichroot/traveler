@@ -53,6 +53,20 @@ entry:
 
 with tempfile.TemporaryDirectory() as directory:
     temp = Path(directory)
+    guard_source = SOURCE.with_name('pfor_guard_probe.tv')
+    aliases = {r['fn']: r for r in map(json.loads, run(TVC, guard_source, '--pfor-alias-report').splitlines())}
+    legacy = {r['fn']: r for r in map(json.loads, run(TVC, guard_source, '--pfor-report').splitlines())}
+    run(TVC, guard_source, '-o', temp/'probe.ll')
+    probe_ir = (temp/'probe.ll').read_text()
+    for name in ('k1', 'k2', 'k3', 'k4', 'k5', 'k6'):
+        assert legacy[name]['dispatched'] == 1, legacy[name]
+        assert aliases[name]['admitted'] == 1, aliases[name]
+        assert aliases[name]['alias'] == ('checked' if name == 'k5' else 'serial'), aliases[name]
+        reason = '' if name == 'k5' else ('read-footprint' if name == 'k6' else 'callee-footprint')
+        assert aliases[name]['reason'] == reason, aliases[name]
+        body = re.search(r'define [^\n]+ @'+name+r'\([^\n]*\)[^{]*\{(.*?)\n}', probe_ir, re.S)
+        assert body, name
+        assert ('icmp eq i1 0, 0' in body[1]) == (name != 'k5'), name
     original = SOURCE.read_text()
     for name, changed in [
         ("callee-offset", original.replace("w[k * N + j]", "w[k * N + j + 1]")),
