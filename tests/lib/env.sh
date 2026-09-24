@@ -147,6 +147,17 @@ done
 if [ -n "$LLVM14_BINDIR" ]; then HAVE_LLVM14=1; else HAVE_LLVM14=0; fi
 
 # --- Compilers under test --------------------------------------------------
+tv_require_stage1() {
+    CANONICAL_TVC="${TVC_SELF:-$TV_REPO_DIR/src/bootstrap/out/stage1}"
+    if [ ! -x "$CANONICAL_TVC" ] && [ -z "${TVC_SELF:-}" ]; then
+        LLC="$LLC" LINK="$LINKER" bash "$TV_REPO_DIR/src/bootstrap/build.sh" || return 1
+    fi
+    if [ ! -x "$CANONICAL_TVC" ]; then
+        echo "FATAL: canonical compiler unavailable: $CANONICAL_TVC" >&2
+        return 1
+    fi
+}
+
 if [ -x "$TV_REPO_DIR/src/bootstrap/out/stage1" ]; then
     HAVE_STAGE1=1
 else

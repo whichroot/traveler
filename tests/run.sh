@@ -67,38 +67,10 @@ if [ -z "$OPT" ]; then
     echo "WARNING: opt not found, skipping IR validation" >&2
 fi
 
-# --- Build bootstrap compiler (optional) ---
-# The frozen C seed is dual-parity material. Without a C compiler it cannot
-# be built; seed-driven output tests then fall back to stage1 (sound — the
-# seed/self semantic parity invariant is what run_dual.sh proves), while
-# diagnostics negative tests skip (their messages are seed-shaped).
-TVC="$SRC_DIR/tvc"
-if [ ! -x "$TVC" ] && [ "$HAVE_LINKER" = "1" ]; then
-    echo "Building bootstrap compiler..."
-    (cd "$SRC_DIR" && make tvc 2>&1) || {
-        # Force rebuild if make thinks it's up to date but binary missing
-        (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c 2>&1)
-    }
-fi
-if [ -x "$TVC" ]; then
-    HAVE_SEED=1
-else
-    HAVE_SEED=0
-    echo "NOTE: C seed unavailable — seed output tests run through stage1, negative diagnostics tests skip" >&2
-fi
-
-# --- Build the self-hosting compiler (for import-based modules the C seed
-#     cannot parse, e.g. the split piecewise codec). C-free canonical build. ---
-TVC_SELF="$REPO_DIR/src/bootstrap/out/stage1"
-if [ ! -x "$TVC_SELF" ]; then
-    echo "Building self-hosting compiler (C-free)..."
-    LLC="$LLC" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || {
-        echo "FATAL: could not build self-hosting compiler" >&2; exit 1
-    }
-fi
-if [ "$HAVE_SEED" = "0" ]; then
-    TVC="$TVC_SELF"
-fi
+# Use the canonical compiler for both single-file and import-based fixtures.
+tv_require_stage1 || exit 1
+TVC_SELF="$CANONICAL_TVC"
+TVC="$CANONICAL_TVC"
 
 # --- Temp directory ---
 TMPDIR=$(mktemp -d)
@@ -317,12 +289,12 @@ test_negative() {
         return
     fi
 
-    # Diagnostics are seed-shaped; without the C seed the messages differ.
-    if [ "$HAVE_SEED" = "0" ]; then
-        printf "  [%2d] %-35s SKIP (no seed)\n" "$TOTAL" "neg:$name"
-        SKIP=$((SKIP + 1))
-        return
-    fi
+    case "$name" in
+        instantiate_nongeneric|missing_return)
+            printf "  [%2d] %-35s SKIP (legacy-seed diagnostic)\n" "$TOTAL" "neg:$name"
+            SKIP=$((SKIP + 1))
+            return ;;
+    esac
 
     local stderr_out
     stderr_out=$("$TVC" "$tv_file" -o "$TMPDIR/${name}_neg.ll" 2>&1) || true

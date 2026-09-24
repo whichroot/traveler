@@ -27,9 +27,9 @@ See `src/bootstrap/PROVENANCE.md` for why this is honest (the snapshot is a fixe
 point; regenerate it with `src/bootstrap/refresh.sh`).
 
 `src-legacy/tvc.c` is the original C bootstrap **seed**, now **optional** — kept only
-as an independent provenance/audit path (the bootstrap gate proves the C-free
-build is byte-identical to the C-seed build). The legacy seed pipeline below
-still works if you prefer it.
+as an independent provenance/audit path. Frozen-seed compatibility is a separate
+effort; the canonical bootstrap gate uses no C source. The legacy seed pipeline
+below is retained for that compatibility effort.
 
 ## 1. Prerequisites
 
@@ -1281,7 +1281,7 @@ tests/run_all.sh --suite=gpu   # run one suite (see --help for names)
 The dispatcher's behavior by environment:
 
 - **llc + link driver(s) present:** the full gate on the primary driver
-  (`tests/run_dual.sh` when the C seed is available, else `tests/run.sh`),
+  (`tests/run.sh` through the canonical bootstrap),
   then the full regression suite once per *additional* discovered link driver
   (`cc`/`clang`/`gcc`), with tool-neutral sub-gates skipped on repeat passes.
 - **No llc or no link driver:** `tests/run.sh` runs degraded — compilation
@@ -1293,9 +1293,9 @@ The dispatcher's behavior by environment:
 Individual suites remain directly runnable:
 
 ```sh
-tests/run_dual.sh      # the full gate: regression + pfor + dynfield + bootstrap,
-                       # then Stage 1 build + dual-compiler parity (one script)
-tests/run.sh           # regression suite alone (incl. lsp/doc/bootstrap gates)
+tests/run.sh           # canonical full gate, including lsp/doc/bootstrap
+tests/run_dual.sh      # separate legacy-seed compatibility effort
+tests/run_bootstrap.sh --legacy-seed  # explicitly request C-seed equivalence
 tests/run_pfor.sh      # auto-parallelization soundness suite
 tests/dynfield/run.sh  # dynamic-field + traits + closures suite
 ```
@@ -1311,8 +1311,10 @@ LINKER=gcc tests/run.sh        # link with a specific driver
 ```
 
 `tests/run.sh` never fails hard on a missing tool: an absent `llc`, link
-driver, C seed, or python3 turns the affected tests into named SKIPs (the C
-seed's output tests fall back to stage1; its diagnostics negative tests skip).
+driver, or python3 turns the affected tests into named SKIPs once stage1 is
+available. Frozen-seed-only diagnostics (`instantiate_nongeneric` and
+`missing_return`) report legacy-only skips. The canonical gate does not build
+or invoke the frozen seed. `TVC_SELF` can select an existing canonical compiler.
 The Wayland window test (`gfx_window`) runs only when a live compositor
 socket exists, and pops a real window for ~5 seconds when it does.
 
@@ -1330,15 +1332,15 @@ Not every suite needs the full toolchain. Pick by environment:
 
 | Suite | stage1 | llc | Link driver | C compiler | Extra |
 |---|---|---|---|---|---|
-| `tests/run.sh` (regression) | ✓ | ✓ | ✓ | ✓ | `opt` recommended (IR verify) |
-| `tests/run_dual.sh` (full gate) | ✓ | ✓ | ✓ | ✓ | regression + pfor + dynfield + bootstrap + parity |
+| `tests/run.sh` (full gate) | ✓ | ✓ | ✓ | — | `opt` recommended (IR verify) |
+| `tests/run_dual.sh` (legacy compatibility) | ✓ | ✓ | ✓ | ✓ | separate frozen-seed effort |
 | `tests/run_pfor.sh` | ✓ | ✓ | ✓ | — | |
-| `tests/dynfield/run.sh` | ✓ | ✓ | ✓ | ✓ | |
+| `tests/dynfield/run.sh` | ✓ | ✓ | ✓ | — | |
 | `tests/emit/run.sh` (`--emit` driver) | ✓ | ✓ | ✓ | — | |
 | `tests/eval_diff/run.sh` (evaluator oracle) | ✓ | ✓ | ✓ | — | |
 | `tests/alloc_debug/run.sh` | ✓ | ✓ | ✓ | — | |
 | `tests/foldbug/run.sh` | ✓ | ✓ | ✓ | — | |
-| `tests/run_diag.sh` / `run_fmt.sh` / `run_lsp.sh` / `run_doc.sh` | ✓ | ✓ | ✓ | ✓ | also run as `run.sh` sub-gates |
+| `tests/run_diag.sh` / `run_fmt.sh` / `run_lsp.sh` / `run_doc.sh` | ✓ | ✓ | ✓ | — | also run as `run.sh` sub-gates |
 | `tests/run_bootstrap.sh` (fixed point) | ✓ | ✓ | ✓ | — | rebuilds stage1/stage2 |
 | `tests/typedptr/run.sh` (`-target tpc`) | ✓ | ✓ | ✓ | — | also needs an LLVM-14-era `llvm-as` + `llc` pair |
 | `tests/gpu/run.sh` | ✓ | per leg | AGX/CUDA legs | — | AMDGCN/NVPTX legs skip if `llc` lacks the target; CUDA execution needs `libcuda` + device node; AGX hardware legs need the measured M4 profile (macOS) |

@@ -16,7 +16,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-SRC_DIR="$REPO_DIR/src-legacy"
 
 # Resolve a .tv by basename across the demo + library + tool trees. Demos live
 # in examples/, reusable kernels in src/lib/<subsys>/, tools in src/tools/.
@@ -54,8 +53,8 @@ esac
 # re-derived honoring TRAVELER_LINK_FLAGS, plus capability flags.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/env.sh"
 
-(cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || exit 1
-TVC="$SRC_DIR/tvc"
+tv_require_stage1 || exit 1
+TVC="$CANONICAL_TVC"
 
 TMP=$(mktemp -d)
 trap "rm -rf $TMP" EXIT
@@ -197,7 +196,7 @@ EXPECTED_DYN_NTT="1
 1"
 
 NTT_OK=1
-# Build Stage 1 tvc_self (seed compiles the canonical compiler).
+# Compile a fresh test compiler with the canonical bootstrap.
 "$TVC" "$REPO_DIR/src/tvc_self.tv" -o "$TMP/tvc_self.ll" >/dev/null 2>&1 \
   && "$LLC" $LLC_TARGET -filetype=obj "$TMP/tvc_self.ll" -o "$TMP/tvc_self.o" 2>/dev/null \
   && "$LINKER" $LINK_PIE "$TMP/tvc_self.o" -o "$TMP/tvc_self" 2>/dev/null || {

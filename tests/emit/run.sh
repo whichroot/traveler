@@ -221,8 +221,8 @@ if ! "$STAGE1" "$PROMOTE_SRC" -o "$TMP/tpc-omitted.ll" -target tpc 2>/dev/null |
    ! "$STAGE1" "$PROMOTE_SRC" -o "$TMP/tpc-none.ll" -target tpc \
         --opt-level none 2>/dev/null || \
    ! cmp -s "$TMP/tpc-omitted.ll" "$TMP/tpc-none.ll" || \
-   ! "$STAGE1" --emit-gpu "$SRC" -o "$TMP/gpu-omitted.ll" 2>/dev/null || \
-   ! "$STAGE1" --emit-gpu "$SRC" -o "$TMP/gpu-none.ll" \
+    ! "$STAGE1" --emit-gpu "$REPO_DIR/examples/gpu_field_map.tv" -o "$TMP/gpu-omitted.ll" 2>/dev/null || \
+    ! "$STAGE1" --emit-gpu "$REPO_DIR/examples/gpu_field_map.tv" -o "$TMP/gpu-none.ll" \
         --opt-level none 2>/dev/null || \
    ! cmp -s "$TMP/gpu-omitted.ll" "$TMP/gpu-none.ll"; then
     profile_boundaries_ok=0

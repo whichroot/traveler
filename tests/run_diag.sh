@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Diagnostics catalog (roadmap A5) — error-message regression suite.
 #
-# The structured diagnostics from A2.1/A2.2/A2.3 (file:line:col + caret,
-# "expected X, found Y", recovery, error cap, single non-zero exit) live in
-# the CANONICAL compiler tvc_self, not the frozen bootstrap. The existing
-# negative suite in run.sh runs against the bootstrap, so these diagnostics
-# were untested. This suite pins them against tvc_self.
+# Check structured diagnostics with a fresh canonical compiler.
+# Fixtures pin source positions, recovery, error limits, and failure status.
 #
 # Each fixture in tests/diag/*.tv is a deliberately broken program. The
 # matching tests/diag/expected/<name>.txt lists substrings (one per line)
@@ -17,7 +14,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-SRC_DIR="$REPO_DIR/src-legacy"
 EXAMPLES="$REPO_DIR/examples"
 DIAG_DIR="$SCRIPT_DIR/diag"
 EXPECTED="$DIAG_DIR/expected"
@@ -72,10 +68,8 @@ diag_compile() { # $1=timeout secs, rest = command
 }
 
 # --- Build the canonical compiler (Stage 1: bootstrap -> tvc_self) ---
-(cd "$SRC_DIR" && make tvc >/dev/null 2>&1) || {
-    (cd "$SRC_DIR" && "$LINKER" -O2 -Wall -Wextra -std=c99 -o tvc tvc.c) || exit 1
-}
-"$SRC_DIR/tvc" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self.ll" 2>/dev/null || {
+tv_require_stage1 || exit 1
+"$CANONICAL_TVC" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/tvc_self.ll" 2>/dev/null || {
     echo "FATAL: Stage 1 compile failed" >&2; exit 1
 }
 "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/tvc_self.ll" -o "$TMPDIR/tvc_self.o" 2>/dev/null || {

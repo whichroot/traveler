@@ -6,8 +6,7 @@
 #
 #   - no llc / no link driver:  run.sh degrades (IR-only, link/run SKIP) and
 #     the AGX byte goldens run via tests/gpu/run.sh --goldens-only.
-#   - llc + one link driver:    the full gate once (run_dual.sh when the C
-#     seed is available, else run.sh).
+#   - llc + one link driver: run the canonical full gate once.
 #   - llc + several drivers:    the full gate on the primary driver, then the
 #     full regression suite once per ADDITIONAL driver with the tool-neutral
 #     sub-gates skipped (they are linker-independent).
@@ -90,7 +89,7 @@ if [ "$HAVE_STAGE1" != "1" ]; then
     if [ "$HAVE_LLC" = "1" ] && [ "$HAVE_LINKER" = "1" ]; then
         echo ""
         echo "stage1 missing — building it (src/bootstrap/build.sh)..."
-        LLC="$LLC" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || true
+        LLC="$LLC" LINK="$LINKER" "$REPO_DIR/src/bootstrap/build.sh" >/dev/null 2>&1 || true
         [ -x "$REPO_DIR/src/bootstrap/out/stage1" ] && HAVE_STAGE1=1
     fi
 fi
@@ -103,11 +102,7 @@ elif [ "$HAVE_LLC" != "1" ] || [ "$HAVE_LINKER" != "1" ]; then
     echo "  - run.sh        (degraded: IR-only, link/run stages SKIP)"
     echo "  - gpu goldens   (tests/gpu/run.sh --goldens-only)"
 else
-    if [ "$HAVE_SEED" = "1" ]; then
-        echo "  - run_dual.sh   (full gate incl. dual parity; linker: ${LINKERS%% *})"
-    else
-        echo "  - run.sh        (full; linker: ${LINKERS%% *}; no C seed — parity gate off)"
-    fi
+    echo "  - run.sh        (canonical full gate; linker: ${LINKERS%% *})"
     _rest="${LINKERS#* }"
     if [ "$_rest" != "$LINKERS" ]; then
         for _d in $_rest; do
@@ -143,11 +138,7 @@ else
     _first=1
     for _d in $LINKERS; do
         if [ "$_first" = "1" ]; then
-            if [ "$HAVE_SEED" = "1" ]; then
-                LINKER="$_d" run_one "run_dual[$_d]" bash tests/run_dual.sh
-            else
-                LINKER="$_d" run_one "run[$_d]" bash tests/run.sh
-            fi
+            LINKER="$_d" run_one "run[$_d]" bash tests/run.sh
             _first=0
         else
             LINKER="$_d" TRAVELER_SKIP_TOOL_NEUTRAL=1 \

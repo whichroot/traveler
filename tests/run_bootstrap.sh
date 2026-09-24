@@ -1,23 +1,10 @@
 #!/usr/bin/env bash
-# run_bootstrap.sh — the B4 gate: Traveler builds itself with NO C in the trust
-# chain, the committed snapshot is fresh, and the C-free path is byte-identical
-# to the historical C-seed path (so dropping C changes nothing).
-#
-# Four assertions:
-#   1. C-FREE BUILD: bootstrap/build.sh reaches the self-hosting fixed point
-#      using only the committed Traveler-produced IR + llc + a linker (no C
-#      source compiled).
-#   2. FRESHNESS: the committed bootstrap/tvc_self.boot.ll equals the IR the
-#      booted compiler emits for the current source (the snapshot is not stale).
-#   3. CORRECTNESS: the C-free-built compiler compiles a real example to a
-#      binary with the expected output.
-#   4. EQUIVALENCE: the C-free-built compiler and the C-seed-built compiler emit
-#      BYTE-IDENTICAL IR for tvc_self.tv — proof the C seed is redundant, not
-#      merely unused. (This is the only assertion that touches tvc.c, and only
-#      to prove it can be dropped.)
-#
-# Usage: ./run_bootstrap.sh
+# Check the canonical fixed point, snapshot freshness, and native output.
+# Usage: ./run_bootstrap.sh [--legacy-seed] (separate compatibility check).
 set -uo pipefail
+if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != "--legacy-seed" ]; }; then
+    echo "Usage: $0 [--legacy-seed]" >&2; exit 2
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -48,6 +35,9 @@ case "$(uname -s)-$(uname -m)" in
     Linux-aarch64) LLC_TARGET="-mtriple=aarch64-linux-gnu"; LINK_PIE="-no-pie" ;;
     *)             LLC_TARGET="";                           LINK_PIE="" ;;
 esac
+
+. "$SCRIPT_DIR/lib/env.sh"
+export LINK="$LINKER"
 
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
@@ -89,7 +79,7 @@ ok=1
 if [ -x "$STAGE1" ]; then
     "$STAGE1" "$EXAMPLES/field_basics.tv" -o "$TMPDIR/fb.ll" 2>/dev/null || ok=0
     "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/fb.ll" -o "$TMPDIR/fb.o" 2>/dev/null || ok=0
-    cc $LINK_PIE "$TMPDIR/fb.o" -o "$TMPDIR/fb" 2>/dev/null || ok=0
+    "$LINKER" $LINK_PIE "$TMPDIR/fb.o" -o "$TMPDIR/fb" 2>/dev/null || ok=0
     got=$("$TMPDIR/fb" 2>/dev/null | tr '\n' ' ')
     [ "$got" = "49 100 171 2 123 1 " ] || ok=0
 else
@@ -97,14 +87,13 @@ else
 fi
 check "C-free compiler emits correct native output" "$ok"
 
-# --- 4: equivalence to the C-seed path (proves the seed is redundant) ---
-# Build the seed (this is the ONLY C compilation in the gate, and only to prove
-# it produces the same compiler the C-free path does).
+# The frozen seed comparison runs only when explicitly requested.
+if [ "${1:-}" = "--legacy-seed" ]; then
 ok=1
 if (cd "$SRC_DIR" && make tvc >/dev/null 2>&1); then
     "$SRC_DIR/tvc" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/seed_s1.ll" 2>/dev/null || ok=0
     "$LLC" $LLC_TARGET -filetype=obj "$TMPDIR/seed_s1.ll" -o "$TMPDIR/seed_s1.o" 2>/dev/null || ok=0
-    cc $LINK_PIE "$TMPDIR/seed_s1.o" -o "$TMPDIR/seed_s1" 2>/dev/null || ok=0
+    "$LINKER" $LINK_PIE "$TMPDIR/seed_s1.o" -o "$TMPDIR/seed_s1" 2>/dev/null || ok=0
     # Seed-built compiler emits IR for tvc_self.tv.
     "$TMPDIR/seed_s1" "$REPO_DIR/src/tvc_self.tv" -o "$TMPDIR/seed_out.ll" 2>/dev/null || ok=0
     # C-free-built compiler emits IR for tvc_self.tv.
@@ -118,6 +107,7 @@ else
     ok=0
 fi
 check "C-free path == C-seed path (seed is redundant)" "$ok"
+fi
 
 echo ""
 echo "============================================"
