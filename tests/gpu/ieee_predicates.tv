@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/float/numeric.tv";
+
+var predicate_calls: i32 = 0;
+
+fn predicate_effect(value: bool) -> bool {
+    predicate_calls = predicate_calls + 1;
+    return value;
+}
+
+fn main() -> i32 {
+    let finite: bool = ieee64_is_finite(4607182418800017408);
+    if !finite { return 1; }
+    if !ieee32_is_nan(2139095041) { return 2; }
+    if ieee32_is_nan(1065353216) || !ieee32_eq(0, 2147483648) { return 3; }
+    if ieee64_is_finite(4607182418800017408) && ieee64_lt(0, 4607182418800017408) { }
+    else { return 4; }
+    let skipped_and: bool = predicate_effect(false) && predicate_effect(true);
+    if skipped_and || predicate_calls != 1 { return 5; }
+    let skipped_or: bool = predicate_effect(true) || predicate_effect(false);
+    if !skipped_or || predicate_calls != 2 { return 6; }
+    let taken_and: bool = predicate_effect(true) && predicate_effect(false);
+    if taken_and || predicate_calls != 4 { return 7; }
+    let taken_or: bool = predicate_effect(false) || predicate_effect(true);
+    if !taken_or || predicate_calls != 6 { return 8; }
+    print(predicate_calls);
+    return 0;
+}

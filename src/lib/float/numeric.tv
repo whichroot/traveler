@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: Apache-2.0
+
+fn ieee_log2_16(value: u64) -> u32 {
+    let shift8: u32 = ((value >= 256) as u32) * 8;
+    let value8: u64 = value >> (shift8 as u64);
+    let shift4: u32 = ((value8 >= 16) as u32) * 4;
+    let value4: u64 = value8 >> (shift4 as u64);
+    let shift2: u32 = ((value4 >= 4) as u32) * 2;
+    let value2: u64 = value4 >> (shift2 as u64);
+    return shift8 + shift4 + shift2 + ((value2 >= 2) as u32);
+}
+fn ieee_log2_32(value: u64) -> u32 {
+    if value >= 65536 { return 16 + ieee_log2_16(value >> 16); } else { return ieee_log2_16(value); }
+}
+fn ieee_log2_64(value: u64) -> u32 {
+    if value >= 4294967296 { return 32 + ieee_log2_32(value >> 32); } else { return ieee_log2_32(value); }
+}
+
+// The full discarded suffix determines nearest-even rounding.
+// Separate width-64 branches prevent out-of-range shifts.
+fn ieee_round_shift(value: u64, shift: i32) -> u64 {
+    if shift <= 0 { return value << ((0 - shift) as u64); }
+    else {
+        if shift > 64 { return 0; }
+        else {
+            if shift == 64 {
+                if value > 9223372036854775808 { return 1; } else { return 0; }
+            } else {
+                let n: u64 = shift as u64;
+                let result: u64 = value >> n;
+                let remainder: u64 = value & (((1 as u64) << n) - 1);
+                let half: u64 = (1 as u64) << (n - 1);
+                if (remainder > half) | ((remainder == half) & ((result & 1) != 0)) {
+                    return result + 1;
+                } else { return result; }
+            }
+        }
+    }
+}
+
+// Internal format parameters are fixed by the public wrappers.
+// The finite input is magnitude * 2^exponent; sign is zero or one.
+fn ieee_encode_finite(sign: u64, magnitude: u64, exponent: i32, fraction: u32, bias: i32) -> u64 {
+    let sign_bits: u64 = (sign * ((bias + 1) as u64)) << ((fraction + 1) as u64);
+    let infinity: u64 = ((bias * 2 + 1) as u64) << (fraction as u64);
+    if magnitude == 0 { return sign_bits; }
+    else {
+        let top: i32 = ieee_log2_64(magnitude) as i32;
+        let power: i32 = exponent + top;
+        if power > bias { return sign_bits | infinity; }
+        else {
+            if power < 1 - bias {
+                return sign_bits | ieee_round_shift(magnitude, 1 - bias - (fraction as i32) - exponent);
+            } else {
+                let rounded: u64 = ieee_round_shift(magnitude, top - (fraction as i32));
+                return sign_bits | ((((power + bias - 1) as u64) << (fraction as u64)) + rounded);
+            }
+        }
+    }
+}
+
+fn ieee32_from_u64(value: u64) -> u32 { return ieee_encode_finite(0, value, 0, 23, 127) as u32; }
+fn ieee64_from_u64(value: u64) -> u64 { return ieee_encode_finite(0, value, 0, 52, 1023); }
+fn ieee32_from_u32(value: u32) -> u32 { return ieee32_from_u64(value as u64); }
+fn ieee64_from_u32(value: u32) -> u64 { return ieee64_from_u64(value as u64); }
+fn ieee32_from_i64(value: i64) -> u32 {
+    if value < 0 { return ieee_encode_finite(1, (0 as u64) - (value as u64), 0, 23, 127) as u32; }
+    else { return ieee32_from_u64(value as u64); }
+}
+fn ieee64_from_i64(value: i64) -> u64 {
+    if value < 0 { return ieee_encode_finite(1, (0 as u64) - (value as u64), 0, 52, 1023); }
+    else { return ieee64_from_u64(value as u64); }
+}
+fn ieee32_from_i32(value: i32) -> u32 { return ieee32_from_i64(value as i64); }
+fn ieee64_from_i32(value: i32) -> u64 { return ieee64_from_i64(value as i64); }
+
+// Class codes match ieee.tv: zero, normal, subnormal, infinity, NaN.
+fn ieee_classify_bits(bits: u64, fraction: u32, bias: i32) -> u32 {
+    let exponent: u64 = (bits >> (fraction as u64)) & ((bias * 2 + 1) as u64);
+    let mantissa: u64 = bits & (((1 as u64) << (fraction as u64)) - 1);
+    if exponent == 0 {
+        if mantissa == 0 { return 0; } else { return 2; }
+    } else {
+        if exponent == (bias * 2 + 1) as u64 {
+            if mantissa == 0 { return 3; } else { return 4; }
+        } else { return 1; }
+    }
+}
+fn ieee32_classify(bits: u32) -> u32 { return ieee_classify_bits(bits as u64, 23, 127); }
+fn ieee64_classify(bits: u64) -> u32 { return ieee_classify_bits(bits, 52, 1023); }
+fn ieee32_is_nan(bits: u32) -> bool { return ieee32_classify(bits) == 4; }
+fn ieee64_is_nan(bits: u64) -> bool { return ieee64_classify(bits) == 4; }
+fn ieee32_is_finite(bits: u32) -> bool { return ieee32_classify(bits) < 3; }
+fn ieee64_is_finite(bits: u64) -> bool { return ieee64_classify(bits) < 3; }
+
+fn ieee32_eq(a: u32, b: u32) -> bool {
+    if (ieee32_classify(a) == 4) | (ieee32_classify(b) == 4) { return false; }
+    else { return (a == b) | (((a | b) & 2147483647) == 0); }
+}
+fn ieee64_eq(a: u64, b: u64) -> bool {
+    if (ieee64_classify(a) == 4) | (ieee64_classify(b) == 4) { return false; }
+    else { return (a == b) | (((a | b) & 9223372036854775807) == 0); }
+}
+fn ieee32_lt(a: u32, b: u32) -> bool {
+    if (ieee32_classify(a) == 4) | (ieee32_classify(b) == 4) | (((a | b) & 2147483647) == 0) { return false; }
+    else {
+        if (a >> 31) != (b >> 31) { return (a >> 31) != 0; }
+        else { if (a >> 31) != 0 { return a > b; } else { return a < b; } }
+    }
+}
+fn ieee64_lt(a: u64, b: u64) -> bool {
+    if (ieee64_classify(a) == 4) | (ieee64_classify(b) == 4) | (((a | b) & 9223372036854775807) == 0) { return false; }
+    else {
+        if (a >> 63) != (b >> 63) { return (a >> 63) != 0; }
+        else { if (a >> 63) != 0 { return a > b; } else { return a < b; } }
+    }
+}
+fn ieee32_le(a: u32, b: u32) -> bool { if ieee32_lt(a, b) { return true; } else { return ieee32_eq(a, b); } }
+fn ieee64_le(a: u64, b: u64) -> bool { if ieee64_lt(a, b) { return true; } else { return ieee64_eq(a, b); } }
+
+// Absolute finite values truncate toward zero; overflow saturates.
+// NaNs map to zero, while either infinity maps to the maximum magnitude.
+fn ieee_integer_magnitude(bits: u64, fraction: u32, bias: i32) -> u64 {
+    let kind: u32 = ieee_classify_bits(bits, fraction, bias);
+    let exponent: u64 = (bits >> (fraction as u64)) & ((bias * 2 + 1) as u64);
+    let power: i32 = (exponent as i32) - bias;
+    if (kind == 4) | (power < 0) { return 0; }
+    else {
+        if (kind == 3) | (power >= 64) { return 18446744073709551615; }
+        else {
+            let mantissa: u64 = (bits & (((1 as u64) << (fraction as u64)) - 1)) | ((1 as u64) << (fraction as u64));
+            if power >= fraction as i32 { return mantissa << ((power - (fraction as i32)) as u64); }
+            else { return mantissa >> (((fraction as i32) - power) as u64); }
+        }
+    }
+}
+fn ieee_signed_integer(bits: u64, fraction: u32, bias: i32) -> i64 {
+    let magnitude: u64 = ieee_integer_magnitude(bits, fraction, bias);
+    let sign: u64 = bits & (((bias + 1) as u64) << ((fraction + 1) as u64));
+    if sign != 0 {
+        if magnitude >= 9223372036854775808 { return (9223372036854775808 as u64) as i64; }
+        else { return 0 - (magnitude as i64); }
+    } else {
+        if magnitude >= 9223372036854775808 { return 9223372036854775807; }
+        else { return magnitude as i64; }
+    }
+}
+fn ieee32_to_u64_sat(bits: u32) -> u64 {
+    if (bits >> 31) != 0 { return 0; } else { return ieee_integer_magnitude(bits as u64, 23, 127); }
+}
+fn ieee64_to_u64_sat(bits: u64) -> u64 {
+    if (bits >> 63) != 0 { return 0; } else { return ieee_integer_magnitude(bits, 52, 1023); }
+}
+fn ieee32_to_i64_sat(bits: u32) -> i64 { return ieee_signed_integer(bits as u64, 23, 127); }
+fn ieee64_to_i64_sat(bits: u64) -> i64 { return ieee_signed_integer(bits, 52, 1023); }
+fn ieee_narrow_u32_sat(value: u64) -> u32 {
+    if value > 4294967295 { return 4294967295; } else { return value as u32; }
+}
+fn ieee_narrow_i32_sat(value: i64) -> i32 {
+    if value > 2147483647 { return 2147483647; }
+    else { if value < 0 - 2147483648 { return (2147483648 as u32) as i32; } else { return value as i32; } }
+}
+fn ieee32_to_u32_sat(bits: u32) -> u32 { return ieee_narrow_u32_sat(ieee32_to_u64_sat(bits)); }
+fn ieee64_to_u32_sat(bits: u64) -> u32 { return ieee_narrow_u32_sat(ieee64_to_u64_sat(bits)); }
+fn ieee32_to_i32_sat(bits: u32) -> i32 { return ieee_narrow_i32_sat(ieee32_to_i64_sat(bits)); }
+fn ieee64_to_i32_sat(bits: u64) -> i32 { return ieee_narrow_i32_sat(ieee64_to_i64_sat(bits)); }

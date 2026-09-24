@@ -11896,13 +11896,15 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             g_use_prelude = 0;
             // Evaluate LHS and store it as the provisional result.
             let sc_lhs: IRValue = codegen_expr(g_nodes[node].child0, str_intern("i1"));
-            ir_wr("  store i1 "); ir_wr_reg(sc_lhs.reg);
+            var sc_left: i32 = sc_lhs.reg;
+            if sc_lhs.type_off == str_intern("bool") { sc_left = ir_cond_i1(sc_lhs); }
+            ir_wr("  store i1 "); ir_wr_reg(sc_left);
             ir_wr(", ptr "); ir_wr_reg(sc); ir_wr("\n");
             let lbl_rhs: i32 = ir_label();
             let lbl_merge: i32 = ir_label();
             // && : if LHS true, evaluate RHS; else short-circuit to merge.
             // || : if LHS true, short-circuit to merge; else evaluate RHS.
-            ir_wr("  br i1 "); ir_wr_reg(sc_lhs.reg); ir_wr(", label %");
+            ir_wr("  br i1 "); ir_wr_reg(sc_left); ir_wr(", label %");
             if op == OP_AND {
                 ir_wr_label(lbl_rhs); ir_wr(", label %"); ir_wr_label(lbl_merge);
             } else {
@@ -11912,7 +11914,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             // RHS block: evaluate, overwrite the slot, fall to merge.
             ir_wr_label_def(lbl_rhs);
             let sc_rhs: IRValue = codegen_expr(g_nodes[node].child1, str_intern("i1"));
-            ir_wr("  store i1 "); ir_wr_reg(sc_rhs.reg);
+            var sc_right: i32 = sc_rhs.reg;
+            if sc_rhs.type_off == str_intern("bool") { sc_right = ir_cond_i1(sc_rhs); }
+            ir_wr("  store i1 "); ir_wr_reg(sc_right);
             ir_wr(", ptr "); ir_wr_reg(sc); ir_wr("\n");
             ir_wr("  br label %"); ir_wr_label(lbl_merge); ir_wr("\n");
             // Merge block: load whichever value was stored.
@@ -14971,9 +14975,11 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             return IRValue { reg: r, type_off: operand.type_off };
         }
         if uop == OP_NOT {
+            var truth: i32 = operand.reg;
+            if operand.type_off == str_intern("bool") { truth = ir_cond_i1(operand); }
             let r: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(r); ir_wr(" = xor i1 ");
-            ir_wr_reg(operand.reg); ir_wr(", 1\n");
+            ir_wr_reg(truth); ir_wr(", 1\n");
             return IRValue { reg: r, type_off: str_intern("i1") };
         }
         if uop == OP_BITNOT {
