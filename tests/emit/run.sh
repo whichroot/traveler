@@ -146,7 +146,7 @@ fi
 if "$STAGE1" "$PROMOTE_SRC" -o "$TMP/invalid.ll" --opt-level fast \
     2>"$TMP/invalid.err"; then
     echo "  FAIL: invalid optimization profile was accepted"; fail=1
-elif grep -q '^error: --opt-level expects none|promote|o1$' "$TMP/invalid.err" && \
+elif grep -q '^error: --opt-level expects none|promote|o1|o3$' "$TMP/invalid.err" && \
      [ ! -e "$TMP/invalid.ll" ]; then
     echo "  ok   invalid profile: stable refusal, no output"
 else

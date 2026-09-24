@@ -116,11 +116,15 @@ def main():
         for name in ('fixed', 'fenced', 'helper_loop'):
             rows = [row for row in copies if row['fn'] == name]
             assert rows and all(row['dispatched'] == 0 for row in rows), copies
-        for mode in ('raw', 'o1'):
+        for mode in ('raw', 'o1', 'o3'):
             selected = ir
             if mode == 'o1':
                 selected = d/'o1.ll'
                 run(a.opt, '-passes=default<O1>', '-S', ir, '-o', selected)
+            if mode == 'o3':
+                selected = d/'o3.ll'
+                run(a.tvc, source, '-o', selected, '--opt-level', 'o3',
+                    '-mcpu', 'x86-64', '-opt', a.opt, '-target', 'x86_64-linux-gnu')
             run(a.opt, '-passes=verify', '-disable-output', selected)
             asm = d/f'{mode}.s'
             run(a.llc, '-mtriple=x86_64-linux-gnu', selected, '-o', asm)
@@ -159,7 +163,7 @@ def main():
         run(a.tvc, source, '-o', d/'shadow.ll')
         assert '!nontemporal' not in (d/'shadow.ll').read_text()
         assert '"mfence"' in (d/'shadow.ll').read_text()
-    print('PASS: streaming stores, worker fences, raw/O1 values, alias fallback, and refusals')
+    print('PASS: streaming stores, worker fences, raw/O1/O3 values, alias fallback, and refusals')
 
 
 if __name__ == '__main__':

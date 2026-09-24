@@ -40,7 +40,7 @@ below is retained for that compatibility effort.
 | make | any | drives `src-legacy/Makefile` |
 | bash + coreutils | any | running the test suites |
 
-LLVM 15+ is required to run the build. The `promote` and `o1` CPU middle-end
+LLVM 15+ is required to run the build. The `promote`, `o1`, and `o3` CPU middle-end
 profiles described below initially require LLVM 21; profile `none` retains the
 LLVM 15+ contract.
 
@@ -165,7 +165,7 @@ an existing destination and remove intermediates.
 
 ### CPU middle-end profiles
 
-Traveler exposes three closed profiles through the same IR/object/executable
+Traveler exposes four closed profiles through the same IR/object/executable
 flow:
 
 | Profile | LLVM middle-end pipeline | Requires `opt` |
@@ -173,12 +173,26 @@ flow:
 | `none` | none; raw compiler IR | no |
 | `promote` | `-passes=mem2reg -verify-each` | LLVM 21 |
 | `o1` | `-passes=default<O1> -verify-each` | LLVM 21 |
+| `o3` | `-passes=default<O3> -verify-each`, explicit CPU | LLVM 21 |
 
 The default is `none`. Omitting `--opt-level` and selecting `none` produce
-byte-identical raw IR. `promote` and `o1` are explicit, reproducible LLVM-21
+byte-identical raw IR. `promote`, `o1`, and `o3` are explicit, reproducible LLVM-21
 toolchain transformations; their output is verified LLVM but is not a bootstrap
 fixed-point artifact. Native host retargeting is applied consistently to both
 `opt` and `llc`.
+
+`o3` requires an x86-64 target and `-mcpu x86-64` or
+`-mcpu sapphirerapids`. The selected CPU goes to both `opt` and `llc` and is
+retained in optimized IR's function attributes. `native` and other CPU names
+are refused; `-mcpu` is accepted only with `o3`. This profile enables LLVM's
+vectorizing O3 pipeline without fast-math options or changes to Traveler's
+integer arithmetic contract. A Sapphire Rapids artifact requires a compatible
+execution CPU. The backend remains at its explicit `-O2` setting.
+
+```sh
+$TVC program.tv -o program.o --emit obj -target x86_64-linux-gnu \
+    --opt-level o3 -mcpu sapphirerapids -opt "$OPT" -llc "$LLC"
+```
 
 ```sh
 OPT=/opt/homebrew/opt/llvm@21/bin/opt
@@ -195,8 +209,8 @@ $TVC examples/field_basics.tv -o /tmp/fb --emit exe \
 `-opt <path>` overrides `PATH`, matching `-llc` and `-cc`. Arbitrary LLVM pass
 strings are deliberately not accepted. Standalone AMDGCN, NVPTX, and AGX device
 emission and the `-target tpc` typed-pointer compatibility mode accept only
-profile `none`; `--agx-dispatch` emits a normal host module and may use either
-CPU profile for its unchanged fallback path.
+profile `none`; `--agx-dispatch` emits a normal host module and may use a
+CPU profile supported by that host target for its fallback path.
 
 ### Shared library (`#[export]` functions, callable from Python/ctypes)
 
@@ -1392,6 +1406,6 @@ Not every suite needs the full toolchain. Pick by environment:
   multi-file program; compile and link every required `.tv` (see §4).
 - **Invalid IR / verifier errors after `opt`** — confirm `opt`, `llc`, and
   the IR all come from the same LLVM 21 toolchain (don't mix versions).
-- **`error: opt failed`** — a requested `promote`/`o1` profile could not run
+- **`error: opt failed`** — a requested `promote`/`o1`/`o3` profile could not run
   LLVM 21 `opt`, or verification failed. Set `-opt <path>` to the matching tool.
   `opt` remains unnecessary when the profile is `none`.

@@ -69,8 +69,9 @@ any program that uses `import` (the legacy `src-legacy/tvc` seed predates
 own — on Linux it auto-adds `-mtriple=<host>` to the internal `llc` and `-no-pie`
 to the internal `cc`, so `stage1 prog.tv -o prog --emit exe` links and runs
 without the manual triple dance above. Closed LLVM 21 middle-end profiles are
-available through `--opt-level promote|o1 -opt <path>`; raw IR remains the
-default `none` profile. For profile details, shared-library, and multi-file
+available through `--opt-level promote|o1 -opt <path>`. The x86-64 `o3` profile
+requires `-mcpu x86-64|sapphirerapids`; raw IR remains the default `none`
+profile. For profile details, shared-library, and multi-file
 recipes, see [`BUILD.md`](../BUILD.md).
 
 Run programs at a fixed worker count (auto-parallelized loops; output is

@@ -69,7 +69,7 @@ On an x86-64 Linux host with LLVM tools:
 python3 tests/check_stream_stores.py "$TVC_SELF" "$LLC" "$OPT" "$LINKER"
 ```
 
-The gate checks instruction selection, per-worker fences, raw and O1 output
+The gate checks instruction selection, per-worker fences, raw, O1, and O3 output
 at one and four threads, non-cache-line-sized ranges, overlapping alias
 fallback, guards, and unsupported uses. Bandwidth must be measured separately
 on the staging workload; instruction selection alone is not a speedup result.

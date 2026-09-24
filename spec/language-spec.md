@@ -5773,24 +5773,31 @@ contracts.
 
 ### 18.1 CPU Middle-End Profiles (`--opt-level`)
 
-Three closed profiles run through the same IR/object/executable flow:
+Four closed profiles run through the same IR/object/executable flow:
 
 | Profile | LLVM middle-end pipeline | Requires `opt` |
 |---|---|---|
 | `none` | none; raw compiler IR | no |
 | `promote` | `-passes=mem2reg -verify-each` | LLVM 21 |
 | `o1` | `-passes=default<O1> -verify-each` | LLVM 21 |
+| `o3` | `-passes=default<O3> -verify-each`, explicit CPU | LLVM 21 |
 
 - `none` is the default; omitting `--opt-level` and selecting `none` produce
   byte-identical raw IR.
-- `promote`/`o1` are explicit, reproducible LLVM-21 toolchain transformations.
+- `promote`/`o1`/`o3` are explicit, reproducible LLVM-21 toolchain transformations.
   Their output is verified LLVM but is **not** a bootstrap fixed-point
   artifact (§15.0). Arbitrary pass strings are refused — the set above is the
   whole surface. `-opt <path>` overrides `PATH`, matching `-llc` and `-cc`.
+- `o3` requires an x86-64 target and explicit `-mcpu x86-64` or
+  `-mcpu sapphirerapids`. The CPU is passed to both tools and retained in
+  optimized IR's function attributes. `native`, other CPU names, and `-mcpu`
+  with other profiles are refused. The execution CPU must support the chosen
+  CPU's instructions. The pipeline enables vectorization without fast-math
+  options or changes to integer semantics; backend lowering remains `llc -O2`.
 - Standalone AMDGCN/NVPTX/AGX device emission (§18.3, §18.4) and the `-target
   tpc` compatibility mode (§18.2) accept only profile `none`.
-  `--agx-dispatch` (§18.4) emits a normal host module and may use either CPU
-  profile for its unchanged fallback path.
+  `--agx-dispatch` (§18.4) emits a normal host module and may use a CPU profile
+  supported by that host target for its fallback path.
 - External tools run with argument vectors, not through a shell. IR, object,
   and executable outputs use exclusive sibling stages and are atomically
   published only after every requested tool succeeds; a failure preserves any
@@ -6014,7 +6021,7 @@ Previously listed here as deferred, now implemented and specified in the body:
 - **Recursive parallel proofs** (§15.18) — recursive effect summaries,
   static-call targets, declaration-aware affine analysis, and
   fresh-allocation non-overlap; authoritative for CPU dispatch.
-- **CPU middle-end profiles** (`--opt-level none|promote|o1`, §18.1) and the
+- **CPU middle-end profiles** (`--opt-level none|promote|o1|o3`, §18.1) and the
   **TPC typed-pointer target** (`-target tpc`, §18.2).
 - **GPU device emission** — AMDGCN/NVPTX Stage 0 (§18.3) and the direct
   AGX/G16X backend with content-checked dispatch and CPU fallback (§18.4).
