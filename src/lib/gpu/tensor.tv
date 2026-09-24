@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Native tensor arithmetic opts in to cuda-mma-native-v1; all 32 lanes participate.
+import "thread.tv";
+
+extern "C" fn gpu_native_mma_f16_m16n8k16(a: u128, b: u64, c: u128) -> u128;
+extern "C" fn gpu_native_mma_bf16_m16n8k16(a: u128, b: u64, c: u128) -> u128;

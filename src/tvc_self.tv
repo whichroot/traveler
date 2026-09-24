@@ -27074,6 +27074,10 @@ let DEVICE_ATOMIC_ADD: i32 = 1012;
 let DEVICE_SHARED_ATOMIC: i32 = 1013;
 let DEVICE_BOUNDED_LOAD: i32 = 1014;
 let DEVICE_IEEE_BITS: i32 = 1015;
+let DEVICE_NATIVE_MMA: i32 = 1016;
+let DEVICE_ASYNC_COPY: i32 = 1017;
+let DEVICE_ASYNC_COMMIT: i32 = 1018;
+let DEVICE_ASYNC_WAIT: i32 = 1019;
 
 struct DeviceScalarPlan {
     nodes: *EIRNode,
@@ -27778,6 +27782,8 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
 }
 
 fn device_scalar_call(P: *DeviceScalarPlan, node: i32, depth: i32) -> i32 {
+    let tensor: i32 = device_native_mma_operation(g_nodes[node].name0);
+    if tensor >= 0 { return device_native_mma_call(P, node, tensor, depth); }
     let numeric: i32 = ieee_operation(g_nodes[node].name0);
     if numeric >= 0 && find_func(g_nodes[node].name0) < 0 {
         if g_gpu_target != 1 || g_nodes[node].nargs != ieee_arity(numeric) { return device_scalar_fail(P, 3, node); }
@@ -27996,6 +28002,10 @@ fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32
                 if n < 1 || n > 16 || P.nodes[i].args_start < 0
                     || P.nodes[i].args_start > P.ncomponents - n { return 0; }
             }
+            else if k >= DEVICE_ASYNC_COPY && k <= DEVICE_ASYNC_WAIT {
+                if region != 0 { return 0; } if k == DEVICE_ASYNC_COPY { n = 3; }
+            }
+            else if k == DEVICE_NATIVE_MMA { n = 3; if region != 0 { return 0; } }
             else if k == DEVICE_IEEE_BITS { n = ieee_arity(P.nodes[i].op); }
             else if k == DEVICE_WARP_SHUFFLE || k == DEVICE_WARP_VOTE { n = 1; }
             else if k == DEVICE_WARP_SYNC { n = 0; }
@@ -28050,10 +28060,30 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
     free(scopes); free(parents);
     if scoped == 0 { return 0; }
     var initialized: i32 = 0; var dirty: i32 = 0; var reads: i32 = 0;
+    var asynchronous: i32 = 0;
     var i: i32 = 0;
     while i < P.count {
         let k: i32 = P.nodes[i].kind;
-        if k == DEVICE_IEEE_BITS {
+        if asynchronous != 0 && ((k >= DEVICE_SHARED_INIT && k <= DEVICE_BLOCK_BARRIER)
+            || k == DEVICE_SHARED_ATOMIC) { return 0; }
+        if k >= DEVICE_ASYNC_COPY && k <= DEVICE_ASYNC_WAIT {
+            if P.cooperative != 1 || P.nodes[i].type_off != NULL_STR { return 0; }
+            if k == DEVICE_ASYNC_COPY {
+                if initialized != 1 || asynchronous != 0 || dirty != 0 || reads != 0
+                    || P.nodes[P.nodes[i].a].kind != EIR_LOCAL || P.nodes[P.nodes[i].a].type_off != str_intern("*u64")
+                    || P.nodes[P.nodes[i].b].kind != EIR_LOCAL || P.nodes[P.nodes[i].b].type_off != str_intern("u64")
+                    || P.nodes[P.nodes[i].c].type_off != str_intern("u64") { return 0; }
+                asynchronous = 1; dirty = 1;
+            } else if k == DEVICE_ASYNC_COMMIT {
+                if asynchronous != 1 { return 0; } asynchronous = 2;
+            } else { if asynchronous != 2 { return 0; } asynchronous = 0; }
+        } else if k == DEVICE_NATIVE_MMA {
+            if P.cooperative != 1 || P.warp_used != 1 || P.nodes[i].op < 0 || P.nodes[i].op > 1
+                || P.nodes[i].type_off != str_intern("u128")
+                || P.nodes[P.nodes[i].a].type_off != str_intern("u128")
+                || P.nodes[P.nodes[i].b].type_off != str_intern("u64")
+                || P.nodes[P.nodes[i].c].type_off != str_intern("u128") { return 0; }
+        } else if k == DEVICE_IEEE_BITS {
             let op: i32 = P.nodes[i].op;
             if op < 0 || op > 13 || P.nodes[i].type_off != ieee_result_type(op) { return 0; }
             if P.nodes[P.nodes[i].a].type_off != ieee_input_type(op) { return 0; }
@@ -28195,6 +28225,7 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
         }
         i = i + 1;
     }
+    if asynchronous != 0 { return 0; }
     return 1;
 }
 
@@ -28303,6 +28334,19 @@ fn device_scalar_label(label: i32) {
 fn device_shared_statement(P: *DeviceScalarPlan, call: i32, statement: i32) -> i32 {
     if call <= 0 || g_nodes[call].kind != AST_CALL { return device_scalar_fail(P, 3, call); }
     let name: *u8 = &g_strings[g_nodes[call].name0];
+    if str_eq(name, "gpu_shared_async_copy_u64") == 1 {
+        if g_gpu_target != 1 || P.shared_count == 0 || P.shared_dirty != 0 || P.shared_reads != 0 { return device_scalar_fail(P, 3, call); }
+        let e: i32 = device_bounded_load(P, call, 0);
+        if e < 0 { return e; }
+        P.nodes[e].kind = DEVICE_ASYNC_COPY; P.nodes[e].type_off = NULL_STR; P.shared_dirty = 1;
+        return e;
+    }
+    if str_eq(name, "gpu_shared_async_commit") == 1 || str_eq(name, "gpu_shared_async_wait") == 1 {
+        if g_gpu_target != 1 || P.cooperative != 1 || P.calls != 0 || g_nodes[call].nargs != 0 { return device_scalar_fail(P, 3, call); }
+        var k: i32 = DEVICE_ASYNC_COMMIT;
+        if str_eq(name, "gpu_shared_async_wait") == 1 { k = DEVICE_ASYNC_WAIT; }
+        return device_scalar_node(P, k, NULL_STR, call);
+    }
     let atomic_type: i32 = device_atomic_type(g_nodes[call].name0);
     if atomic_type != NULL_STR { return device_atomic_call(P, call, atomic_type, 0); }
     if device_shared_atomic_operation(g_nodes[call].name0) >= 0 { return device_shared_atomic_call(P, call, 0); }
@@ -28510,6 +28554,72 @@ fn device_warp_operation(name: i32) -> i32 {
     return 0 - 1;
 }
 
+fn device_native_mma_operation(name: i32) -> i32 {
+    if str_eq(&g_strings[name], "gpu_native_mma_f16_m16n8k16") == 1 { return 0; }
+    if str_eq(&g_strings[name], "gpu_native_mma_bf16_m16n8k16") == 1 { return 1; }
+    return 0 - 1;
+}
+
+fn device_native_mma_call(P: *DeviceScalarPlan, node: i32, op: i32, depth: i32) -> i32 {
+    if g_gpu_target != 1 || P.cooperative != 1 || P.calls != 0 || depth > 64
+        || g_nodes[node].nargs != 3 { return device_scalar_fail(P, 3, node); }
+    var values: [i32; 3] = 0; var i: i32 = 0;
+    while i < 3 {
+        var t: i32 = str_intern("u128"); if i == 1 { t = str_intern("u64"); }
+        values[i] = device_scalar_expr(P, g_args[g_nodes[node].args_start + i], t, depth + 1);
+        if values[i] < 0 { return 0 - 1; }
+        if P.nodes[values[i]].type_off != t { return device_scalar_fail(P, 2, node); }
+        i = i + 1;
+    }
+    P.warp_used = 1;
+    let e: i32 = device_scalar_node(P, DEVICE_NATIVE_MMA, str_intern("u128"), node);
+    if e >= 0 { P.nodes[e].op = op; P.nodes[e].a = values[0]; P.nodes[e].b = values[1]; P.nodes[e].c = values[2]; }
+    return e;
+}
+
+fn device_native_mma_emit(P: *DeviceScalarPlan, i: i32, regs: *i32) {
+    var inputs: [i32; 10] = 0; var at: i32 = 0; var group: i32 = 0;
+    while group < 3 {
+        var node: i32 = P.nodes[i].a; var width: i32 = 128; var count: i32 = 4;
+        if group == 1 { node = P.nodes[i].b; width = 64; count = 2; }
+        if group == 2 { node = P.nodes[i].c; }
+        var j: i32 = 0;
+        while j < count {
+            var value: i32 = regs[node];
+            if j != 0 {
+                value = ir_tmp(); ir_wr("  "); ir_wr_reg(value); ir_wr(" = lshr i"); ir_wr_int(width as i64);
+                ir_wr(" "); ir_wr_reg(regs[node]); ir_wr(", "); ir_wr_int((j * 32) as i64); ir_wr("\n");
+            }
+            inputs[at] = ir_tmp(); ir_wr("  "); ir_wr_reg(inputs[at]); ir_wr(" = trunc i"); ir_wr_int(width as i64);
+            ir_wr(" "); ir_wr_reg(value); ir_wr(" to i32\n"); at = at + 1; j = j + 1;
+        }
+        group = group + 1;
+    }
+    let result: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(result);
+    ir_wr(" = call { i32, i32, i32, i32 } asm sideeffect \"{ .reg .f32 c<4>, d<4>; ");
+    ir_wr("mov.b32 c0, $10; mov.b32 c1, $11; mov.b32 c2, $12; mov.b32 c3, $13; ");
+    ir_wr("mma.sync.aligned.m16n8k16.row.col.f32.");
+    if P.nodes[i].op == 0 { ir_wr("f16.f16"); } else { ir_wr("bf16.bf16"); }
+    ir_wr(".f32 {d0,d1,d2,d3}, {$4,$5,$6,$7}, {$8,$9}, {c0,c1,c2,c3}; ");
+    ir_wr("mov.b32 $0, d0; mov.b32 $1, d1; mov.b32 $2, d2; mov.b32 $3, d3; }\", ");
+    ir_wr("\"=r,=r,=r,=r,r,r,r,r,r,r,r,r,r,r\"("); at = 0;
+    while at < 10 { if at != 0 { ir_wr(", "); } ir_wr("i32 "); ir_wr_reg(inputs[at]); at = at + 1; }
+    ir_wr(") convergent noduplicate\n"); var combined: i32 = 0; at = 0;
+    while at < 4 {
+        let part: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(part);
+        ir_wr(" = extractvalue { i32, i32, i32, i32 } "); ir_wr_reg(result); ir_wr(", "); ir_wr_int(at as i64); ir_wr("\n");
+        var wide: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(wide); ir_wr(" = zext i32 "); ir_wr_reg(part); ir_wr(" to i128\n");
+        if at != 0 {
+            let shifted: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(shifted); ir_wr(" = shl i128 "); ir_wr_reg(wide);
+            ir_wr(", "); ir_wr_int((at * 32) as i64); ir_wr("\n"); wide = shifted;
+            let joined: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(joined); ir_wr(" = or i128 "); ir_wr_reg(combined);
+            ir_wr(", "); ir_wr_reg(wide); ir_wr("\n"); combined = joined;
+        } else { combined = wide; }
+        at = at + 1;
+    }
+    regs[i] = combined;
+}
+
 fn device_scalar_predicate(P: *DeviceScalarPlan, active: i32, source: i32) -> i32 {
     if active < 0 { return active; }
     if P.nodes[active].type_off == str_intern("i1") { return active; }
@@ -28672,6 +28782,29 @@ fn device_shared_emit(P: *DeviceScalarPlan, i: i32, regs: *i32) -> i32 {
     return label + 2;
 }
 
+fn device_async_copy_emit(P: *DeviceScalarPlan, i: i32, regs: *i32) -> i32 {
+    let label: i32 = 40000 + i * 8;
+    let inside: i32 = ir_tmp(); let valid: i32 = ir_tmp(); let shared: i32 = ir_tmp();
+    let source: i32 = ir_tmp(); let destination: i32 = ir_tmp(); let address: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(inside); ir_wr(" = icmp ult i64 "); ir_wr_reg(regs[P.local_index]);
+    ir_wr(", "); device_shared_bound(P, regs); ir_wr("\n  br i1 "); ir_wr_reg(inside);
+    ir_wr(", label %"); device_scalar_label(label); ir_wr(", label %"); device_scalar_label(label + 3); ir_wr("\n");
+    device_scalar_label(label); ir_wr(":\n"); device_shared_pointer(P, shared, regs[P.local_index]);
+    ir_wr("  "); ir_wr_reg(valid); ir_wr(" = icmp ult i64 "); ir_wr_reg(regs[P.nodes[i].c]);
+    ir_wr(", "); ir_wr_reg(regs[P.nodes[i].b]); ir_wr("\n  br i1 "); ir_wr_reg(valid);
+    ir_wr(", label %"); device_scalar_label(label + 1); ir_wr(", label %"); device_scalar_label(label + 2); ir_wr("\n");
+    device_scalar_label(label + 1); ir_wr(":\n  "); ir_wr_reg(source); ir_wr(" = getelementptr i64, ptr ");
+    ir_wr_reg(regs[P.nodes[i].a]); ir_wr(", i64 "); ir_wr_reg(regs[P.nodes[i].c]); ir_wr("\n  ");
+    ir_wr_reg(destination); ir_wr(" = ptrtoint ptr addrspace(3) "); ir_wr_reg(shared); ir_wr(" to i32\n  ");
+    ir_wr_reg(address); ir_wr(" = ptrtoint ptr "); ir_wr_reg(source); ir_wr(" to i64\n");
+    ir_wr("  call void asm sideeffect \"{ .reg .u64 src; cvta.to.global.u64 src, $1; cp.async.ca.shared.global [$0], [src], 8; }\", \"r,l,~{memory}\"(i32 ");
+    ir_wr_reg(destination); ir_wr(", i64 "); ir_wr_reg(address); ir_wr(") convergent noduplicate\n  br label %");
+    device_scalar_label(label + 3); ir_wr("\n"); device_scalar_label(label + 2); ir_wr(":\n");
+    ir_wr("  store i64 0, ptr addrspace(3) "); ir_wr_reg(shared); ir_wr(", align 8\n  br label %");
+    device_scalar_label(label + 3); ir_wr("\n"); device_scalar_label(label + 3); ir_wr(":\n");
+    return label + 3;
+}
+
 fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32) {
     let regs: *i32 = alloc(P.count);
     let predecessors: *i32 = alloc(P.count);
@@ -28680,7 +28813,14 @@ fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32
     while i < P.count {
         let kind: i32 = P.nodes[i].kind;
         let t: i32 = P.nodes[i].type_off;
-        if kind == DEVICE_IEEE_BITS {
+        if kind == DEVICE_ASYNC_COPY { current = device_async_copy_emit(P, i, regs); }
+        else if kind == DEVICE_ASYNC_COMMIT {
+            ir_wr("  call void asm sideeffect \"cp.async.commit_group;\", \"~{memory}\"() convergent noduplicate\n");
+        } else if kind == DEVICE_ASYNC_WAIT {
+            ir_wr("  call void asm sideeffect \"cp.async.wait_group 0;\", \"~{memory}\"() convergent noduplicate\n");
+        } else if kind == DEVICE_NATIVE_MMA {
+            device_native_mma_emit(P, i, regs);
+        } else if kind == DEVICE_IEEE_BITS {
             var args: [i32; 3] = 0;
             args[0] = regs[P.nodes[i].a];
             if ieee_arity(P.nodes[i].op) >= 2 { args[1] = regs[P.nodes[i].b]; }
@@ -28939,7 +29079,7 @@ fn gpu_interface_validate(body: i32, lv: i32, ncaps: i32, base: i32, roles: *i32
 fn device_atomic_count(P: *DeviceScalarPlan, slot: i32) -> i32 {
     var count: i32 = 0 - 1; var i: i32 = 0;
     while i < P.count {
-        if (P.nodes[i].kind == DEVICE_ATOMIC_ADD || P.nodes[i].kind == DEVICE_BOUNDED_LOAD) && P.nodes[P.nodes[i].a].a == slot {
+        if (P.nodes[i].kind == DEVICE_ATOMIC_ADD || P.nodes[i].kind == DEVICE_BOUNDED_LOAD || P.nodes[i].kind == DEVICE_ASYNC_COPY) && P.nodes[P.nodes[i].a].a == slot {
             let next: i32 = P.nodes[P.nodes[i].b].a;
             if count >= 0 && count != next { return 0 - 2; }
             count = next;
@@ -28955,14 +29095,14 @@ fn device_scalar_roles(P: *DeviceScalarPlan, ncaps: i32, base: i32, roles: *i32)
     i = 0;
     while i < P.count {
         let k: i32 = P.nodes[i].kind;
-        if k == EIR_INDEX || k == EIR_INDEX_ST || k == DEVICE_MASKED_LOAD || k == DEVICE_MASKED_STORE || k == DEVICE_ATOMIC_ADD || k == DEVICE_BOUNDED_LOAD {
+        if k == EIR_INDEX || k == EIR_INDEX_ST || k == DEVICE_MASKED_LOAD || k == DEVICE_MASKED_STORE || k == DEVICE_ATOMIC_ADD || k == DEVICE_BOUNDED_LOAD || k == DEVICE_ASYNC_COPY {
             let pointer: i32 = P.nodes[i].a;
             if P.nodes[pointer].kind != EIR_LOCAL { return 0; }
             let slot: i32 = P.nodes[pointer].a;
             if slot < 0 || slot >= ncaps { return 0; }
             var role: i32 = 1; if k == EIR_INDEX_ST || k == DEVICE_MASKED_STORE { role = 2; }
-            if k == DEVICE_ATOMIC_ADD || k == DEVICE_BOUNDED_LOAD {
-                var required: i32 = 7; if k == DEVICE_BOUNDED_LOAD { required = 9; }
+            if k == DEVICE_ATOMIC_ADD || k == DEVICE_BOUNDED_LOAD || k == DEVICE_ASYNC_COPY {
+                var required: i32 = 7; if k != DEVICE_ATOMIC_ADD { required = 9; }
                 if roles[slot] != 0 && roles[slot] != required { return 0; }
                 let count: i32 = device_atomic_count(P, slot);
                 if count < 0 || count >= ncaps || g_pfor_workers[base + count * 4 + 1] != str_intern("u64") { return 0; }
@@ -28994,6 +29134,10 @@ fn device_capability_mask(P: *DeviceScalarPlan) -> i32 {
             else { if op < 6 { mask = mask | 1; } else { mask = mask | 2; } }
         }
         if P.nodes[i].kind == DEVICE_BOUNDED_LOAD { mask = mask | 8; }
+        if P.nodes[i].kind == DEVICE_ASYNC_COPY { mask = mask | 64; }
+        if P.nodes[i].kind == DEVICE_NATIVE_MMA {
+            if P.nodes[i].op == 0 { mask = mask | 16; } else { mask = mask | 32; }
+        }
         i = i + 1;
     }
     return mask;

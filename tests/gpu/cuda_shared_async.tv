@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/shared.tv";
+
+#[kernel]
+fn shared_async(thread: GpuThread, input: *u64, count: u64, output: *u64) {
+    gpu_shared_init_u64(64);
+    let i: u64 = gpu_global_index(thread);
+    let local: u64 = gpu_local_index(thread);
+    gpu_shared_async_copy_u64(input, count, i);
+    gpu_shared_async_commit();
+    gpu_shared_async_wait();
+    gpu_block_barrier();
+    let first: u64 = gpu_shared_load_u64(local ^ 1);
+    gpu_block_barrier();
+    gpu_shared_async_copy_u64(input, count, i + 1);
+    gpu_shared_async_commit();
+    gpu_shared_async_wait();
+    gpu_block_barrier();
+    output[i] = first + gpu_shared_load_u64(local);
+}

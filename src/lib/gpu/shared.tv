@@ -8,6 +8,11 @@ extern "C" fn gpu_shared_load_u64(index: u64) -> u64;
 extern "C" fn gpu_shared_store_u64(index: u64, value: u64);
 extern "C" fn gpu_block_barrier();
 
+// Each lane copies into its local-index slot; wait then barrier makes it visible.
+extern "C" fn gpu_shared_async_copy_u64(buffer: *u64, count: u64, index: u64);
+extern "C" fn gpu_shared_async_commit();
+extern "C" fn gpu_shared_async_wait();
+
 fn gpu_masked_load_u64(input: *u64, index: u64, active: bool) -> u64 {
     if active { return input[index]; } else { return 0; }
 }

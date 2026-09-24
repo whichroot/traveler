@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/tensor.tv";
+
+#[kernel]
+fn native_half(thread: GpuThread, al: *u64, ah: *u64, b: *u64,
+               cl: *u64, ch: *u64, dl: *u64, dh: *u64) {
+    let i: u64 = gpu_global_index(thread);
+    let a: u128 = (al[i] as u128) | ((ah[i] as u128) << 64);
+    let c: u128 = (cl[i] as u128) | ((ch[i] as u128) << 64);
+    let d: u128 = gpu_native_mma_f16_m16n8k16(a, b[i], c);
+    dl[i] = d as u64;
+    dh[i] = (d >> 64) as u64;
+}
+
+#[kernel]
+fn native_bfloat(thread: GpuThread, al: *u64, ah: *u64, b: *u64,
+                 cl: *u64, ch: *u64, dl: *u64, dh: *u64) {
+    let i: u64 = gpu_global_index(thread);
+    let a: u128 = (al[i] as u128) | ((ah[i] as u128) << 64);
+    let c: u128 = (cl[i] as u128) | ((ch[i] as u128) << 64);
+    let d: u128 = gpu_native_mma_bf16_m16n8k16(a, b[i], c);
+    dl[i] = d as u64;
+    dh[i] = (d >> 64) as u64;
+}

@@ -154,6 +154,13 @@ checks. The actual driver must support the emitted PTX version; module JIT
 diagnoses incompatibility before launch. No architecture-specific target suffix
 is implied by a capability or GPU marketing name.
 
+Native tensor capabilities require an additional explicit policy and full-warp
+participation. See [CUDA native tensor operations](cuda-native-tensor.md).
+The `ieee-bits-rne-v1` contract continues to govern scalar IEEE operations and
+the reproducible packed library operations, including in mixed kernels.
+The [asynchronous shared-copy capability](cuda-shared-async.md) adds no arithmetic
+policy.
+
 ## Lowering, dependencies, and admission
 
 On CUDA, input/output reinterpretation uses LLVM bitcasts. Arithmetic lowers
