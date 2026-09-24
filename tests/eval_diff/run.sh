@@ -121,6 +121,13 @@ if [ -n "$OPT" ] && command -v python3 >/dev/null 2>&1; then
     if ! python3 "$REPO_DIR/tests/check_arithmetic_contract.py" "$SELF" "$LLC_BIN" "$OPT" "$LINKER"; then
         fail=$((fail+1))
     fi
+    if [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ]; then
+        if ! python3 "$REPO_DIR/tests/check_stream_stores.py" "$SELF" "$LLC_BIN" "$OPT" "$LINKER"; then
+            fail=$((fail+1))
+        fi
+    else
+        echo "  SKIP: streaming-store gate needs x86-64 Linux"
+    fi
 else
     echo "  SKIP: arithmetic contract needs opt and python3"
 fi

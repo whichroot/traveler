@@ -13223,6 +13223,22 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         if ieee_operation(call_name) >= 0 && find_func(call_name) < 0 {
             return ieee_codegen(node, ieee_operation(call_name));
         }
+        if str_eq(&g_strings[call_name], "stream_store_fence") == 1
+            && find_func(call_name) < 0 {
+            if g_nodes[node].nargs != 0 || (g_nodes[node].flags & 1048576) == 0 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "stream_store_fence() requires a standalone statement with no arguments");
+                return IRValue { reg: 0, type_off: NULL_STR };
+            }
+            if stream_store_target(node) == 1 { emit_stream_store_fence(); }
+            return IRValue { reg: 0, type_off: NULL_STR };
+        }
+        if str_eq(&g_strings[call_name], "stream_store_u64") == 1
+            && find_func(call_name) < 0 {
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "stream_store_u64(dst, index, value) requires a standalone statement");
+            return IRValue { reg: 0, type_off: NULL_STR };
+        }
         // Atomic orders are bare identifiers checked before instruction emission.
         // (design-notes/atomics.md "surface")
 
@@ -21065,11 +21081,27 @@ fn codegen_stmt(stmt: i32) {
         let ia_idx: i32 = g_nodes[stmt].child1;
         let ia_rhs: i32 = g_nodes[stmt].child2;
         let ia_idx_val: IRValue = codegen_expr(ia_idx, str_intern("i32"));
+        if (g_nodes[stmt].flags & 1048576) != 0
+            && (pfor_prim_int(ia_idx_val.type_off) == 0
+                || str_eq(&g_strings[ia_idx_val.type_off], "bool") == 1) {
+            diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
+                "stream_store_u64 index must have an integer type");
+            return;
+        }
         let ia_idx64: i32 = emit_index_to_i64(ia_idx_val);
         // Evaluate object expression (handles chained: struct.array_field[i] = v)
         let ia_obj_val: IRValue = codegen_expr(ia_obj, NULL_STR);
         let ia_type: i32 = ia_obj_val.type_off;
         let ia_reg: i32 = ia_obj_val.reg;
+        let streaming: i32 = g_nodes[stmt].flags & 1048576;
+        if streaming != 0 {
+            if stream_store_target(stmt) == 0 { return; }
+            if str_eq(&g_strings[ia_type], "*u64") == 0 {
+                diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
+                    "stream_store_u64 destination must have type *u64");
+                return;
+            }
+        }
         var gep_r: i32 = 0;
         var elem_t: i32 = 0;
         if type_is_array(ia_type) == 1 {
@@ -21090,6 +21122,11 @@ fn codegen_stmt(stmt: i32) {
             ir_wr(", i64 "); ir_wr_reg(ia_idx64); ir_wr("\n");
         }
         let ia_val: IRValue = codegen_expr(ia_rhs, elem_t);
+        if streaming != 0 && str_eq(&g_strings[ia_val.type_off], "u64") == 0 {
+            diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
+                "stream_store_u64 value must have type u64");
+            return;
+        }
         var ia_store_reg: i32 = ia_val.reg;
         // Struct/enum element: the RHS is an alloca POINTER — load the aggregate
         // before storing into the array slot (Vec<Pt> element store).
@@ -21102,7 +21139,12 @@ fn codegen_stmt(stmt: i32) {
             ia_store_reg = emit_implicit_convert(ia_val.reg, ia_val.type_off, elem_t);
         }
         ir_wr("  store "); ir_wr_type(elem_t); ir_wr(" ");
-        ir_wr_reg(ia_store_reg); ir_wr(", ptr "); ir_wr_reg(gep_r); ir_wr("\n");
+        ir_wr_reg(ia_store_reg); ir_wr(", ptr "); ir_wr_reg(gep_r);
+        if streaming != 0 {
+            ir_wr(", align 8, !nontemporal !{i32 1}");
+            g_stream_store_count = g_stream_store_count + 1;
+        }
+        ir_wr("\n");
         return;
     }
 
@@ -23333,6 +23375,7 @@ fn emit_pfor_workers() {
         g_body_mode = 1;
         g_block_terminated = 0;
 
+        let stream_count: i64 = g_stream_store_count;
         codegen_stmt(body_node);
 
         g_loop_depth = g_loop_depth - 1;
@@ -23365,6 +23408,7 @@ fn emit_pfor_workers() {
 
         ir_wr_label_def(lbl_end);
         sym_pop_scope();
+        if g_stream_store_count != stream_count { emit_stream_store_fence(); }
         ir_wr("  ret void\n}\n");
 
         // Restore state
@@ -32023,7 +32067,64 @@ fn global_const_init(prog: i32, upto: i32, ginit: i32, ok_io: *i32) -> u64 {
     return 0;
 }
 
+var g_stream_store_count: i64 = 0;
+
+fn stream_store_target(node: i32) -> i32 {
+    if g_eval_mode == 1 || g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1
+        || tp_starts(g_target_triple, "x86_64-") == 0 {
+        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+            "streaming stores require native x86_64 CPU codegen");
+        return 0;
+    }
+    return 1;
+}
+
+fn emit_stream_store_fence() {
+    ir_wr("  call void asm sideeffect \"mfence\", \"~{memory}\"()\n");
+}
+
+// Indexed stores expose the destination and index to the existing alias proof.
+// Normalize only statements; expression uses retain the builtin diagnostic.
+fn prepare_stream_stores(prog: i32) {
+    var shadowed: i32 = 0;
+    var di: i32 = 0;
+    while di < g_nodes[prog].nargs {
+        let decl: i32 = g_args[g_nodes[prog].args_start + di];
+        if (g_nodes[decl].kind == AST_FN_DECL || g_nodes[decl].kind == AST_EXTERN_FN)
+            && str_eq(&g_strings[g_nodes[decl].name0], "stream_store_u64") == 1 {
+            shadowed = 1;
+        }
+        di = di + 1;
+    }
+    var n: i32 = 0;
+    while n < g_nnodes {
+        if g_nodes[n].kind == AST_EXPR_STMT {
+            let call: i32 = g_nodes[n].child0;
+            if call >= 0 && g_nodes[call].kind == AST_CALL
+                && str_eq(&g_strings[g_nodes[call].name0], "stream_store_fence") == 1 {
+                g_nodes[call].flags = g_nodes[call].flags | 1048576;
+            }
+            if shadowed == 0 && call >= 0 && g_nodes[call].kind == AST_CALL
+                && str_eq(&g_strings[g_nodes[call].name0], "stream_store_u64") == 1 {
+                if g_nodes[call].nargs == 3 {
+                    let base: i32 = g_nodes[call].args_start;
+                    g_nodes[n].kind = AST_INDEX_ASSIGN;
+                    g_nodes[n].child0 = g_args[base];
+                    g_nodes[n].child1 = g_args[base + 1];
+                    g_nodes[n].child2 = g_args[base + 2];
+                    g_nodes[n].flags = g_nodes[n].flags | 1048576;
+                } else {
+                    diag_error_at(g_nodes[call].line, g_nodes[call].col,
+                        "stream_store_u64(dst, index, value) takes three arguments");
+                }
+            }
+        }
+        n = n + 1;
+    }
+}
+
 fn codegen_program(prog: i32) {
+    prepare_stream_stores(prog);
     emit_preamble();
 
     // ---- Pre-pass: register structs first (needed for chained access) ----

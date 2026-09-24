@@ -3235,6 +3235,11 @@ while atomic_load(&m[FLAG], acquire) != seq { }
 let got: i64 = m[PAYLOAD];
 ```
 
+### 12.7 Streaming Stores
+
+Native x86-64 streaming stores and their worker-completion ordering contract
+are specified in [Host streaming stores](streaming-stores.md).
+
 ---
 
 ## 13. Module System
