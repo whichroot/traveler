@@ -56,6 +56,10 @@ while IFS= read -r line; do
 done < "$CORPUS"
 
 if [ "$MODE" = "update" ]; then
+    if [ "$fail" = "1" ]; then
+        echo "  FAIL: corpus had missing/uncompilable sources; golden preserved"
+        exit 1
+    fi
     sort -k2 "$TMP/current.txt" > "$GOLDEN"
     echo "=== Codegen-diff golden re-blessed ($(wc -l < "$GOLDEN" | tr -d ' ') entries) ==="
     echo "Review the diff and commit tests/codegen_diff/golden.txt."

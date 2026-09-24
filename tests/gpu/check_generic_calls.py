@@ -85,7 +85,7 @@ with tempfile.TemporaryDirectory() as directory:
         explicit = descriptor["owner"].startswith("explicit_")
         assert descriptor["execution"] == ("independent-kernel" if explicit else "independent-pfor")
         assert descriptor["symbol"].startswith("__traveler_kernel_" if explicit else "__pfor_gpu_worker_")
-    assert not re.search(r"\bcall\b(?![^\n]*@llvm\.nvvm\.)", ir)
+    assert not re.search(r"\bcall\b(?![^\n]*@(?:llvm\.nvvm\.|llvm\.trap\(|__tv_checked_[0-3]_(?:1|8|16|32|64)\())", ir)
     assert "alloca" not in ir
     run(LLC, "-mcpu=sm_90", nv, "-o", temp / "generic.ptx")
     amd = temp / "generic-amd.ll"

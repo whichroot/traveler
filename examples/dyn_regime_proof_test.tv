@@ -36,7 +36,7 @@ fn segment_fits<F: Field>(data: *F, a: i32, len: i32, d: i32, work: *F) -> i32 {
 }
 
 // "Boundary at b is forced": Delta^d of the d+1 points ending at b is nonzero,
-// witnessed by err * inv(err) == 1 (false boundary: err == 0 -> chk 0 != 1).
+// witnessed by err * inv(err) == 1 after rejecting a zero error.
 fn boundary_forced<F: Field>(data: *F, b: i32, d: i32, work: *F) -> i32 {
     // Window of d+1 points crossing the boundary: data[b-d .. b].
     for i in 0..(d + 1) { work[i] = data[b - d + i]; }
@@ -48,8 +48,9 @@ fn boundary_forced<F: Field>(data: *F, b: i32, d: i32, work: *F) -> i32 {
         rem = rem - 1;
     }
     let err: F = work[0];
-    let inv: F = 1 / err;        // field inverse; inv(0) = 0
-    let chk: F = err * inv;      // 1 iff err != 0, else 0
+    if err == 0 { return 0; }
+    let inv: F = 1 / err;
+    let chk: F = err * inv;
     if chk == 1 { return 1; }
     return 0;
 }

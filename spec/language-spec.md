@@ -271,6 +271,19 @@ patterns and assume logical shifts. They must be written in an unsigned type;
 in a signed type the sign-extending shift silently destroys avalanche.
 `examples/shift_semantics.tv` pins both rules with known-answer vectors.
 
+The shift count is interpreted as an unsigned bit pattern. For a count at least
+the operand width, left shift and unsigned right shift return zero. Signed right
+shift returns the sign fill (`0` or `-1`). This includes negative signed counts.
+These results also apply to supported wide integer types.
+
+**Integer division and remainder.** Division truncates toward zero. Remainder
+has the dividend's sign and satisfies `a = (a / b) * b + a % b` when the quotient
+is representable. A zero divisor fails explicitly. Signed minimum divided by
+`-1` also fails; signed minimum remainder `-1` is zero. Failure remains observable
+when the result is discarded and when optimization is enabled. Native host code
+aborts, the evaluator exits with status 134, and LLVM GPU kernels trap. A trapped
+CUDA launch reports a driver failure through the resident runtime.
+
 Logical:
 ```
 &&   short-circuit AND
@@ -1249,20 +1262,13 @@ In a field, every nonzero element has a multiplicative inverse. Division by zero
 (`a / 0`) is undefined.
 
 **Behavior**:
-- If the compiler can prove the divisor is zero at compile time: **compile error**.
-- At runtime: **trap** (program aborts with a diagnostic message and stack trace).
+- At runtime: **explicit failure**, including when optimization discards the result.
+- Compile-time zero-divisor diagnostics and failure stack traces are not implemented.
 
 **Rationale**: Silently returning 0 (as some implementations do) masks bugs.
-Trapping is the safe default. (An earlier revision offered `unsafe { a / b }`
-to elide the check; there is no `unsafe` construct — §14.3 — so if the trap
-lands, elision will be a compiler flag or a proven-nonzero path, not a
-block form.)
-
-> **NOT YET IMPLEMENTED (v0.1.0).** The runtime zero-divisor trap is not
-> implemented. Division lowers to `a * inv(b)`
-> with `inv(x) = pow(x, p-2)`, so `a / 0` currently computes `a * pow(0, p-2)`
-> = `0` **silently**, with no trap (§16.11). Compile-time-provable-zero
-> divisors are likewise not yet diagnosed.
+The inverse checks its operand before exponentiation. Host code aborts, the
+evaluator exits with status 134, and LLVM GPU code traps. There is no `unsafe`
+construct to bypass the check (§14.3).
 
 ### 5.3 Polynomial Expressions
 
@@ -1428,6 +1434,19 @@ The `as` operator is the implemented cast mechanism. It covers:
 - **Scalar → `ExtField<F, 2>`**: `a as E` builds `(a, 0)`.
 - Under a `dyn` field carrier, a reducing cast routes through the runtime
   reduction (§17.10).
+
+Distinct field definitions do not implicitly convert into one another. Direct
+casts between them are rejected too; extract an integer representative and then
+reduce it into the destination field. Aliases of the same field definition are
+compatible. A base-field value can embed into its matching extension field.
+Integer reduction into prime, extension, and runtime fields currently accepts
+at most 64-bit source integers; wider sources are rejected before IR publication.
+The legacy bare `as Field` annotation at `_dyn` call boundaries requires a
+64-bit integer representative; narrow and wide annotations are rejected.
+
+Field inversion and division require a nonzero inverse operand or divisor.
+Zero fails explicitly, including in characteristic two and when the result is
+unused. Host failure uses the same abort convention as integer division.
 
 > **NOT YET IMPLEMENTED (v0.1.0 — planned).** The `lift()` / `project()`
 > *methods* (embed `Field<p>` into a larger `Field<q>` preserving the integer
@@ -1896,12 +1915,12 @@ Multiplication: `max(a * b) = (p-1)^2 ≈ 2^128`, which fits in `u128`.
 **Multiplicative inverse**: `a^(p-2) mod p` (by Fermat's little theorem)
 ```
 inv(a):
+    if a == 0: fail
     return pow(a, p - 2)        // modular exponentiation by squaring
 ```
 
-> **NOT YET IMPLEMENTED (v0.1.0).** `inv` emits no zero check: `inv(0)` computes
-> `pow(0, p-2) = 0` silently rather than trapping (§5.2, §16.11). A guarding
-> trap is planned.
+The zero check also applies when `p = 2`; exponentiation with exponent zero
+does not supply an inverse for zero (§5.2, §16.11).
 
 For small primes (p < 256), the compiler MAY precompute an inverse table at
 compile time and use a lookup instead of exponentiation. (Not currently emitted;
@@ -3485,7 +3504,8 @@ compile-time errors include:
 
 | Condition | Behavior (v0.1.0) |
 |---|---|
-| Division by zero (field) | **No trap** — `a * inv(0)` = 0, silent (§5.2, §16.11) |
+| Division by zero (integer or field), zero inversion | Explicit failure (§2.10, §5.2, §16.11) |
+| Signed integer minimum divided by `-1` | Explicit failure; remainder is zero (§2.10) |
 | Array / pointer index out of bounds | **No check** — out-of-bounds access is UB |
 | `vec_pop` on empty | **No check** — underflows `len`, UB |
 | Heap allocation failure | **No check** — null returned unchecked (§12.3) |
@@ -3494,7 +3514,7 @@ compile-time errors include:
 | Use after free | Undefined behavior |
 | Double free | Undefined behavior |
 
-> **Corrected from an earlier revision.** The field division-by-zero trap,
+> **Corrected from an earlier revision.** The
 > array/`Vec` bounds-check traps, empty-pop trap, OOM trap, `DynPoly::into_static`
 > trap (no `DynPoly`, §3.3.2), and "fuel exhaustion" (no fuel construct, §6.5)
 > are **not** implemented. Traveler currently follows the C discipline: these are
@@ -4730,9 +4750,9 @@ no inverse in Z/pZ. The Newton basis is undefined for degree >= p over Z/pZ.
 
 > **NOT ENFORCED (v0.1.0).** `newton_to_standard` / `standard_to_newton`
 > *require* `d < p`, but the compiler does **not** check it — there is no
-> degree-vs-prime guard. The converters divide by `k mod p` and call `inv`; at
-> `k = p` this computes `inv(0) = 0` (§16.11) and silently produces a **wrong
-> result** rather than the error shown below. (In practice the conversion
+> degree-vs-prime guard. A runtime inverse of `k mod p` now fails at `k = p`
+> (§16.11), but this does not provide the compile-time diagnostic below.
+> (In practice the conversion
 > buffers cap `d` at 31, §9.1.3, far below any real prime, so the barrier is not
 > approached.) The intended diagnostic was:
 >
@@ -4822,10 +4842,8 @@ The compiler MAY special-case this to avoid the squaring loop. Not required.
 
 **inv(0)**: mathematically undefined (0 has no multiplicative inverse).
 
-> **NOT YET IMPLEMENTED (v0.1.0).** No zero check is emitted. `inv(x)` is
-> `pow(x, p-2)`, so `inv(0) = pow(0, p-2) = 0`, and division `a / 0 = a * inv(0)`
-> returns `0` **silently** — no trap, no diagnostic (§5.2, §14.2). A guarding
-> trap (with `unsafe`/provably-nonzero elision) is the intended behavior.
+Zero inversion fails explicitly before computing an inverse (§5.2, §14.2).
+This applies to prime, binary, extension, and runtime-field inverse helpers.
 
 ### 16.12 Field<2> and Polynomial Operations
 
@@ -4833,9 +4851,8 @@ The compiler MAY special-case this to avoid the squaring loop. Not required.
 
 **Newton conversion**: The divisors in `newton_to_standard` are `1, 2, 3, ...`.
 In `Field<2>`, the divisor 2 = 0. This means Newton conversion is only valid
-for degree 0 and degree 1 (d < 2). Note this precondition is **not enforced**
-by the compiler (§16.10); a degree ≥ 2 conversion over `Field<2>` silently
-misbehaves rather than erroring.
+for degree 0 and degree 1 (d < 2). The compiler does not issue a degree-barrier
+diagnostic (§16.10); a runtime inverse of the zero divisor fails explicitly.
 
 **Polynomial multiplication**: Schoolbook and Karatsuba work correctly (they
 use only addition and multiplication, both well-defined in Field<2>). NTT is
@@ -5955,7 +5972,7 @@ of definition. This is the index:
   inclusive range `..=` (§5.8); `lift()`/`project()` (§5.9); let-destructuring
   (§6.1); compound assignment `+= -= *= /=` (§6.2, §2.10); field enumeration
   `for x in F` (§6.4).
-- **Semantics/safety**: `unsafe` blocks (§14.3); the field division-by-zero /
+- **Semantics/safety**: `unsafe` blocks (§14.3);
   bounds / OOM traps and match-exhaustiveness / degree-barrier diagnostics
   (§14.1, §14.2, §16.10, §16.11); explicit `poly.to_newton()`/`to_standard()`
   (§9.1.3); namespaced `module::item` imports and `std::*` / `mem::*` / `io::*`

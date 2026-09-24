@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Eval-diff gate (eval-engine E1): the differential semantic oracle.
+# Compare evaluator/native behavior and check arithmetic with independent oracles.
+# Differential agreement alone does not establish mathematical correctness.
 # For every corpus program:   eval(prog) == run(compile(prog))
 # byte-exact on stdout AND equal on exit status. This is the fixed-point
 # discipline applied to SEMANTICS — the evaluator is only trustworthy
@@ -115,6 +116,14 @@ while IFS= read -r line; do
     fi
     pass=$((pass+1))
 done < "$CORPUS"
+
+if [ -n "$OPT" ] && command -v python3 >/dev/null 2>&1; then
+    if ! python3 "$REPO_DIR/tests/check_arithmetic_contract.py" "$SELF" "$LLC_BIN" "$OPT" "$LINKER"; then
+        fail=$((fail+1))
+    fi
+else
+    echo "  SKIP: arithmetic contract needs opt and python3"
+fi
 
 if [ "$fail" = "0" ]; then
     echo "  EVAL-DIFF: PASS ($pass programs, eval == compiled byte-exact)"

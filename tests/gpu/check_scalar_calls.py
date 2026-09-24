@@ -65,7 +65,7 @@ def check_execution(source, bits, oracle, owner, temp):
     result = run(TVC, "--emit-gpu-nvptx", str(source), "-o", str(nv))
     assert '"status":"emitted"' in result.stderr
     ir = nv.read_text()
-    assert not re.search(r"\bcall\b(?![^\n]*@llvm\.nvvm\.)", ir), ir
+    assert not re.search(r"\bcall\b(?![^\n]*@(?:llvm\.nvvm\.|llvm\.trap\(|__tv_checked_[0-3]_(?:1|8|16|32|64)\())", ir), ir
     assert "alloca" not in ir.replace("registers-only", "")
     if owner == "scalar_calls":
         assert len(re.findall(r" = load i64,", ir)) == 1, ir
@@ -76,7 +76,10 @@ def check_execution(source, bits, oracle, owner, temp):
     run(OPT, "-passes=verify", "-disable-output", str(nv))
     ptx = temp / f"{owner}.ptx"
     run(LLC, "-mcpu=sm_90", str(nv), "-o", str(ptx))
-    assert not re.search(r"\.extern\s+\.func|\bcall(?:\.uni)?\b", ptx.read_text())
+    ptx_text = ptx.read_text()
+    assert not re.search(r"\.extern\s+\.func", ptx_text)
+    for callee in re.findall(r"\bcall(?:\.uni)?\s+(?:\([^)]*\),\s*)?([A-Za-z_]\w*)", ptx_text):
+        assert re.fullmatch(r"__tv_checked_[0-3]_(?:1|8|16|32|64)", callee), callee
     amd = temp / f"{owner}-amd.ll"
     run(TVC, "--emit-gpu", str(source), "-o", str(amd))
     run(OPT, "-passes=verify", "-disable-output", str(amd))

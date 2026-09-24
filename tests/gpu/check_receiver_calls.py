@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory() as directory:
         "receiver_map", "receiver_branch_map", "closure_snapshot_map",
         "closure_guard_map", "closure_inline_map", "closure_unsigned_map"}
     assert "alloca" not in text and "ptrtoint" not in text
-    assert not re.search(r"\bcall\b(?![^\n]*@llvm\.nvvm\.)", text)
+    assert not re.search(r"\bcall\b(?![^\n]*@(?:llvm\.nvvm\.|llvm\.trap\(|__tv_checked_[0-3]_(?:1|8|16|32|64)\())", text)
     for descriptor in descriptors:
         if descriptor["owner"].startswith("closure_"):
             body = re.search(r"define ptx_kernel void @" + re.escape(descriptor["symbol"]) +

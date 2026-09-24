@@ -2954,14 +2954,14 @@ else
     echo "  SKIP: HIP+Vulkan hardware toolchain unavailable (projection execution)"
 fi
 
-# PROOF1 changes ordinary CPU authority only. This source gains three CPU
-# workers, so its pre-handoff device artifacts pin the mode-selection fence.
+# Pin device admission separately from CPU authority; field helpers include
+# explicit zero-inverse traps in the arithmetic-contract baseline.
 echo "  -- PROOF1 device-authority fence"
 PROOF1_DEVICE_SRC="$REPO_DIR/examples/poly_core_generic_test.tv"
 PROOF1_DEVICE_MODES=("--emit-gpu" "--emit-gpu-nvptx" "--emit-gpu-agx")
 PROOF1_DEVICE_HASHES=(
-    "40ad76d7a19b0c595c6fa039b20d2c6de1bbe8f4887b301227a4c96b2129081c"
-    "95cf24e57e37f703060d52d7a0d5b57249846619754cc4ae0840d58428963111"
+    "9c7bcd5ba341331b200dba1f3f33d1b87ff79d520098c0072b736c6bdfef6ab2"
+    "abd569edc9200e5e4871840cbc0452692aa47634b98d1ffbacf97ae2a1dc361f"
     "713440392fe735167eca32a9cba5e60de0a3bef56364c8589c595ddf11197b9b"
 )
 for pi in 0 1 2; do
@@ -2975,7 +2975,7 @@ for pi in 0 1 2; do
     if [ "$proof1_hash" != "${PROOF1_DEVICE_HASHES[$pi]}" ]; then
         echo "  FAIL: PROOF1 changed ${PROOF1_DEVICE_MODES[$pi]} admission/bytes"; fail=1
     else
-        echo "  ok   ${PROOF1_DEVICE_MODES[$pi]} unchanged across CPU authority handoff"
+        echo "  ok   ${PROOF1_DEVICE_MODES[$pi]} matches the device-authority baseline"
     fi
 done
 

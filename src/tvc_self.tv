@@ -1845,6 +1845,8 @@ var g_pfor_proof0_mode: i32 = 0;
 // 1 = --emit-gpu (Stage 0): ride the /dev/null codegen pass to populate the
 // registries, then re-emit each elementwise-class worker as a device kernel.
 var g_emit_gpu_mode: i32 = 0;
+var g_checked_integer_mask: u64 = 0;
+var g_arithmetic_source: i32 = 0;
 var g_gpu_interface: i32 = 0;
 // Set when a device worker body calls the udot4 builtin: the module gains a
 // trailing @llvm.amdgcn.udot4 declare (declares may follow uses in LLVM IR).
@@ -6895,10 +6897,119 @@ fn emit_field_pow(fi: i32) {
     ir_wr("}\n\n");
 }
 
+fn emit_arithmetic_failure() {
+    if g_emit_gpu_mode == 1 { ir_wr("  call void @llvm.trap()\n"); }
+    else { ir_wr("  call void @abort()\n"); }
+    ir_wr("  unreachable\n");
+}
+
+fn emit_nonzero_argument(bits: i32, value: *u8) {
+    ir_wr("  %arith.zero = icmp eq i"); ir_wr_int(bits as i64); ir_wr(" "); ir_wr(value); ir_wr(", 0\n");
+    ir_wr("  br i1 %arith.zero, label %arith.fail, label %arith.ok\narith.fail:\n");
+    emit_arithmetic_failure(); ir_wr("arith.ok:\n");
+}
+
+fn arithmetic_field_same(a: i32, b: i32) -> i32 {
+    return (g_fields[a].field_kind == g_fields[b].field_kind
+        && g_fields[a].prime == g_fields[b].prime && g_fields[a].poly == g_fields[b].poly
+        && g_fields[a].degree == g_fields[b].degree && g_fields[a].nonresidue == g_fields[b].nonresidue) as i32;
+}
+
+fn arithmetic_field_seen(fi: i32) -> i32 {
+    var i: i32 = 0;
+    while i < fi {
+        if arithmetic_field_same(i, fi) == 1 { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn arithmetic_conversion_valid(source: i32, target: i32) -> i32 {
+    let s: i32 = find_field_by_alias(source); let d: i32 = find_field_by_alias(target);
+    if target != NULL_STR && str_eq(&g_strings[target], "Field") == 1
+        && type_bits(source) > 0 && type_bits(source) != 64 { return 0; }
+    if type_is_dyn(target) == 1 {
+        if s >= 0 || type_bits(source) > 64 { return 0; }
+    }
+    if d < 0 { return 1; }
+    if type_is_dyn(source) == 1 { return 0; }
+    if s >= 0 {
+        if arithmetic_field_same(s, d) == 1 { return 1; }
+        if g_fields[d].field_kind == FIELD_KIND_EXTENSION && g_fields[s].field_kind != FIELD_KIND_EXTENSION {
+            return arithmetic_field_same(s, g_fields[d].base_field_idx);
+        }
+        return 0;
+    }
+    if type_bits(source) > 64 && g_fields[d].field_kind != FIELD_KIND_BINARY { return 0; }
+    return 1;
+}
+
+fn checked_integer_name(op: i32, bits: i32) {
+    ir_wr("__tv_checked_"); ir_wr_int(op as i64); ir_wr("_"); ir_wr_int(bits as i64);
+}
+
+fn emit_checked_integer(op: i32, t: i32, a: i32, b: i32) -> i32 {
+    let bits: i32 = type_bits(t); var wi: i32 = 0; var width: i32 = 1;
+    while width < bits { wi = wi + 1; if width == 1 { width = 8; } else { width = width * 2; } }
+    var operation: i32 = 0;
+    if op == OP_MOD { operation = 2; }
+    if type_is_signed(t) == 0 { operation = operation + 1; }
+    g_checked_integer_mask = g_checked_integer_mask | ((1 as u64) << ((operation * 5 + wi) as u64));
+    let r: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(r); ir_wr(" = call "); ir_wr_type(t); ir_wr(" @");
+    checked_integer_name(operation, bits); ir_wr("("); ir_wr_type(t); ir_wr(" "); ir_wr_reg(a);
+    ir_wr(", "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(b); ir_wr(")\n"); return r;
+}
+
+fn emit_checked_integer_helpers() {
+    var i: i32 = 0;
+    while i < 20 {
+        if (g_checked_integer_mask & ((1 as u64) << (i as u64))) != 0 {
+            let operation: i32 = i / 5; let wi: i32 = i % 5;
+            var bits: i32 = 1; if wi > 0 { bits = 8 << (wi - 1); }
+            ir_wr("\ndefine internal i"); ir_wr_int(bits as i64); ir_wr(" @"); checked_integer_name(operation, bits);
+            ir_wr("(i"); ir_wr_int(bits as i64); ir_wr(" %a, i"); ir_wr_int(bits as i64); ir_wr(" %b) alwaysinline {\n");
+            emit_nonzero_argument(bits, "%b");
+            if operation == 0 || operation == 2 {
+                ir_wr("  %min = icmp eq i"); ir_wr_int(bits as i64); ir_wr(" %a, ");
+                ir_wr_u64((1 as u64) << ((bits - 1) as u64)); ir_wr("\n  %negone = icmp eq i");
+                ir_wr_int(bits as i64); ir_wr(" %b, -1\n  %overflow = and i1 %min, %negone\n");
+                if operation == 0 {
+                    ir_wr("  br i1 %overflow, label %overflow.fail, label %overflow.ok\noverflow.fail:\n");
+                    emit_arithmetic_failure(); ir_wr("overflow.ok:\n");
+                } else {
+                    ir_wr("  %safe = select i1 %overflow, i"); ir_wr_int(bits as i64); ir_wr(" 0, i");
+                    ir_wr_int(bits as i64); ir_wr(" %a\n");
+                }
+            }
+            ir_wr("  %r = ");
+            if operation == 0 { ir_wr("sdiv"); } else if operation == 1 { ir_wr("udiv"); }
+            else if operation == 2 { ir_wr("srem"); } else { ir_wr("urem"); }
+            ir_wr(" i"); ir_wr_int(bits as i64);
+            if operation == 2 { ir_wr(" %safe, %b\n"); } else { ir_wr(" %a, %b\n"); }
+            ir_wr("  ret i"); ir_wr_int(bits as i64); ir_wr(" %r\n}\n");
+        }
+        i = i + 1;
+    }
+}
+
+fn emit_defined_shift(op: i32, t: i32, a: i32, b: i32) -> i32 {
+    let bits: i32 = type_bits(t); let outside: i32 = ir_tmp(); let safe: i32 = ir_tmp(); let shifted: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(outside); ir_wr(" = icmp uge "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(b);
+    ir_wr(", "); ir_wr_int(bits as i64); ir_wr("\n  "); ir_wr_reg(safe); ir_wr(" = select i1 "); ir_wr_reg(outside);
+    ir_wr(", "); ir_wr_type(t); ir_wr(" "); ir_wr_int((bits - 1) as i64); ir_wr(", "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(b); ir_wr("\n  ");
+    ir_wr_reg(shifted); ir_wr(" = ");
+    if op == OP_SHL { ir_wr("shl"); } else if type_is_signed(t) == 1 { ir_wr("ashr"); } else { ir_wr("lshr"); }
+    ir_wr(" "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(a); ir_wr(", "); ir_wr_reg(safe); ir_wr("\n");
+    if op == OP_SHR && type_is_signed(t) == 1 { return shifted; }
+    let result: i32 = ir_tmp(); ir_wr("  "); ir_wr_reg(result); ir_wr(" = select i1 "); ir_wr_reg(outside);
+    ir_wr(", "); ir_wr_type(t); ir_wr(" 0, "); ir_wr_type(t); ir_wr(" "); ir_wr_reg(shifted); ir_wr("\n"); return result;
+}
+
 fn emit_field_inv(fi: i32) {
     let p_minus_2: u64 = g_fields[fi].prime - 2;
     ir_wr("define internal "); ir_wr_elem(fi); ir_wr(" ");
     ir_wr_field_prefix(fi); ir_wr("inv("); ir_wr_elem(fi); ir_wr(" %a) alwaysinline {\n");
+    emit_nonzero_argument(g_fields[fi].elem_bits, "%a");
     ir_wr("  %r = call "); ir_wr_elem(fi); ir_wr(" ");
     ir_wr_field_prefix(fi); ir_wr("pow("); ir_wr_elem(fi); ir_wr(" %a, ");
     ir_wr_exp_type(fi); ir_wr(" "); ir_wr_int(p_minus_2 as i64); ir_wr(")\n");
@@ -6920,6 +7031,7 @@ fn emit_field_div(fi: i32) {
 }
 
 fn emit_field_funcs(fi: i32) {
+    if arithmetic_field_seen(fi) == 1 { return; }
     emit_field_add(fi);
     emit_field_sub(fi);
     emit_field_mul(fi);
@@ -7046,6 +7158,7 @@ fn emit_dynfield_funcs() {
 
     // inv: a^(p-2) mod p (Fermat). p loaded at runtime.
     ir_wr("\ndefine internal i64 @field_dyn_inv(i64 %a, ptr %f) alwaysinline {\n");
+    emit_nonzero_argument(64, "%a");
     ir_wr("  %pp = getelementptr %__Field, ptr %f, i32 0, i32 0\n");
     ir_wr("  %p = load i64, ptr %pp\n");
     ir_wr("  %pm2 = sub i64 %p, 2\n");
@@ -7449,6 +7562,8 @@ fn emit_widefield_funcs() {
 
     // inv: a^(p-2) mod p (Fermat). Computes p-2 as i256, then pow.
     ir_wr("\ndefine internal void @field_wide_inv(ptr %dst, ptr %a, ptr %f) {\n");
+    wf_load256("checked", "%a");
+    emit_nonzero_argument(256, "%checked256");
     wf_load_p256();
     ir_wr("  %pm2 = sub i256 %p256, 2\n");
     ir_wr("  %e2buf = alloca [4 x i64]\n");
@@ -7594,6 +7709,7 @@ fn emit_widefield_init() {
 // Emit NTT root tables as global constant arrays (@ntt_roots_<p>,
 // @ntt_inv_roots_<p>, @ntt_n_inv_<p>). Mirrors tvc.c:3259-3301.
 fn emit_ntt_tables(fi: i32) {
+    if arithmetic_field_seen(fi) == 1 { return; }
     if g_fields[fi].ntt_max_log == 0 { return; }
     if g_ntt_emitted[fi] == 1 { return; }
     g_ntt_emitted[fi] = 1;
@@ -7916,6 +8032,7 @@ fn emit_gf256_funcs() {
 
     // gf256_inv: a^254 via Fermat (group order 255, inv = a^(255-1) = a^254)
     ir_wr("define internal i8 @gf256_inv(i8 %a) alwaysinline {\n");
+    emit_nonzero_argument(8, "%a");
     ir_wr("  %r = call i8 @gf256_pow(i8 %a, i32 254)\n");
     ir_wr("  ret i8 %r\n");
     ir_wr("}\n\n");
@@ -8037,6 +8154,7 @@ fn emit_binfield_funcs(fi: i32) {
     ir_wr("define internal "); ir_wr_elem(fi); ir_wr(" ");
     ir_wr_bin_prefix(fi); ir_wr("inv(");
     ir_wr_elem(fi); ir_wr(" %a) alwaysinline {\n");
+    emit_nonzero_argument(g_fields[fi].elem_bits, "%a");
     ir_wr("  %r = call "); ir_wr_elem(fi); ir_wr(" "); ir_wr_bin_prefix(fi);
     ir_wr("pow("); ir_wr_elem(fi); ir_wr(" %a, i64 "); ir_wr_u64(kbit - 2); ir_wr(")\n");
     ir_wr("  ret "); ir_wr_elem(fi); ir_wr(" %r\n");
@@ -9158,6 +9276,11 @@ fn emit_signed_field_reduce(vreg: i32, fi: i32, preg: i32) -> i32 {
 // Emit implicit widening/narrowing if src and dst IR types differ.
 // Returns the (possibly new) register holding the converted value.
 fn emit_implicit_convert(src_reg: i32, src_type: i32, dst_type: i32) -> i32 {
+    if arithmetic_conversion_valid(src_type, dst_type) == 0 {
+        diag_error_at(g_nodes[g_arithmetic_source].line, g_nodes[g_arithmetic_source].col,
+            "unsupported field conversion: use an explicit integer representative; wide integer reduction is not supported");
+        return src_reg;
+    }
     // #27(a): scalar -> ExtField<F,2> constructs the {a, 0} aggregate (dst_bits
     // is 0 for the pair, so the early return below would hand back a bare scalar).
     let ic_defi: i32 = find_field_by_alias(dst_type);
@@ -11662,6 +11785,7 @@ fn emit_index_to_i64(v: IRValue) -> i32 {
 }
 
 fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
+    g_arithmetic_source = node;
     let kind: i32 = g_nodes[node].kind;
     // Apply generic type substitution to context type
     let ctx_type: i32 = resolve_type_sub(ctx_type);
@@ -12090,11 +12214,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
                 bint_check_operands(bl.type_off, br.type_off,
                     g_nodes[node].line, g_nodes[node].col);
-                let cr: i32 = ir_tmp();
-                ir_wr("  "); ir_wr_reg(cr);
-                if op == OP_DIV { ir_wr(" = sdiv i64 "); }
-                else { ir_wr(" = ashr i64 "); }
-                ir_wr_reg(bl.reg); ir_wr(", "); ir_wr_reg(br.reg); ir_wr("\n");
+                var cr: i32 = 0;
+                if op == OP_DIV { cr = emit_checked_integer(op, str_intern("i64"), bl.reg, br.reg); }
+                else { cr = emit_defined_shift(op, str_intern("i64"), bl.reg, br.reg); }
                 return IRValue { reg: cr, type_off: bl.type_off };
             }
             // <<, %, bitwise on Int: refused (bound would be wrong or meaningless).
@@ -12775,6 +12897,12 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 return IRValue { reg: lhs_r2, type_off: wide_t };
             }
         }
+        if op == OP_DIV || op == OP_MOD {
+            return IRValue { reg: emit_checked_integer(op, wide_t, lhs_r2, rhs_r2), type_off: wide_t };
+        }
+        if op == OP_SHL || op == OP_SHR {
+            return IRValue { reg: emit_defined_shift(op, wide_t, lhs_r2, rhs_r2), type_off: wide_t };
+        }
         // Integer arithmetic (signed or unsigned based on source type)
         let r: i32 = ir_tmp();
         let is_signed: i32 = type_is_signed(wide_t);
@@ -13369,9 +13497,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     }
                 } else {
                     // %d for 32-bit-and-narrower integer types
+                    var promoted: i32 = arg.reg;
+                    if arg_bits > 0 && arg_bits < 32 {
+                        promoted = emit_implicit_convert(arg.reg, arg.type_off, str_intern("i32"));
+                    }
                     ir_wr("  "); ir_wr_reg(pr2);
                     ir_wr(" = call i32 (ptr, ...) @printf(ptr @.fmt_d, i32 ");
-                    ir_wr_reg(arg.reg); ir_wr(")\n");
+                    ir_wr_reg(promoted); ir_wr(")\n");
                 }
             }
             return IRValue { reg: 0, type_off: NULL_STR };
@@ -14870,10 +15002,19 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             cast_ctx = target_type;
         }
         let inner: IRValue = codegen_expr(g_nodes[node].child0, cast_ctx);
+        if arithmetic_conversion_valid(inner.type_off, target_type) == 0 {
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "unsupported field conversion: use an explicit integer representative; wide integer reduction is not supported");
+            return inner;
+        }
         let src_bits: i32 = type_bits(inner.type_off);
         let dst_bits: i32 = type_bits(target_type);
         // expr as dyn: widen to i64, runtime urem against carrier p
         if type_is_dyn(target_type) == 1 {
+            if arithmetic_conversion_valid(inner.type_off, target_type) == 0 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col, "unsupported runtime-field conversion: use an integer representative of at most 64 bits");
+                return inner;
+            }
             let cfv: i32 = load_dyn_field_ptr();
             var wide: i32 = inner.reg;
             if src_bits > 0 && src_bits < 64 {
@@ -28865,6 +29006,10 @@ fn device_scalar_emit(P: *DeviceScalarPlan, ncaps: i32, caps_base: i32, idx: i32
             device_scalar_label(predecessors[branch]); ir_wr(" ], [ ");
             ir_wr_reg(regs[P.nodes[i].b]); ir_wr(", %"); device_scalar_label(current); ir_wr(" ]\n");
             current = branch * 3 + 3;
+        } else if kind == EIR_BIN && (P.nodes[i].op == OP_DIV || P.nodes[i].op == OP_MOD) {
+            regs[i] = emit_checked_integer(P.nodes[i].op, P.nodes[i].aux_type, regs[P.nodes[i].a], regs[P.nodes[i].b]);
+        } else if kind == EIR_BIN && (P.nodes[i].op == OP_SHL || P.nodes[i].op == OP_SHR) {
+            regs[i] = emit_defined_shift(P.nodes[i].op, P.nodes[i].aux_type, regs[P.nodes[i].a], regs[P.nodes[i].b]);
         } else if kind == EIR_LOCAL {
             let slot: i32 = P.nodes[i].a;
             if slot == ncaps { regs[i] = idx; }
@@ -29433,6 +29578,7 @@ fn emit_gpu_module() {
         ir_wr("\n");
     }
 
+    ir_wr("declare void @llvm.trap()\n");
     // Baked prime-field arithmetic (alloca-free, alwaysinline -> GCN urem-as-
     // magic-multiply). NTT/dyn/wide/ext omitted — Stage 0 is prime-field only.
     var fi: i32 = 0;
@@ -29757,6 +29903,7 @@ fn emit_gpu_module() {
     if nemitted == 0 {
         ir_wr("; (no elementwise-class prime-field pfor workers emitted)\n");
     }
+    emit_checked_integer_helpers();
     g_gpu_emitted = nemitted;
     gpu_decision_prefix("module");
     wr(2, ",\"candidates\":"); wr_int(2, nentries as i64);
@@ -32319,6 +32466,7 @@ fn codegen_program(prog: i32) {
     // ---- Emit wide-integer decimal print helpers (Slice 4), if any wide
     //      value was printed. Lazy: gates set during the print codegen above. ----
     emit_wide_print();
+    emit_checked_integer_helpers();
 
     // Lazy: declared only when a wide-element alloc was emitted above.
     if g_used_aligned_alloc == 1 {
@@ -34397,7 +34545,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
         if str_eq(&g_strings[call_name], "print") == 1 && nargs >= 1 {
             var print_ctx: i32 = ctx_type;
             if print_ctx == NULL_STR { print_ctx = str_intern("i32"); }
-            let arg: LowVal = lower_expr(g_args[abase], print_ctx);
+            var arg: LowVal = lower_expr(g_args[abase], print_ctx);
             var eb: i32 = 0;
             var pw_bits: i32 = 0;      // E2i: EB_PRINT_WIDE width (EIR .a)
             var pw_signed: i32 = 0;    // E2i: EB_PRINT_WIDE signedness (EIR .b)
@@ -34434,6 +34582,9 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
                     }
                 } else {
                     eb = EB_PRINT_I32;
+                    if arg_bits > 0 && arg_bits < 32 {
+                        arg = lw_conv(arg, str_intern("i32"), ln, cl);
+                    }
                 }
             }
             let e: i32 = eir_new(EIR_BUILTIN, ln, cl);
@@ -40719,8 +40870,9 @@ fn ev_powmod(b: u64, e: u64, p: u64) -> u64 {
     return res;
 }
 
-// Fermat inverse (prime p). inv(0) = 0 — the compiled field_div parity.
+// Fermat inversion is defined only on nonzero field elements.
 fn ev_invmod(a: u64, p: u64) -> u64 {
+    if a == 0 { _exit(134); }
     return ev_powmod(a, p - 2, p);
 }
 
@@ -40761,8 +40913,9 @@ fn ev_bf_pow(a: u64, e: u64, k: i32, poly: u64) -> u64 {
     return res;
 }
 
-// Fermat inverse in GF(2^K): a^(2^K - 2). inv(0) = 0 (compiled parity).
+// Binary-field inversion has the same nonzero precondition.
 fn ev_bf_inv(a: u64, k: i32, poly: u64) -> u64 {
+    if a == 0 { _exit(134); }
     let qm2: u64 = (((1 as u64) << (k as u64)) - 1) - 1;
     return ev_bf_pow(a, qm2, k, poly);
 }
@@ -41415,8 +41568,10 @@ fn ev_fw_pow(dst: u64, base: u64, exp: u64, f: u64) {
     }
 }
 
-// a^(p-2) (Fermat; inv(0) = 0, the compiled parity).
+// Check the complete four-limb value before Fermat inversion.
 fn ev_fw_inv(dst: u64, a: u64, f: u64) {
+    let ap: *u64 = a as *u64;
+    if (ap[0] | ap[1] | ap[2] | ap[3]) == 0 { _exit(134); }
     let pp: *u64 = f as *u64;
     var pm2: [u64; 4] = 0;
     var two: [u64; 4] = 0;
@@ -41888,6 +42043,15 @@ fn ev_expr(e: i32, fr: *EvFrame) -> EvalVal {
         if op == OP_ADD { r = ev_mask(av.bits + bv.bits, w); }
         if op == OP_SUB { r = ev_mask(av.bits - bv.bits, w); }
         if op == OP_MUL { r = ev_mask(av.bits * bv.bits, w); }
+        if op == OP_DIV || op == OP_MOD {
+            if bv.bits == 0 { _exit(134); }
+            if is_s == 1 && w > 0 {
+                if av.bits == ((1 as u64) << ((w - 1) as u64)) && bv.bits == ev_mask(18446744073709551615, w) {
+                    if op == OP_DIV { _exit(134); }
+                    return EvalVal { tag: EV_INT, type_off: g_eir[e].type_off, bits: 0 };
+                }
+            }
+        }
         if op == OP_DIV {
             if is_s == 1 {
                 r = ev_mask((ev_sext(av.bits, w) / ev_sext(bv.bits, w)) as u64, w);
