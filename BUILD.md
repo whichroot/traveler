@@ -327,16 +327,16 @@ The elementwise and blocked-dot device classes share one admission contract:
 NVPTX and AMDGCN can expand direct, nonrecursive integer helpers in flat
 elementwise workers before device emission. Imported helpers and nested calls
 work, including unbounded type generics inferred from scalar arguments. Helpers
-can bind and shadow scalar locals, assign concrete mutable scalar locals, and end
-with a return or a terminal `if`/`else` whose arms each return. Nested terminal
-branches are supported. Branch evaluation is lazy; only the selected arm runs.
+can bind and shadow scalar locals, assign mutable scalar locals, merge assignments
+across branches, return early, and execute rolled `while` loops. Branches and
+`&&`/`||` evaluate lazily; only the selected path runs.
 Bodies can use integer literals, casts, arithmetic, bitwise operations, shifts,
 comparisons, and supported nested calls. Arguments are evaluated once, in source
 order, including unused arguments. Caller and callee type bindings are separate.
 
 The initial profile covers signed/unsigned 8-, 16-, 32-, 64-, 128-, 256-, and
 512-bit integers plus `i1` and `bool`. It excludes const/bounded generics,
-nonterminal returns, loops inside helpers, short-circuit operators, arbitrary pointer
+`for` loops, loop exits (`break`, `continue`, or return from a loop), arbitrary pointer
 parameters, hidden memory reads, external/indirect calls, and field arithmetic.
 Helper bodies must pass the typed device verifier. Implicit pfor discovery also
 requires the existing CPU loop proof. Division/remainder above
@@ -344,8 +344,10 @@ requires the existing CPU loop proof. Division/remainder above
 values can come from memory, widening, or supported arithmetic. Expansion is
 bounded to 16 active calls, 16 type parameters, depth 64, 4096 expression/statement visits, 4096
 typed nodes, and 256 live bindings. Unsupported calls retain `uncarried-call`
-decisions, with a located `device-call-refused` diagnostic explaining the class
-of refusal. Call-free workers keep their existing lowering path.
+decisions; control-flow, aggregate-merge, conditional-effect, and non-canonical
+store refusals have distinct reasons and located diagnostics. See
+[Scalar device control flow](spec/device-scalar-control.md) for the admission
+boundary and exact Q32 helper checks.
 
 Explicit kernels can call helpers with local aggregates:
 
@@ -507,8 +509,9 @@ The runtime checks the geometry, byte extents, and
 disjointness before submission; footprint checks divide the available bytes by
 element size before comparing the lane count.
 
-The profile accepts direct-index stores, scalar locals, bounded flat aggregates,
-and the shared-memory operations below. Ordinary global buffer accesses must
+The profile accepts direct-index stores, mutable scalar locals, scalar branches,
+rolled `while` loops, bounded flat aggregates, and the shared-memory operations
+below. Ordinary global buffer accesses must
 lower to the canonical x-fastest global coordinate tree used by
 `gpu_global_index(thread)`. Factored calls are allowed; arbitrary offsets and
 unproved index reassociations refuse. Index-call arguments contribute memory

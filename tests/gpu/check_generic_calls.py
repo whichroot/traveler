@@ -171,7 +171,7 @@ with tempfile.TemporaryDirectory() as directory:
         "#[kernel] fn bad(i:i32,input:*i64,output:*i64) { output[i+1]=input[i]; }",
         "#[kernel] fn bad(i:i32,input:*i64,output:*i64) { output[i]=input[i+1]; }",
         "#[kernel] fn bad(i:i32,input:*i64,output:*i64) { output[i]=helper(input[i]); } "
-        "fn helper(x:i64)->i64 { if x==0 { return 7; } return x; }",
+        "fn helper(x:i64)->i64 { return x ** 3; }",
         "#[kernel(extra)] fn bad(i:i32,input:*i64,output:*i64) { output[i]=input[i]; }",
         "#[kernel] struct NotAFunction { value:i64, }",
     ]

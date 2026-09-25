@@ -1944,6 +1944,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_AMD" = "1" ] && [ -n "$OPT" ] && [ "$HAVE_LI
         echo "  FAIL: scalar device call expansion"
         fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_scalar_control.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+        echo "  FAIL: scalar device control flow"; fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/check_generic_calls.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
         echo "  FAIL: generic device call expansion"
         fail=1

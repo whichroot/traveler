@@ -152,11 +152,22 @@ with tempfile.TemporaryDirectory() as directory:
                         f"typed_calls_{ty}", temp)
 
     kernel = "\nfn work(a: *i64, b: *i64) { for i in 0..2048 { b[i] = helper(a[i]); } }\n"
+    control = [
+        ('early_calls', 'if x < 0 { return 0; } return x;', lambda x: max(signed(x, 64), 0)),
+        ('logical_calls', 'return ((x != 0) && (10 / x > 0)) as i64;',
+         lambda x: int(0 < signed(x, 64) <= 10)),
+        ('loop_calls', 'var v:u64=x as u64; var n:i64=0; while v>0 { '
+         'n=n+((v&1) as i64); v=v>>1; } return n;', lambda x: x.bit_count()),
+    ]
+    for owner, body, oracle in control:
+        source = temp / f'{owner}.tv'
+        source.write_text(f'fn helper(x:i64)->i64 {{ {body} }}\n'
+                          f'#[export] fn {owner}(input:*i64,output:*i64) {{ '
+                          'for i in 0..2048 { output[i]=helper(input[i]); } }\n')
+        check_execution(source, 64, oracle, owner, temp)
     cases = {
-        "conditional": "fn helper(x:i64)->i64 { if x < 0 { return 0; } return x; }",
         "bounded_generic": "fn helper<T: Any>(x:T)->T { return x; }",
         "hidden_read": "let table: *i64 = null; fn helper(x:i64)->i64 { return table[x]; }",
-        "short_circuit": "fn helper(x:i64)->i64 { return ((x != 0) && (10 / x > 0)) as i64; }",
     }
     for name, helper in cases.items():
         source = temp / f"{name}.tv"

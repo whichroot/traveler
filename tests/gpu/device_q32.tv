@@ -1,0 +1,88 @@
+// Q32 lanes, round-to-nearest ties-to-even. Callers enforce the lane bounds.
+// Wide products and reductions are exact before their stated rounding point.
+
+fn q_rne(a: i128, bits: i64) -> i64 {
+    if bits == 0 { return a as i64; }
+    if bits >= 128 { return 0; }
+    let q: i128 = a >> bits;
+    let mask: i128 = ((1 as i128) << bits) - 1;
+    let rem: i128 = a & mask;
+    let half: i128 = (1 as i128) << (bits - 1);
+    var up: i128 = 0;
+    if rem > half || (rem == half && (q & 1) != 0) { up = 1; }
+    return (q + up) as i64;
+}
+
+fn q_mul(a: i64, b: i64) -> i64 {
+    return q_rne((a as i128) * (b as i128), 32);
+}
+
+// Positive Q32 ratio; bitwise division avoids a device i128 division runtime.
+fn q_ratio(a: i64, b: i64) -> i64 {
+    var rem: i128 = (a as i128) << 32;
+    let den: i128 = b as i128;
+    var out: i64 = 0;
+    var bit: i64 = 62;
+    while bit >= 0 {
+        if rem >= (den << bit) {
+            rem = rem - (den << bit);
+            out = out | ((1 as i64) << bit);
+        }
+        bit = bit - 1;
+    }
+    if rem * 2 > den || (rem * 2 == den && (out & 1) != 0) { out = out + 1; }
+    return out;
+}
+
+// exp(x), x <= 0: Q48 range reduction and degree-14 Taylor on [-ln(2), 0].
+fn q_exp_neg(x: i64) -> i64 {
+    if x >= 0 { return 4294967296; }
+    if x <= -137438953472 { return 0; }
+    let ln2: i64 = 195103586505167;
+    let z: i64 = x * 65536;
+    let k: i64 = (0 - z) / ln2;
+    let r: i64 = z + k * ln2;
+    var term: i64 = 281474976710656;
+    var sum: i64 = term;
+    var j: i64 = 1;
+    while j <= 14 {
+        term = q_rne((term as i128) * (r as i128), 48) / j;
+        sum = sum + term;
+        j = j + 1;
+    }
+    return q_rne(sum as i128, 16 + k);
+}
+
+fn q_sigmoid(x: i64) -> i64 {
+    var a: i64 = x;
+    if a < 0 { a = 0 - a; }
+    let e: i64 = q_exp_neg(0 - a);
+    if x < 0 { return q_ratio(e, 4294967296 + e); }
+    return q_ratio(4294967296, 4294967296 + e);
+}
+
+// Positive exp for the small A_log constants; caller restricts x <= 10.
+fn q_exp(x: i64) -> i64 {
+    if x <= 0 { return q_exp_neg(x); }
+    let ln2: i64 = 195103586505167;
+    let z: i64 = x * 65536;
+    let k: i64 = z / ln2;
+    let r: i64 = z - k * ln2;
+    var term: i64 = 281474976710656;
+    var sum: i64 = term;
+    var j: i64 = 1;
+    while j <= 14 {
+        term = q_rne((term as i128) * (r as i128), 48) / j;
+        sum = sum + term; j = j + 1;
+    }
+    return q_rne(sum as i128, 16 - k);
+}
+
+fn q_tanh(x: i64) -> i64 {
+    var a: i64 = x;
+    if a < 0 { a = 0 - a; }
+    let e: i64 = q_exp_neg(0 - 2 * a);
+    let y: i64 = q_ratio(4294967296 - e, 4294967296 + e);
+    if x < 0 { return 0 - y; }
+    return y;
+}
