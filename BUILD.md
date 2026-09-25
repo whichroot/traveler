@@ -1023,6 +1023,13 @@ with an aligned u64 loop and byte heads/tails. `dax_copy` retains per-byte
 atomic observations. See [DAX bulk copies](spec/dax-copy.md) for the range,
 non-overlap, and concurrency contracts.
 
+`cuda_upload_dax_async` borrows a `CudaDaxStaging` record containing two pinned
+buffers, two completion events, and a chunk size. It overlaps CPU staging with
+queued uploads, waits only before slot reuse, and returns the final completion
+event (zero for an empty transfer). See
+[Double-buffered DAX uploads](spec/cuda-dax-staging.md) for setup, resource
+lifetimes, preflight checks, and error recovery.
+
 `src/lib/gpu/cuda_dax.tv` provides
 `cuda_pinned_stage_dax(destination, source_view, offset, bytes)`. It checks the
 source window and copies synchronously into idle owned pinned storage. The caller

@@ -2,10 +2,112 @@
 import "cuda_async.tv";
 import "../mem/dax.tv";
 
-// The caller keeps the mapping alive for this synchronous staging copy.
-fn cuda_pinned_stage_dax(destination: CudaArgument, source: *DaxView, offset: u64, bytes: u64) -> Result<u64, CudaError> {
-    if source == null { return Result::Err(cuda_res_error(14, 0-1, destination.buffer)); }
+fn cuda_dax_source_valid(source: *DaxView, offset: u64, bytes: u64) -> i32 {
+    if source == null { return 0; }
     if source.length < 0 || offset > source.length as u64 || bytes > (source.length as u64)-offset
-        || (source.ptr == null && bytes != 0) { return Result::Err(cuda_res_error(14, 0-1, destination.buffer)); }
+        || (source.ptr == null && bytes != 0) { return 0; }
+    if bytes != 0 {
+        let max: u64 = 18446744073709551615;
+        let base: u64 = source.ptr as u64;
+        if base > max-offset || base+offset > max-bytes { return 0; }
+    }
+    return 1;
+}
+
+// Non-atomic CPU copy: keep the mapping alive and source bytes stable until return.
+fn cuda_pinned_stage_dax(destination: CudaArgument, source: *DaxView, offset: u64, bytes: u64) -> Result<u64, CudaError> {
+    if cuda_dax_source_valid(source, offset, bytes) == 0 {
+        return Result::Err(cuda_res_error(14, 0-1, destination.buffer));
+    }
     return cuda_pinned_write(destination, ((source.ptr as u64)+offset) as *u8, bytes);
+}
+
+// Borrowed pinned buffers and events; one caller owns their use during submission.
+struct CudaDaxStaging {
+    slot0: u64,
+    slot1: u64,
+    event0: u64,
+    event1: u64,
+    chunk_bytes: u64,
+}
+
+fn cuda_dax_staging_check(stream_id: u64, destination: CudaArgument, source: *DaxView,
+                          offset: u64, bytes: u64, staging: *CudaDaxStaging) -> Result<u64, CudaError> {
+    if staging == null || cuda_dax_source_valid(source, offset, bytes) == 0 {
+        return Result::Err(cuda_res_error(15, 0-1, stream_id));
+    }
+    cuda_res_lock();
+    let stream: *CudaResource = cuda_res_find(stream_id, 5);
+    let output: *CudaResource = cuda_res_find(destination.buffer, 2);
+    let p0: *CudaResource = cuda_res_find(staging.slot0, 7);
+    let p1: *CudaResource = cuda_res_find(staging.slot1, 7);
+    let e0: *CudaResource = cuda_res_find(staging.event0, 6);
+    let e1: *CudaResource = cuda_res_find(staging.event1, 6);
+    if stream == null || output == null || p0 == null || p1 == null || e0 == null || e1 == null
+        || destination.kind != 2 || staging.slot0 == staging.slot1 || staging.event0 == staging.event1 {
+        return cuda_res_fail(15, 0-1, stream_id);
+    }
+    if output.owner != stream.owner || p0.owner != stream.owner || p1.owner != stream.owner
+        || e0.owner != stream.owner || e1.owner != stream.owner {
+        return cuda_res_fail(15, 0-1, stream_id);
+    }
+    let chunk: u64 = staging.chunk_bytes;
+    if chunk == 0 || chunk > p0.bytes || chunk > p1.bytes || destination.offset > output.bytes
+        || destination.bytes > output.bytes-destination.offset || bytes > destination.bytes {
+        return cuda_res_fail(15, 0-1, destination.buffer);
+    }
+    if p0.users != 0 || p1.users != 0 || e0.users != 0 || e1.users != 0 {
+        return cuda_res_fail(15, 0-5, stream_id);
+    }
+    let device: *CudaResource = cuda_res_find(stream.owner, 1);
+    if device.poisoned != 0 { return cuda_res_fail(15, 0-4, stream_id); }
+    if bytes != 0 {
+        let start: u64 = (source.ptr as u64)+offset;
+        let end: u64 = start+bytes;
+        let a: u64 = p0.native as u64;
+        let b: u64 = p1.native as u64;
+        let max: u64 = 18446744073709551615;
+        if a > max-chunk || b > max-chunk
+            || (start < a+chunk && a < end) || (start < b+chunk && b < end) {
+            return cuda_res_fail(15, 0-1, stream_id);
+        }
+        var chunks: u64 = bytes/chunk;
+        if bytes%chunk != 0 { chunks = chunks+1; }
+        if chunks > (max-stream.sequence)/2 { return cuda_res_fail(15, 0-2, stream_id); }
+    }
+    return cuda_res_ok(chunk);
+}
+
+// CPU staging overlaps prior DMA; only a slot's completed event permits reuse.
+// Returns the final completion event, or zero for an empty transfer.
+fn cuda_upload_dax_async(stream: u64, destination: CudaArgument, source: *DaxView,
+                        offset: u64, bytes: u64, staging: *CudaDaxStaging) -> Result<u64, CudaError> {
+    let chunk: u64 = cuda_dax_staging_check(stream, destination, source, offset, bytes, staging)?;
+    if bytes == 0 { return Result::Ok(0); }
+    var done: u64 = 0;
+    var turn: i32 = 0;
+    var used0: i32 = 0;
+    var used1: i32 = 0;
+    var completion: u64 = 0;
+    while done < bytes {
+        var slot: u64 = staging.slot0;
+        var event: u64 = staging.event0;
+        var used: i32 = used0;
+        if turn == 1 { slot = staging.slot1; event = staging.event1; used = used1; }
+        if used != 0 { cuda_event_sync(event)?; }
+        var count: u64 = chunk;
+        if bytes-done < count { count = bytes-done; }
+        let pin: CudaArgument = CudaArgument { kind: 3, type_code: 0-8, value: 0,
+            buffer: slot, offset: 0, bytes: chunk };
+        let target: CudaArgument = CudaArgument { kind: 2, type_code: destination.type_code, value: 0,
+            buffer: destination.buffer, offset: destination.offset+done, bytes: count };
+        cuda_pinned_stage_dax(pin, source, offset+done, count)?;
+        cuda_upload_async(stream, target, pin, count)?;
+        cuda_event_record(event, stream)?;
+        if turn == 0 { used0 = 1; } else { used1 = 1; }
+        completion = event;
+        done = done+count;
+        turn = 1-turn;
+    }
+    return Result::Ok(completion);
 }

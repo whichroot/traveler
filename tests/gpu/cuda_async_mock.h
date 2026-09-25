@@ -13,6 +13,14 @@ struct AsyncStream {
 };
 typedef struct { AsyncStream *source; unsigned until; } AsyncEvent;
 static int async_streams, async_events, async_pinned, async_context_syncs, async_graphs, async_execs;
+static int async_upload_count, async_event_wait_count, async_stream_wait_count, async_max_pending;
+void mock_async_reset_counts(void) {
+    async_upload_count = async_event_wait_count = async_stream_wait_count = async_max_pending = 0;
+}
+int mock_async_uploads(void) { return async_upload_count; }
+int mock_async_event_waits(void) { return async_event_wait_count; }
+int mock_async_stream_waits(void) { return async_stream_wait_count; }
+int mock_async_pending_peak(void) { return async_max_pending; }
 int mock_async_context_syncs(void) { return async_context_syncs; }
 static void async_release(AsyncStream *s) { if (s && !--s->refs) free(s); }
 static void async_drain(AsyncStream *s, unsigned until) {
@@ -47,6 +55,7 @@ int cuStreamCreate(void **out, unsigned flags) {
     AsyncStream *s = calloc(1, sizeof(*s)); s->refs = 1; *out = s; async_streams++; return 0;
 }
 int cuStreamSynchronize(AsyncStream *s) {
+    async_stream_wait_count++;
     int e = fail(16); if (e) return e; if (s) async_drain(s, s->count); return 0;
 }
 int cuStreamQuery(AsyncStream *s) {
@@ -74,6 +83,7 @@ int cuEventQuery(AsyncEvent *e) {
     return e->source->done >= e->until ? 0 : 600;
 }
 int cuEventSynchronize(AsyncEvent *e) {
+    async_event_wait_count++;
     int status = fail(18); if (status) return status; async_drain(e->source, e->until); return 0;
 }
 int cuEventDestroy_v2(AsyncEvent *e) {
@@ -93,7 +103,12 @@ static int async_copy(AsyncStream *s, void *dest, const void *src, size_t bytes,
     assert(s && s->count < 4096 && bytes && current != (void *)0x123);
     int status = fail(operation); if (status) { if (s->capturing) s->invalidated = 1; return status; }
     AsyncCommand *c = &s->commands[s->count++];
-    c->operation = 4; c->a = (uint64_t *)src; c->out = dest; c->lanes = bytes; return 0;
+    c->operation = 4; c->a = (uint64_t *)src; c->out = dest; c->lanes = bytes;
+    if (operation == 24) {
+        async_upload_count++;
+        if ((int)(s->count-s->done) > async_max_pending) async_max_pending = (int)(s->count-s->done);
+    }
+    return 0;
 }
 int cuMemcpyHtoDAsync_v2(void *dest, const void *src, size_t bytes, AsyncStream *s) { return async_copy(s, dest, src, bytes, 24); }
 int cuMemcpyDtoHAsync_v2(void *dest, const void *src, size_t bytes, AsyncStream *s) { return async_copy(s, dest, src, bytes, 25); }

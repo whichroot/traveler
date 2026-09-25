@@ -1,0 +1,227 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_resident_checks.tv";
+import "../../src/lib/gpu/cuda_dax.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+extern "C" fn mock_async_reset_counts();
+extern "C" fn mock_async_uploads() -> i32;
+extern "C" fn mock_async_event_waits() -> i32;
+extern "C" fn mock_async_stream_waits() -> i32;
+extern "C" fn mock_async_pending_peak() -> i32;
+extern "C" fn mock_async_context_syncs() -> i32;
+var g_dax_case: i32 = 0;
+
+fn dax_pin(buffer: u64, bytes: u64) -> CudaArgument {
+    match cuda_pinned_view(buffer, 0, bytes) {
+        Result::Ok(view) => { return view; }
+        Result::Err(error) => { exit(50); }
+    }
+    exit(50); return cuda_arg_u64(0);
+}
+
+fn dax_error(result: Result<u64, CudaError>, boundary: i32, status: i32) {
+    g_dax_case = g_dax_case+1;
+    match result {
+        Result::Ok(value) => { exit(51); }
+        Result::Err(error) => {
+            var e: CudaError = error;
+            if e.boundary != boundary || e.status != status {
+                print(g_dax_case); print(boundary); print(status); print(e.boundary); print(e.status); exit(52);
+            }
+            cuda_error_close(&e);
+        }
+    }
+}
+
+fn dax_staging_new(device: u64, chunk: u64) -> CudaDaxStaging {
+    return CudaDaxStaging {
+        slot0: resident_need(cuda_pinned_alloc(device, chunk+8)),
+        slot1: resident_need(cuda_pinned_alloc(device, chunk+8)),
+        event0: resident_need(cuda_event_create(device)),
+        event1: resident_need(cuda_event_create(device)),
+        chunk_bytes: chunk,
+    };
+}
+
+fn dax_staging_close(staging: *CudaDaxStaging) {
+    resident_need(cuda_event_close(staging.event0)); resident_need(cuda_event_close(staging.event1));
+    resident_need(cuda_pinned_close(staging.slot0)); resident_need(cuda_pinned_close(staging.slot1));
+}
+
+fn dax_pattern(index: i64) -> u8 { return ((index*37+(index/7)*53+11)%256) as u8; }
+
+fn dax_round(bytes: u64, chunk: u64) {
+    let d: u64 = resident_need(cuda_device_open(0));
+    let s: u64 = resident_need(cuda_stream_create(d));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 8218));
+    let whole: CudaArgument = resident_typed_view(b, 0, 8218, 0-8);
+    let target: CudaArgument = resident_typed_view(b, 13, 8192, 0-8);
+    var staging: CudaDaxStaging = dax_staging_new(d, chunk);
+    let p0: CudaArgument = dax_pin(staging.slot0, chunk+8);
+    let p1: CudaArgument = dax_pin(staging.slot1, chunk+8);
+    let source: *u8 = alloc(8192); let back: *u8 = alloc(8218);
+    for i in 0..8192 { source[i] = dax_pattern(i as i64); }
+    for i in 0..8218 { back[i] = 205; }
+    resident_need(cuda_upload(whole, back, 8218));
+    resident_need(cuda_pinned_write(p0, back, chunk+8)); resident_need(cuda_pinned_write(p1, back, chunk+8));
+    var view: DaxView = DaxView { ptr: source, offset: 0, length: 8192 };
+    if bytes == 0 { view.ptr = null; }
+    mock_async_reset_counts();
+    let done: u64 = resident_need(cuda_upload_dax_async(s, target, &view, 3, bytes, &staging));
+    var chunks: u64 = bytes/chunk;
+    if bytes%chunk != 0 { chunks = chunks+1; }
+    var waits: i32 = 0; if chunks > 2 { waits = (chunks-2) as i32; }
+    var peak: i32 = chunks as i32; if chunks > 2 { peak = 2; }
+    if mock_async_uploads() != chunks as i32 || mock_async_event_waits() != waits
+        || mock_async_pending_peak() != peak || mock_async_stream_waits() != 0
+        || mock_async_context_syncs() != 0 { exit(53); }
+    for i in 0..8192 { source[i] = 0; }
+    free(source);
+    if bytes == 0 { if done != 0 { exit(54); } }
+    else {
+        var expected: u64 = staging.event0;
+        if chunks%2 == 0 { expected = staging.event1; }
+        if done != expected || resident_need(cuda_event_query(done)) != 0
+            || resident_need(cuda_stream_query(s)) != 0 { exit(55); }
+        resident_refused(cuda_pinned_close(staging.slot0)); resident_refused(cuda_buffer_close(b));
+        if chunks > 1 { resident_refused(cuda_pinned_close(staging.slot1)); }
+        resident_refused(cuda_pinned_write(p0, back, 1));
+        resident_need(cuda_event_sync(done));
+    }
+    resident_need(cuda_download(back, whole, 8218));
+    var i: i64 = 0;
+    while i < 8218 {
+        var expected: u8 = 205;
+        if i >= 13 && i < 13+(bytes as i64) { expected = dax_pattern(i-13+3); }
+        if back[i] != expected { print(i); exit(56); }
+        i = i+1;
+    }
+    resident_need(cuda_pinned_read(back, p0, chunk+8));
+    i = chunk as i64; while i < (chunk+8) as i64 { if back[i] != 205 { exit(57); } i = i+1; }
+    resident_need(cuda_pinned_read(back, p1, chunk+8));
+    i = chunk as i64; while i < (chunk+8) as i64 { if back[i] != 205 { exit(58); } i = i+1; }
+    resident_need(cuda_stream_close(s)); dax_staging_close(&staging);
+    resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(back);
+    if mock_clean() == 0 { exit(59); }
+}
+
+fn dax_refusals() {
+    let d: u64 = resident_need(cuda_device_open(0)); let other: u64 = resident_need(cuda_device_open(0));
+    let s: u64 = resident_need(cuda_stream_create(d)); let foreign: u64 = resident_need(cuda_event_create(other));
+    let foreign_pin: u64 = resident_need(cuda_pinned_alloc(other, 64));
+    let foreign_buffer: u64 = resident_need(cuda_buffer_alloc(other, 256));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 256));
+    let target: CudaArgument = resident_typed_view(b, 0, 256, 0-8);
+    var staging: CudaDaxStaging = dax_staging_new(d, 17);
+    let data: *u8 = alloc(256);
+    for i in 0..256 { data[i] = dax_pattern(i as i64); }
+    var view: DaxView = DaxView { ptr: data, offset: 0, length: 256 };
+    mock_async_reset_counts();
+    dax_error(cuda_upload_dax_async(s, target, null, 0, 1, &staging), 15, 0-1);
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, null), 15, 0-1);
+    dax_error(cuda_upload_dax_async(s, target, &view, 250, 7, &staging), 15, 0-1);
+    dax_error(cuda_upload_dax_async(s, target, &view, 257, 0, &staging), 15, 0-1);
+    dax_error(cuda_upload_dax_async(0, target, &view, 0, 1, &staging), 15, 0-1);
+    var bad: CudaDaxStaging = CudaDaxStaging { slot0: staging.slot0, slot1: staging.slot1,
+        event0: staging.event0, event1: staging.event1, chunk_bytes: staging.chunk_bytes };
+    bad.chunk_bytes = 0; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    bad = staging; bad.chunk_bytes = 26; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    bad = staging; bad.slot1 = bad.slot0; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    bad = staging; bad.event1 = bad.event0; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    bad = staging; bad.event1 = foreign; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    bad = staging; bad.slot1 = foreign_pin; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    let foreign_target: CudaArgument = resident_typed_view(foreign_buffer, 0, 256, 0-8);
+    dax_error(cuda_upload_dax_async(s, foreign_target, &view, 0, 1, &staging), 15, 0-1);
+    var bad_view: CudaArgument = CudaArgument { kind: 2, type_code: 0-8, value: 0,
+        buffer: b, offset: 0, bytes: 256 };
+    bad_view.offset = 18446744073709551615; dax_error(cuda_upload_dax_async(s, bad_view, &view, 0, 1, &staging), 15, 0-1);
+    bad_view = target; bad_view.kind = 3; dax_error(cuda_upload_dax_async(s, bad_view, &view, 0, 1, &staging), 15, 0-1);
+    bad_view = target; bad_view.bytes = 1; dax_error(cuda_upload_dax_async(s, bad_view, &view, 0, 2, &staging), 15, 0-1);
+    view.ptr = null; dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &staging), 15, 0-1);
+    view.ptr = (18446744073709551612 as u64) as *u8;
+    dax_error(cuda_upload_dax_async(s, target, &view, 8, 1, &staging), 15, 0-1);
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 8, &staging), 15, 0-1);
+    dax_error(cuda_pinned_stage_dax(dax_pin(staging.slot0, 17), &view, 8, 1), 14, 0-1);
+    view.ptr = data; view.length = -1;
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 0, &staging), 15, 0-1);
+    view.length = 256;
+    cuda_res_lock(); view.ptr = cuda_res_find(staging.slot0, 7).native; cuda_res_unlock();
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 8, &staging), 15, 0-1);
+    view.ptr = data;
+    cuda_res_lock(); cuda_res_find(s, 5).sequence = 18446744073709551614; cuda_res_unlock();
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &staging), 15, 0-2);
+    cuda_res_lock(); cuda_res_find(s, 5).sequence = 0; cuda_res_unlock();
+    let stale: u64 = staging.event0;
+    resident_need(cuda_event_close(stale)); staging.event0 = resident_need(cuda_event_create(d));
+    bad = staging; bad.event0 = stale;
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    let old_pin: u64 = staging.slot1;
+    resident_need(cuda_pinned_close(old_pin)); staging.slot1 = resident_need(cuda_pinned_alloc(d, 25));
+    bad = staging; bad.slot1 = old_pin;
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &bad), 15, 0-1);
+    if mock_async_uploads() != 0 || mock_async_event_waits() != 0 || mock_async_stream_waits() != 0 { exit(60); }
+    resident_need(cuda_event_record(staging.event0, s));
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &staging), 15, 0-5);
+    resident_need(cuda_event_sync(staging.event0));
+    let done: u64 = resident_need(cuda_upload_dax_async(s, target, &view, 0, 35, &staging));
+    dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &staging), 15, 0-5);
+    resident_need(cuda_event_sync(done));
+    let again: u64 = resident_need(cuda_upload_dax_async(s, target, &view, 0, 35, &staging));
+    let second: u64 = resident_need(cuda_stream_create(d));
+    let pin0: CudaArgument = dax_pin(staging.slot0, 17);
+    let later: CudaArgument = resident_typed_view(b, 128, 1, 0-8);
+    let elsewhere: CudaArgument = resident_typed_view(b, 129, 1, 0-8);
+    resident_need(cuda_upload_async(s, later, pin0, 1));
+    resident_need(cuda_upload_async(second, elsewhere, pin0, 1));
+    resident_need(cuda_event_sync(again));
+    resident_refused(cuda_pinned_write(pin0, data, 1));
+    resident_need(cuda_stream_sync(s));
+    resident_refused(cuda_pinned_write(pin0, data, 1));
+    resident_need(cuda_stream_sync(second));
+    resident_need(cuda_pinned_write(pin0, data, 1));
+    resident_need(cuda_stream_close(second));
+    resident_need(cuda_stream_close(s)); dax_staging_close(&staging);
+    resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d));
+    resident_need(cuda_event_close(foreign)); resident_need(cuda_pinned_close(foreign_pin));
+    resident_need(cuda_buffer_close(foreign_buffer)); resident_need(cuda_device_close(other)); free(data);
+    if mock_clean() == 0 { exit(61); }
+}
+
+fn dax_faults() {
+    for test in 0..7 {
+        let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let b: u64 = resident_need(cuda_buffer_alloc(d, 256));
+        let target: CudaArgument = resident_typed_view(b, 0, 256, 0-8);
+        var staging: CudaDaxStaging = dax_staging_new(d, 17);
+        let data: *u8 = alloc(256);
+        for i in 0..256 { data[i] = dax_pattern(i as i64); }
+        var view: DaxView = DaxView { ptr: data, offset: 0, length: 256 };
+        var boundary: i32 = 15; var status: i32 = 824;
+        if test == 0 { mock_fail(24, 0); }
+        if test == 1 { mock_fail(24, 1); }
+        if test == 2 { mock_fail(14, 0); boundary = 11; status = 814; }
+        if test == 3 { mock_fail(18, 0); boundary = 12; status = 818; }
+        if test == 4 { mock_fail(2, 1); status = 802; }
+        if test == 5 { mock_fail(14, 1); boundary = 11; status = 814; }
+        if test == 6 { mock_fail(18, 1); boundary = 12; status = 818; }
+        dax_error(cuda_upload_dax_async(s, target, &view, 0, 100, &staging), boundary, status);
+        resident_refused(cuda_pinned_close(staging.slot0)); resident_refused(cuda_buffer_close(b));
+        resident_need(cuda_stream_sync(s));
+        dax_error(cuda_upload_dax_async(s, target, &view, 0, 1, &staging), 15, 0-4);
+        resident_need(cuda_stream_close(s)); dax_staging_close(&staging);
+        resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(data);
+        if mock_clean() == 0 { exit(62); }
+    }
+}
+
+fn main() -> i32 {
+    dax_round(0, 17); dax_round(1, 17); dax_round(16, 17); dax_round(17, 17);
+    dax_round(18, 17); dax_round(34, 17); dax_round(35, 17); dax_round(255, 17);
+    dax_round(256, 17); dax_round(259, 17); dax_round(4099, 17);
+    dax_round(257, 64); dax_round(4099, 256);
+    dax_refusals();
+    if mock_async_context_syncs() != 0 { return 63; }
+    dax_faults();
+    puts("DAX async PASS: double buffering, pending completion, exact bytes, guards, refusals, and fault retention");
+    return 0;
+}
