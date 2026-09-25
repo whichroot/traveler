@@ -121,6 +121,9 @@ if [ -n "$OPT" ] && command -v python3 >/dev/null 2>&1; then
     if ! python3 "$REPO_DIR/tests/check_arithmetic_contract.py" "$SELF" "$LLC_BIN" "$OPT" "$LINKER"; then
         fail=$((fail+1))
     fi
+    if ! python3 "$REPO_DIR/tests/check_dax_bulk.py" "$SELF" "$LLC_BIN" "$OPT" "$LINKER"; then
+        fail=$((fail+1))
+    fi
     if [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ]; then
         if ! python3 "$REPO_DIR/tests/check_o3_profile.py" "$SELF" "$LLC_BIN" "$OPT" "$LINKER"; then
             fail=$((fail+1))

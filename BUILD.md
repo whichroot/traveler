@@ -1018,6 +1018,11 @@ SM120. Physical overlap is not measured by these correctness gates.
 
 **Read-only DAX staging and graph replay**
 
+For stable host-side data, `dax_copy_bulk` provides checked non-atomic copies
+with an aligned u64 loop and byte heads/tails. `dax_copy` retains per-byte
+atomic observations. See [DAX bulk copies](spec/dax-copy.md) for the range,
+non-overlap, and concurrency contracts.
+
 `src/lib/gpu/cuda_dax.tv` provides
 `cuda_pinned_stage_dax(destination, source_view, offset, bytes)`. It checks the
 source window and copies synchronously into idle owned pinned storage. The caller

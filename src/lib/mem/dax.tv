@@ -323,6 +323,50 @@ fn dax_copy(v: *DaxView, rel: i64, dst: *u8, n: i64) {
     }
 }
 
+// The checked caller supplies aligned word ranges to the parallel alias guard.
+fn dax_copy_bulk_words(input: *u64, output: *u64, words: i64) {
+    for i in 0..words { output[i] = input[i]; }
+}
+
+// Non-atomic copy of stable bytes; source and destination must not overlap.
+// Matching alignments use u64 loads/stores, with byte heads and tails.
+fn dax_copy_bulk(v: *DaxView, rel: i64, dst: *u8, n: i64) {
+    if v == null || n < 0 { dax_trap("bulk copy length"); }
+    if v.length < 0 || rel < 0 || rel > v.length || n > v.length - rel {
+        dax_trap("bulk copy out of range");
+    }
+    if n == 0 { return; }
+    if v.ptr == null || dst == null { dax_trap("bulk copy null pointer"); }
+    let max: u64 = 18446744073709551615;
+    let base: u64 = v.ptr as u64;
+    let dest: u64 = dst as u64;
+    if base > max - (rel as u64) { dax_trap("bulk copy address overflow"); }
+    let start: u64 = base + (rel as u64);
+    if start > max - (n as u64) || dest > max - (n as u64) {
+        dax_trap("bulk copy address overflow");
+    }
+    if start < dest + (n as u64) && dest < start + (n as u64) {
+        dax_trap("bulk copy overlap");
+    }
+    let src: *u8 = &v.ptr[rel];
+    var done: i64 = 0;
+    if (start & 7) == (dest & 7) {
+        while done < n && ((start + (done as u64)) & 7) != 0 {
+            dst[done] = src[done];
+            done = done + 1;
+        }
+        let words: i64 = (n - done) / 8;
+        let input: *u64 = (&src[done]) as *u64;
+        let output: *u64 = (&dst[done]) as *u64;
+        if words != 0 { dax_copy_bulk_words(input, output, words); }
+        done = done + words * 8;
+    }
+    while done < n {
+        dst[done] = src[done];
+        done = done + 1;
+    }
+}
+
 // XOR of every 8-byte word in the view: a cheap whole-view fingerprint.
 // Requires an 8-aligned view with an 8-multiple length.
 fn dax_xor64(v: *DaxView) -> u64 {
