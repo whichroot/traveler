@@ -1,0 +1,40 @@
+struct Buffer { data: *i64, count: i64 }
+struct Bank { all: Buffer }
+var calls: i64 = 0;
+
+fn bank(p: *Bank) -> *Bank {
+    calls = calls + 1;
+    return p;
+}
+
+fn count_ptr(p: *Bank) -> *i64 {
+    return &p.all.count;
+}
+
+fn next_index() -> i32 {
+    calls = calls + 1;
+    return 1;
+}
+
+fn main() -> i32 {
+    let p: *Bank = alloc(1);
+    p.all.data = alloc(2);
+    p.all.count = 2;
+    let all: *Buffer = &p.all;
+    all.count = 7;
+    let count: *i64 = &bank(p).all.count;
+    count[0] = count[0] + 1;
+    let elem: *i64 = &bank(p).all.data[next_index()];
+    elem[0] = 42;
+    print(p.all.count);
+    print(p.all.data[1]);
+    print(calls);
+    print(count_ptr(p)[0]);
+    var local: Buffer = Buffer { data: p.all.data, count: 1 };
+    let n: *i64 = &local.count;
+    n[0] = 9;
+    print(local.count);
+    free(p.all.data);
+    free(p);
+    return 0;
+}

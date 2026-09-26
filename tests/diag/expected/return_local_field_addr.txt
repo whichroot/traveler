@@ -1,0 +1,2 @@
+:5:
+cannot return the address of a local

@@ -1,0 +1,9 @@
+struct S { x: i64 }
+struct Outer { s: S }
+fn bad() -> *i64 {
+    var local = Outer { s: S { x: 1 } };
+    return &local.s.x;
+}
+fn main() -> i32 {
+    return 0;
+}
