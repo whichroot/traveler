@@ -28525,7 +28525,6 @@ fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32
             else if k == EIR_INDEX_ST { n = 3; }
             else if k != EIR_LOCAL && k != EIR_CONST && k != DEVICE_THREAD_ID { return 0; }
             if region != 0 && ((k >= DEVICE_SHARED_INIT && k <= DEVICE_BLOCK_BARRIER)
-                || (k >= DEVICE_WARP_SHUFFLE && k <= DEVICE_WARP_SYNC)
                 || k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC) {
                 device_scalar_fail(P, 8, P.origins[i]);
                 return 0;
@@ -28559,10 +28558,74 @@ fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32
     return 1;
 }
 
+// Loop phis start uniform; divergent seeds propagate through every backedge.
+// The fixed point proves equal values for all participating lanes of a warp.
+fn device_scalar_warp_uniform(P: *DeviceScalarPlan, uniform: *i32) {
+    var i: i32 = 0;
+    while i < P.count { uniform[i] = 1; i = i + 1; }
+    var changed: i32 = 1;
+    while changed == 1 {
+        changed = 0; i = 0;
+        while i < P.count {
+            let k: i32 = P.nodes[i].kind;
+            let a: i32 = P.nodes[i].a;
+            let b: i32 = P.nodes[i].b;
+            var u: i32 = 0;
+            if k == EIR_CONST || k == EIR_LOCAL { u = 1; }
+            else if k == DEVICE_THREAD_ID { u = (a >= 3) as i32; }
+            else if k == EIR_CAST || k == EIR_UN { u = uniform[a]; }
+            else if k == EIR_BIN {
+                u = uniform[a] & uniform[b];
+                // Linear local IDs partition physical warps for every block shape.
+                if P.nodes[i].op == OP_SHR && P.nodes[i].aux_type == str_intern("u64")
+                    && P.nodes[b].kind == EIR_CONST && P.nodes[b].ival >= 5 && P.nodes[b].ival < 64
+                    && device_thread_same(P, a, P.local_index, 0) == 1 { u = 1; }
+            } else if k == EIR_RET || k == DEVICE_PHI {
+                let branch: i32 = P.nodes[i].c;
+                u = uniform[a] & uniform[b] & uniform[P.nodes[branch].a];
+            } else if k == DEVICE_LOOP_PHI {
+                u = uniform[a] & uniform[b];
+            } else if k == DEVICE_LOOP_NEXT || k == DEVICE_LOOP_RESULT {
+                let loop: i32 = P.nodes[i].c;
+                u = uniform[a] & uniform[P.nodes[P.nodes[loop].a].a];
+            }
+            if uniform[i] == 1 && u == 0 { uniform[i] = 0; changed = 1; }
+            i = i + 1;
+        }
+    }
+}
+
+fn device_scalar_verify_warps(P: *DeviceScalarPlan, scopes: *i32, parents: *i32) -> i32 {
+    let uniform: *i32 = alloc(4096);
+    device_scalar_warp_uniform(P, uniform);
+    var i: i32 = 0;
+    while i < P.count {
+        let k: i32 = P.nodes[i].kind;
+        if k >= DEVICE_WARP_SHUFFLE && k <= DEVICE_WARP_SYNC {
+            var region: i32 = scopes[i];
+            while region != 0 {
+                let owner: i32 = (region - 1) / 2;
+                var cond: i32 = P.nodes[owner].a;
+                if P.nodes[owner].kind == DEVICE_LOOP { cond = P.nodes[cond].a; }
+                if uniform[cond] == 0 {
+                    free(uniform);
+                    device_scalar_fail(P, 8, P.origins[i]);
+                    return 0;
+                }
+                region = parents[region];
+            }
+        }
+        i = i + 1;
+    }
+    free(uniform);
+    return 1;
+}
+
 fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
     let scopes: *i32 = alloc(4096);
     let parents: *i32 = alloc(8193);
-    let scoped: i32 = device_scalar_verify_scopes(P, scopes, parents);
+    var scoped: i32 = device_scalar_verify_scopes(P, scopes, parents);
+    if scoped == 1 && P.warp_used == 1 { scoped = device_scalar_verify_warps(P, scopes, parents); }
     free(scopes); free(parents);
     if scoped == 0 { return 0; }
     var initialized: i32 = 0; var dirty: i32 = 0; var reads: i32 = 0;

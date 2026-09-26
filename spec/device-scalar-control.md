@@ -49,12 +49,42 @@ index. `gpu_bounded_load_u64` can also appear in these regions, with the same
 direct buffer/count capture binding and runtime footprint checks as a
 straight-line bounded read. Pure scalar helpers still cannot hide pointer reads.
 
-Shared-memory operations, barriers, warp collectives, native tensor operations,
-asynchronous shared copies, and atomics must remain in the root control-flow
-region. A scalar branch or loop does not establish collective participation or
-shared-memory phase safety. A uniform-looking condition is not yet an admitted
-uniformity proof. Collectives after a scalar loop retain the normal root-region
-rules; collectives inside it refuse.
+Full-mask warp shuffles, votes, and warp synchronization can appear in branches
+and rolled `while` loops when every enclosing condition is proven uniform
+within each physical warp. Different warps may take different paths or execute
+different numbers of iterations. The proof follows scalar operations, branch
+merges, and loop-carried values to a fixed point, including the backedge: a
+uniform initial counter alone is insufficient. Memory reads and collective
+results are conservatively treated as potentially lane-dependent.
+
+Kernel scalar parameters, constants, block coordinates, and grid/block sizes
+are uniform. `gpu_local_index(t) >> 5` is the physical warp index within a block,
+including multidimensional blocks. A block-major grid-stride row loop can use:
+
+```tv
+let warps = (t.block_dim_x * t.block_dim_y * t.block_dim_z) >> 5;
+let stride = t.grid_dim_x * t.grid_dim_y * t.grid_dim_z * warps;
+var row = gpu_block_index(t) * warps + (gpu_local_index(t) >> 5);
+while row < rows {
+    var token: u64 = 0;
+    while token < tokens {
+        // Full-mask shuffles can reduce lane-local values here.
+        token = token + 1;
+    }
+    row = row + stride;
+}
+```
+
+The existing cooperative-warp launch contract requires complete 32-lane warps.
+Neither `t.thread_x >> 5` nor `gpu_global_index(t) >> 5` establishes warp
+uniformity for general multidimensional launch geometry. Lane-dependent scalar
+branches can reconverge before a collective; a collective inside such a branch
+still refuses with `conditional-effect`.
+
+Shared-memory operations, block barriers, native tensor operations, asynchronous
+shared copies, and atomics must remain in the root control-flow region. Warp
+uniformity does not establish block-wide participation or shared-memory phase
+safety.
 
 This milestone does not admit `for`, `break`, `continue`, returns from inside
 loops, or early returns from cooperative entries. Only scalar values can merge
@@ -87,8 +117,15 @@ Python oracles in raw and O1 profiles, including the SiTU composition. It also
 checks nested loops, zero iterations, shadowing, guarded memory, short-circuit
 failures, and rejection of unsupported control and synchronization effects.
 
-The emitted modules lower to SM90 and SM120 PTX. The scalar-call gate also checks
-AMDGCN lowering and exact helper behavior. These portable checks establish
+`check_warp_loops.py` executes nested row/token reductions with real host-thread
+warp barriers and independent Python results. It covers zero iterations, unequal
+trip counts between warps, reconverged lane-dependent branches, and multidimensional
+launches. Negative cases check divergent initial conditions, loop updates, nested
+control, memory-derived counters, and block barriers. Optimized device IR is
+verified and lowered to SM90 PTX.
+
+The scalar-control modules lower to SM90 and SM120 PTX. The scalar-call gate also
+checks AMDGCN lowering and exact helper behavior. These portable checks establish
 compiler semantics, not GPU throughput or hardware parity. The full expert
-workload still needs the Jane GPU parity gate and a scheduling plan for its
-collectives inside token/row loops.
+workload still needs the Jane GPU parity gate and its remaining memory/store
+admission work.

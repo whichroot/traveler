@@ -2022,6 +2022,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
         if ! python3 "$SCRIPT_DIR/check_warp_dynamic.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: dynamic shared memory and warp collectives"; fail=1
         fi
+        if ! python3 "$SCRIPT_DIR/check_warp_loops.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: warp-uniform collective loops"; fail=1
+        fi
         if ! python3 "$SCRIPT_DIR/check_atomic.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: bounded atomic buffers"; fail=1
         fi
