@@ -32,6 +32,11 @@ BODY = SETUP + '''
         var token: u64 = 0;
         while token < slots {
             var v: u32 = (value + row + token) as u32;
+            var e: u64 = local & 31;
+            while e < slots {
+                v = v + 3;
+                e = e + 32;
+            }
             if (local & 1) == 0 { v = v + 1; } else { v = v + 2; }
 ''' + REDUCE + '''
             if (row & 1) == 0 {
@@ -112,6 +117,7 @@ with tempfile.TemporaryDirectory() as directory:
                     for row in range(first, rows, stride):
                         for token in range(tokens):
                             value = sum(values[index] + row + token + 1 + lane % 2
+                                        + 3 * len(range(lane, tokens, 32))
                                         for lane, index in enumerate(lanes)) & 0xffffffff
                             total += value ^ (0x55555555 if row % 2 == 0 else 0)
                     for index in lanes:
@@ -132,6 +138,7 @@ with tempfile.TemporaryDirectory() as directory:
         f'var j=gpu_global_index(t)>>5; while j<limit {{ {shuffle} j=j+stride; }}',
         f'var j=t.thread_x>>5; while j<limit {{ {shuffle} j=j+1; }}',
         f'while row<limit {{ {shuffle} row=input[index]; }}',
+        f'while row<limit {{ var e=local; while e<slots {{ row=row+1; e=e+32; }} {shuffle} row=row+stride; }}',
         f'while row<limit {{ gpu_block_barrier(); row=row+stride; }}',
     ]
     for body in failures:

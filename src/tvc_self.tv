@@ -28094,9 +28094,13 @@ fn device_scalar_loop(P: *DeviceScalarPlan, stmt: i32, depth: i32) -> i32 {
     while i < saved {
         if phis[i] >= 0 {
             let phi: i32 = phis[i];
-            let result: i32 = device_scalar_node(P, DEVICE_LOOP_RESULT, P.nodes[phi].type_off, stmt);
-            if result < 0 { return result; }
-            P.nodes[result].a = phi; P.nodes[result].c = loop; P.values[i] = result;
+            // An identity backedge preserves the entry value after reconvergence.
+            if P.nodes[P.nodes[phi].b].a == phi { P.values[i] = before[i]; }
+            else {
+                let result: i32 = device_scalar_node(P, DEVICE_LOOP_RESULT, P.nodes[phi].type_off, stmt);
+                if result < 0 { return result; }
+                P.nodes[result].a = phi; P.nodes[result].c = loop; P.values[i] = result;
+            }
         }
         i = i + 1;
     }

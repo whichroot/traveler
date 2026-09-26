@@ -57,6 +57,10 @@ merges, and loop-carried values to a fixed point, including the backedge: a
 uniform initial counter alone is insufficient. Memory reads and collective
 results are conservatively treated as potentially lane-dependent.
 
+An unchanged mutable local retains its entry value after a nested loop, including
+a loop with lane-dependent trip counts. This permits collectives after the lanes
+reconverge without treating an unchanged outer counter as lane-dependent.
+
 Shuffle source lanes and XOR deltas currently require integer literals in
 `0..31`; binding a literal to a local does not satisfy this restriction. Use
 literal reduction stages `16`, `8`, `4`, `2`, `1` inside a rolled row/token loop.
