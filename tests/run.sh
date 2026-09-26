@@ -567,6 +567,10 @@ compile_obj_self struct_reassign
 link_objs struct_reassign struct_reassign
 run_test struct_reassign "$TIMEOUT_SINGLE"
 
+compile_obj_self struct_field_values
+link_objs struct_field_values struct_field_values
+run_test struct_field_values "$TIMEOUT_SINGLE"
+
 # #54 gate: for-loop bound WIDTH ADOPTION — i64/usize/u32/narrow/wide-literal
 # bounds (serial + pfor-dispatched via the i64 ABI + the prepeek-miss call
 # bound). tvc_self-only — the frozen C seed refuses wide bounds (i32-only

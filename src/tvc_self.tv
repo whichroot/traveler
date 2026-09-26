@@ -14787,7 +14787,12 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 exit(1);
             }
             var fstore: i32 = fval.reg;
-            if ftype != NULL_STR && fval.type_off != NULL_STR {
+            if resolve_struct_type(ftype) >= 0 {
+                // Aggregate expressions carry addresses; fields store their values.
+                fstore = ir_tmp();
+                ir_wr("  "); ir_wr_reg(fstore); ir_wr(" = load ");
+                ir_wr_type(ftype); ir_wr(", ptr "); ir_wr_reg(fval.reg); ir_wr("\n");
+            } else if ftype != NULL_STR && fval.type_off != NULL_STR {
                 fstore = emit_implicit_convert(fval.reg, fval.type_off, ftype);
             }
             let gep: i32 = ir_tmp();
@@ -21061,7 +21066,12 @@ fn codegen_stmt(stmt: i32) {
         // RHS first (may grow arenas / move buffers).
         let mas_val: IRValue = codegen_expr(mas_rhs, mas_ftype);
         var mas_store: i32 = mas_val.reg;
-        if mas_ftype != NULL_STR && mas_val.type_off != NULL_STR {
+        if resolve_struct_type(mas_ftype) >= 0 {
+            // Snapshot the aggregate before re-evaluating the destination.
+            mas_store = ir_tmp();
+            ir_wr("  "); ir_wr_reg(mas_store); ir_wr(" = load ");
+            ir_wr_type(mas_ftype); ir_wr(", ptr "); ir_wr_reg(mas_val.reg); ir_wr("\n");
+        } else if mas_ftype != NULL_STR && mas_val.type_off != NULL_STR {
             mas_store = emit_implicit_convert(mas_val.reg, mas_val.type_off, mas_ftype);
         }
         // Re-evaluate the destination object pointer post-RHS, then store.
@@ -34013,8 +34023,7 @@ fn lower_expr(node: i32, ctx_type_in: i32) -> LowVal {
             let f_expr: i32 = g_args[sl_base + fi * 2 + 1];
             let fidx: i32 = struct_field_index(sl_si, f_name);
             let ftype: i32 = struct_field_type(sl_si, fidx);
-            // Aggregate field init would compile to `store %T <ptr>` —
-            // invalid IR (the agg-assign class). Refuse by name.
+            // Aggregate field copies are not yet represented in evaluator IR.
             if lw_is_agg(ftype) == 1 { ev_refuse("agg-field-init", ln, cl); }
             if type_is_array(ftype) == 1 { ev_refuse("array-field-init", ln, cl); }
             let fw: i32 = lw_type_size(ftype, ln, cl);

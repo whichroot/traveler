@@ -1,0 +1,36 @@
+struct Inner { x: i64, y: i64 }
+struct Outer { inner: Inner, tag: i64 }
+struct Box<T> { value: T }
+
+fn inner(v: i64) -> Inner {
+    return Inner { x: v, y: v + 1 };
+}
+
+fn outer(v: i64) -> Outer {
+    let value = inner(v);
+    return Outer { inner: value, tag: 7 };
+}
+
+fn main() -> i32 {
+    var a = outer(10);
+    print(a.inner.x);
+    print(a.inner.y);
+    let b = Inner { x: 20, y: 21 };
+    a.inner = b;
+    print(a.inner.x);
+    a.inner = inner(30);
+    print(a.inner.y);
+    a.inner = Inner { x: 40, y: 41 };
+    print(a.inner.x);
+    let heap: *Outer = alloc(1);
+    heap[0] = a;
+    heap.inner = b;
+    print(heap.inner.y);
+    print(a.inner.x);
+    var boxed: Box<Inner> = Box { value: inner(50) };
+    print(boxed.value.x);
+    boxed.value = b;
+    print(boxed.value.y);
+    free(heap);
+    return 0;
+}
