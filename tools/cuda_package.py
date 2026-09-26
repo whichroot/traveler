@@ -37,6 +37,27 @@ def require(condition, message):
         raise ValueError(message)
 
 
+ABS = re.compile(rb"^(\s*)(@!?%\w+\s+)?abs\.(s16|s32|s64)\s+(%\w+)\s*,\s*(%\w+)\s*;\s*$")
+ABS_ANY = re.compile(rb"\babs\.s(16|32|64)\b")
+
+
+# ptxas -O1..-O3 miscompiles setp on neg(abs x); neg+max equals abs.sN exactly.
+# (design-notes/ptxas-negabs.md "Guard")
+def guard_integer_abs(ptx):
+    out = []
+    for line in ptx.split(b"\n"):
+        m = ABS.match(line)
+        if m:
+            indent, predicate, width, dest, source = m[1], m[2] or b"", m[3], m[4], m[5]
+            require(dest != source, "PTX guard: abs destination aliases its source")
+            out.append(indent + predicate + b"neg." + width + b" \t" + dest + b", " + source + b";")
+            out.append(indent + predicate + b"max." + width + b" \t" + dest + b", " + source + b", " + dest + b";")
+        else:
+            require(not ABS_ANY.search(line), "PTX guard: unrecognized integer abs form")
+            out.append(line)
+    return b"\n".join(out)
+
+
 def integer(value, low, high):
     return type(value) is int and low <= value <= high
 
@@ -188,7 +209,7 @@ def build(ir_path, output, llc, sm):
         source.write_text(ir)
         subprocess.run([llc, "-mtriple=nvptx64-nvidia-cuda", f"-mcpu=sm_{sm}",
                         str(source), "-o", str(target)], check=True)
-        ptx = target.read_bytes()
+        ptx = guard_integer_abs(target.read_bytes())
     require(0 < len(ptx) <= MAX_PTX and b"\0" not in ptx, "PTX size or embedded NUL")
     target = re.search(rb"(?m)^\s*\.target sm_(\d+)\s*$", ptx)
     version = re.search(rb"(?m)^\s*\.version (\d+)\.(\d+)\s*$", ptx)

@@ -1959,6 +1959,10 @@ else
     echo "  SKIP: scalar device calls need NVPTX, AMDGCN, opt, and a linker"
 fi
 
+if ! python3 "$SCRIPT_DIR/check_ptx_guard.py"; then
+    echo "  FAIL: PTX integer abs guard"; fail=1
+fi
+
 if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
     if ! python3 "$SCRIPT_DIR/check_cuda_package.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA package contract"; fail=1
