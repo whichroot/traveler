@@ -57,6 +57,11 @@ merges, and loop-carried values to a fixed point, including the backedge: a
 uniform initial counter alone is insufficient. Memory reads and collective
 results are conservatively treated as potentially lane-dependent.
 
+Shuffle source lanes and XOR deltas currently require integer literals in
+`0..31`; binding a literal to a local does not satisfy this restriction. Use
+literal reduction stages `16`, `8`, `4`, `2`, `1` inside a rolled row/token loop.
+A rolled reduction-stage loop with a variable delta is not yet admitted.
+
 Kernel scalar parameters, constants, block coordinates, and grid/block sizes
 are uniform. `gpu_local_index(t) >> 5` is the physical warp index within a block,
 including multidimensional blocks. A block-major grid-stride row loop can use:

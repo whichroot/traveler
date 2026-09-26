@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // The initial warp profile requires literal full masks and complete physical warps.
+// Shuffle source lanes and XOR deltas must be integer literals from 0 through 31.
 import "thread.tv";
 
 extern "C" fn gpu_warp_shuffle_u32(mask: u32, value: u32, source_lane: u32) -> u32;
