@@ -1,0 +1,14 @@
+type F = Field<17>;
+
+#[zk]
+fn chain(x: F) -> F {
+    var acc: F = x;
+    for i in 0..16 {
+        acc = acc * x;
+    }
+    return acc;
+}
+
+fn main() -> i32 {
+    return 0;
+}

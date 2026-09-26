@@ -1084,6 +1084,17 @@ compile_obj zk_if_test_driver
 link_objs zk_if_test ntt poseidon2 merkle fri plonk zk_if_test zk_if_test_driver
 run_test zk_if_test "$TIMEOUT_MULTI"
 
+TOTAL=$((TOTAL + 1))
+if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ]; then
+    echo "  zk_roots SKIP (requires python3 and opt)"
+    SKIP=$((SKIP + 1))
+elif python3 "$SCRIPT_DIR/check_zk_roots.py" --tvc "$TVC_SELF" --opt "$OPT"; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    FAILURES="$FAILURES zk_roots"
+fi
+
 # Float membrane: IEEE-754 decoder (2-file: ieee + test).
 # The decoder is pure integer shifts/masks — assert ZERO float ops in its IR
 # (the membrane never touches the FPU), then check decode of known patterns.

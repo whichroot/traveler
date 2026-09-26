@@ -1,0 +1,10 @@
+type F = Field<19>;
+
+#[zk]
+fn square(x: F) -> F {
+    return x * x;
+}
+
+fn main() -> i32 {
+    return 0;
+}

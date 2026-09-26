@@ -31547,6 +31547,11 @@ fn codegen_zk_fn(decl: i32) {
         g_zk_log_n = g_zk_log_n + 1;
     }
 
+    if g_zk_log_n > g_fields[fi].ntt_max_log {
+        zk_fail_at(decl, "[zk] circuit domain exceeds the field NTT root chain");
+        return;
+    }
+
     // Build permutation
     zk_build_perm();
 
@@ -31681,45 +31686,16 @@ fn codegen_zk_fn(decl: i32) {
     }
     sym_pop_scope();
 
-    // Compute omega = generator^((p-1)/n) via repeated squaring
-    ir_wr("  ; Omega computation\n");
-    let gen_r: i32 = ir_tmp();
-    ir_wr("  "); ir_wr_reg(gen_r); ir_wr(" = add "); ir_wr_elem(fi); ir_wr(" 0, 7\n");
-
-    // hi = 7^(2^(64-log_n))
-    var hi: i32 = gen_r;
-    var sq: i32 = 0;
-    while sq < 64 - log_n {
-        let next: i32 = ir_tmp();
-        ir_wr("  "); ir_wr_reg(next); ir_wr(" = call "); ir_wr_elem(fi);
-        ir_wr(" "); ir_wr_field_prefix(fi); ir_wr("mul(");
-        ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(hi); ir_wr(", ");
-        ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(hi); ir_wr(")\n");
-        hi = next;
-        sq = sq + 1;
-    }
-
-    // lo = 7^(2^(32-log_n))
-    let lo_gen: i32 = ir_tmp();
-    ir_wr("  "); ir_wr_reg(lo_gen); ir_wr(" = add "); ir_wr_elem(fi); ir_wr(" 0, 7\n");
-    var lo: i32 = lo_gen;
-    sq = 0;
-    while sq < 32 - log_n {
-        let next: i32 = ir_tmp();
-        ir_wr("  "); ir_wr_reg(next); ir_wr(" = call "); ir_wr_elem(fi);
-        ir_wr(" "); ir_wr_field_prefix(fi); ir_wr("mul(");
-        ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(lo); ir_wr(", ");
-        ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(lo); ir_wr(")\n");
-        lo = next;
-        sq = sq + 1;
-    }
-
-    // omega = hi / lo
+    // Match __ntt_root(log_n - 1) for the resolved static field.
+    ir_wr("  ; Omega from field root chain\n");
+    let ogep: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(ogep); ir_wr(" = getelementptr [");
+    ir_wr_int(g_fields[fi].ntt_max_log as i64); ir_wr(" x "); ir_wr_elem(fi);
+    ir_wr("], ptr @ntt_roots_"); ir_wr_u64(g_fields[fi].prime);
+    ir_wr(", i64 0, i64 "); ir_wr_int((log_n - 1) as i64); ir_wr("\n");
     let omega_r: i32 = ir_tmp();
-    ir_wr("  "); ir_wr_reg(omega_r); ir_wr(" = call "); ir_wr_elem(fi);
-    ir_wr(" "); ir_wr_field_prefix(fi); ir_wr("div(");
-    ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(hi); ir_wr(", ");
-    ir_wr_elem(fi); ir_wr(" "); ir_wr_reg(lo); ir_wr(")\n");
+    ir_wr("  "); ir_wr_reg(omega_r); ir_wr(" = load "); ir_wr_elem(fi);
+    ir_wr(", ptr "); ir_wr_reg(ogep); ir_wr("\n");
 
     // Omega powers: op[0]=1, op[i]=op[i-1]*omega
     let op_regs: *i32 = alloc(n);
