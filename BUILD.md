@@ -982,6 +982,13 @@ An event cannot be re-recorded while any stream retains its current recording.
 Queries/waits on unrecorded events refuse. All event/stream pairings require the
 same resident device owner.
 
+Stream and event synchronization release the resource-table lock during the
+driver wait. Temporary holds prevent close and event re-record while it runs.
+Other threads may enqueue later work; completion releases only the prefix
+captured before the wait, retaining all later uses. Stream destruction and
+other synchronous resource operations can still wait while holding the table
+lock. `check_cuda_sync_lock.py` tests paused waits and concurrent later enqueues.
+
 Elapsed queries require an ordered pair of timing-enabled events recorded on the
 same stream. See [CUDA event timing](spec/cuda-event-timing.md) for the pending
 result, units, prefix retirement, and error contract.

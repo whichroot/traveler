@@ -1,4 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
+#ifdef MOCK_SYNC_LATCH
+#include <pthread.h>
+static pthread_mutex_t sync_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sync_changed = PTHREAD_COND_INITIALIZER;
+static int sync_paused, sync_arrived;
+void mock_sync_pause(void) {
+    pthread_mutex_lock(&sync_mutex); sync_paused = 1; sync_arrived = 0; pthread_mutex_unlock(&sync_mutex);
+}
+void mock_sync_wait(void) {
+    pthread_mutex_lock(&sync_mutex);
+    while (!sync_arrived) pthread_cond_wait(&sync_changed, &sync_mutex);
+    pthread_mutex_unlock(&sync_mutex);
+}
+void mock_sync_release(void) {
+    pthread_mutex_lock(&sync_mutex); sync_paused = 0; pthread_cond_broadcast(&sync_changed); pthread_mutex_unlock(&sync_mutex);
+}
+static void mock_sync_latch(void) {
+    pthread_mutex_lock(&sync_mutex);
+    if (sync_paused) {
+        sync_arrived = 1; pthread_cond_broadcast(&sync_changed);
+        while (sync_paused) pthread_cond_wait(&sync_changed, &sync_mutex);
+    }
+    pthread_mutex_unlock(&sync_mutex);
+}
+#else
+static void mock_sync_latch(void) {}
+#endif
 typedef struct AsyncStream AsyncStream;
 typedef struct {
     unsigned operation, until;
@@ -59,7 +86,8 @@ int cuStreamCreate(void **out, unsigned flags) {
 }
 int cuStreamSynchronize(AsyncStream *s) {
     async_stream_wait_count++;
-    int e = fail(16); if (e) return e; if (s) async_drain(s, s->count); return 0;
+    unsigned until = s ? s->count : 0; mock_sync_latch();
+    int e = fail(16); if (e) return e; if (s) async_drain(s, until); return 0;
 }
 int cuStreamQuery(AsyncStream *s) {
     int e = fail(17); if (e) return e; return s->done == s->count ? 0 : 600;
@@ -95,6 +123,7 @@ int cuEventQuery(AsyncEvent *e) {
 }
 int cuEventSynchronize(AsyncEvent *e) {
     async_event_wait_count++;
+    mock_sync_latch();
     int status = fail(18); if (status) return status; async_drain(e->source, e->until); return 0;
 }
 int cuEventDestroy_v2(AsyncEvent *e) {

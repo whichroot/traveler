@@ -1,0 +1,47 @@
+import "cuda_resident_checks.tv";
+import "../../src/lib/gpu/cuda_dax_pool.tv";
+extern "C" fn mock_sync_pause();
+extern "C" fn mock_sync_wait();
+extern "C" fn mock_sync_release();
+extern "C" fn mock_clean() -> i32;
+
+struct SyncWait { id: u64, event: i32, result: u64 }
+fn sync_wait_worker(argument: *u8) -> *u8 {
+    let job: *SyncWait = argument as *SyncWait;
+    if job.event == 1 { job.result = resident_need(cuda_event_sync(job.id)); }
+    else { job.result = resident_need(cuda_stream_sync(job.id)); }
+    return null;
+}
+
+fn main() -> i32 {
+    for kind in 0..2 {
+        let d: u64 = resident_need(cuda_device_open(0));
+        let s: u64 = resident_need(cuda_stream_create(d));
+        let e: u64 = resident_need(cuda_event_create(d));
+        let pin: u64 = resident_need(cuda_pinned_alloc(d, 8));
+        let buffer: u64 = resident_need(cuda_buffer_alloc(d, 8));
+        let host: CudaArgument = CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: pin, offset: 0, bytes: 8 };
+        let target: CudaArgument = resident_typed_view(buffer, 0, 8, 0-8);
+        resident_need(cuda_upload_async(s, target, host, 8)); resident_need(cuda_event_record(e, s));
+        var id: u64 = s; if kind == 1 { id = e; }
+        var job: SyncWait = SyncWait { id: id, event: kind, result: 0 };
+        let handle: **u8 = alloc(1); mock_sync_pause();
+        if pthread_create(handle as *u8, null, &sync_wait_worker, (&job) as *u8) != 0 { return 30; }
+        mock_sync_wait();
+        let other: u64 = resident_need(cuda_stream_create(d));
+        if resident_need(cuda_stream_query(other)) != 1 { return 31; }
+        resident_refused(cuda_stream_close(s)); resident_refused(cuda_event_close(e));
+        resident_refused(cuda_device_close(d)); resident_refused(cuda_event_record(e, s));
+        resident_need(cuda_upload_async(s, target, host, 8));
+        mock_sync_release(); if pthread_join(handle[0], null) != 0 { return 32; }
+        if job.result != 1 { return 33; }
+        resident_refused(cuda_buffer_close(buffer)); resident_refused(cuda_pinned_close(pin));
+        if resident_need(cuda_stream_query(s)) != 0 { return 34; }
+        resident_need(cuda_stream_sync(s)); resident_need(cuda_buffer_close(buffer)); resident_need(cuda_pinned_close(pin));
+        resident_need(cuda_event_close(e)); resident_need(cuda_stream_close(s)); resident_need(cuda_stream_close(other));
+        resident_need(cuda_device_close(d)); free(handle);
+        if mock_clean() == 0 { return 35; }
+    }
+    puts("CUDA sync lock PASS: independent progress, retained handles, later-prefix holds, stream/event waits");
+    return 0;
+}

@@ -100,22 +100,31 @@ fn cuda_res_async_complete(id: u64, kind: i32, query: i32) -> Result<u64, CudaEr
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
     if status != 0 { return cuda_res_fail(12, status, id); }
+    let sequence: u64 = r.sequence;
+    var source: *CudaResource = r;
+    if kind == 6 { source = cuda_res_find(r.parent, 5); }
+    if query == 0 {
+        r.users = r.users+1; d.users = d.users+1;
+        if source != null && source != r { source.users = source.users+1; }
+        cuda_res_unlock();
+    }
     if kind == 5 {
         if query == 1 { status = cuStreamQuery(r.native); } else { status = cuStreamSynchronize(r.native); }
     } else {
         if query == 1 { status = cuEventQuery(r.native); } else { status = cuEventSynchronize(r.native); }
     }
+    if query == 0 { cuda_res_lock(); }
     var ready: u64 = 1;
     if query == 1 && status == 600 { ready = 0; status = 0; }
     else if status == 0 {
-        if kind == 5 { cuda_res_stream_release(r); }
-        else {
-            let source: *CudaResource = cuda_res_find(r.parent, 5);
-            if source != null { cuda_res_stream_release_prefix(source, r.sequence); }
-        }
+        if source != null { cuda_res_stream_release_prefix(source, sequence); }
     }
     else { cuda_res_poison(d); }
     status = cuda_res_leave(d, previous, status);
+    if query == 0 {
+        r.users = r.users-1; d.users = d.users-1;
+        if source != null && source != r { source.users = source.users-1; }
+    }
     if status != 0 { return cuda_res_fail(12, status, id); }
     return cuda_res_ok(ready);
 }
