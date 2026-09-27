@@ -126,7 +126,7 @@ fn cuda_pinned_view(buffer: u64, offset: u64, bytes: u64) -> Result<CudaArgument
     return Result::Ok(CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: buffer, offset: offset, bytes: bytes });
 }
 
-fn cuda_res_pinned_copy(view: CudaArgument, host: *u8, bytes: u64, read: i32) -> Result<u64, CudaError> {
+fn cuda_res_pinned_begin(view: CudaArgument, host: *u8, bytes: u64) -> Result<u64, CudaError> {
     cuda_res_lock(); let r: *CudaResource = cuda_res_find(view.buffer, 7);
     if r == null || view.kind != 3 || view.type_code != 0-8 || (host == null && bytes != 0) { return cuda_res_fail(14, 0-1, view.buffer); }
     if view.offset > r.bytes || view.bytes > r.bytes-view.offset || bytes > view.bytes { return cuda_res_fail(14, 0-1, view.buffer); }
@@ -135,8 +135,23 @@ fn cuda_res_pinned_copy(view: CudaArgument, host: *u8, bytes: u64, read: i32) ->
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(14, 0-4, view.buffer); }
     let pointer: *u8 = ((r.native as u64)+view.offset) as *u8;
+    // The user hold prevents close; cpu_copy distinguishes this hold from queued DMA.
+    r.users = r.users+1; r.cpu_copy = 1;
+    return cuda_res_ok(pointer as u64);
+}
+
+fn cuda_res_pinned_end(buffer: u64) {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(buffer, 7);
+    r.users = r.users-1; r.cpu_copy = 0; cuda_res_unlock();
+}
+
+fn cuda_res_pinned_copy(view: CudaArgument, host: *u8, bytes: u64, read: i32) -> Result<u64, CudaError> {
+    let address: u64 = cuda_res_pinned_begin(view, host, bytes)?;
+    if bytes == 0 { return Result::Ok(0); }
+    let pointer: *u8 = address as *u8;
     if read == 1 { memcpy(host, pointer, bytes as usize); } else { memcpy(pointer, host, bytes as usize); }
-    return cuda_res_ok(0);
+    cuda_res_pinned_end(view.buffer);
+    return Result::Ok(0);
 }
 
 fn cuda_pinned_write(view: CudaArgument, source: *u8, bytes: u64) -> Result<u64, CudaError> { return cuda_res_pinned_copy(view, source, bytes, 0); }
@@ -157,6 +172,7 @@ fn cuda_res_copy_async(stream_id: u64, device_view: CudaArgument, host_view: Cud
     if d.poisoned != 0 { return cuda_res_fail(15, 0-4, stream_id); }
     if bytes == 0 { return cuda_res_ok(0); }
     if stream.sequence == 18446744073709551615 { return cuda_res_fail(15, 0-2, stream_id); }
+    if host.cpu_copy != 0 { return cuda_res_fail(15, 0-5, host_view.buffer); }
     var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
     if status != 0 { return cuda_res_fail(15, status, stream_id); }
     stream.sequence = stream.sequence + 1;

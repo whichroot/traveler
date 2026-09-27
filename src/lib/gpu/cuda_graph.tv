@@ -170,6 +170,9 @@ fn cuda_graph_launch(graph: u64, stream: u64) -> Result<u64,CudaError> {
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(18, 0-4, graph); }
     if s.sequence == 18446744073709551615 { return cuda_res_fail(18, 0-2, graph); }
+    for i in 0..1024 {
+        if r.uses[i] != 0 && g_cuda_res_table[i].cpu_copy != 0 { return cuda_res_fail(18, 0-5, graph); }
+    }
     var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
     if status != 0 { return cuda_res_fail(18, status, graph); }
     s.sequence = s.sequence+1; cuda_res_stream_hold(s, r);

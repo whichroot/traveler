@@ -44,6 +44,7 @@ struct CudaResource {
     uses_at: *u64,
     sequence: u64,
     users: u64,
+    cpu_copy: i32,
     graph_users: u64,
     recorded: i32,
 }
@@ -101,6 +102,7 @@ fn cuda_res_slot() -> *CudaResource {
             r.limits = null; r.threads = 0; r.shared_bytes = 0;
             r.dynamic_bytes = 0;
             r.uses = null; r.uses_at = null; r.sequence = 0; r.users = 0; r.graph_users = 0; r.recorded = 0;
+            r.cpu_copy = 0;
             return r;
         }
         i = i + 1;

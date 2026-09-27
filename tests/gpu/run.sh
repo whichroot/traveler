@@ -1995,6 +1995,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if ! python3 "$SCRIPT_DIR/check_cuda_dax_staging.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
         echo "  FAIL: CUDA double-buffered DAX staging contract"; fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_dax_parallel.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+        echo "  FAIL: CUDA parallel DAX staging contract"; fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/check_cuda_pipeline.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA staging pipeline and graph contract"; fail=1
     fi

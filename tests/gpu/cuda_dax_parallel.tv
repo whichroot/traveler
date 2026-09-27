@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/cuda_graph.tv";
+extern "C" fn dax_copy_pause(pointer: *u8, bytes: u64);
+extern "C" fn dax_copy_wait(count: i32);
+extern "C" fn dax_copy_release();
+extern "C" fn dax_thread_fail(after: i32);
+extern "C" fn dax_threads_drained() -> i32;
+var g_dax_threads: i32 = 1;
+
+fn dax_parallel_upload(stream: u64, destination: CudaArgument, source: *DaxView,
+                       offset: u64, bytes: u64, staging: *CudaDaxStaging) -> Result<u64, CudaError> {
+    return cuda_upload_dax_parallel(stream, destination, source, offset, bytes, staging, g_dax_threads);
+}
+
+struct DaxPausedCopy {
+    pin: CudaArgument,
+    source: DaxView,
+    mode: i32,
+}
+
+fn dax_paused_copy(arg: *u8) -> *u8 {
+    let work: *DaxPausedCopy = arg as *DaxPausedCopy;
+    if work.mode == 0 { resident_need(cuda_pinned_write(work.pin, work.source.ptr, 1031)); }
+    else if work.mode == 1 { resident_need(cuda_pinned_read(work.source.ptr, work.pin, 1031)); }
+    else { resident_need(cuda_pinned_stage_dax_parallel(work.pin, &work.source, 0, 1031, 4)); }
+    return null;
+}
+
+fn dax_copy_busy() {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 1031));
+    let target: CudaArgument = resident_typed_view(b, 0, 1031, 0-8);
+    let p: u64 = resident_need(cuda_pinned_alloc(d, 1031)); let pin: CudaArgument = dax_pin(p, 1031);
+    let other: u64 = resident_need(cuda_pinned_alloc(d, 1031)); let spare: CudaArgument = dax_pin(other, 1031);
+    let data: *u8 = alloc(1031); let back: *u8 = alloc(1031);
+    for i in 0..1031 { data[i] = dax_pattern(i as i64); }
+    resident_need(cuda_pinned_write(pin, data, 1031));
+    let graph: u64 = resident_need(cuda_graph_create(d));
+    resident_need(cuda_graph_copy(graph, target, pin, 1031, 0));
+    resident_need(cuda_graph_instantiate(graph));
+    let handle: **u8 = alloc(1);
+    var mode: i32 = 0;
+    while mode < 3 {
+        var work: DaxPausedCopy = DaxPausedCopy { pin: pin,
+            source: DaxView { ptr: data, offset: 0, length: 1031 }, mode: mode };
+        cuda_res_lock(); let pointer: *u8 = cuda_res_find(p, 7).native; cuda_res_unlock();
+        dax_copy_pause(pointer, 1031);
+        if pthread_create(handle as *u8, null, &dax_paused_copy, (&work) as *u8) != 0 { exit(70); }
+        var workers: i32 = 1; if mode == 2 { workers = 4; }
+        dax_copy_wait(workers);
+        cuda_res_lock(); let users: u64 = cuda_res_find(p, 7).users; cuda_res_unlock();
+        if users != 1 { exit(71); }
+        dax_error(cuda_pinned_close(p), 9, 0-5);
+        dax_error(cuda_pinned_write(pin, data, 1), 14, 0-5);
+        dax_error(cuda_pinned_read(back, pin, 1), 14, 0-5);
+        dax_error(cuda_upload_async(s, target, pin, 1), 15, 0-5);
+        dax_error(cuda_download_async(s, pin, target, 1), 15, 0-5);
+        dax_error(cuda_graph_launch(graph, s), 18, 0-5);
+        resident_need(cuda_pinned_write(spare, data, 1031));
+        resident_need(cuda_upload_async(s, target, spare, 1031));
+        resident_need(cuda_stream_sync(s));
+        dax_copy_release();
+        if pthread_join(handle[0], null) != 0 { exit(72); }
+        resident_need(cuda_graph_launch(graph, s)); resident_need(cuda_stream_sync(s));
+        resident_need(cuda_pinned_read(back, pin, 1031));
+        for i in 0..1031 { if back[i] != dax_pattern(i as i64) { exit(73); } }
+        mode = mode+1;
+    }
+    free(handle); free(data); free(back);
+    resident_need(cuda_graph_close(graph));
+    resident_need(cuda_pinned_close(p)); resident_need(cuda_pinned_close(other));
+    resident_need(cuda_stream_close(s)); resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d));
+    if mock_clean() == 0 { exit(74); }
+}
+
+fn dax_thread_faults() {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 100));
+    let target: CudaArgument = resident_typed_view(b, 0, 100, 0-8);
+    var staging: CudaDaxStaging = dax_staging_new(d, 17);
+    let data: *u8 = alloc(100); for i in 0..100 { data[i] = dax_pattern(i as i64); }
+    var source: DaxView = DaxView { ptr: data, offset: 0, length: 100 };
+    mock_async_reset_counts();
+    dax_error(cuda_upload_dax_parallel(s, target, &source, 0, 100, &staging, 0), 15, 0-1);
+    dax_error(cuda_upload_dax_parallel(s, target, &source, 0, 0, &staging, -1), 15, 0-1);
+    if mock_async_uploads() != 0 { exit(75); }
+    var after: i32 = 0;
+    while after < 11 {
+        dax_thread_fail(after); mock_async_reset_counts();
+        dax_error(cuda_upload_dax_parallel(s, target, &source, 0, 100, &staging, 4), 14, 11);
+        if dax_threads_drained() == 0 || mock_async_uploads() != after/4 { exit(76); }
+        resident_need(cuda_stream_sync(s));
+        resident_need(cuda_pinned_write(dax_pin(staging.slot0, 17), data, 17));
+        resident_need(cuda_pinned_write(dax_pin(staging.slot1, 17), data, 17));
+        after = after+1;
+    }
+    dax_thread_fail(-1);
+    let done: u64 = resident_need(cuda_upload_dax_parallel(s, target, &source, 0, 100, &staging, 4));
+    resident_need(cuda_event_sync(done));
+    let back: *u8 = alloc(100); resident_need(cuda_download(back, target, 100));
+    for i in 0..100 { if back[i] != data[i] { exit(77); } }
+    free(back); free(data); dax_staging_close(&staging);
+    resident_need(cuda_stream_close(s)); resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d));
+    if mock_clean() == 0 { exit(78); }
+}
+
+fn main() -> i32 {
+    g_dax_threads = 1; dax_staging_suite();
+    g_dax_threads = 2; dax_staging_suite();
+    g_dax_threads = 4; dax_staging_suite();
+    g_dax_threads = 32; dax_round(35, 17); dax_round(259, 64);
+    dax_copy_busy(); dax_thread_faults();
+    g_dax_threads = 4; dax_faults();
+    puts("DAX parallel PASS: exact slices, unlocked busy copies, DMA refusal, worker failures, and completion");
+    return 0;
+}

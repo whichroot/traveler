@@ -1,6 +1,56 @@
 // SPDX-License-Identifier: Apache-2.0
 import "cuda_async.tv";
 import "../mem/dax.tv";
+extern "C" fn pthread_create(t: *u8, attr: *u8, start: fn(*u8) -> *u8, arg: *u8) -> i32;
+extern "C" fn pthread_join(t: *u8, ret: **u8) -> i32;
+
+struct CudaDaxCopy {
+    destination: *u8,
+    source: *u8,
+    bytes: u64,
+    done: i32,
+}
+
+fn cuda_dax_copy_worker(arg: *u8) -> *u8 {
+    let work: *CudaDaxCopy = arg as *CudaDaxCopy;
+    memcpy(work.destination, work.source, work.bytes as usize);
+    atomic_store(&work.done, 1, release);
+    return null;
+}
+
+fn cuda_pinned_stage_dax_parallel(destination: CudaArgument, source: *DaxView,
+                                  offset: u64, bytes: u64, threads: i32) -> Result<u64, CudaError> {
+    if threads <= 0 || cuda_dax_source_valid(source, offset, bytes) == 0 {
+        return Result::Err(cuda_res_error(14, 0-1, destination.buffer));
+    }
+    if threads == 1 || bytes <= 1 { return cuda_pinned_stage_dax(destination, source, offset, bytes); }
+    let host: *u8 = ((source.ptr as u64)+offset) as *u8;
+    let address: u64 = cuda_res_pinned_begin(destination, host, bytes)?;
+    var count: i32 = threads;
+    if bytes < count as u64 { count = bytes as i32; }
+    let work: *CudaDaxCopy = alloc(count);
+    let handles: **u8 = alloc(count);
+    let part: u64 = bytes/(count as u64); let extra: u64 = bytes%(count as u64);
+    var start: u64 = 0; var launched: i32 = 0; var status: i32 = 0;
+    while launched < count && status == 0 {
+        var size: u64 = part; if (launched as u64) < extra { size = size+1; }
+        work[launched] = CudaDaxCopy { destination: (address+start) as *u8,
+            source: ((host as u64)+start) as *u8, bytes: size, done: 0 };
+        status = pthread_create((&handles[launched]) as *u8, null, &cuda_dax_copy_worker, (&work[launched]) as *u8);
+        if status == 0 { launched = launched+1; start = start+size; }
+    }
+    var i: i32 = 0;
+    while i < launched {
+        let joined: i32 = pthread_join(handles[i], null);
+        // Completion protects the borrowed bytes even if joining reports an error.
+        while atomic_load(&work[i].done, acquire) == 0 { sched_yield(); }
+        if status == 0 { status = joined; }
+        i = i+1;
+    }
+    free(handles); free(work); cuda_res_pinned_end(destination.buffer);
+    if status != 0 { return Result::Err(cuda_res_error(14, status, destination.buffer)); }
+    return Result::Ok(0);
+}
 
 fn cuda_dax_source_valid(source: *DaxView, offset: u64, bytes: u64) -> i32 {
     if source == null { return 0; }
@@ -82,6 +132,12 @@ fn cuda_dax_staging_check(stream_id: u64, destination: CudaArgument, source: *Da
 // Returns the final completion event, or zero for an empty transfer.
 fn cuda_upload_dax_async(stream: u64, destination: CudaArgument, source: *DaxView,
                         offset: u64, bytes: u64, staging: *CudaDaxStaging) -> Result<u64, CudaError> {
+    return cuda_upload_dax_parallel(stream, destination, source, offset, bytes, staging, 1);
+}
+
+fn cuda_upload_dax_parallel(stream: u64, destination: CudaArgument, source: *DaxView,
+                           offset: u64, bytes: u64, staging: *CudaDaxStaging, threads: i32) -> Result<u64, CudaError> {
+    if threads <= 0 { return Result::Err(cuda_res_error(15, 0-1, stream)); }
     let chunk: u64 = cuda_dax_staging_check(stream, destination, source, offset, bytes, staging)?;
     if bytes == 0 { return Result::Ok(0); }
     var done: u64 = 0;
@@ -101,7 +157,7 @@ fn cuda_upload_dax_async(stream: u64, destination: CudaArgument, source: *DaxVie
             buffer: slot, offset: 0, bytes: chunk };
         let target: CudaArgument = CudaArgument { kind: 2, type_code: destination.type_code, value: 0,
             buffer: destination.buffer, offset: destination.offset+done, bytes: count };
-        cuda_pinned_stage_dax(pin, source, offset+done, count)?;
+        cuda_pinned_stage_dax_parallel(pin, source, offset+done, count, threads)?;
         cuda_upload_async(stream, target, pin, count)?;
         cuda_event_record(event, stream)?;
         if turn == 0 { used0 = 1; } else { used1 = 1; }

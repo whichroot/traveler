@@ -14,6 +14,10 @@ struct CudaDaxStaging {
 fn cuda_upload_dax_async(stream: u64, destination: CudaArgument,
                         source: *DaxView, offset: u64, bytes: u64,
                         staging: *CudaDaxStaging) -> Result<u64, CudaError>;
+
+fn cuda_upload_dax_parallel(stream: u64, destination: CudaArgument,
+                           source: *DaxView, offset: u64, bytes: u64,
+                           staging: *CudaDaxStaging, threads: i32) -> Result<u64, CudaError>;
 ```
 
 The staging record **borrows** two distinct pinned-buffer IDs from
@@ -28,6 +32,21 @@ The helper copies each source chunk into alternating pinned buffers with
 `cuda_pinned_stage_dax`, queues `cuda_upload_async`, and records that slot's
 event. Before overwriting a previously submitted slot, it waits for that event.
 Thus CPU staging of the next chunk can overlap the preceding GPU upload.
+
+`cuda_upload_dax_parallel` uses the same checks and submission protocol. For each
+chunk it starts up to `threads` CPU workers over balanced, disjoint byte ranges.
+The first remainder workers copy one extra byte. The active count is capped at
+the chunk's byte count; one worker or one byte uses the serial copy path.
+`threads` must be positive, including for empty transfers. This explicit worker
+count is independent of `TRAVELER_THREADS`. All started workers finish before
+the chunk is uploaded or a worker error is returned.
+
+Pinned CPU reads and writes validate and increment the buffer's `users` count
+under the resource lock, then copy outside that lock. Parallel staging retains
+the whole checked chunk while its workers copy their assigned ranges. The hold
+is released after copying finishes. During the copy, checked writes, reads,
+destruction, async DMA, and graph launches that use the buffer report busy.
+Operations on unrelated resources can proceed.
 
 CPU staging remains synchronous: the call has read all requested source bytes
 when it returns successfully. It does not wait for the final uploads or issue a
@@ -72,6 +91,10 @@ resources and ranges, but may use a null source data pointer.
 Validation failures use copy boundary 15: `-1` invalid arguments, `-2` sequence
 capacity, `-4` poisoned device, or `-5` busy staging resources. Copy/event/driver
 failures propagate their existing boundary and status.
+Nonpositive worker counts report boundary 15, status `-1`. Thread creation or
+join failures report boundary 14 with the pthread status and pinned-buffer ID.
+On a thread-start failure, all workers already started are joined, the CPU hold
+is released, and that chunk is not uploaded. Earlier uploads remain pending.
 
 On an error after submission begins, earlier chunks may already be queued or
 complete; there is no rollback. The caller still owns all resources. Synchronize
@@ -87,6 +110,12 @@ after submission, pinned/destination guards, short and empty transfers, slot
 reuse, pending completion on return, validation refusals, and failure retention.
 Counters verify at most two outstanding copies and waits only when a slot must
 be reused. Raw and available optimized profiles run at one and four CPU threads.
+
+`tests/gpu/check_cuda_dax_parallel.py` repeats those cases with explicit worker
+counts and adds uneven slices, more workers than bytes, nonpositive counts, and
+partial thread-start failures. Instrumented copies pause all four workers at
+once to prove worker concurrency. Paused serial reads/writes and parallel copies
+also check lock availability, the CPU hold, DMA refusal, and unrelated progress.
 
 This verifies the overlap mechanism and lifetime contract. Bandwidth and actual
 CPU/DMA overlap require a separate hardware measurement.
