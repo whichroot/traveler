@@ -229,6 +229,12 @@ fn cuda_capability_index(d: *Json, node: i32) -> i32 {
 fn cuda_kernel_valid(d: *Json, k: i32) -> i32 {
     let numerical: i32 = json_get(d, k, "numerical");
     var fields: i32 = 21;
+    let register_limit: i32 = json_get(d, k, "max_registers");
+    if register_limit >= 0 {
+        if json_kind(d, register_limit) != JSON_INT || json_as_int(d, register_limit) < 1
+            || json_as_int(d, register_limit) > 255 { return 0; }
+        fields = fields + 1;
+    }
     let tensor: i32 = json_get(d, k, "tensor");
     var native: i32 = 0; var warp: i32 = 0;
     if tensor >= 0 {

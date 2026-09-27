@@ -101,6 +101,38 @@ across a statement branch or loop boundary; mutation of an enclosing aggregate
 across that boundary refuses. Existing terminal helper branches may still use
 local aggregates to compute a returned scalar.
 
+## Warp collectives in helpers
+
+Statically resolved helpers can contain shuffle, shuffle-xor, ballot, any, all,
+and warp sync. Nested helpers and supported scalar generic specializations expand
+into the caller's checked device plan before uniformity verification:
+
+```tv
+fn step(value: u32, delta: u32) -> u32 {
+    return value + gpu_warp_shuffle_xor_u32(4294967295, value, delta);
+}
+fn fence(mask: u32) {
+    gpu_warp_sync(mask);
+}
+```
+
+Call `step(value, 16)` or `fence(4294967295)` from a cooperative entry. Masks and
+selectors must resolve to constants after argument substitution: the full mask
+`0xffffffff`, and selector values from 0 through 31. Constant integer casts up to
+64 bits are supported. A runtime-uniform scalar is not a compile-time constant.
+
+Lane-varying data operands are permitted. Every collective's enclosing caller
+and helper control flow must still be proven warp-uniform. Actual arguments
+determine helper-parameter uniformity. Divergent calls, conditional participation,
+and lane-dependent loop backedges refuse. Scalar helper early returns retain
+their checked continuation semantics. Void helpers support fallthrough and bare
+unconditional returns; conditional void returns remain refused.
+
+Helpers do not gain shared-memory, block-barrier, pointer-effect, or native-MMA
+permissions from this feature. Recursion and unresolved calls remain refused.
+The emitted kernel carries the transitive `warp-full32-v1` capability, so existing
+complete-warp launch admission applies even when every collective is in a helper.
+
 Non-canonical stores still require a separate uniqueness proof. Range checks
 alone do not make conflicting non-atomic writes valid.
 
@@ -115,6 +147,10 @@ callee/type/expression refusals retain their established categories.
 The existing 16-active-call, depth-64, 4096-node/work, and 256-binding limits
 remain enforced. Early-return continuation expansion counts toward those
 limits. Unsupported explicit entries prevent publication of a partial module.
+Capacity diagnostics distinguish live bindings, device nodes, traversal work,
+aggregate components, and closure captures. Helper scopes release binding slots;
+expanded nodes still count toward the whole kernel's budget. A failed warp proof
+reports the collective location, expanded helper call, and non-uniform control.
 
 ## Verification
 
@@ -132,6 +168,12 @@ trip counts between warps, reconverged lane-dependent branches, and multidimensi
 launches. Negative cases check divergent initial conditions, loop updates, nested
 control, memory-derived counters, and block barriers. Optimized device IR is
 verified and lowered to SM90 PTX.
+
+`check_warp_helpers.py` compares inline and helper forms of all six collectives
+using threaded simulation and Python oracles in raw and optimized profiles. It covers nested,
+generic, and void helpers, forwarded constants, participation refusals, and
+binding/node/work capacity diagnostics. Helper support alone does not establish
+that a generated workload fits the remaining expansion limits.
 
 The scalar-control modules lower to SM90 and SM120 PTX. The scalar-call gate also
 checks AMDGCN lowering and exact helper behavior. These portable checks establish

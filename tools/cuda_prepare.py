@@ -77,6 +77,7 @@ def validate_blob(blob, sm):
         package.require(sm >= minimum_sm and v >= minimum_ptx, 'target capabilities')
     symbols = [k['symbol'].encode() for k in kernels]
     package.require(len(set(symbols)) == len(symbols) and set(re.findall(rb'\.visible \.entry (\w+)\(', ptx)) == set(symbols), 'entry symbols')
+    package.validate_register_limits(ptx, kernels)
     return header
 
 

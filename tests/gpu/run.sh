@@ -2011,6 +2011,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
         echo "  FAIL: CUDA expert placement contract"; fail=1
     fi
     if [ -n "$OPT" ]; then
+        if ! python3 "$SCRIPT_DIR/check_cuda_registers.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: CUDA per-kernel register caps"; fail=1
+        fi
         if ! python3 "$SCRIPT_DIR/check_ieee_bits.py" "$STAGE1" "$LLC" "$LINKER" --opt "$OPT"; then
             echo "  FAIL: IEEE bit-pattern numerical profile"; fail=1
         fi
@@ -2037,6 +2040,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
         fi
         if ! python3 "$SCRIPT_DIR/check_warp_loops.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: warp-uniform collective loops"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_warp_helpers.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: checked warp helper collectives"; fail=1
         fi
         if ! python3 "$SCRIPT_DIR/check_atomic.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: bounded atomic buffers"; fail=1

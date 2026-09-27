@@ -73,6 +73,9 @@ def unique_object(pairs):
 def validate_kernel(k):
     require(type(k) is dict, "kernel must be an object")
     fields = set(k)
+    if "max_registers" in k:
+        require(integer(k["max_registers"], 1, 255), "register limit")
+        fields.remove("max_registers")
     tensor = k.get("tensor")
     if "tensor" in k:
         require(tensor == "cuda-mma-native-v1", "unsupported tensor policy")
@@ -187,12 +190,31 @@ def descriptors(ir):
     require(1 <= len(entries) <= 64, "entry limit")
     for k in entries:
         validate_kernel(k)
-    signatures = dict(re.findall(r"define ptx_kernel void @(\w+)\(([^\n]*)\) #[01]", ir))
+    functions = re.findall(r"define ptx_kernel void @(\w+)\(([^\n]*)\) #(\d+)\b", ir)
+    signatures = {name: signature for name, signature, _ in functions}
+    groups = dict(re.findall(r"(?m)^attributes #(\d+) = \{([^\n]*)\}", ir))
+    attributes = {name: groups.get(group, '') for name, _, group in functions}
     require(len(signatures) == len(entries) == len({k["symbol"] for k in entries}), "entry table mismatch")
     for k in entries:
         signature = ", ".join(f'{p["llvm_type"]} %t{i}' for i, p in enumerate(k["parameters"]))
         require(signatures.get(k["symbol"]) == signature, "descriptor/signature mismatch")
+        attrs = attributes[k["symbol"]]
+        limits = re.findall(r'"nvvm.maxnreg"="([0-9]+)"', attrs)
+        expected = [str(k["max_registers"])] if "max_registers" in k else []
+        require(limits == expected and attrs.count('nvvm.maxnreg') == len(expected),
+                "descriptor/register attribute mismatch")
     return entries
+
+
+def validate_register_limits(ptx, entries):
+    headers = dict(re.findall(rb"\.visible\s+\.entry\s+(\w+)\s*\([^)]*\)\s*([^{}]*)\{", ptx))
+    for kernel in entries:
+        header = headers.get(kernel["symbol"].encode())
+        require(header is not None, "PTX entry header")
+        limits = re.findall(rb"\.maxnreg\s+([0-9]+)\b", header)
+        expected = [str(kernel["max_registers"]).encode()] if "max_registers" in kernel else []
+        require(limits == expected and header.count(b'.maxnreg') == len(expected),
+                "PTX register limit mismatch")
 
 
 def build(ir_path, output, llc, sm):
@@ -216,6 +238,7 @@ def build(ir_path, output, llc, sm):
     require(target and int(target[1]) == sm and version, "PTX target/version mismatch")
     require(all((int(version[1]), int(version[2])) >= kernel_requirements(k)[1] for k in entries), "PTX lacks required capability")
     require(set(re.findall(rb"\.visible \.entry (\w+)\(", ptx)) == {k["symbol"].encode() for k in entries}, "PTX entry mismatch")
+    validate_register_limits(ptx, entries)
     manifest = {"schema": "traveler.cuda.package.v1", "abi": 1, "sm": sm,
                 "ptx_major": int(version[1]), "ptx_minor": int(version[2]),
                 "ptx_bytes": len(ptx), "ptx_sha256": hashlib.sha256(ptx).hexdigest(),
