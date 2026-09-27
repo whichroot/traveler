@@ -3471,6 +3471,14 @@ They produce `usize` constants known at compile time.
 `extern "C"` binds an arbitrary C/POSIX symbol by declaring its signature; the
 symbol is resolved by the linker.
 
+Repeated declarations of the same symbol, including declarations from different
+imported files, produce one LLVM declaration when their return type, ordered
+parameter types, ABI, and declaration attributes match. Parameter names may
+differ. Conflicting declarations produce a compiler diagnostic; equal LLVM
+representations alone do not make source types interchangeable. A matching
+native definition may appear before or after an extern declaration and suppresses
+the redundant LLVM declaration. Multiple native definitions remain an error.
+
 ```
 extern "C" fn malloc(n: i64) -> *u8;
 extern "C" fn write(fd: i32, buf: *u8, n: i64) -> i64;

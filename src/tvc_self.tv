@@ -4283,14 +4283,17 @@ fn parse_extern_fn() -> i32 {
     let ln: i32 = p_cur_line();
     let cl: i32 = p_cur_col();
     p_expect(TOK_KW_EXTERN);
+    var abi: i32 = NULL_STR;
     // consume "C" string literal
     if p_peek() == TOK_STR_LIT {
         literal_require_text(tok_literal(&g_tokens[g_tok_pos]), g_tokens[g_tok_pos].int_val as i32,
             p_cur_line(), p_cur_col(), "extern ABI name");
+        abi = str_intern(tok_literal(&g_tokens[g_tok_pos]));
     }
     p_expect(TOK_STR_LIT);
     p_expect(TOK_KW_FN);
     let idx: i32 = node_alloc(AST_EXTERN_FN, ln, cl);
+    g_nodes[idx].name2 = abi;
     g_nodes[idx].name0 = tok_intern(&g_tokens[g_tok_pos]);
     p_expect(TOK_IDENT);
     p_expect(TOK_LPAREN);
@@ -9638,7 +9641,37 @@ fn in_dyn_context() -> i32 {
 
 // ===== FUNCTION REGISTRY =====
 
+fn func_same_signature(a: i32, b: i32) -> i32 {
+    if g_nodes[a].name1 != g_nodes[b].name1 || g_nodes[a].nargs != g_nodes[b].nargs { return 0; }
+    if ((g_nodes[a].flags >> 3) & 31) != ((g_nodes[b].flags >> 3) & 31) { return 0; }
+    if g_nodes[a].kind == AST_EXTERN_FN && g_nodes[b].kind == AST_EXTERN_FN {
+        if g_nodes[a].name2 != g_nodes[b].name2 || g_nodes[a].flags != g_nodes[b].flags { return 0; }
+    } else {
+        if g_nodes[a].kind == AST_EXTERN_FN && g_nodes[a].name2 != str_intern("C") { return 0; }
+        if g_nodes[b].kind == AST_EXTERN_FN && g_nodes[b].name2 != str_intern("C") { return 0; }
+    }
+    for i in 0..g_nodes[a].nargs {
+        let ap: i32 = g_args[g_nodes[a].args_start+i];
+        let bp: i32 = g_args[g_nodes[b].args_start+i];
+        if g_nodes[ap].name1 != g_nodes[bp].name1 { return 0; }
+    }
+    return 1;
+}
+
 fn func_add(name: i32, ret_type: i32, node: i32, is_extern: i32) {
+    let previous: i32 = find_func(name);
+    if previous >= 0 && (is_extern == 1 || g_funcs[previous].is_extern == 1) {
+        if func_same_signature(g_funcs[previous].node, node) == 0 {
+            diag_begin(g_nodes[node].line, g_nodes[node].col);
+            derr("conflicting function declaration for '"); derr(&g_strings[name]); derr("'"); diag_end(); exit(1);
+        }
+        if is_extern == 0 {
+            g_funcs[previous].node = node;
+            g_funcs[previous].is_extern = 0;
+            g_funcs[previous].gen_start = g_nodes[node].name2;
+        }
+        return;
+    }
     if g_nfuncs >= MAX_FUNCS { arena_overflow("function registry", MAX_FUNCS); }
     let ngen: i32 = (g_nodes[node].flags >> 3) & 31;
     g_funcs[g_nfuncs].name = name;
