@@ -187,7 +187,24 @@ struct Token {
     col: i32,
     text: [u8; 256],
     int_val: u64,             // String tokens store the decoded byte length here.
+    literal_offset: i32,
 }
+
+var g_lex_bytes: *u8 = null;
+var g_lex_bytes_len: i32 = 0;
+var g_lex_bytes_cap: i32 = 0;
+
+fn lex_literal_byte(byte: u8) {
+    if g_lex_bytes_len == g_lex_bytes_cap {
+        if g_lex_bytes_cap >= 1073741824 { arena_overflow("literal byte arena", g_lex_bytes_cap); }
+        if g_lex_bytes_cap == 0 { g_lex_bytes_cap = 4096; g_lex_bytes = alloc(g_lex_bytes_cap); }
+        else { g_lex_bytes_cap = g_lex_bytes_cap * 2; g_lex_bytes = realloc(g_lex_bytes, g_lex_bytes_cap); }
+    }
+    g_lex_bytes[g_lex_bytes_len] = byte;
+    g_lex_bytes_len = g_lex_bytes_len + 1;
+}
+
+fn tok_literal(tok: *Token) -> *u8 { return &g_lex_bytes[tok.literal_offset]; }
 
 // ===== WRITE HELPERS =====
 
@@ -518,25 +535,20 @@ fn lex(src: *u8, len: i32, tokens: *Token, cap: i32) -> i32 {
             pos = pos + 1;
             col = col + 1;
             var j: i32 = 0;
+            tokens[ntok].literal_offset = g_lex_bytes_len;
             while pos < len && src[pos] != 34 {
-                if j >= 255 {
-                    diag_error_at(start_line, start_col, "string literal exceeds 255 decoded bytes");
-                    exit(1);
-                }
+                var byte: u8 = src[pos];
                 if src[pos] == 92 && pos + 1 < len {
                     pos = pos + 1;
                     col = col + 1;
                     let esc: u8 = src[pos];
-                    if esc == 110 { tokens[ntok].text[j] = 10; }
-                    else if esc == 116 { tokens[ntok].text[j] = 9; }
-                    else if esc == 114 { tokens[ntok].text[j] = 13; }
-                    else if esc == 48 { tokens[ntok].text[j] = 0; }
-                    else if esc == 92 { tokens[ntok].text[j] = 92; }
-                    else if esc == 34 { tokens[ntok].text[j] = 34; }
-                    else { tokens[ntok].text[j] = esc; }
-                } else {
-                    tokens[ntok].text[j] = src[pos];
+                    if esc == 110 { byte = 10; }
+                    else if esc == 116 { byte = 9; }
+                    else if esc == 114 { byte = 13; }
+                    else if esc == 48 { byte = 0; }
+                    else { byte = esc; }
                 }
+                lex_literal_byte(byte);
                 j = j + 1;
                 pos = pos + 1;
                 col = col + 1;
@@ -545,7 +557,8 @@ fn lex(src: *u8, len: i32, tokens: *Token, cap: i32) -> i32 {
                 diag_error_at(start_line, start_col, "unterminated string literal");
                 exit(1);
             }
-            tokens[ntok].text[j] = 0;
+            lex_literal_byte(0);
+            tokens[ntok].text[0] = 0;
             if pos < len { pos = pos + 1; col = col + 1; }
             tokens[ntok].kind = TOK_STR_LIT;
             tokens[ntok].int_val = j as u64;
@@ -770,6 +783,7 @@ fn imp_copy_token(dst: *Token, src: *Token) {
     dst.line = src.line;
     dst.col = src.col;
     dst.int_val = src.int_val;
+    if src.kind == TOK_STR_LIT { dst.literal_offset = src.literal_offset; }
     var i: i32 = 0;
     while i < 256 {
         dst.text[i] = src.text[i];
@@ -780,6 +794,9 @@ fn imp_copy_token(dst: *Token, src: *Token) {
 // Resolve `rel` against the directory of `base` into `out` (NUL-terminated).
 // Absolute paths copy verbatim; a base with no '/' resolves to the current dir.
 fn imp_resolve_path(base: *u8, rel: *u8, out: *u8) {
+    if str_len(base) + str_len(rel) + 2 >= 4096 {
+        diag_error_at(0, 0, "resolved import path exceeds path buffer capacity"); exit(1);
+    }
     // Absolute path: copy as-is.
     if rel[0] == 47 {
         var a: i32 = 0;
@@ -902,7 +919,7 @@ fn imp_lex_file(path: *u8, tokens: *Token, cap: i32, ntok_io: *i32) -> i32 {
                 ok = 0;
                 continue;
             }
-            let rel: *u8 = &tmp[ti + 1].text[0];
+            let rel: *u8 = tok_literal(&tmp[ti + 1]);
             literal_require_text(rel, tmp[ti + 1].int_val as i32,
                 tmp[ti + 1].line, tmp[ti + 1].col, "import path");
             let resolved: *u8 = alloc(4096);
@@ -2261,6 +2278,7 @@ fn json_emit_escaped_fd(fd: i32, s: *u8, len: i32) {
 // (fallback col+1). Used for LSP end positions.
 fn diag_span_endcol(col: i32) -> i32 {
     if g_tokens != null && g_tok_pos < g_ntokens {
+        if g_tokens[g_tok_pos].kind == TOK_STR_LIT { return col + (g_tokens[g_tok_pos].int_val as i32) + 2; }
         let tl: i32 = str_len(&g_tokens[g_tok_pos].text[0]);
         if tl > 0 { return col + tl; }
     }
@@ -2450,7 +2468,8 @@ fn diag_found_current() {
             var i: i32 = 0;
             var byte: [u8; 2] = 0;
             while i < g_tokens[g_tok_pos].int_val as i32 {
-                byte[0] = g_tokens[g_tok_pos].text[i];
+                let text: *u8 = tok_literal(&g_tokens[g_tok_pos]);
+                byte[0] = text[i];
                 if byte[0] == 0 { derr("\\0"); }
                 else if byte[0] == 10 { derr("\\n"); }
                 else if byte[0] == 13 { derr("\\r"); }
@@ -3150,7 +3169,7 @@ fn parse_primary() -> i32 {
     if k == TOK_STR_LIT {
         let idx: i32 = node_alloc(AST_STR_LIT, ln, cl);
         let len: i32 = g_tokens[g_tok_pos].int_val as i32;
-        g_nodes[idx].name0 = literal_store(&g_tokens[g_tok_pos].text[0], len);
+        g_nodes[idx].name0 = literal_store(tok_literal(&g_tokens[g_tok_pos]), len);
         g_nodes[idx].int_val = len as u64;
         p_advance();
         return idx;
@@ -4266,7 +4285,7 @@ fn parse_extern_fn() -> i32 {
     p_expect(TOK_KW_EXTERN);
     // consume "C" string literal
     if p_peek() == TOK_STR_LIT {
-        literal_require_text(&g_tokens[g_tok_pos].text[0], g_tokens[g_tok_pos].int_val as i32,
+        literal_require_text(tok_literal(&g_tokens[g_tok_pos]), g_tokens[g_tok_pos].int_val as i32,
             p_cur_line(), p_cur_col(), "extern ABI name");
     }
     p_expect(TOK_STR_LIT);

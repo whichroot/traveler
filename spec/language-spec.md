@@ -219,9 +219,12 @@ following bytes. `embedded[2]` is `98`, while a NUL-terminated operation such as
 `strlen(embedded)` returns `1`. Explicit-length byte operations can access the
 entire literal, including embedded zeros and the additional trailing terminator.
 
-The current compiler accepts at most 255 decoded bytes per literal and diagnoses
-longer or unterminated literals. Import paths, extern ABI names, and the textual
-hexadecimal arguments of `wide` and `field_wide` reject embedded NULs.
+The compiler stores decoded literals in a growable byte arena, separately from
+fixed-size identifier tokens. Literals are not limited to 255 bytes; compiler
+resource limits still apply. Unterminated literals are diagnosed. Import paths,
+extern ABI names, and the textual hexadecimal arguments of `wide` and
+`field_wide` reject embedded NULs. Import paths retain a separate bounded path
+buffer and are diagnosed if they exceed its capacity.
 
 ### 2.9 Polynomial Literals
 
