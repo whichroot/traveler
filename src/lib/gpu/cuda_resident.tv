@@ -606,6 +606,7 @@ fn cuda_resource_close(id: u64, kind: i32) -> Result<u64, CudaError> {
         }
         else if kind == 6 { status = cuEventDestroy_v2(r.native); }
         else if kind == 7 { status = cuMemFreeHost(r.native); }
+        else if kind == 11 { status = cuMemHostUnregister(r.native); }
     }
     if status == 0 {
         if kind == 3 {

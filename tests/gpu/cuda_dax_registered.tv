@@ -1,0 +1,90 @@
+import "cuda_resident_checks.tv";
+import "../../src/lib/gpu/cuda_dax_registered.tv";
+extern "C" fn mock_register_limit(bytes: u64);
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+
+fn registered_view(id: u64, offset: u64, bytes: u64) -> CudaArgument {
+    match cuda_dax_registered_view(id, offset, bytes) {
+        Result::Ok(view) => { return view; },
+        Result::Err(error) => { exit(40); },
+    }
+    return cuda_arg_u64(0);
+}
+fn register_error(result: Result<u64, CudaError>, boundary: i32, status: i32) -> u64 {
+    match result {
+        Result::Ok(value) => { exit(41); },
+        Result::Err(error) => {
+            if error.boundary != boundary || error.status != status { print(error.boundary); print(error.status); exit(42); }
+            return error.resource;
+        },
+    }
+    return 0;
+}
+fn main() -> i32 {
+    let page: u64 = getpagesize() as u64;
+    let memory: *u8 = mmap(null, (page*3) as usize, 3, 34, 0-1, 0);
+    if memory as u64 == 18446744073709551615 { return 43; }
+    for i in 0..((page*3) as i64) { memory[i] = (i%251) as u8; }
+    var source: DaxView = DaxView { ptr: memory, offset: 0, length: (page*3) as i64 };
+    let d: u64 = resident_need(cuda_device_open(0));
+    let s: u64 = resident_need(cuda_stream_create(d)); let s2: u64 = resident_need(cuda_stream_create(d));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 256));
+    let a: CudaArgument = resident_typed_view(b, 0, 97, 0-8);
+    let target2: CudaArgument = resident_typed_view(b, 128, 97, 0-8);
+    register_error(cuda_dax_register(d, &source, 0, 0), 21, 0-1);
+    register_error(cuda_dax_register(d, &source, 1, page), 21, 0-1);
+    register_error(cuda_dax_register(d, &source, 0, page+1), 21, 0-1);
+    register_error(cuda_dax_register(d, &source, page*3, page), 21, 0-1);
+    mock_register_limit(page);
+    let r: u64 = resident_need(cuda_dax_register(d, &source, 0, page));
+    register_error(cuda_dax_register(d, &source, 0, page), 21, 0-5);
+    register_error(cuda_dax_register(d, &source, page, page), 21, 2);
+    let fallback: u64 = resident_need(cuda_pinned_alloc(d, 97)); resident_need(cuda_pinned_close(fallback));
+    mock_register_limit(page*3);
+    let neighbor: u64 = resident_need(cuda_dax_register(d, &source, page, page));
+    let view: CudaArgument = registered_view(r, 32, 97);
+    match cuda_dax_registered_view(r, 0, page+1) {
+        Result::Ok(value) => { return 44; },
+        Result::Err(error) => { if error.status != 0-1 { return 45; } },
+    }
+    let crossing: CudaArgument = CudaArgument { kind: 4, type_code: 0-8, value: 0, buffer: r, offset: page-8, bytes: 16 };
+    register_error(cuda_upload_async(s, a, crossing, 16), 15, 0-1);
+    resident_refused(cuda_pinned_write(view, memory, 97)); resident_refused(cuda_download_async(s, view, a, 97));
+    let foreign: u64 = resident_need(cuda_device_open(1));
+    register_error(cuda_dax_register(foreign, &source, 0, page), 21, 0-5);
+    let other: u64 = resident_need(cuda_stream_create(foreign));
+    let other_b: u64 = resident_need(cuda_buffer_alloc(foreign, 97));
+    resident_refused(cuda_upload_async(other, resident_typed_view(other_b, 0, 97, 0-8), view, 97));
+    resident_need(cuda_buffer_close(other_b)); resident_need(cuda_stream_close(other)); resident_need(cuda_device_close(foreign));
+    resident_need(cuda_upload_async(s, a, view, 97)); resident_need(cuda_upload_async(s2, target2, view, 97));
+    register_error(cuda_dax_unregister(r), 9, 0-5);
+    resident_need(cuda_stream_sync(s)); register_error(cuda_dax_unregister(r), 9, 0-5);
+    resident_need(cuda_stream_sync(s2));
+    let back: *u8 = alloc(256); resident_need(cuda_download(back, resident_typed_view(b, 0, 256, 0-8), 256));
+    for i in 0..97 { if back[i] != memory[i+32] || back[i+128] != memory[i+32] { return 46; } }
+    for i in 97..128 { if back[i] != 0 { return 47; } }
+    mock_fail(35, 0); register_error(cuda_dax_unregister(r), 9, 835);
+    resident_need(cuda_dax_unregister(r)); resident_refused(cuda_upload_async(s, a, view, 97));
+    let reused: u64 = resident_need(cuda_dax_register(d, &source, 0, page));
+    resident_refused(cuda_upload_async(s, a, view, 97)); resident_need(cuda_dax_unregister(reused));
+    resident_need(cuda_dax_unregister(neighbor));
+    resident_need(cuda_buffer_close(b)); resident_need(cuda_stream_close(s)); resident_need(cuda_stream_close(s2));
+    resident_need(cuda_device_close(d)); free(back);
+    for test in 0..3 {
+        let device: u64 = resident_need(cuda_device_open(0));
+        if test == 0 { mock_fail(34, 0); register_error(cuda_dax_register(device, &source, 0, page), 21, 834); }
+        else if test == 1 {
+            mock_fail(2, 1); let retained: u64 = register_error(cuda_dax_register(device, &source, 0, page), 21, 802);
+            resident_need(cuda_dax_unregister(retained));
+        } else {
+            let retained: u64 = resident_need(cuda_dax_register(device, &source, 0, page));
+            mock_fail(2, 1); register_error(cuda_dax_unregister(retained), 9, 802);
+            register_error(cuda_dax_unregister(retained), 9, 0-1);
+        }
+        resident_need(cuda_device_close(device));
+    }
+    for i in 0..((page*3) as i64) { if memory[i] != (i%251) as u8 { return 48; } }
+    if munmap(memory, (page*3) as usize) != 0 || mock_clean() == 0 { return 49; }
+    puts("DAX registration PASS: upload-only views, bounds, budgets, multi-stream retention, failures, and cleanup"); return 0;
+}

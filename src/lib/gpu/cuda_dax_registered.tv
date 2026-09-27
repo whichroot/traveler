@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_dax.tv";
+extern "C" fn getpagesize() -> i32;
+
+fn cuda_dax_register(device: u64, source: *DaxView, offset: u64, bytes: u64) -> Result<u64, CudaError> {
+    if bytes == 0 || cuda_dax_source_valid(source, offset, bytes) == 0 {
+        return Result::Err(cuda_res_error(21, 0-1, device));
+    }
+    let page: i32 = getpagesize(); let address: u64 = (source.ptr as u64)+offset;
+    if page <= 0 || address%(page as u64) != 0 || bytes%(page as u64) != 0 {
+        return Result::Err(cuda_res_error(21, 0-1, device));
+    }
+    cuda_res_lock(); let d: *CudaResource = cuda_res_find(device, 1);
+    if d == null { return cuda_res_fail(21, 0-1, device); }
+    if d.poisoned != 0 { return cuda_res_fail(21, 0-4, device); }
+    for i in 0..1024 {
+        let prior: *CudaResource = &g_cuda_res_table[i];
+        if prior.kind == 11 {
+            let begin: u64 = prior.native as u64;
+            if address < begin+prior.bytes && begin < address+bytes { return cuda_res_fail(21, 0-5, prior.id); }
+        }
+    }
+    let r: *CudaResource = cuda_res_slot(); if r == null { return cuda_res_fail(21, 0-2, device); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { return cuda_res_fail(21, status, device); }
+    status = cuMemHostRegister_v2(address as *u8, bytes as usize, 2);
+    if status == 0 { r.kind = 11; r.owner = device; r.native = address as *u8; r.bytes = bytes; }
+    status = cuda_res_leave(d, previous, status);
+    if status != 0 { return cuda_res_fail(21, status, r.id); }
+    return cuda_res_ok(r.id);
+}
+
+fn cuda_dax_registered_view(registration: u64, offset: u64, bytes: u64) -> Result<CudaArgument, CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(registration, 11);
+    if r == null { cuda_res_unlock(); return Result::Err(cuda_res_error(21, 0-1, registration)); }
+    if offset > r.bytes || bytes > r.bytes-offset {
+        cuda_res_unlock(); return Result::Err(cuda_res_error(21, 0-1, registration));
+    }
+    cuda_res_unlock();
+    return Result::Ok(CudaArgument { kind: 4, type_code: 0-8, value: 0, buffer: registration, offset: offset, bytes: bytes });
+}
+
+fn cuda_dax_unregister(registration: u64) -> Result<u64, CudaError> {
+    return cuda_resource_close(registration, 11);
+}

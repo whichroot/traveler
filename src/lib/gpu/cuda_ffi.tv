@@ -43,9 +43,8 @@ extern "C" fn cuEventQuery(event: *u8) -> i32;
 // CUDA writes IEEE binary32 milliseconds through its float pointer output.
 extern "C" fn cuEventElapsedTime(milliseconds_bits: *u32, start: *u8, end: *u8) -> i32;
 
-// Registered host memory: a device reads the pinned host pages directly.
-// flags=2 is CU_MEMHOSTREGISTER_DEVICEMAP, the cuMemHostGetDevicePointer form.
-// The driver refuses file-backed mappings; stage through cuMemHostAlloc.
+// flags=2 enables DEVICEMAP; supported writable DAX mappings can be registered.
+// Registered upload sources use the host address, without exposing a device pointer.
 extern "C" fn cuMemHostRegister_v2(pointer: *u8, size: usize,
                                    flags: u32) -> i32;
 extern "C" fn cuMemHostGetDevicePointer(device_out: **u8, host: *u8,

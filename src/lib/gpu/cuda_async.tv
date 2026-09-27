@@ -208,8 +208,10 @@ fn cuda_res_copy_async(stream_id: u64, device_view: CudaArgument, host_view: Cud
     cuda_res_lock();
     let stream: *CudaResource = cuda_res_find(stream_id, 5);
     let device: *CudaResource = cuda_res_find(device_view.buffer, 2);
-    let host: *CudaResource = cuda_res_find(host_view.buffer, 7);
-    if stream == null || device == null || host == null || device_view.kind != 2 || host_view.kind != 3
+    var host: *CudaResource = null;
+    if host_view.kind == 3 { host = cuda_res_find(host_view.buffer, 7); }
+    if host_view.kind == 4 && download == 0 { host = cuda_res_find(host_view.buffer, 11); }
+    if stream == null || device == null || host == null || device_view.kind != 2
         || host_view.type_code != 0-8 { return cuda_res_fail(15, 0-1, stream_id); }
     if device.owner != stream.owner || host.owner != stream.owner { return cuda_res_fail(15, 0-1, stream_id); }
     if cuda_res_stream_available(stream) == 0 { return cuda_res_fail(15, 0-5, stream_id); }

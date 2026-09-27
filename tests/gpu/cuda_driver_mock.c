@@ -9,6 +9,9 @@
 
 static _Thread_local void *current = (void *)0x123;
 static int fault, delay, uploads, downloads, launches, allocations, modules, contexts;
+static struct { void *address; size_t bytes; } registered[1024];
+static size_t registered_bytes, register_limit = SIZE_MAX;
+void mock_register_limit(uint64_t bytes) { register_limit = (size_t)bytes; }
 void mock_fail(int operation, int after) { fault = operation; delay = after; }
 static int fail(int operation) {
     if (operation != fault) return 0;
@@ -18,7 +21,24 @@ static int fail(int operation) {
 }
 #include "cuda_async_mock.h"
 int mock_clean(void) {
-    return !allocations && !modules && !contexts && !async_streams && !async_events && !async_pinned && !async_graphs && !async_execs && current == (void *)0x123;
+    return !allocations && !modules && !contexts && !async_streams && !async_events && !async_pinned && !async_graphs && !async_execs && !registered_bytes && current == (void *)0x123;
+}
+int cuMemHostRegister_v2(void *address, size_t bytes, unsigned flags) {
+    assert(current != (void *)0x123 && address && bytes && flags == 2);
+    int status = fail(34); if (status) return status;
+    if (bytes > register_limit || registered_bytes > register_limit - bytes) return 2;
+    for (unsigned i = 0; i < 1024; ++i) if (!registered[i].address) {
+        registered[i].address = address; registered[i].bytes = bytes; registered_bytes += bytes; return 0;
+    }
+    return 2;
+}
+int cuMemHostUnregister(void *address) {
+    assert(current != (void *)0x123);
+    int status = fail(35); if (status) return status;
+    for (unsigned i = 0; i < 1024; ++i) if (registered[i].address == address) {
+        registered_bytes -= registered[i].bytes; registered[i].address = NULL; return 0;
+    }
+    return 1;
 }
 int mock_pipeline(void) { return uploads == 3 && downloads == 1 && launches == 4 && mock_clean(); }
 #ifdef MOCK_ASYNC_CLEAN

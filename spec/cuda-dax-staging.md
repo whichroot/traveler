@@ -325,6 +325,62 @@ reservations. Thread join or resource cleanup failure returns the pipeline ID;
 retry close. Partial creation rolls back, or returns a retained pipeline ID if
 cleanup itself needs retry.
 
+## Registered DAX upload sources
+
+Import `src/lib/gpu/cuda_dax_registered.tv`:
+
+```tv
+fn cuda_dax_register(device: u64, source: *DaxView, offset: u64,
+                    bytes: u64) -> Result<u64, CudaError>;
+fn cuda_dax_registered_view(registration: u64, offset: u64,
+                           bytes: u64) -> Result<CudaArgument, CudaError>;
+fn cuda_dax_unregister(registration: u64) -> Result<u64, CudaError>;
+```
+
+Registration borrows a nonempty, host-page-aligned range within the supplied
+view and calls `cuMemHostRegister_v2` with `DEVICEMAP` (flags 2). Both the start
+address and byte count must be aligned to `getpagesize()`. It neither rounds the
+range outward nor changes mapping protections. The mapping must satisfy the
+driver's registration requirements. Jane's DAX probe used an `O_RDWR` device
+descriptor and writable `MAP_SHARED` mapping; ordinary read-only DAX mappings
+were refused on that platform. Registration is a setup operation and can block.
+
+The returned handle owns the registration, not the mapping. Keep the range mapped
+until unregister succeeds and its source bytes stable while DMA reads them.
+The original DaxView descriptor may be discarded after registration. Checked
+registrations reject overlapping host-address ranges, including across device
+owners. View offsets and sizes may be unaligned but cannot cross the registration
+boundary; adjacent registrations are not merged for a single upload.
+
+Registered views have argument kind 4 and byte type code -8. `cuda_upload_async`
+accepts them as host sources, retains them through stream/event completion, and
+enqueues HtoD directly without a CPU staging copy. Pinned storage mutation,
+downloads into the mapping, and use as a kernel device-buffer argument refuse.
+This interface does not expose a device pointer or grant direct kernel access.
+Multiple streams retain independent uses; unregister refuses until all uses have
+been observed complete. Unregister calls `cuMemHostUnregister`, never `munmap`
+or `cuMemFreeHost`.
+
+Registration/view errors use boundary 21: -1 for invalid handles/ranges/alignment,
+-2 for registry capacity, -4 for a poisoned device, and -5 for an overlapping
+registration. Driver admission errors preserve the driver's status and do not
+poison a usable context. Close uses the existing boundary 9. A failed unregister
+retains the resource for retry. If context restoration fails after successful
+registration, the error's resource identifies the retained registration for
+cleanup. If restoration fails after successful unregister, that ID is already
+retired; a subsequent close reports an invalid handle.
+
+Keep a bounded hot window registered and use the existing staging path when
+registration is unavailable or its budget is exhausted. Jane's September 2026
+probe observed a shared pinned-DRAM plus registered-DAX budget of about 61 GiB
+per process; this is not a hardcoded or portable limit. Registration and
+unregistration costs belong outside steady-state upload timings.
+
+`check_cuda_dax_registered.py` verifies raw/O1/O3 byte parity, alignment/bounds,
+upload-only views, overlap/cross-device/stale-handle refusals, budget fallback,
+multiple-stream retention, and driver/context cleanup failures with the mock.
+Real mapping admission and bandwidth still require a native hardware gate.
+
 ## Verification
 
 `tests/gpu/check_cuda_dax_staging.py` uses the deferred-copy CUDA mock, without
