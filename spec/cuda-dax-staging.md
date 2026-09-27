@@ -132,7 +132,7 @@ the supplied stream to drain outstanding work before reuse or destruction;
 an event whose recording failed is not a completion witness. Failed driver
 operations retain the existing conservative resource holds and device poisoning.
 
-## Cross-call pipelines
+## Cross-call pipelines with caller-side staging
 
 Import `src/lib/gpu/cuda_dax_pipeline.tv` for an owned ring of staging records:
 
@@ -213,6 +213,81 @@ Close frees only owned resources. If cleanup fails, the error's resource is the
 pipeline ID: retry close to finish cleanup. Already destroyed resources are not
 destroyed twice, including when context restoration failed after destruction.
 
+## Non-blocking submission and prefetch
+
+Use the opt-in constructor from `src/lib/gpu/cuda_dax_pipeline.tv`:
+
+```tv
+fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32,
+                                  chunk_bytes: u64) -> Result<u64, CudaError>;
+```
+
+The same submit/query/wait/drain/close functions operate on this pipeline. The
+constructor above selects asynchronous CPU staging; `cuda_dax_pipeline_create`
+retains the caller-side staging contract described in the previous section.
+
+Creation reserves a dedicated upload stream and the worker pool until close,
+preallocates a bounded job ring and descriptor arrays, and starts one persistent
+coordinator. The pinned capacity remains `2 * depth * chunk_bytes`. The stream
+cannot already belong to another pipeline. Checked external stream submissions,
+stream query/sync/close, pool use/close, and competing pipeline construction
+refuse while reserved. The coordinator is the authorized stream submitter.
+
+Submit validates bounds, retains the destination allocation, copies the source
+view and destination descriptors, publishes a FIFO ticket, and returns. It does
+not read source bytes, allocate storage, create or join threads, wait for CPU
+workers, or wait for GPU completion. Metadata uses finite scans and short locks;
+the API does not promise lock-free or hard real-time execution. A full ring
+returns boundary 20/status -5 without consuming a ticket or retaining arguments.
+An empty transfer validates and returns zero without occupying a ring slot.
+
+The DaxView descriptor itself can be discarded after submit. **Keep its backing
+mapping readable and its source bytes unchanged through successful ticket
+completion or successful drain.** Views do not own mappings, so this lifetime is
+a caller obligation. Queued destinations are retained before any CUDA command
+exists. CPU staging runs on the coordinator/persistent pool even with one worker.
+The coordinator queries staging-slot events before reuse and never waits for
+slot completion while holding the resource-table lock.
+
+Query returns pending for queued, CPU-active, and GPU-pending work, then complete
+after DMA completion. It does not synchronize. Completed FIFO prefixes release
+the job holds and free ring slots without requiring caller polling. Retired
+successful tickets remain complete after reuse. Wait explicitly waits for the
+same result. Concurrent submit/query operations are supported; closing refuses
+while another host operation retains the pipeline.
+
+Use a separate compute stream for consumers. Poll upload completion before
+launching the corresponding consumer. Work on the current expert can run while
+the next expert stages and uploads. **Returning from submit does not establish
+CUDA enqueue order for a dependent kernel.** An event that the coordinator has
+not yet recorded is not a future promise; private slot events are not dependency
+handles. This API does not provide a GPU-side wait-on-ticket operation.
+
+```tv
+let pipeline = cuda_dax_pipeline_create_async(upload_stream, pool, 2, chunk_bytes)?;
+let next = cuda_dax_pipeline_submit(pipeline, next_weights, next_source, 0, bytes)?;
+// Enqueue independent current-expert work on compute_stream here.
+if cuda_dax_pipeline_query(pipeline, next)? == 1 {
+    // next_weights is ready for its consumer on compute_stream.
+}
+```
+
+After an accepted job fails, its ticket and later accepted tickets report the
+saved error, while earlier completed tickets retain success. New submissions
+refuse. A failed ticket alone does not establish source/DMA quiescence: drain
+before releasing its source mapping. Drain gates new submits, finishes healthy
+queued work or cancels unstarted work after failure, waits for CPU reads to end,
+then synchronizes the stream outside the resource-table lock. A failed drain
+keeps holds for retry. Successful drain releases holds but preserves failed
+ticket outcomes and device poisoning. Recreate a failed pipeline for further
+submissions; drain does not make it reusable.
+
+Close refuses pending or undrained failed work. Once quiescent, it stops and
+joins the coordinator, destroys owned resources, and releases stream/pool
+reservations. Thread join or resource cleanup failure returns the pipeline ID;
+retry close. Partial creation rolls back, or returns a retained pipeline ID if
+cleanup itself needs retry.
+
 ## Verification
 
 `tests/gpu/check_cuda_dax_staging.py` uses the deferred-copy CUDA mock, without
@@ -243,3 +318,10 @@ O3 profiles at runtime thread settings one and four.
 
 This verifies the overlap mechanism and lifetime contract. Bandwidth and actual
 CPU/DMA overlap require a separate hardware measurement.
+
+`tests/gpu/check_cuda_dax_nonblocking.py` uses deterministic CPU-copy latches and
+deferred DMA to check that submission returns while workers are paused, full-ring
+refusal, independent progress during slot reuse, descriptor snapshots, queued
+resource holds, FIFO bytes and guards, stable tickets, drain during CPU copying,
+asynchronous failure outcomes, and partial creation/close retry. It covers one
+and four pool workers in raw/O1/O3 profiles at runtime thread settings one/four.

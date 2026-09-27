@@ -40,6 +40,8 @@ extern "C" fn cuEventDestroy_v2(event: *u8) -> i32;
 extern "C" fn cuEventRecord(event: *u8, stream: *u8) -> i32;
 extern "C" fn cuEventSynchronize(event: *u8) -> i32;
 extern "C" fn cuEventQuery(event: *u8) -> i32;
+// CUDA writes IEEE binary32 milliseconds through its float pointer output.
+extern "C" fn cuEventElapsedTime(milliseconds_bits: *u32, start: *u8, end: *u8) -> i32;
 
 // Registered host memory: a device reads the pinned host pages directly.
 // flags=2 is CU_MEMHOSTREGISTER_DEVICEMAP, the cuMemHostGetDevicePointer form.

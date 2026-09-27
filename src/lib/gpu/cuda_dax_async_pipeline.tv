@@ -1,0 +1,263 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_dax.tv";
+extern "C" fn usleep(microseconds: u32) -> i32;
+
+struct CudaDaxJob {
+    source: *DaxView, destination: *CudaArgument, offset: u64, bytes: u64,
+    ticket: u64, event: u64, state: i32,
+}
+struct CudaDaxQueue {
+    jobs: *CudaDaxJob, sources: *DaxView, destinations: *CudaArgument,
+    pool: *CudaDaxPool, mutex: *u64, ready: *u64,
+    initialized: i32, started: i32, joined: i32, handle: *u8,
+    stop: i32, draining: i32, drained: i32, drain_status: i32,
+    failed_ticket: u64, boundary: i32, status: i32, resource: u64,
+}
+
+fn cuda_dax_queue_wake(q: *CudaDaxQueue) {
+    pthread_mutex_lock(q.mutex as *u8); pthread_cond_signal(q.ready as *u8);
+    pthread_mutex_unlock(q.mutex as *u8);
+}
+
+fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32, chunk_bytes: u64) -> Result<u64, CudaError> {
+    let worker: u64 = cuda_dax_pool_acquire(pool)?;
+    var id: u64 = 0;
+    match cuda_dax_pipeline_new(stream, pool, depth, chunk_bytes) {
+        Result::Ok(value) => { id = value; },
+        Result::Err(error) => { cuda_dax_pool_release(pool); return Result::Err(error); },
+    }
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(id, 10);
+    let p: *CudaDaxPipeline = r.native as *CudaDaxPipeline;
+    let s: *CudaResource = cuda_res_find(stream, 5);
+    var busy: i32 = 0;
+    for i in 0..1024 {
+        let other: *CudaResource = &g_cuda_res_table[i];
+        if other.kind == 10 && other.id != id {
+            let prior: *CudaDaxPipeline = other.native as *CudaDaxPipeline;
+            if prior.stream == stream { busy = 1; }
+        }
+    }
+    if s == null { busy = 1; }
+    else if s.reservation != 0 || s.users != 0 { busy = 1; }
+    if busy != 0 {
+        cuda_res_unlock(); cuda_dax_pool_release(pool); cuda_dax_pipeline_close(id)?;
+        return Result::Err(cuda_res_error(20, 0-5, stream));
+    }
+    let q: *CudaDaxQueue = alloc(1); p.queue = q;
+    q.jobs = alloc(depth); q.pool = worker as *CudaDaxPool;
+    q.sources = alloc(depth); q.destinations = alloc(depth);
+    q.mutex = alloc(8); q.ready = alloc(8); q.initialized = 0;
+    q.started = 0; q.joined = 0; q.handle = null; q.stop = 0;
+    q.draining = 0; q.drained = 1; q.drain_status = 0;
+    q.failed_ticket = 0; q.boundary = 0; q.status = 0; q.resource = 0;
+    for i in 0..depth {
+        q.jobs[i].state = 0; q.jobs[i].source = &q.sources[i]; q.jobs[i].destination = &q.destinations[i];
+    }
+    s.reservation = id; s.users = s.users+1; cuda_res_unlock();
+    var status: i32 = pthread_mutex_init(q.mutex as *u8, null);
+    if status == 0 { q.initialized = 1; status = pthread_cond_init(q.ready as *u8, null); }
+    if status == 0 { q.initialized = 2; status = pthread_create((&q.handle) as *u8, null, &cuda_dax_queue_worker, p as *u8); }
+    if status == 0 { q.started = 1; return Result::Ok(id); }
+    cuda_dax_pipeline_close(id)?;
+    return Result::Err(cuda_res_error(20, status, stream));
+}
+
+fn cuda_dax_queue_submit(p: *CudaDaxPipeline, destination: CudaArgument, source: *DaxView,
+                         offset: u64, bytes: u64) -> Result<u64, CudaError> {
+    if cuda_dax_source_valid(source, offset, bytes) == 0 { return Result::Err(cuda_res_error(15, 0-1, p.stream)); }
+    cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
+    if q.draining != 0 || p.failed != 0 { return cuda_res_fail(20, 0-5, p.stream); }
+    let b: *CudaResource = cuda_res_find(destination.buffer, 2);
+    if b == null || destination.kind != 2 { return cuda_res_fail(15, 0-1, destination.buffer); }
+    if b.owner != p.device || destination.offset > b.bytes || destination.bytes > b.bytes-destination.offset
+        || bytes > destination.bytes { return cuda_res_fail(15, 0-1, destination.buffer); }
+    if cuda_res_find(p.device, 1).poisoned != 0 { return cuda_res_fail(15, 0-4, p.stream); }
+    if bytes == 0 { return cuda_res_ok(0); }
+    if p.last == 18446744073709551615 { return cuda_res_fail(20, 0-2, p.stream); }
+    var slot: i32 = -1;
+    for i in 0..p.depth { if slot < 0 && q.jobs[i].state == 0 { slot = i; } }
+    if slot < 0 { return cuda_res_fail(20, 0-5, p.stream); }
+    p.last = p.last+1; b.users = b.users+1; q.drained = 0;
+    q.sources[slot] = source[0]; q.destinations[slot] = destination;
+    q.jobs[slot].offset = offset; q.jobs[slot].bytes = bytes; q.jobs[slot].ticket = p.last;
+    q.jobs[slot].event = 0; q.jobs[slot].state = 1;
+    let ticket: u64 = p.last; cuda_res_unlock(); cuda_dax_queue_wake(q);
+    return Result::Ok(ticket);
+}
+
+fn cuda_dax_queue_error(p: *CudaDaxPipeline, ticket: u64, error: CudaError) {
+    cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
+    if q.failed_ticket == 0 || ticket < q.failed_ticket {
+        q.failed_ticket = ticket; q.boundary = error.boundary; q.status = error.status; q.resource = error.resource;
+    }
+    p.failed = 1; cuda_res_unlock(); var e: CudaError = error; cuda_error_close(&e);
+}
+
+fn cuda_dax_queue_observe(p: *CudaDaxPipeline, ticket: u64, wait: i32) -> Result<u64, CudaError> {
+    while true {
+        cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
+        if ticket == 0 || ticket > p.last { return cuda_res_fail(20, 0-1, ticket); }
+        if q.failed_ticket != 0 && ticket >= q.failed_ticket {
+            return cuda_res_fail(q.boundary, q.status, q.resource);
+        }
+        if ticket <= p.completed { return cuda_res_ok(1); }
+        if wait == 0 { return cuda_res_ok(0); }
+        cuda_res_unlock(); usleep(1000);
+    }
+    return Result::Ok(0);
+}
+
+// Only the coordinator reads job payloads; publication and retirement hold the table lock.
+fn cuda_dax_queue_upload(p: *CudaDaxPipeline, index: i32) -> Result<u64, CudaError> {
+    let job: *CudaDaxJob = &p.queue.jobs[index];
+    let staging: *CudaDaxStaging = &p.staging[index];
+    let chunk: u64 = cuda_dax_staging_check(p.stream, job.destination[0], job.source, job.offset, job.bytes, staging)?;
+    var done: u64 = 0; var turn: i32 = 0; var chunks: u64 = 0; var completion: u64 = 0;
+    while done < job.bytes {
+        var slot: u64 = staging.slot0; var event: u64 = staging.event0;
+        if turn == 1 { slot = staging.slot1; event = staging.event1; }
+        if chunks >= 2 {
+            while cuda_event_query(event)? == 0 { usleep(1000); }
+        }
+        var count: u64 = chunk; if job.bytes-done < count { count = job.bytes-done; }
+        let pin: CudaArgument = CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: slot, offset: 0, bytes: chunk };
+        let target: CudaArgument = CudaArgument { kind: 2, type_code: job.destination.type_code, value: 0,
+            buffer: job.destination.buffer, offset: job.destination.offset+done, bytes: count };
+        cuda_dax_stage_pooled(pin, job.source, job.offset+done, count, p.queue.pool)?;
+        cuda_upload_async(p.stream, target, pin, count)?; cuda_event_record(event, p.stream)?;
+        done = done+count; chunks = chunks+1; turn = 1-turn; completion = event;
+    }
+    return Result::Ok(completion);
+}
+
+fn cuda_dax_queue_retire(p: *CudaDaxPipeline, ticket: u64) {
+    let q: *CudaDaxQueue = p.queue;
+    if ticket > p.completed { p.completed = ticket; }
+    for i in 0..p.depth {
+        let job: *CudaDaxJob = &q.jobs[i];
+        if job.state != 0 && job.ticket <= ticket {
+            let b: *CudaResource = cuda_res_find(job.destination.buffer, 2); b.users = b.users-1; job.state = 0;
+        }
+    }
+}
+
+// Reservation keeps the stream alive while synchronization runs without the table lock.
+fn cuda_dax_queue_sync(p: *CudaDaxPipeline) -> i32 {
+    cuda_res_lock(); let s: *CudaResource = cuda_res_find(p.stream, 5);
+    let d: *CudaResource = cuda_res_find(p.device, 1);
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { cuda_res_unlock(); return status; }
+    cuda_res_unlock(); status = cuStreamSynchronize(s.native); cuda_res_lock();
+    if status == 0 { cuda_res_stream_release(s); } else { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status); cuda_res_unlock(); return status;
+}
+
+fn cuda_dax_queue_worker(argument: *u8) -> *u8 {
+    let p: *CudaDaxPipeline = argument as *CudaDaxPipeline; let q: *CudaDaxQueue = p.queue;
+    cuda_res_lock(); cuda_res_find(p.stream, 5).executor = pthread_self(); cuda_res_unlock();
+    while true {
+        pthread_mutex_lock(q.mutex as *u8); cuda_res_lock();
+        if q.stop != 0 {
+            cuda_res_find(p.stream, 5).executor = 0;
+            cuda_res_unlock(); pthread_mutex_unlock(q.mutex as *u8); return null;
+        }
+        var slot: i32 = -1; var pending: i32 = -1; var oldest: u64 = 18446744073709551615;
+        var first: u64 = 18446744073709551615;
+        for i in 0..p.depth {
+            let job: *CudaDaxJob = &q.jobs[i];
+            if job.state == 1 && job.ticket <= oldest { oldest = job.ticket; slot = i; }
+            if job.state == 3 && job.ticket <= first { first = job.ticket; pending = i; }
+        }
+        if p.failed != 0 { slot = -1; }
+        if q.draining == 1 && (p.failed != 0 || (slot < 0 && pending < 0)) {
+            cuda_res_unlock(); pthread_mutex_unlock(q.mutex as *u8);
+            let status: i32 = cuda_dax_queue_sync(p); cuda_res_lock();
+            if status == 0 {
+                if q.failed_ticket == 0 { cuda_dax_queue_retire(p, p.last); }
+                else {
+                    cuda_dax_queue_retire(p, q.failed_ticket-1);
+                    for i in 0..p.depth {
+                        if q.jobs[i].state != 0 {
+                            let b: *CudaResource = cuda_res_find(q.jobs[i].destination.buffer, 2);
+                            b.users = b.users-1; q.jobs[i].state = 0;
+                        }
+                    }
+                }
+                q.drained = 1;
+            } else {
+                p.failed = 1; q.drained = 0;
+            }
+            q.drain_status = status; q.draining = 2; cuda_res_unlock(); continue;
+        }
+        if slot < 0 && (pending < 0 || p.failed != 0) {
+            cuda_res_unlock(); pthread_cond_wait(q.ready as *u8, q.mutex as *u8);
+            pthread_mutex_unlock(q.mutex as *u8); continue;
+        }
+        var event: u64 = 0; if pending >= 0 { event = q.jobs[pending].event; }
+        cuda_res_unlock(); pthread_mutex_unlock(q.mutex as *u8);
+        if event != 0 {
+            match cuda_event_query(event) {
+                Result::Ok(ready) => {
+                    if ready != 0 { cuda_res_lock(); cuda_dax_queue_retire(p, first); cuda_res_unlock(); }
+                },
+                Result::Err(error) => { cuda_dax_queue_error(p, first, error); continue; },
+            }
+        }
+        if slot >= 0 {
+            cuda_res_lock(); q.jobs[slot].state = 2; cuda_res_unlock();
+            match cuda_dax_queue_upload(p, slot) {
+                Result::Ok(completion) => {
+                    cuda_res_lock(); q.jobs[slot].event = completion; q.jobs[slot].state = 3; cuda_res_unlock();
+                },
+                Result::Err(error) => { cuda_dax_queue_error(p, oldest, error); },
+            }
+        } else { usleep(1000); }
+    }
+    return null;
+}
+
+fn cuda_dax_queue_drain(p: *CudaDaxPipeline) -> Result<u64, CudaError> {
+    cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
+    if q.draining != 0 { return cuda_res_fail(20, 0-5, p.stream); }
+    q.draining = 1; cuda_res_unlock(); cuda_dax_queue_wake(q);
+    while true {
+        cuda_res_lock();
+        if q.draining == 2 {
+            q.draining = 0; let status: i32 = q.drain_status;
+            if status != 0 { return cuda_res_fail(12, status, p.stream); }
+            return cuda_res_ok(0);
+        }
+        cuda_res_unlock(); usleep(1000);
+    }
+    return Result::Ok(0);
+}
+
+fn cuda_dax_queue_close(id: u64, p: *CudaDaxPipeline) -> Result<u64, CudaError> {
+    cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
+    if q.draining != 0 || (p.failed != 0 && q.drained == 0) || (p.failed == 0 && p.last != p.completed) {
+        cuda_res_find(id, 10).recorded = 0;
+        cuda_res_unlock(); return cuda_dax_pipeline_release(id, Result::Err(cuda_res_error(20, 0-5, id)));
+    }
+    cuda_res_find(id, 10).recorded = 1; q.stop = 1; cuda_res_unlock();
+    if q.started != 0 && q.joined == 0 {
+        cuda_dax_queue_wake(q); let status: i32 = pthread_join(q.handle, null);
+        if status != 0 { return cuda_dax_pipeline_release(id, Result::Err(cuda_res_error(20, status, id))); }
+        q.joined = 1;
+    }
+    var status: i32 = 0;
+    if q.initialized == 2 { status = pthread_cond_destroy(q.ready as *u8); if status == 0 { q.initialized = 1; } }
+    if status == 0 && q.initialized == 1 { status = pthread_mutex_destroy(q.mutex as *u8); if status == 0 { q.initialized = 0; } }
+    if status != 0 { return cuda_dax_pipeline_release(id, Result::Err(cuda_res_error(20, status, id))); }
+    match cuda_dax_pipeline_cleanup(p) {
+        Result::Ok(value) => {},
+        Result::Err(error) => {
+            var e: CudaError = error; e.resource = id; return cuda_dax_pipeline_release(id, Result::Err(e));
+        },
+    }
+    cuda_res_lock(); let s: *CudaResource = cuda_res_find(p.stream, 5);
+    s.reservation = 0; s.executor = 0; s.users = s.users-1;
+    cuda_res_find(p.pool, 9).users = 0;
+    let r: *CudaResource = cuda_res_find(id, 10); r.kind = 0; r.users = 0;
+    cuda_res_unlock(); free(q.jobs); free(q.sources); free(q.destinations); free(q.ready); free(q.mutex); free(q);
+    free(p.staging); free(p.flights); free(p); return Result::Ok(0);
+}

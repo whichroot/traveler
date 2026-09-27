@@ -166,6 +166,7 @@ fn cuda_graph_instantiate(graph: u64) -> Result<u64,CudaError> {
 fn cuda_graph_launch(graph: u64, stream: u64) -> Result<u64,CudaError> {
     cuda_res_lock(); let r: *CudaResource = cuda_res_find(graph, 8); let s: *CudaResource = cuda_res_find(stream, 5);
     if r == null || s == null { return cuda_res_fail(18, 0-1, graph); }
+    if cuda_res_stream_available(s) == 0 { return cuda_res_fail(18, 0-5, stream); }
     if r.owner != s.owner || r.recorded != 2 { return cuda_res_fail(18, 0-1, graph); }
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(18, 0-4, graph); }

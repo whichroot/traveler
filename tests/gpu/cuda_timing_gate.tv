@@ -1,0 +1,70 @@
+import "cuda_resident_checks.tv";
+import "../../src/lib/gpu/cuda_async.tv";
+extern "C" fn mock_async_reset_counts();
+extern "C" fn mock_async_event_waits() -> i32;
+extern "C" fn mock_async_stream_waits() -> i32;
+extern "C" fn mock_async_context_syncs() -> i32;
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_async_complete_event(event: *u8);
+
+fn timing_need(result: Result<CudaElapsedTime, CudaError>, ready: u64, bits: u32) {
+    match result {
+        Result::Ok(value) => { if value.ready != ready || value.milliseconds_bits != bits { exit(30); } },
+        Result::Err(error) => { print(error.status); exit(31); },
+    }
+}
+fn timing_error(result: Result<CudaElapsedTime, CudaError>, status: i32) {
+    match result {
+        Result::Ok(value) => { exit(32); },
+        Result::Err(error) => { if error.status != status { print(error.status); exit(33); } },
+    }
+}
+fn main() -> i32 {
+    let d: u64 = resident_need(cuda_device_open(0));
+    let s: u64 = resident_need(cuda_stream_create(d));
+    let other: u64 = resident_need(cuda_stream_create(d));
+    let a: u64 = resident_need(cuda_event_create_timed(d));
+    let b: u64 = resident_need(cuda_event_create_timed(d));
+    let plain: u64 = resident_need(cuda_event_create(d));
+    let pin: u64 = resident_need(cuda_pinned_alloc(d, 8));
+    let buffer: u64 = resident_need(cuda_buffer_alloc(d, 8));
+    let src: CudaArgument = CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: pin, offset: 0, bytes: 8 };
+    let dst: CudaArgument = resident_typed_view(buffer, 0, 8, 0-8);
+    timing_error(cuda_event_elapsed(a, b), 0-1);
+    resident_need(cuda_event_record(a, s));
+    resident_need(cuda_upload_async(s, dst, src, 8));
+    resident_need(cuda_event_record(b, s));
+    mock_async_reset_counts();
+    timing_need(cuda_event_elapsed(a, b), 0, 0);
+    timing_error(cuda_event_elapsed(b, a), 0-1);
+    timing_error(cuda_event_elapsed(a, plain), 0-1);
+    if mock_async_event_waits() != 0 || mock_async_stream_waits() != 0 || mock_async_context_syncs() != 0 { return 34; }
+    cuda_res_lock(); mock_async_complete_event(cuda_res_find(b, 6).native); cuda_res_unlock();
+    resident_refused(cuda_buffer_close(buffer));
+    timing_need(cuda_event_elapsed(a, b), 1, 1067450368);
+    timing_need(cuda_event_elapsed(b, b), 1, 0);
+    if mock_async_event_waits() != 0 || mock_async_stream_waits() != 0 { return 35; }
+    resident_need(cuda_buffer_close(buffer)); resident_need(cuda_pinned_close(pin));
+    let d2: u64 = resident_need(cuda_device_open(1));
+    let s2: u64 = resident_need(cuda_stream_create(d2));
+    let e2: u64 = resident_need(cuda_event_create_timed(d2));
+    resident_need(cuda_event_record(e2, s2)); timing_error(cuda_event_elapsed(a, e2), 0-1);
+    resident_need(cuda_stream_close(s2)); resident_need(cuda_event_close(e2)); resident_need(cuda_device_close(d2));
+    resident_need(cuda_event_record(b, other));
+    timing_error(cuda_event_elapsed(a, b), 0-1); resident_need(cuda_stream_query(other));
+    resident_need(cuda_event_record(b, s));
+    mock_fail(2, 1); timing_error(cuda_event_elapsed(a, b), 802);
+    resident_need(cuda_stream_close(s)); resident_need(cuda_stream_close(other));
+    resident_need(cuda_event_close(a)); resident_need(cuda_event_close(b)); resident_need(cuda_event_close(plain));
+    timing_error(cuda_event_elapsed(a, b), 0-1);
+    resident_need(cuda_device_close(d));
+    let fault_device: u64 = resident_need(cuda_device_open(0));
+    let fault_stream: u64 = resident_need(cuda_stream_create(fault_device));
+    let fault_event: u64 = resident_need(cuda_event_create_timed(fault_device));
+    resident_need(cuda_event_record(fault_event, fault_stream));
+    mock_fail(33, 0); timing_error(cuda_event_elapsed(fault_event, fault_event), 833);
+    resident_need(cuda_stream_close(fault_stream)); resident_need(cuda_event_close(fault_event));
+    resident_need(cuda_device_close(fault_device));
+    puts("CUDA timing PASS: binary32 milliseconds, pending, refusals, context restore, no query syncs");
+    return 0;
+}

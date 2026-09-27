@@ -11,9 +11,11 @@ struct AsyncStream {
     unsigned count, done, refs, capturing, invalidated;
     AsyncCommand commands[4096];
 };
-typedef struct { AsyncStream *source; unsigned until; } AsyncEvent;
+typedef struct { AsyncStream *source; unsigned until, flags; } AsyncEvent;
 static int async_streams, async_events, async_pinned, async_context_syncs, async_graphs, async_execs;
-static int async_upload_count, async_event_wait_count, async_stream_wait_count, async_max_pending;
+static _Atomic int async_upload_count, async_event_wait_count, async_stream_wait_count, async_max_pending;
+static _Atomic int async_progress;
+void mock_async_progress(int enabled) { async_progress = enabled; }
 void mock_async_reset_counts(void) {
     async_upload_count = async_event_wait_count = async_stream_wait_count = async_max_pending = 0;
 }
@@ -40,6 +42,7 @@ static void async_drain(AsyncStream *s, unsigned until) {
         }
     }
 }
+void mock_async_complete_event(AsyncEvent *event) { async_drain(event->source, event->until); }
 static int mock_async_launch(AsyncStream *s, unsigned operation, uint64_t lanes, void **args) {
     assert(s->count < 4096);
     unsigned n = operation == 3 ? 3 : 2;
@@ -66,8 +69,15 @@ int cuStreamDestroy_v2(AsyncStream *s) {
     async_streams--; async_release(s); return 0;
 }
 int cuEventCreate(void **out, unsigned flags) {
-    assert(flags == 2); int e = fail(13); if (e) return e;
-    *out = calloc(1, sizeof(AsyncEvent)); async_events++; return 0;
+    assert(flags == 2 || flags == 0); int e = fail(13); if (e) return e;
+    AsyncEvent *event = calloc(1, sizeof(AsyncEvent)); event->flags = flags;
+    *out = event; async_events++; return 0;
+}
+int cuEventElapsedTime(float *out, AsyncEvent *a, AsyncEvent *b) {
+    int status = fail(33); if (status) return status;
+    assert(a->source && b->source && !a->flags && !b->flags);
+    if (a->source->done < a->until || b->source->done < b->until) return 600;
+    *out = (float)(b->until - a->until) * 1.25f; return 0;
 }
 int cuEventRecord(AsyncEvent *e, AsyncStream *s) {
     int status = fail(14); if (status) return status;
@@ -80,6 +90,7 @@ int cuStreamWaitEvent(AsyncStream *s, AsyncEvent *e, unsigned flags) {
 }
 int cuEventQuery(AsyncEvent *e) {
     int status = fail(19); if (status) return status;
+    if (async_progress) async_drain(e->source, e->until);
     return e->source->done >= e->until ? 0 : 600;
 }
 int cuEventSynchronize(AsyncEvent *e) {

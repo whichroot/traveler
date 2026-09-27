@@ -2011,6 +2011,12 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
         echo "  FAIL: CUDA expert placement contract"; fail=1
     fi
     if [ -n "$OPT" ]; then
+        if ! python3 "$SCRIPT_DIR/check_cuda_timing.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: CUDA event timing"; fail=1
+        fi
+        if ! python3 "$SCRIPT_DIR/check_cuda_dax_nonblocking.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: CUDA non-blocking DAX submission"; fail=1
+        fi
         if ! python3 "$SCRIPT_DIR/check_cuda_registers.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: CUDA per-kernel register caps"; fail=1
         fi

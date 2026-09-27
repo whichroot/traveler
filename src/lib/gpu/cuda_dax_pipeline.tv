@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 import "cuda_dax.tv";
+import "cuda_dax_async_pipeline.tv";
 
 struct CudaDaxFlight { staging: *CudaDaxStaging, ticket: u64, event: u64 }
 struct CudaDaxPipeline {
     stream: u64, pool: u64, device: u64, depth: i32, chunk: u64,
     flights: *CudaDaxFlight, staging: *CudaDaxStaging, last: u64, completed: u64, failed: i32,
+    queue: *CudaDaxQueue,
 }
 
 fn cuda_dax_pipeline_acquire(pipeline: u64, closing: i32) -> Result<u64, CudaError> {
     cuda_res_lock(); let r: *CudaResource = cuda_res_find(pipeline, 10);
     if r == null { return cuda_res_fail(20, 0-1, pipeline); }
-    if r.users != 0 || (closing == 0 && r.recorded != 0) { return cuda_res_fail(20, 0-5, pipeline); }
-    r.users = 1; return cuda_res_ok(r.native as u64);
+    let p: *CudaDaxPipeline = r.native as *CudaDaxPipeline;
+    if (r.users != 0 && (closing == 1 || p.queue == null)) || (closing == 0 && r.recorded != 0) { return cuda_res_fail(20, 0-5, pipeline); }
+    if closing == 1 && p.queue != null { r.recorded = 1; }
+    r.users = r.users+1; return cuda_res_ok(r.native as u64);
 }
 
 fn cuda_dax_pipeline_release(pipeline: u64, result: Result<u64, CudaError>) -> Result<u64, CudaError> {
-    cuda_res_lock(); cuda_res_find(pipeline, 10).users = 0; cuda_res_unlock(); return result;
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(pipeline, 10); r.users = r.users-1; cuda_res_unlock(); return result;
 }
 
 fn cuda_dax_pipeline_allocate(id: *u64, device: u64, chunk: u64, kind: i32) -> Result<u64, CudaError> {
@@ -55,6 +59,7 @@ fn cuda_dax_pipeline_create(stream: u64, pool: u64, depth: i32, chunk_bytes: u64
 fn cuda_dax_pipeline_new(stream: u64, pool: u64, depth: i32, chunk: u64) -> Result<u64, CudaError> {
     cuda_res_lock(); let s: *CudaResource = cuda_res_find(stream, 5);
     if s == null || depth < 2 || depth > 255 || chunk == 0 { return cuda_res_fail(20, 0-1, stream); }
+    if s.reservation != 0 { return cuda_res_fail(20, 0-5, stream); }
     if chunk > 18446744073709551615/((depth as u64)*2) { return cuda_res_fail(20, 0-2, stream); }
     let d: *CudaResource = cuda_res_find(s.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(20, 0-4, stream); }
@@ -64,6 +69,7 @@ fn cuda_dax_pipeline_new(stream: u64, pool: u64, depth: i32, chunk: u64) -> Resu
     let r: *CudaResource = cuda_res_slot(); if r == null { return cuda_res_fail(20, 0-2, stream); }
     let p: *CudaDaxPipeline = alloc(1);
     p.stream = stream; p.pool = pool; p.device = s.owner; p.depth = depth; p.chunk = chunk;
+    p.queue = null;
     p.last = 0; p.completed = 0; p.failed = 0; p.flights = alloc(depth); p.staging = alloc(depth);
     var i: i32 = 0;
     while i < depth {
@@ -118,13 +124,19 @@ fn cuda_dax_pipeline_observe(p: *CudaDaxPipeline, ticket: u64, wait: i32) -> Res
 
 fn cuda_dax_pipeline_query(pipeline: u64, ticket: u64) -> Result<u64, CudaError> {
     let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
-    let result: Result<u64, CudaError> = cuda_dax_pipeline_observe(address as *CudaDaxPipeline, ticket, 0);
+    let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    var result: Result<u64, CudaError> = Result::Ok(0);
+    if p.queue != null { result = cuda_dax_queue_observe(p, ticket, 0); }
+    else { result = cuda_dax_pipeline_observe(p, ticket, 0); }
     return cuda_dax_pipeline_release(pipeline, result);
 }
 
 fn cuda_dax_pipeline_wait(pipeline: u64, ticket: u64) -> Result<u64, CudaError> {
     let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
-    let result: Result<u64, CudaError> = cuda_dax_pipeline_observe(address as *CudaDaxPipeline, ticket, 1);
+    let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    var result: Result<u64, CudaError> = Result::Ok(0);
+    if p.queue != null { result = cuda_dax_queue_observe(p, ticket, 1); }
+    else { result = cuda_dax_pipeline_observe(p, ticket, 1); }
     return cuda_dax_pipeline_release(pipeline, result);
 }
 
@@ -172,6 +184,9 @@ fn cuda_dax_pipeline_submit(pipeline: u64, destination: CudaArgument, source: *D
                             offset: u64, bytes: u64) -> Result<u64, CudaError> {
     let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
     let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    if p.queue != null {
+        return cuda_dax_pipeline_release(pipeline, cuda_dax_queue_submit(p, destination, source, offset, bytes));
+    }
     match cuda_dax_pool_acquire(p.pool) {
         Result::Ok(worker) => {
             let result: Result<u64, CudaError> = cuda_dax_pipeline_enqueue(p, destination, source, offset, bytes, worker as *CudaDaxPool);
@@ -185,6 +200,7 @@ fn cuda_dax_pipeline_submit(pipeline: u64, destination: CudaArgument, source: *D
 fn cuda_dax_pipeline_drain(pipeline: u64) -> Result<u64, CudaError> {
     let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
     let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    if p.queue != null { return cuda_dax_pipeline_release(pipeline, cuda_dax_queue_drain(p)); }
     let result: Result<u64, CudaError> = cuda_stream_sync(p.stream);
     match result {
         Result::Ok(value) => { cuda_dax_pipeline_retire(p, p.last); p.failed = 0; },
@@ -219,11 +235,13 @@ fn cuda_dax_pipeline_cleanup(p: *CudaDaxPipeline) -> Result<u64, CudaError> {
 fn cuda_dax_pipeline_close(pipeline: u64) -> Result<u64, CudaError> {
     let address: u64 = cuda_dax_pipeline_acquire(pipeline, 1)?;
     let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    if p.queue != null { return cuda_dax_queue_close(pipeline, p); }
     if p.failed != 0 || p.last != p.completed { return cuda_dax_pipeline_release(pipeline, Result::Err(cuda_res_error(20, 0-5, pipeline))); }
     cuda_res_lock(); let r: *CudaResource = cuda_res_find(pipeline, 10); r.recorded = 1; cuda_res_unlock();
     match cuda_dax_pipeline_cleanup(p) {
         Result::Ok(value) => {
-            free(p.staging); free(p.flights); free(p); cuda_res_lock(); r.kind = 0; r.users = 0; return cuda_res_ok(0);
+            cuda_res_lock(); r.kind = 0; r.users = 0; cuda_res_unlock();
+            free(p.staging); free(p.flights); free(p); return Result::Ok(0);
         },
         Result::Err(error) => {
             var e: CudaError = error; e.resource = pipeline;

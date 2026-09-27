@@ -943,12 +943,14 @@ DAX view into driver-allocated pinned host memory before explicit upload.
 **Streams, events, and pinned staging (K4 in progress)**
 
 Import `src/lib/gpu/cuda_async.tv` for explicit nonblocking streams and events
-with timing disabled. Handles use the resident registry's generation and device
+with timing disabled by default. Handles use the resident registry's generation and device
 ownership checks. The initial API is:
 
 | Operation | Contract |
 | --- | --- |
 | `cuda_stream_create(device)` / `cuda_event_create(device)` | Return owned handles. |
+| `cuda_event_create_timed(device)` | Return a timing-enabled event. |
+| `cuda_event_elapsed(start, end)` | Query readiness and IEEE binary32 millisecond bits without synchronization. |
 | `cuda_launch_async(kernel, stream, lo, hi, args, count)` | Enqueue an independent kernel with checked arguments. |
 | `cuda_launch_grid_async(kernel, stream, geometry, args, count)` | Enqueue a cooperative kernel with checked geometry and arguments. |
 | `cuda_event_record(event, stream)` | Record completion of the stream's current prefix. |
@@ -979,6 +981,10 @@ their buffers synchronously, and using their buffers in a synchronous launch ref
 An event cannot be re-recorded while any stream retains its current recording.
 Queries/waits on unrecorded events refuse. All event/stream pairings require the
 same resident device owner.
+
+Elapsed queries require an ordered pair of timing-enabled events recorded on the
+same stream. See [CUDA event timing](spec/cuda-event-timing.md) for the pending
+result, units, prefix retirement, and error contract.
 
 Pinned copies check both view bounds and require the stream, device buffer, and
 pinned allocation to share one resident device owner. Zero-byte copies are no-ops

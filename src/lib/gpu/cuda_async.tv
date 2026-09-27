@@ -3,6 +3,10 @@ import "cuda_resident.tv";
 extern "C" fn memcpy(destination: *u8, source: *u8, count: usize) -> *u8;
 
 fn cuda_res_async_create(device: u64, kind: i32) -> Result<u64, CudaError> {
+    return cuda_res_async_create_flags(device, kind, 2);
+}
+
+fn cuda_res_async_create_flags(device: u64, kind: i32, flags: u32) -> Result<u64, CudaError> {
     cuda_res_lock();
     let d: *CudaResource = cuda_res_find(device, 1);
     if d == null { return cuda_res_fail(10, 0-1, device); }
@@ -13,9 +17,10 @@ fn cuda_res_async_create(device: u64, kind: i32) -> Result<u64, CudaError> {
     if status != 0 { return cuda_res_fail(10, status, device); }
     var native: *u8 = null;
     if kind == 5 { status = cuStreamCreate(&native, 1); }
-    else { status = cuEventCreate(&native, 2); }
+    else { status = cuEventCreate(&native, flags); }
     if status == 0 {
         r.kind = kind; r.owner = device; r.native = native;
+        if kind == 6 && flags == 0 { r.timing = 1; }
         if kind == 5 {
             r.uses = alloc(1024); r.uses_at = alloc(1024); var i: i32 = 0;
             while i < 1024 { r.uses[i] = 0; r.uses_at[i] = 0; i = i + 1; }
@@ -29,10 +34,41 @@ fn cuda_res_async_create(device: u64, kind: i32) -> Result<u64, CudaError> {
 fn cuda_stream_create(device: u64) -> Result<u64, CudaError> { return cuda_res_async_create(device, 5); }
 fn cuda_event_create(device: u64) -> Result<u64, CudaError> { return cuda_res_async_create(device, 6); }
 
+fn cuda_event_create_timed(device: u64) -> Result<u64, CudaError> { return cuda_res_async_create_flags(device, 6, 0); }
+
+struct CudaElapsedTime { ready: u64, milliseconds_bits: u32 }
+
+fn cuda_event_elapsed(start: u64, end: u64) -> Result<CudaElapsedTime, CudaError> {
+    cuda_res_lock();
+    let a: *CudaResource = cuda_res_find(start, 6); let b: *CudaResource = cuda_res_find(end, 6);
+    if a == null || b == null {
+        cuda_res_unlock(); return Result::Err(cuda_res_error(12, 0-1, end));
+    }
+    if a.owner != b.owner || a.timing == 0 || b.timing == 0 || a.recorded == 0 || b.recorded == 0
+        || a.parent != b.parent || a.sequence > b.sequence {
+        cuda_res_unlock(); return Result::Err(cuda_res_error(12, 0-1, end));
+    }
+    let d: *CudaResource = cuda_res_find(a.owner, 1);
+    if d.poisoned != 0 { cuda_res_unlock(); return Result::Err(cuda_res_error(12, 0-4, end)); }
+    var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
+    if status != 0 { cuda_res_unlock(); return Result::Err(cuda_res_error(12, status, end)); }
+    var bits: u32 = 0; var ready: u64 = 1;
+    status = cuEventElapsedTime(&bits, a.native, b.native);
+    if status == 600 { ready = 0; bits = 0; status = 0; }
+    else if status == 0 {
+        let stream: *CudaResource = cuda_res_find(b.parent, 5);
+        if stream != null { cuda_res_stream_release_prefix(stream, b.sequence); }
+    } else { cuda_res_poison(d); }
+    status = cuda_res_leave(d, previous, status); cuda_res_unlock();
+    if status != 0 { return Result::Err(cuda_res_error(12, status, end)); }
+    return Result::Ok(CudaElapsedTime { ready: ready, milliseconds_bits: bits });
+}
+
 fn cuda_res_event_command(stream_id: u64, event_id: u64, record: i32) -> Result<u64, CudaError> {
     cuda_res_lock();
     let stream: *CudaResource = cuda_res_find(stream_id, 5); let event: *CudaResource = cuda_res_find(event_id, 6);
     if stream == null || event == null || stream.owner != event.owner { return cuda_res_fail(11, 0-1, event_id); }
+    if cuda_res_stream_available(stream) == 0 { return cuda_res_fail(11, 0-5, stream_id); }
     let d: *CudaResource = cuda_res_find(stream.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(11, 0-4, stream_id); }
     if record == 1 && event.users != 0 { return cuda_res_fail(11, 0-5, event_id); }
@@ -59,6 +95,7 @@ fn cuda_res_async_complete(id: u64, kind: i32, query: i32) -> Result<u64, CudaEr
     cuda_res_lock();
     let r: *CudaResource = cuda_res_find(id, kind);
     if r == null { return cuda_res_fail(12, 0-1, id); }
+    if kind == 5 { if cuda_res_stream_available(r) == 0 { return cuda_res_fail(12, 0-5, id); } }
     if kind == 6 && r.recorded == 0 { return cuda_res_fail(12, 0-1, id); }
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);
@@ -166,6 +203,7 @@ fn cuda_res_copy_async(stream_id: u64, device_view: CudaArgument, host_view: Cud
     if stream == null || device == null || host == null || device_view.kind != 2 || host_view.kind != 3
         || host_view.type_code != 0-8 { return cuda_res_fail(15, 0-1, stream_id); }
     if device.owner != stream.owner || host.owner != stream.owner { return cuda_res_fail(15, 0-1, stream_id); }
+    if cuda_res_stream_available(stream) == 0 { return cuda_res_fail(15, 0-5, stream_id); }
     if device_view.offset > device.bytes || device_view.bytes > device.bytes-device_view.offset || bytes > device_view.bytes
         || host_view.offset > host.bytes || host_view.bytes > host.bytes-host_view.offset || bytes > host_view.bytes { return cuda_res_fail(15, 0-1, stream_id); }
     let d: *CudaResource = cuda_res_find(stream.owner, 1);

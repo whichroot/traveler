@@ -5,8 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdatomic.h>
 
-static void *current = (void *)0x123;
+static _Thread_local void *current = (void *)0x123;
 static int fault, delay, uploads, downloads, launches, allocations, modules, contexts;
 void mock_fail(int operation, int after) { fault = operation; delay = after; }
 static int fail(int operation) {
