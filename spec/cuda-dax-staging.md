@@ -132,6 +132,25 @@ the supplied stream to drain outstanding work before reuse or destruction;
 an event whose recording failed is not a completion witness. Failed driver
 operations retain the existing conservative resource holds and device poisoning.
 
+## Pool copy mode
+
+```tv
+fn cuda_dax_pool_set_copy_mode(pool: u64, mode: u64) -> Result<u64, CudaError>;
+```
+
+New pools use mode `0` (`memcpy`). Mode `1` opts into `stream_copy_bytes`
+for worker slices of at least 4096 bytes, including the single-worker path.
+The builtin checks CPU and OS support and falls back to `memcpy` where needed;
+see [Host streaming stores](streaming-stores.md). Each vector writer fences
+before publishing completion. Existing pinned-slot retention and CUDA event
+completion rules still apply.
+
+Set the mode while the pool is idle, before an asynchronous pipeline reserves
+it. Invalid modes report boundary 19, status `-1`; a busy or reserved pool
+reports boundary 19, status `-5`. Changing the mode does not change pool size
+or allocate worker threads. Measure both modes on the deployment workload;
+the opt-in setting does not guarantee a bandwidth improvement.
+
 ## Cross-call pipelines with caller-side staging
 
 Import `src/lib/gpu/cuda_dax_pipeline.tv` for an owned ring of staging records:

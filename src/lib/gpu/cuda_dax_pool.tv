@@ -19,6 +19,19 @@ struct CudaDaxPool {
     handles: **u8, workers: *CudaDaxWorker,
     stop: i32, generation: u64, active: i32, remaining: i32,
     destination: *u8, source: *u8, bytes: u64,
+    copy_mode: u64,
+}
+
+fn cuda_dax_pool_copy_bytes(p: *CudaDaxPool, destination: *u8, source: *u8, bytes: u64) {
+    if p.copy_mode == 1 && bytes >= 4096 { stream_copy_bytes(destination, source, bytes); }
+    else { memcpy(destination, source, bytes as usize); }
+}
+
+fn cuda_dax_pool_set_copy_mode(pool: u64, mode: u64) -> Result<u64, CudaError> {
+    if mode > 1 { return Result::Err(cuda_res_error(19, 0-1, pool)); }
+    let address: u64 = cuda_dax_pool_acquire(pool)?;
+    let p: *CudaDaxPool = address as *CudaDaxPool; p.copy_mode = mode;
+    cuda_dax_pool_release(pool); return Result::Ok(0);
 }
 
 fn cuda_dax_pool_worker(arg: *u8) -> *u8 {
@@ -38,7 +51,7 @@ fn cuda_dax_pool_worker(arg: *u8) -> *u8 {
                 let destination: *u8 = ((p.destination as u64)+offset) as *u8;
                 let source: *u8 = ((p.source as u64)+offset) as *u8;
                 pthread_mutex_unlock(p.mutex as *u8);
-                memcpy(destination, source, bytes as usize);
+                cuda_dax_pool_copy_bytes(p, destination, source, bytes);
                 pthread_mutex_lock(p.mutex as *u8);
                 p.remaining = p.remaining-1;
                 if p.remaining == 0 { pthread_cond_signal(p.complete as *u8); }
@@ -97,6 +110,7 @@ fn cuda_dax_pool_create(threads: i32) -> Result<u64, CudaError> {
     p.threads = threads; p.started = 0; p.joined = 0; p.initialized = 0;
     p.stop = 0; p.generation = 0; p.active = 0; p.remaining = 0;
     p.destination = null; p.source = null; p.bytes = 0;
+    p.copy_mode = 0;
     p.mutex = null; p.ready = null; p.complete = null; p.handles = null; p.workers = null;
     r.kind = 9; r.native = p as *u8; r.users = 1; let id: u64 = r.id; cuda_res_unlock();
     var status: i32 = 0;
@@ -125,7 +139,7 @@ fn cuda_dax_pool_create(threads: i32) -> Result<u64, CudaError> {
 // The caller holds the pool for the upload and retains the checked pinned range.
 fn cuda_dax_pool_copy(p: *CudaDaxPool, destination: *u8, source: *u8, bytes: u64) -> Result<u64, CudaError> {
     if bytes == 0 { return Result::Ok(0); }
-    if p.threads == 1 { memcpy(destination, source, bytes as usize); return Result::Ok(0); }
+    if p.threads == 1 { cuda_dax_pool_copy_bytes(p, destination, source, bytes); return Result::Ok(0); }
     if p.generation == 18446744073709551615 { return Result::Err(cuda_res_error(19, 0-2, 0)); }
     pthread_mutex_lock(p.mutex as *u8);
     p.destination = destination; p.source = source; p.bytes = bytes;

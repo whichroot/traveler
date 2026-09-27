@@ -586,6 +586,17 @@ else
     FAILURES="$FAILURES struct_copies"
 fi
 
+TOTAL=$((TOTAL + 1))
+if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ] || [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ] || [ "$TV_UNAME_S" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+    echo "  stream_copy SKIP (requires x86-64 Linux, python3, LLVM tools, and a linker)"
+    SKIP=$((SKIP + 1))
+elif python3 "$SCRIPT_DIR/check_stream_copy.py" "$TVC_SELF" "$LLC" "$OPT" "$LINKER"; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    FAILURES="$FAILURES stream_copy"
+fi
+
 # #54 gate: for-loop bound WIDTH ADOPTION — i64/usize/u32/narrow/wide-literal
 # bounds (serial + pfor-dispatched via the i64 ABI + the prepeek-miss call
 # bound). tvc_self-only — the frozen C seed refuses wide bounds (i32-only

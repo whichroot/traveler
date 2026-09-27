@@ -2014,6 +2014,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
         if ! python3 "$SCRIPT_DIR/check_cuda_dax_registered.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: CUDA registered DAX upload sources"; fail=1
         fi
+        if ! python3 "$SCRIPT_DIR/check_cuda_dax_streaming.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+            echo "  FAIL: CUDA streaming DAX pool copies"; fail=1
+        fi
         if ! python3 "$SCRIPT_DIR/check_cuda_sync_lock.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
             echo "  FAIL: CUDA synchronization lock and prefix retention"; fail=1
         fi

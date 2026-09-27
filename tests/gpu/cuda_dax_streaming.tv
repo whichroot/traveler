@@ -1,0 +1,40 @@
+import "../../src/lib/gpu/cuda_dax_pipeline.tv";
+extern "C" fn mock_async_progress(enabled: i32);
+
+fn dax_streaming_round(threads: i32) {
+    let n: u64 = 131119;
+    let data: *u8 = alloc((n+3) as i64); let back: *u8 = alloc((n+10) as i64);
+    for i in 0..((n+3) as i64) { data[i] = dax_pattern(i); }
+    for i in 0..((n+10) as i64) { back[i] = 205; }
+    var source: DaxView = DaxView { ptr: data, offset: 0, length: (n+3) as i64 };
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let pool: u64 = resident_need(cuda_dax_pool_create(threads));
+    dax_error(cuda_dax_pool_set_copy_mode(pool, 2), 19, 0-1);
+    resident_need(cuda_dax_pool_set_copy_mode(pool, 1));
+    let pipeline: u64 = resident_need(cuda_dax_pipeline_create_async(s, pool, 2, 32773));
+    let buffer: u64 = resident_need(cuda_buffer_alloc(d, n+10));
+    let whole: CudaArgument = resident_typed_view(buffer, 0, n+10, 0-8);
+    let destination: CudaArgument = resident_typed_view(buffer, 5, n, 0-8);
+    resident_need(cuda_upload(whole, back, n+10));
+    mock_async_progress(1); dax_copy_pause(data, n+3);
+    let ticket: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, destination, &source, 3, n));
+    dax_copy_wait(threads);
+    if resident_need(cuda_dax_pipeline_query(pipeline, ticket)) != 0 { exit(180); }
+    dax_error(cuda_dax_pool_set_copy_mode(pool, 0), 19, 0-5);
+    dax_error(cuda_buffer_close(buffer), 9, 0-5);
+    dax_copy_release(); resident_need(cuda_dax_pipeline_wait(pipeline, ticket));
+    resident_need(cuda_download(back, whole, n+10));
+    for i in 0..((n+10) as i64) {
+        var expected: u8 = 205;
+        if i >= 5 && i < (n+5) as i64 { expected = dax_pattern(i-2); }
+        if back[i] != expected { print(i); exit(181); }
+    }
+    resident_need(cuda_dax_pipeline_close(pipeline)); resident_need(cuda_dax_pool_set_copy_mode(pool, 0));
+    resident_need(cuda_dax_pool_close(pool)); resident_need(cuda_stream_close(s));
+    resident_need(cuda_buffer_close(buffer)); resident_need(cuda_device_close(d));
+    free(data); free(back); if mock_clean() == 0 { exit(182); }
+}
+fn main() -> i32 {
+    dax_streaming_round(1); dax_streaming_round(4);
+    puts("DAX streaming PASS: one/four workers, paused copies, uneven chunks, guards, and mode retention"); return 0;
+}

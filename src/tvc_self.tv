@@ -13367,6 +13367,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         if ieee_operation(call_name) >= 0 && find_func(call_name) < 0 {
             return ieee_codegen(node, ieee_operation(call_name));
         }
+        if str_eq(&g_strings[call_name], "stream_copy_bytes") == 1 && find_func(call_name) < 0 {
+            return codegen_stream_copy(node);
+        }
         if str_eq(&g_strings[call_name], "stream_store_fence") == 1
             && find_func(call_name) < 0 {
             if g_nodes[node].nargs != 0 || (g_nodes[node].flags & 1048576) == 0 {
@@ -32721,6 +32724,70 @@ fn global_const_init(prog: i32, upto: i32, ginit: i32, ok_io: *i32) -> u64 {
 }
 
 var g_stream_store_count: i64 = 0;
+var g_use_stream_copy: i32 = 0;
+
+fn codegen_stream_copy(node: i32) -> IRValue {
+    if g_nodes[node].nargs != 3 || (g_nodes[node].flags & 1048576) == 0 {
+        diag_error_at(g_nodes[node].line, g_nodes[node].col, "stream_copy_bytes(dst, src, bytes) requires a standalone statement and three arguments");
+        return IRValue { reg: 0, type_off: NULL_STR };
+    }
+    if g_eval_mode == 1 || g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1 {
+        diag_error_at(g_nodes[node].line, g_nodes[node].col, "stream_copy_bytes requires native CPU codegen");
+        return IRValue { reg: 0, type_off: NULL_STR };
+    }
+    let base: i32 = g_nodes[node].args_start;
+    let destination: IRValue = codegen_expr(g_args[base], str_intern("*u8"));
+    let source: IRValue = codegen_expr(g_args[base+1], str_intern("*u8"));
+    let bytes: IRValue = codegen_expr(g_args[base+2], str_intern("u64"));
+    if destination.type_off != str_intern("*u8") || source.type_off != str_intern("*u8") || bytes.type_off != str_intern("u64") {
+        diag_error_at(g_nodes[node].line, g_nodes[node].col, "stream_copy_bytes requires *u8, *u8, and u64 arguments");
+        return IRValue { reg: 0, type_off: NULL_STR };
+    }
+    g_use_stream_copy = 1;
+    ir_wr("  call void @__traveler_stream_copy(ptr "); ir_wr_reg(destination.reg);
+    ir_wr(", ptr "); ir_wr_reg(source.reg); ir_wr(", i64 "); ir_wr_reg(bytes.reg); ir_wr(")\n");
+    return IRValue { reg: 0, type_off: NULL_STR };
+}
+
+fn emit_stream_copy() {
+    if g_use_stream_copy == 0 { return; }
+    ir_wr("\ndeclare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)\n");
+    ir_wr("define internal void @__traveler_stream_copy(ptr %dst, ptr %src, i64 %n) {\nentry:\n");
+    if tp_starts(g_target_triple, "x86_64-") == 1 {
+        ir_wr("  %large = icmp uge i64 %n, 4096\n  br i1 %large, label %cpu, label %fallback\ncpu:\n");
+        ir_wr("  %leaf0 = call {i32, i32, i32, i32} asm sideeffect \"cpuid\", \"={ax},={bx},={cx},={dx},0,2,~{flags}\"(i32 0, i32 0)\n");
+        ir_wr("  %max = extractvalue {i32, i32, i32, i32} %leaf0, 0\n  %has7 = icmp uge i32 %max, 7\n  br i1 %has7, label %os, label %fallback\nos:\n");
+        ir_wr("  %leaf1 = call {i32, i32, i32, i32} asm sideeffect \"cpuid\", \"={ax},={bx},={cx},={dx},0,2,~{flags}\"(i32 1, i32 0)\n");
+        ir_wr("  %ecx = extractvalue {i32, i32, i32, i32} %leaf1, 2\n  %osbits = and i32 %ecx, 402653184\n  %hasos = icmp eq i32 %osbits, 402653184\n  br i1 %hasos, label %xstate, label %fallback\nxstate:\n");
+        ir_wr("  %xcr = call {i32, i32} asm sideeffect \"xgetbv\", \"={ax},={dx},{cx}\"(i32 0)\n  %xlow = extractvalue {i32, i32} %xcr, 0\n");
+        ir_wr("  %state = and i32 %xlow, 230\n  %ready = icmp eq i32 %state, 230\n  br i1 %ready, label %feature, label %fallback\nfeature:\n");
+        ir_wr("  %leaf7 = call {i32, i32, i32, i32} asm sideeffect \"cpuid\", \"={ax},={bx},={cx},={dx},0,2,~{flags}\"(i32 7, i32 0)\n");
+        ir_wr("  %ebx = extractvalue {i32, i32, i32, i32} %leaf7, 1\n  %avx512 = and i32 %ebx, 65536\n  %supported = icmp ne i32 %avx512, 0\n  br i1 %supported, label %stream, label %fallback\nstream:\n");
+        ir_wr("  call void @__traveler_stream_copy_avx512(ptr %dst, ptr %src, i64 %n)\n  ret void\nfallback:\n");
+    }
+    ir_wr("  call void @llvm.memcpy.p0.p0.i64(ptr %dst, ptr %src, i64 %n, i1 false)\n  ret void\n}\n");
+    if tp_starts(g_target_triple, "x86_64-") == 0 { return; }
+    ir_wr("define internal void @__traveler_stream_copy_avx512(ptr %dst, ptr %src, i64 %n) noinline \"target-features\"=\"+avx512f\" {\nentry:\n");
+    ir_wr("  %address = ptrtoint ptr %dst to i64\n  %negative = sub i64 0, %address\n  %alignment = and i64 %negative, 63\n  %short = icmp ult i64 %n, %alignment\n");
+    ir_wr("  %head = select i1 %short, i64 %n, i64 %alignment\n  call void @llvm.memcpy.p0.p0.i64(ptr %dst, ptr %src, i64 %head, i1 false)\n");
+    ir_wr("  %remain = sub i64 %n, %head\n  %bulk = and i64 %remain, -256\n  %bulk_end = add i64 %head, %bulk\n  br label %wide\nwide:\n");
+    ir_wr("  %i = phi i64 [ %head, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %i, %bulk_end\n  br i1 %more, label %body, label %small\nbody:\n");
+    for j in 0..4 {
+        ir_wr("  %o"); ir_wr_int(j as i64); ir_wr(" = add i64 %i, "); ir_wr_int((j*64) as i64); ir_wr("\n");
+        ir_wr("  %s"); ir_wr_int(j as i64); ir_wr(" = getelementptr i8, ptr %src, i64 %o"); ir_wr_int(j as i64); ir_wr("\n");
+        ir_wr("  %d"); ir_wr_int(j as i64); ir_wr(" = getelementptr i8, ptr %dst, i64 %o"); ir_wr_int(j as i64); ir_wr("\n");
+        ir_wr("  %v"); ir_wr_int(j as i64); ir_wr(" = load <8 x i64>, ptr %s"); ir_wr_int(j as i64); ir_wr(", align 1\n");
+    }
+    for j in 0..4 {
+        ir_wr("  store <8 x i64> %v"); ir_wr_int(j as i64); ir_wr(", ptr %d"); ir_wr_int(j as i64); ir_wr(", align 64, !nontemporal !{i32 1}\n");
+    }
+    ir_wr("  %next = add i64 %i, 256\n  br label %wide\nsmall:\n  %body_bytes = and i64 %remain, -64\n  %body_end = add i64 %head, %body_bytes\n  br label %rest\nrest:\n");
+    ir_wr("  %r = phi i64 [ %bulk_end, %small ], [ %rnext, %rest_body ]\n  %rmore = icmp ult i64 %r, %body_end\n  br i1 %rmore, label %rest_body, label %tail\nrest_body:\n");
+    ir_wr("  %rs = getelementptr i8, ptr %src, i64 %r\n  %rd = getelementptr i8, ptr %dst, i64 %r\n  %rv = load <8 x i64>, ptr %rs, align 1\n  store <8 x i64> %rv, ptr %rd, align 64, !nontemporal !{i32 1}\n");
+    ir_wr("  %rnext = add i64 %r, 64\n  br label %rest\ntail:\n");
+    ir_wr("  %ts = getelementptr i8, ptr %src, i64 %body_end\n  %td = getelementptr i8, ptr %dst, i64 %body_end\n  %left = sub i64 %n, %body_end\n");
+    ir_wr("  call void @llvm.memcpy.p0.p0.i64(ptr %td, ptr %ts, i64 %left, i1 false)\n  call void asm sideeffect \"sfence\", \"~{memory}\"()\n  ret void\n}\n");
+}
 
 fn stream_store_target(node: i32) -> i32 {
     if g_eval_mode == 1 || g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1
@@ -32754,7 +32821,8 @@ fn prepare_stream_stores(prog: i32) {
         if g_nodes[n].kind == AST_EXPR_STMT {
             let call: i32 = g_nodes[n].child0;
             if call >= 0 && g_nodes[call].kind == AST_CALL
-                && str_eq(&g_strings[g_nodes[call].name0], "stream_store_fence") == 1 {
+                && (str_eq(&g_strings[g_nodes[call].name0], "stream_store_fence") == 1
+                    || str_eq(&g_strings[g_nodes[call].name0], "stream_copy_bytes") == 1) {
                 g_nodes[call].flags = g_nodes[call].flags | 1048576;
             }
             if shadowed == 0 && call >= 0 && g_nodes[call].kind == AST_CALL
@@ -32777,6 +32845,7 @@ fn prepare_stream_stores(prog: i32) {
 }
 
 fn codegen_program(prog: i32) {
+    g_use_stream_copy = 0;
     prepare_stream_stores(prog);
     emit_preamble();
 
@@ -33221,6 +33290,7 @@ fn codegen_program(prog: i32) {
     //      value was printed. Lazy: gates set during the print codegen above. ----
     emit_wide_print();
     emit_checked_integer_helpers();
+    emit_stream_copy();
 
     // Lazy: declared only when a wide-element alloc was emitted above.
     if g_used_aligned_alloc == 1 {

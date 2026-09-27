@@ -44,7 +44,7 @@ void dax_copy_release(void) {
     pthread_mutex_unlock(&lock);
 }
 
-void *dax_test_memcpy(void *dst, const void *src, size_t bytes) {
+static void dax_copy_latch(void *dst, const void *src, size_t bytes) {
     pthread_mutex_lock(&lock);
     uintptr_t d = (uintptr_t)dst, s = (uintptr_t)src;
     if (!released && ((d >= watched && d - watched < watched_bytes) ||
@@ -55,9 +55,22 @@ void *dax_test_memcpy(void *dst, const void *src, size_t bytes) {
         while (!released) pthread_cond_wait(&changed, &lock);
     }
     pthread_mutex_unlock(&lock);
+}
+
+void *dax_test_memcpy(void *dst, const void *src, size_t bytes) {
+    dax_copy_latch(dst, src, bytes);
     copied_bytes += bytes;
     return memcpy(dst, src, bytes);
 }
+
+#ifdef MOCK_STREAM_COPY
+extern void dax_stream_copy_impl(void *, const void *, uint64_t);
+void dax_test_stream_copy(void *dst, const void *src, uint64_t bytes) {
+    dax_copy_latch(dst, src, (size_t)bytes);
+    copied_bytes += bytes;
+    dax_stream_copy_impl(dst, src, bytes);
+}
+#endif
 
 void dax_thread_fail(int after) {
     fail_after = after;

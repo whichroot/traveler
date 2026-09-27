@@ -47,6 +47,10 @@ with tempfile.TemporaryDirectory(prefix='traveler-dax-parallel-') as directory:
     for symbol in symbols:
         assert f'@{symbol}(' in ir, symbol
         ir = ir.replace(f'@{symbol}(', f'@dax_test_{symbol}(')
+    if FIXTURE == 'streaming':
+        ir = ir.replace('define internal void @__traveler_stream_copy(', 'define void @dax_stream_copy_impl(')
+        ir = ir.replace('@__traveler_stream_copy(', '@dax_test_stream_copy(')
+        ir += '\ndeclare void @dax_test_stream_copy(ptr, ptr, i64)\n'
     (temp/'checked.ll').write_text(ir)
     modes = ['none', 'o1'] if OPT else ['none']
     if OPT and platform.system() == 'Linux' and platform.machine() == 'x86_64':
@@ -60,6 +64,8 @@ with tempfile.TemporaryDirectory(prefix='traveler-dax-parallel-') as directory:
         cpu = ['-mcpu=x86-64'] if mode == 'o3' else []
         run(LLC, '-filetype=obj', *cpu, selected, '-o', temp/f'{mode}.o')
         flags = [] if platform.system() == 'Darwin' else ['-no-pie']
+        if FIXTURE == 'streaming':
+            flags += ['-DMOCK_STREAM_COPY']
         run(LINK, *flags, '-pthread', '-Wall', '-Wextra', '-Werror', temp/f'{mode}.o',
             HERE/'cuda_driver_mock.c', HERE/'cuda_dax_parallel_mock.c', '-o', temp/mode)
         for threads in (1, 4):

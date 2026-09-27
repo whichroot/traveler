@@ -1,6 +1,6 @@
 # Host streaming stores
 
-Native x86-64 CPU codegen provides two builtins:
+Native x86-64 CPU codegen provides two scalar streaming builtins:
 
 ```tv
 stream_store_u64(dst, index, value);
@@ -48,6 +48,33 @@ Function declarations with the builtin names retain ordinary function-call
 semantics. Builtin streaming operations are refused by `--eval`, device
 emission, AGX dispatch, and non-x86-64 native targets.
 
+## Dispatched byte copies
+
+Native CPU codegen also provides a standalone builtin:
+
+```tv
+stream_copy_bytes(dst, src, bytes);
+```
+
+Both pointers have type `*u8`; `bytes` has type `u64`. The caller provides
+valid, disjoint ranges of that length. No pointer alignment is required.
+Operands are evaluated once. A user function with this name takes precedence.
+Evaluation and device/AGX emission refuse the builtin.
+
+Copies below 4096 bytes use `memcpy`. Larger x86-64 copies check CPUID for
+AVX, OSXSAVE, and AVX-512F, and XGETBV for the required XMM/YMM/opmask/ZMM
+state. Unsupported CPUs, OS configurations, and non-x86 targets use `memcpy`.
+The AVX-512 helper has isolated target features; callers need no global
+AVX-512 target flag.
+
+The vector path copies a bounded cached head to align the destination to
+64 bytes, uses unaligned source loads and aligned non-temporal stores, then
+copies a bounded cached tail. It never reads or writes beyond the supplied
+ranges. Each invocation issues `sfence` with a compiler memory clobber before
+returning from the vector path. Worker completion still requires ordinary
+cross-thread synchronization before another thread submits DMA or reuses
+the destination.
+
 ## DAX staging and persistence
 
 The DAX staging workload reads a read-only persistent-memory mapping into
@@ -67,9 +94,13 @@ On an x86-64 Linux host with LLVM tools:
 
 ```sh
 python3 tests/check_stream_stores.py "$TVC_SELF" "$LLC" "$OPT" "$LINKER"
+python3 tests/check_stream_copy.py "$TVC_SELF" "$LLC" "$OPT" "$LINKER"
 ```
 
 The gate checks instruction selection, per-worker fences, raw, O1, and O3 output
 at one and four threads, non-cache-line-sized ranges, overlapping alias
 fallback, guards, and unsupported uses. Bandwidth must be measured separately
 on the staging workload; instruction selection alone is not a speedup result.
+The byte-copy gate checks dispatch, AVX-512 instruction selection, an AArch64
+fallback, bounded guard-page copies, and a baseline-x86 lowering of the vector
+loop. That baseline oracle does not execute AVX-512 streaming instructions.
