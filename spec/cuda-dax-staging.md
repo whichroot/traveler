@@ -256,6 +256,20 @@ successful tickets remain complete after reuse. Wait explicitly waits for the
 same result. Concurrent submit/query operations are supported; closing refuses
 while another host operation retains the pipeline.
 
+`cuda_dax_pipeline_set_poll_interval(pipeline, microseconds: u32)` selects the
+coordinator's pending-GPU and slot-reuse polling backoff for an async pipeline.
+Values from 1 through 1,000,000 are accepted; zero, larger values, and caller-side
+pipelines refuse with boundary 20/status -1. The default remains 1,000 microseconds.
+For decode-sensitive workloads, select a shorter interval and measure CPU use
+and completion-observation latency on the target host. The setting affects the
+next backoff; it does not interrupt a sleep already in progress. OS scheduling
+can make actual sleeps longer, so this is not a completion deadline.
+
+Blocking ticket waits and drain callers use condition notifications when state
+changes; they do not add a separate 1 ms polling cycle. Multiple waiters are
+notified on completion or failure. Idle coordinators also sleep on a condition
+variable, regardless of the selected GPU polling interval.
+
 Use a separate compute stream for consumers. Poll upload completion before
 launching the corresponding consumer. Work on the current expert can run while
 the next expert stages and uploads. **Returning from submit does not establish

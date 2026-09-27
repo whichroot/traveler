@@ -7,6 +7,13 @@ extern "C" fn dax_copied_bytes() -> u64;
 extern "C" fn dax_init_fail(after: i32);
 extern "C" fn dax_join_fail();
 extern "C" fn dax_sync_live() -> i32;
+extern "C" fn dax_short_polls() -> i32;
+
+struct DaxTicketWait { pipeline: u64, ticket: u64, ready: u64 }
+fn dax_ticket_wait_worker(argument: *u8) -> *u8 {
+    let job: *DaxTicketWait = argument as *DaxTicketWait;
+    job.ready = resident_need(cuda_dax_pipeline_wait(job.pipeline, job.ticket)); return null;
+}
 
 var dax_drain_done: i32 = 0;
 fn dax_async_drain_job(argument: *u8) -> *u8 {
@@ -19,6 +26,10 @@ fn dax_async_round(threads: i32) {
     let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
     let pool: u64 = resident_need(cuda_dax_pool_create(threads));
     let pipeline: u64 = resident_need(cuda_dax_pipeline_create_async(s, pool, 2, 17));
+    dax_error(cuda_dax_pipeline_set_poll_interval(pipeline, 0), 20, 0-1);
+    dax_error(cuda_dax_pipeline_set_poll_interval(pipeline, 1000001), 20, 0-1);
+    resident_need(cuda_dax_pipeline_set_poll_interval(pipeline, 13));
+    let prior_polls: i32 = dax_short_polls();
     let b: u64 = resident_need(cuda_buffer_alloc(d, 220));
     let whole: CudaArgument = resident_typed_view(b, 0, 220, 0-8);
     let a: CudaArgument = resident_typed_view(b, 3, 97, 0-8);
@@ -57,6 +68,7 @@ fn dax_async_round(threads: i32) {
     source.ptr = null; source.length = 0;
     dax_copy_release();
     while mock_async_uploads() < 2 { usleep(1000); }
+    while dax_short_polls() == prior_polls { usleep(1000); }
     if resident_need(cuda_dax_pipeline_query(pipeline, first)) != 0 { exit(154); }
     // The coordinator is waiting to reuse its first slot; no lock or GPU wait reaches submit.
     var again: DaxView = DaxView { ptr: data, offset: 0, length: 97 };
@@ -81,6 +93,11 @@ fn dax_async_round(threads: i32) {
     dax_copy_pause(data, 97);
     let final_ticket: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, a, &again, 0, 97));
     dax_copy_wait(threads);
+    var waiter0: DaxTicketWait = DaxTicketWait { pipeline: pipeline, ticket: final_ticket, ready: 0 };
+    var waiter1: DaxTicketWait = DaxTicketWait { pipeline: pipeline, ticket: final_ticket, ready: 0 };
+    let wait_handles: **u8 = alloc(2);
+    if pthread_create(wait_handles as *u8, null, &dax_ticket_wait_worker, (&waiter0) as *u8) != 0 { exit(168); }
+    if pthread_create((&wait_handles[1]) as *u8, null, &dax_ticket_wait_worker, (&waiter1) as *u8) != 0 { exit(168); }
     var drain_id: u64 = pipeline; let handle: **u8 = alloc(1); atomic_store(&dax_drain_done, 0, release);
     if pthread_create(handle as *u8, null, &dax_async_drain_job, (&drain_id) as *u8) != 0 { exit(159); }
     var draining: i32 = 0;
@@ -91,6 +108,8 @@ fn dax_async_round(threads: i32) {
     dax_error(cuda_dax_pipeline_submit(pipeline, a, &again, 0, 1), 20, 0-5);
     if atomic_load(&dax_drain_done, acquire) != 0 { exit(160); }
     dax_copy_release(); if pthread_join(handle[0], null) != 0 { exit(161); } free(handle);
+    if pthread_join(wait_handles[0], null) != 0 || pthread_join(wait_handles[1], null) != 0 { exit(169); }
+    free(wait_handles); if waiter0.ready != 1 || waiter1.ready != 1 { exit(170); }
     if resident_need(cuda_dax_pipeline_query(pipeline, final_ticket)) != 1 { exit(162); }
     dax_join_fail(); dax_error(cuda_dax_pipeline_close(pipeline), 20, 11);
     resident_need(cuda_dax_pipeline_close(pipeline)); resident_need(cuda_dax_pool_close(pool));

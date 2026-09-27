@@ -40,8 +40,11 @@ with tempfile.TemporaryDirectory(prefix='traveler-dax-parallel-') as directory:
     run(TVC, temp/'parallel.tv', '--emit', 'ir', '--opt-level', 'none', '-o', temp/'raw.ll')
     ir = (temp/'raw.ll').read_text()
     # Rename before optimization so libc folding cannot remove the pause points.
-    for symbol in ('memcpy', 'pthread_create', 'pthread_join', 'pthread_mutex_init',
-                   'pthread_cond_init', 'pthread_mutex_destroy', 'pthread_cond_destroy'):
+    symbols = ('memcpy', 'pthread_create', 'pthread_join', 'pthread_mutex_init',
+               'pthread_cond_init', 'pthread_mutex_destroy', 'pthread_cond_destroy')
+    if FIXTURE == 'nonblocking':
+        symbols += ('usleep',)
+    for symbol in symbols:
         assert f'@{symbol}(' in ir, symbol
         ir = ir.replace(f'@{symbol}(', f'@dax_test_{symbol}(')
     (temp/'checked.ll').write_text(ir)

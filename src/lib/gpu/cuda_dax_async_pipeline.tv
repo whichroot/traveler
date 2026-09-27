@@ -12,11 +12,26 @@ struct CudaDaxQueue {
     initialized: i32, started: i32, joined: i32, handle: *u8,
     stop: i32, draining: i32, drained: i32, drain_status: i32,
     failed_ticket: u64, boundary: i32, status: i32, resource: u64,
+    poll_us: u32,
 }
 
 fn cuda_dax_queue_wake(q: *CudaDaxQueue) {
-    pthread_mutex_lock(q.mutex as *u8); pthread_cond_signal(q.ready as *u8);
+    pthread_mutex_lock(q.mutex as *u8); pthread_cond_broadcast(q.ready as *u8);
     pthread_mutex_unlock(q.mutex as *u8);
+}
+
+fn cuda_dax_pipeline_set_poll_interval(pipeline: u64, microseconds: u32) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
+    let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    if p.queue == null || microseconds == 0 || microseconds > 1000000 {
+        return cuda_dax_pipeline_release(pipeline, Result::Err(cuda_res_error(20, 0-1, pipeline)));
+    }
+    cuda_res_lock(); p.queue.poll_us = microseconds; cuda_res_unlock();
+    cuda_dax_queue_wake(p.queue); return cuda_dax_pipeline_release(pipeline, Result::Ok(0));
+}
+
+fn cuda_dax_queue_pause(q: *CudaDaxQueue) {
+    cuda_res_lock(); let interval: u32 = q.poll_us; cuda_res_unlock(); usleep(interval);
 }
 
 fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32, chunk_bytes: u64) -> Result<u64, CudaError> {
@@ -50,6 +65,7 @@ fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32, chunk_byte
     q.started = 0; q.joined = 0; q.handle = null; q.stop = 0;
     q.draining = 0; q.drained = 1; q.drain_status = 0;
     q.failed_ticket = 0; q.boundary = 0; q.status = 0; q.resource = 0;
+    q.poll_us = 1000;
     for i in 0..depth {
         q.jobs[i].state = 0; q.jobs[i].source = &q.sources[i]; q.jobs[i].destination = &q.destinations[i];
     }
@@ -90,19 +106,26 @@ fn cuda_dax_queue_error(p: *CudaDaxPipeline, ticket: u64, error: CudaError) {
     if q.failed_ticket == 0 || ticket < q.failed_ticket {
         q.failed_ticket = ticket; q.boundary = error.boundary; q.status = error.status; q.resource = error.resource;
     }
-    p.failed = 1; cuda_res_unlock(); var e: CudaError = error; cuda_error_close(&e);
+    p.failed = 1; cuda_res_unlock(); cuda_dax_queue_wake(q);
+    var e: CudaError = error; cuda_error_close(&e);
 }
 
 fn cuda_dax_queue_observe(p: *CudaDaxPipeline, ticket: u64, wait: i32) -> Result<u64, CudaError> {
+    let q: *CudaDaxQueue = p.queue;
     while true {
-        cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
-        if ticket == 0 || ticket > p.last { return cuda_res_fail(20, 0-1, ticket); }
-        if q.failed_ticket != 0 && ticket >= q.failed_ticket {
-            return cuda_res_fail(q.boundary, q.status, q.resource);
+        if wait == 1 { pthread_mutex_lock(q.mutex as *u8); }
+        cuda_res_lock(); var done: i32 = 1; var result: Result<u64, CudaError> = Result::Ok(0);
+        if ticket == 0 || ticket > p.last { result = Result::Err(cuda_res_error(20, 0-1, ticket)); }
+        else if q.failed_ticket != 0 && ticket >= q.failed_ticket {
+            result = Result::Err(cuda_res_error(q.boundary, q.status, q.resource));
+        } else if ticket <= p.completed { result = Result::Ok(1); }
+        else if wait == 1 { done = 0; }
+        cuda_res_unlock();
+        if done == 1 {
+            if wait == 1 { pthread_mutex_unlock(q.mutex as *u8); }
+            return result;
         }
-        if ticket <= p.completed { return cuda_res_ok(1); }
-        if wait == 0 { return cuda_res_ok(0); }
-        cuda_res_unlock(); usleep(1000);
+        pthread_cond_wait(q.ready as *u8, q.mutex as *u8); pthread_mutex_unlock(q.mutex as *u8);
     }
     return Result::Ok(0);
 }
@@ -117,7 +140,7 @@ fn cuda_dax_queue_upload(p: *CudaDaxPipeline, index: i32) -> Result<u64, CudaErr
         var slot: u64 = staging.slot0; var event: u64 = staging.event0;
         if turn == 1 { slot = staging.slot1; event = staging.event1; }
         if chunks >= 2 {
-            while cuda_event_query(event)? == 0 { usleep(1000); }
+            while cuda_event_query(event)? == 0 { cuda_dax_queue_pause(p.queue); }
         }
         var count: u64 = chunk; if job.bytes-done < count { count = job.bytes-done; }
         let pin: CudaArgument = CudaArgument { kind: 3, type_code: 0-8, value: 0, buffer: slot, offset: 0, bytes: chunk };
@@ -187,7 +210,7 @@ fn cuda_dax_queue_worker(argument: *u8) -> *u8 {
             } else {
                 p.failed = 1; q.drained = 0;
             }
-            q.drain_status = status; q.draining = 2; cuda_res_unlock(); continue;
+            q.drain_status = status; q.draining = 2; cuda_res_unlock(); cuda_dax_queue_wake(q); continue;
         }
         if slot < 0 && (pending < 0 || p.failed != 0) {
             cuda_res_unlock(); pthread_cond_wait(q.ready as *u8, q.mutex as *u8);
@@ -198,7 +221,9 @@ fn cuda_dax_queue_worker(argument: *u8) -> *u8 {
         if event != 0 {
             match cuda_event_query(event) {
                 Result::Ok(ready) => {
-                    if ready != 0 { cuda_res_lock(); cuda_dax_queue_retire(p, first); cuda_res_unlock(); }
+                    if ready != 0 {
+                        cuda_res_lock(); cuda_dax_queue_retire(p, first); cuda_res_unlock(); cuda_dax_queue_wake(q);
+                    }
                 },
                 Result::Err(error) => { cuda_dax_queue_error(p, first, error); continue; },
             }
@@ -211,7 +236,7 @@ fn cuda_dax_queue_worker(argument: *u8) -> *u8 {
                 },
                 Result::Err(error) => { cuda_dax_queue_error(p, oldest, error); },
             }
-        } else { usleep(1000); }
+        } else { cuda_dax_queue_pause(q); }
     }
     return null;
 }
@@ -221,13 +246,15 @@ fn cuda_dax_queue_drain(p: *CudaDaxPipeline) -> Result<u64, CudaError> {
     if q.draining != 0 { return cuda_res_fail(20, 0-5, p.stream); }
     q.draining = 1; cuda_res_unlock(); cuda_dax_queue_wake(q);
     while true {
+        pthread_mutex_lock(q.mutex as *u8);
         cuda_res_lock();
         if q.draining == 2 {
             q.draining = 0; let status: i32 = q.drain_status;
-            if status != 0 { return cuda_res_fail(12, status, p.stream); }
-            return cuda_res_ok(0);
+            cuda_res_unlock(); pthread_mutex_unlock(q.mutex as *u8);
+            if status != 0 { return Result::Err(cuda_res_error(12, status, p.stream)); }
+            return Result::Ok(0);
         }
-        cuda_res_unlock(); usleep(1000);
+        cuda_res_unlock(); pthread_cond_wait(q.ready as *u8, q.mutex as *u8); pthread_mutex_unlock(q.mutex as *u8);
     }
     return Result::Ok(0);
 }

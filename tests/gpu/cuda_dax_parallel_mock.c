@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
@@ -12,6 +13,12 @@ static size_t watched_bytes;
 static int arrivals, released = 1;
 static _Atomic int fail_after = -1, started, joined;
 static _Atomic uint64_t copied_bytes;
+static _Atomic int short_polls;
+int dax_test_usleep(unsigned interval) {
+    if (interval == 13) ++short_polls;
+    return usleep(interval);
+}
+int dax_short_polls(void) { return short_polls; }
 static int join_fail, init_fail = -1, sync_live;
 
 void dax_copy_pause(void *pointer, uint64_t bytes) {
