@@ -2001,6 +2001,9 @@ if [ "$HAVE_NV" = "1" ] && [ "$HAVE_LINKER" = "1" ] && [ "$(uname -s)" = "Linux"
     if ! python3 "$SCRIPT_DIR/check_cuda_dax_pool.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
         echo "  FAIL: CUDA persistent DAX worker pool"; fail=1
     fi
+    if ! python3 "$SCRIPT_DIR/check_cuda_dax_pipeline.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+        echo "  FAIL: CUDA cross-call DAX pipeline"; fail=1
+    fi
     if ! python3 "$SCRIPT_DIR/check_cuda_pipeline.py" "$STAGE1" "$LLC" "$LINKER"; then
         echo "  FAIL: CUDA staging pipeline and graph contract"; fail=1
     fi

@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: Apache-2.0
+import "../../src/lib/gpu/cuda_dax_pipeline.tv";
+extern "C" fn dax_threads_started() -> i32;
+extern "C" fn dax_threads_joined() -> i32;
+extern "C" fn dax_copied_bytes() -> u64;
+
+fn dax_flight_round(depth: i32, chunk: u64) {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let pool: u64 = resident_need(cuda_dax_pool_create(4));
+    let pipeline: u64 = resident_need(cuda_dax_pipeline_create(s, pool, depth, chunk));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 4096)); let whole: CudaArgument = resident_typed_view(b, 0, 4096, 0-8);
+    let back: *u8 = alloc(4096); for i in 0..4096 { back[i] = 205; }
+    resident_need(cuda_upload(whole, back, 4096));
+    let starts: i32 = dax_threads_started(); let joins: i32 = dax_threads_joined();
+    mock_async_reset_counts();
+    var expert: i32 = 0;
+    while expert < 40 {
+        if expert >= depth { resident_need(cuda_dax_pipeline_wait(pipeline, (expert-depth+1) as u64)); }
+        let bytes: u64 = (1+(expert*13)%67) as u64;
+        let data: *u8 = alloc((bytes+5) as i32);
+        var i: i32 = 0; while i < (bytes+5) as i32 { data[i] = dax_pattern((i+expert*29) as i64); i = i+1; }
+        var source: DaxView = DaxView { ptr: data, offset: 0, length: (bytes+5) as i64 };
+        let target: CudaArgument = resident_typed_view(b, (13+expert*71) as u64, 67, 0-8);
+        let ticket: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, target, &source, 3, bytes));
+        if ticket != (expert+1) as u64 { exit(100); }
+        free(data);
+        if expert >= depth { if resident_need(cuda_dax_pipeline_query(pipeline, 1)) != 1 { exit(101); } }
+        expert = expert+1;
+    }
+    resident_need(cuda_dax_pipeline_wait(pipeline, 40));
+    if resident_need(cuda_dax_pipeline_query(pipeline, 39)) != 1 { exit(102); }
+    if dax_threads_started() != starts || dax_threads_joined() != joins
+        || mock_async_stream_waits() != 0 || mock_async_context_syncs() != 0 { exit(103); }
+    resident_need(cuda_download(back, whole, 4096));
+    var i: i32 = 0;
+    while i < 4096 {
+        var expected: u8 = 205;
+        if i >= 13 && i < 13+40*71 {
+            let e: i32 = (i-13)/71; let within: i32 = (i-13)%71;
+            if within < 1+(e*13)%67 { expected = dax_pattern((within+3+e*29) as i64); }
+        }
+        if back[i] != expected { print(i); exit(104); } i = i+1;
+    }
+    resident_need(cuda_dax_pipeline_close(pipeline));
+    dax_error(cuda_dax_pipeline_query(pipeline, 1), 20, 0-1);
+    resident_need(cuda_dax_pool_close(pool)); resident_need(cuda_stream_close(s));
+    resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(back);
+    if mock_clean() == 0 { exit(105); }
+}
+
+struct DaxFlightJob { pipeline: u64, target: CudaArgument, source: DaxView, ticket: u64 }
+fn dax_flight_job(arg: *u8) -> *u8 {
+    let job: *DaxFlightJob = arg as *DaxFlightJob;
+    job.ticket = resident_need(cuda_dax_pipeline_submit(job.pipeline, job.target, &job.source, 0, 1031));
+    return null;
+}
+
+fn dax_flight_overlap() {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let pool: u64 = resident_need(cuda_dax_pool_create(4));
+    let pipeline: u64 = resident_need(cuda_dax_pipeline_create(s, pool, 2, 1031));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 2062));
+    let first: CudaArgument = resident_typed_view(b, 0, 1031, 0-8);
+    let second: CudaArgument = resident_typed_view(b, 1031, 1031, 0-8);
+    let data: *u8 = alloc(1031); for i in 0..1031 { data[i] = dax_pattern(i as i64); }
+    var source: DaxView = DaxView { ptr: data, offset: 0, length: 1031 };
+    mock_async_reset_counts();
+    let a: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, first, &source, 0, 1031));
+    if resident_need(cuda_dax_pipeline_query(pipeline, a)) != 0 { exit(106); }
+    cuda_res_lock(); let p: *CudaDaxPipeline = cuda_res_find(pipeline, 10).native as *CudaDaxPipeline;
+    let pointer: *u8 = cuda_res_find(p.flights[1].staging.slot0, 7).native; cuda_res_unlock();
+    dax_copy_pause(pointer, 1031);
+    var job: DaxFlightJob = DaxFlightJob { pipeline: pipeline, target: second, source: source, ticket: 0 };
+    let handle: **u8 = alloc(1);
+    if pthread_create(handle as *u8, null, &dax_flight_job, (&job) as *u8) != 0 { exit(107); }
+    dax_copy_wait(4);
+    if resident_need(cuda_stream_query(s)) != 0 || mock_async_uploads() != 1
+        || mock_async_event_waits() != 0 || mock_async_stream_waits() != 0 { exit(108); }
+    dax_error(cuda_dax_pipeline_close(pipeline), 20, 0-5);
+    dax_error(cuda_dax_pipeline_submit(pipeline, second, &source, 0, 1), 20, 0-5);
+    dax_error(cuda_dax_pool_close(pool), 19, 0-5);
+    dax_copy_release(); if pthread_join(handle[0], null) != 0 { exit(109); } free(handle);
+    if a != 1 || job.ticket != 2 || mock_async_pending_peak() != 2 { exit(110); }
+    let copied: u64 = dax_copied_bytes();
+    dax_error(cuda_dax_pipeline_submit(pipeline, second, &source, 0, 1), 20, 0-5);
+    if mock_async_uploads() != 2 || dax_copied_bytes() != copied { exit(111); }
+    var empty: DaxView = DaxView { ptr: null, offset: 0, length: 0 };
+    if resident_need(cuda_dax_pipeline_submit(pipeline, second, &empty, 0, 0)) != 0 { exit(112); }
+    dax_error(cuda_dax_pipeline_query(pipeline, 0), 20, 0-1);
+    dax_error(cuda_dax_pipeline_query(pipeline, 3), 20, 0-1);
+    dax_error(cuda_dax_pipeline_close(pipeline), 20, 0-5);
+    resident_need(cuda_dax_pipeline_wait(pipeline, a));
+    let c: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, first, &source, 0, 1031));
+    if c != 3 || resident_need(cuda_dax_pipeline_query(pipeline, a)) != 1
+        || resident_need(cuda_dax_pipeline_query(pipeline, c)) != 0 { exit(113); }
+    free(data); resident_need(cuda_dax_pool_close(pool));
+    resident_need(cuda_dax_pipeline_wait(pipeline, c));
+    if resident_need(cuda_dax_pipeline_query(pipeline, 2)) != 1 { exit(114); }
+    let back: *u8 = alloc(2062); resident_need(cuda_download(back, resident_typed_view(b, 0, 2062, 0-8), 2062));
+    for i in 0..2062 { if back[i] != dax_pattern((i%1031) as i64) { exit(115); } }
+    free(back); resident_need(cuda_dax_pipeline_close(pipeline));
+    resident_need(cuda_buffer_close(b)); resident_need(cuda_stream_close(s)); resident_need(cuda_device_close(d));
+    if mock_clean() == 0 { exit(116); }
+}
+
+fn dax_flight_faults() {
+    var test: i32 = 0;
+    while test < 3 {
+        let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let pool: u64 = resident_need(cuda_dax_pool_create(4));
+        let pipeline: u64 = resident_need(cuda_dax_pipeline_create(s, pool, 2, 17));
+        let b: u64 = resident_need(cuda_buffer_alloc(d, 100)); let target: CudaArgument = resident_typed_view(b, 0, 100, 0-8);
+        let data: *u8 = alloc(100); var source: DaxView = DaxView { ptr: data, offset: 0, length: 100 };
+        for i in 0..100 { data[i] = dax_pattern(i as i64); }
+        resident_need(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1));
+        var boundary: i32 = 15; var status: i32 = 824;
+        if test == 0 { mock_fail(24, 1); }
+        if test == 1 { mock_fail(14, 0); boundary = 11; status = 814; }
+        if test == 2 { mock_fail(18, 0); boundary = 12; status = 818; }
+        dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 100), boundary, status);
+        dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1), 20, 0-5);
+        dax_error(cuda_dax_pipeline_close(pipeline), 20, 0-5);
+        resident_need(cuda_dax_pipeline_drain(pipeline));
+        if resident_need(cuda_dax_pipeline_query(pipeline, 1)) != 1 { exit(117); }
+        dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1), 15, 0-4);
+        resident_need(cuda_dax_pipeline_close(pipeline)); resident_need(cuda_dax_pool_close(pool));
+        resident_need(cuda_buffer_close(b)); resident_need(cuda_stream_close(s)); resident_need(cuda_device_close(d)); free(data);
+        if mock_clean() == 0 { exit(118); } test = test+1;
+    }
+}
+
+fn dax_flight_refusals() {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let pool: u64 = resident_need(cuda_dax_pool_create(1));
+    dax_error(cuda_dax_pipeline_create(s, pool, 1, 17), 20, 0-1);
+    dax_error(cuda_dax_pipeline_create(s, pool, 2, 0), 20, 0-1);
+    dax_error(cuda_dax_pipeline_create(s, pool, 2, 18446744073709551615), 20, 0-2);
+    dax_error(cuda_dax_pipeline_create(0, pool, 2, 17), 20, 0-1);
+    dax_error(cuda_dax_pipeline_create(s, 0, 2, 17), 19, 0-1);
+    let pipeline: u64 = resident_need(cuda_dax_pipeline_create(s, pool, 2, 17));
+    dax_error(cuda_dax_pipeline_create(s, pool, 255, 17), 20, 0-2);
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 100)); let target: CudaArgument = resident_typed_view(b, 0, 100, 0-8);
+    let data: *u8 = alloc(100); var source: DaxView = DaxView { ptr: data, offset: 0, length: 100 };
+    for i in 0..100 { data[i] = dax_pattern(i as i64); }
+    mock_async_reset_counts();
+    dax_error(cuda_dax_pipeline_submit(pipeline, target, null, 0, 1), 15, 0-1);
+    dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 99, 2), 15, 0-1);
+    var invalid: CudaArgument = resident_typed_view(b, 0, 100, 0-8); invalid.offset = 18446744073709551615;
+    dax_error(cuda_dax_pipeline_submit(pipeline, invalid, &source, 0, 1), 15, 0-1);
+    cuda_res_lock(); let p: *CudaDaxPipeline = cuda_res_find(pipeline, 10).native as *CudaDaxPipeline;
+    p.last = 18446744073709551615; p.completed = p.last; cuda_res_unlock();
+    dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1), 20, 0-2);
+    cuda_res_lock(); p.last = 0; p.completed = 0;
+    cuda_res_find(s, 5).sequence = 18446744073709551615; cuda_res_unlock();
+    dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1), 15, 0-2);
+    cuda_res_lock(); cuda_res_find(s, 5).sequence = 0; cuda_res_unlock();
+    if mock_async_uploads() != 0 { exit(119); }
+    let first: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1));
+    let second: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1));
+    resident_need(cuda_stream_sync(s));
+    let third: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1));
+    if first != 1 || second != 2 || third != 3 || resident_need(cuda_dax_pipeline_query(pipeline, first)) != 1 { exit(120); }
+    resident_need(cuda_dax_pipeline_drain(pipeline)); resident_need(cuda_dax_pipeline_close(pipeline));
+    resident_need(cuda_dax_pool_close(pool)); resident_need(cuda_stream_close(s));
+    resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(data);
+    if mock_clean() == 0 { exit(121); }
+}
+
+fn dax_flight_cleanup() {
+    var test: i32 = 0;
+    while test < 8 {
+        let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let pool: u64 = resident_need(cuda_dax_pool_create(1));
+        if test < 4 {
+            if test == 0 { mock_fail(22, 0); }
+            if test == 1 { mock_fail(22, 2); }
+            if test == 2 { mock_fail(13, 2); }
+            if test == 3 { mock_fail(2, 1); }
+            var boundary: i32 = 13; var status: i32 = 822;
+            if test == 2 { boundary = 10; status = 813; }
+            if test == 3 { status = 802; }
+            dax_error(cuda_dax_pipeline_create(s, pool, 2, 17), boundary, status);
+        } else {
+            let pipeline: u64 = resident_need(cuda_dax_pipeline_create(s, pool, 2, 17));
+            var status: i32 = 821;
+            if test == 4 { mock_fail(21, 1); }
+            if test == 5 { mock_fail(23, 1); status = 823; }
+            if test == 6 { mock_fail(2, 1); status = 802; }
+            if test == 7 { mock_fail(2, 5); status = 802; }
+            match cuda_dax_pipeline_close(pipeline) {
+                Result::Ok(value) => { exit(122); },
+                Result::Err(error) => {
+                    var e: CudaError = error;
+                    if e.boundary != 9 || e.status != status || e.resource != pipeline { exit(123); }
+                    cuda_error_close(&e);
+                },
+            }
+            dax_error(cuda_dax_pipeline_query(pipeline, 1), 20, 0-5);
+            resident_need(cuda_dax_pipeline_close(pipeline));
+        }
+        resident_need(cuda_dax_pool_close(pool)); resident_need(cuda_stream_close(s)); resident_need(cuda_device_close(d));
+        if mock_clean() == 0 { exit(124); } test = test+1;
+    }
+}
+
+fn main() -> i32 {
+    dax_flight_round(2, 17); dax_flight_round(3, 64);
+    dax_flight_overlap(); dax_flight_refusals(); dax_flight_faults(); dax_flight_cleanup();
+    puts("DAX pipeline PASS: cross-call overlap, record rotation, stable tickets, backpressure, and drain");
+    return 0;
+}

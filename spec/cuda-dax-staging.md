@@ -132,6 +132,87 @@ the supplied stream to drain outstanding work before reuse or destruction;
 an event whose recording failed is not a completion witness. Failed driver
 operations retain the existing conservative resource holds and device poisoning.
 
+## Cross-call pipelines
+
+Import `src/lib/gpu/cuda_dax_pipeline.tv` for an owned ring of staging records:
+
+```tv
+fn cuda_dax_pipeline_create(stream: u64, pool: u64, depth: i32,
+                            chunk_bytes: u64) -> Result<u64, CudaError>;
+fn cuda_dax_pipeline_submit(pipeline: u64, destination: CudaArgument,
+                            source: *DaxView, offset: u64, bytes: u64)
+                            -> Result<u64, CudaError>;
+fn cuda_dax_pipeline_query(pipeline: u64, ticket: u64) -> Result<u64, CudaError>;
+fn cuda_dax_pipeline_wait(pipeline: u64, ticket: u64) -> Result<u64, CudaError>;
+fn cuda_dax_pipeline_drain(pipeline: u64) -> Result<u64, CudaError>;
+fn cuda_dax_pipeline_close(pipeline: u64) -> Result<u64, CudaError>;
+```
+
+The pipeline borrows the stream and pool, and owns `depth` records. Each record
+contains two pinned buffers and two events. Depth must be 2 through 255 and fit
+the checked resource table. Chunk size must be positive. Creation checks total
+size arithmetic and table capacity, then rolls back partial allocation failures.
+Pinned capacity is `2 * depth * chunk_bytes`; depth two owns four pinned buffers
+and four events. Submission allocates nothing and reuses the persistent workers.
+
+Submit finishes reading the requested DAX bytes before returning, but leaves
+final DMA pending. A second call uses a different record so its CPU copies can
+overlap the first call's pending transfer. Internal slot reuse within one call
+still waits for that slot's event. Hardware completion and these internal waits
+can retire earlier transfers; depth is an upper bound on records in flight.
+
+```tv
+let pool: u64 = cuda_dax_pool_create(4)?;
+let pipeline: u64 = cuda_dax_pipeline_create(stream, pool, 2, chunk_bytes)?;
+let a: u64 = cuda_dax_pipeline_submit(pipeline, target_a, source_a, 0, bytes_a)?;
+let b: u64 = cuda_dax_pipeline_submit(pipeline, target_b, source_b, 0, bytes_b)?;
+if a != 0 { cuda_dax_pipeline_wait(pipeline, a)?; }
+// The first record can now stage another expert while the second transfer runs.
+if b != 0 { cuda_dax_pipeline_wait(pipeline, b)?; }
+cuda_dax_pipeline_close(pipeline)?;
+cuda_dax_pool_close(pool)?;
+```
+
+For nonempty transfers, submit returns a monotonically increasing ticket local
+to that pipeline, not a raw event ID. Query returns zero for pending and one for
+complete. Wait returns one on completion. Observing a later ticket completes
+earlier tickets on the bound stream. Retired tickets remain complete even after
+their internal events are reused. Pair tickets with their originating pipeline;
+numeric tickets are not globally unique. Zero and unissued tickets are invalid.
+An empty transfer validates but consumes no record or ticket and returns zero,
+including when all records are occupied. Skip query/wait for that zero result.
+
+If no record is idle, submit queries the oldest pending ticket once. If it still
+cannot reuse a record, it returns busy without copying source bytes or queuing
+new work. Wait for the oldest outstanding ticket and retry. This makes full-ring
+backpressure explicit; submission itself remains synchronous for CPU copying.
+
+Only one host operation may use a pipeline at a time. Concurrent operations
+report busy. Keep the borrowed stream alive, and keep the pool alive for further
+submissions. The pool may close while previous transfers remain pending; ticket
+observation and pipeline cleanup do not require it. Exclusively control stream
+submission during pipeline operations. Keep destinations alive through transfer
+completion and any consuming GPU work. Record reuse does not release a device
+destination still needed by a consumer.
+
+Same-stream GPU commands follow uploads in order. For a consumer on another
+stream, wait for its ticket before scheduling that consumer. Internal reusable
+events are private and are not cross-stream dependency handles.
+
+Pipeline errors use boundary 20: `-1` invalid handle, depth, chunk size, or ticket;
+`-2` size, resource-table, or ticket capacity; `-4` poisoned device at creation;
+and `-5` busy, closing, full, or awaiting drain. Copy, pool, and driver errors keep
+their existing boundaries. Validation failures leave the pipeline reusable.
+An error after copying/submission may have begun blocks further submissions
+until drain, and issues no ticket for the partial transfer.
+
+Drain synchronizes the bound stream, including partial work with no final event.
+On success it retires pending records. It does not repair device poisoning.
+Close refuses pending work or an unresolved submission error; wait or drain first.
+Close frees only owned resources. If cleanup fails, the error's resource is the
+pipeline ID: retry close to finish cleanup. Already destroyed resources are not
+destroyed twice, including when context restoration failed after destruction.
+
 ## Verification
 
 `tests/gpu/check_cuda_dax_staging.py` uses the deferred-copy CUDA mock, without
@@ -152,6 +233,13 @@ changing job generations, independent pools, busy and stale handles, closing
 before DMA completion, partial synchronization/thread initialization, failed-join
 cleanup retry, and reuse after upload failures. Both worker gates run raw and
 available optimized profiles at runtime thread settings one and four.
+
+`tests/gpu/check_cuda_dax_pipeline.py` pauses the second call's workers while the
+first call's DMA is pending. It checks depths two/three, repeated record reuse,
+stable tickets, source release, guards, full-ring refusal without copying,
+prefix retirement, worker reuse, validation/capacity errors, partial submission
+drain, and allocation/destruction failure cleanup. It runs raw/O1 and supported
+O3 profiles at runtime thread settings one and four.
 
 This verifies the overlap mechanism and lifetime contract. Bandwidth and actual
 CPU/DMA overlap require a separate hardware measurement.

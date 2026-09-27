@@ -34,6 +34,8 @@ with tempfile.TemporaryDirectory(prefix='traveler-dax-parallel-') as directory:
         source += '\n' + (HERE/f'cuda_dax_{FIXTURE}.tv').read_text()
     source = source.replace('"../../src/lib/gpu/cuda_graph.tv"',
                             f'"{HERE.parents[1]}/src/lib/gpu/cuda_graph.tv"')
+    source = source.replace('"../../src/lib/gpu/cuda_dax_pipeline.tv"',
+                            f'"{HERE.parents[1]}/src/lib/gpu/cuda_dax_pipeline.tv"')
     (temp/'parallel.tv').write_text(source)
     run(TVC, temp/'parallel.tv', '--emit', 'ir', '--opt-level', 'none', '-o', temp/'raw.ll')
     ir = (temp/'raw.ll').read_text()

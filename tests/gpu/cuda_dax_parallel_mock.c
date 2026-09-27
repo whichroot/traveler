@@ -11,6 +11,7 @@ static uintptr_t watched;
 static size_t watched_bytes;
 static int arrivals, released = 1;
 static _Atomic int fail_after = -1, started, joined;
+static _Atomic uint64_t copied_bytes;
 static int join_fail, init_fail = -1, sync_live;
 
 void dax_copy_pause(void *pointer, uint64_t bytes) {
@@ -47,6 +48,7 @@ void *dax_test_memcpy(void *dst, const void *src, size_t bytes) {
         while (!released) pthread_cond_wait(&changed, &lock);
     }
     pthread_mutex_unlock(&lock);
+    copied_bytes += bytes;
     return memcpy(dst, src, bytes);
 }
 
@@ -72,6 +74,7 @@ int dax_test_pthread_join(pthread_t t, void **ret) {
 }
 
 int dax_threads_drained(void) { return started == joined; }
+uint64_t dax_copied_bytes(void) { return copied_bytes; }
 int dax_threads_started(void) { return started; }
 int dax_threads_joined(void) { return joined; }
 void dax_join_fail(void) { join_fail = 1; }

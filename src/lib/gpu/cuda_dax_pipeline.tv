@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_dax.tv";
+
+struct CudaDaxFlight { staging: *CudaDaxStaging, ticket: u64, event: u64 }
+struct CudaDaxPipeline {
+    stream: u64, pool: u64, device: u64, depth: i32, chunk: u64,
+    flights: *CudaDaxFlight, staging: *CudaDaxStaging, last: u64, completed: u64, failed: i32,
+}
+
+fn cuda_dax_pipeline_acquire(pipeline: u64, closing: i32) -> Result<u64, CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(pipeline, 10);
+    if r == null { return cuda_res_fail(20, 0-1, pipeline); }
+    if r.users != 0 || (closing == 0 && r.recorded != 0) { return cuda_res_fail(20, 0-5, pipeline); }
+    r.users = 1; return cuda_res_ok(r.native as u64);
+}
+
+fn cuda_dax_pipeline_release(pipeline: u64, result: Result<u64, CudaError>) -> Result<u64, CudaError> {
+    cuda_res_lock(); cuda_res_find(pipeline, 10).users = 0; cuda_res_unlock(); return result;
+}
+
+fn cuda_dax_pipeline_allocate(id: *u64, device: u64, chunk: u64, kind: i32) -> Result<u64, CudaError> {
+    var result: Result<u64, CudaError> = Result::Ok(0);
+    if kind == 7 { result = cuda_pinned_alloc(device, chunk); } else { result = cuda_event_create(device); }
+    match result {
+        Result::Ok(value) => { id[0] = value; },
+        Result::Err(error) => {
+            // A context-restore failure can leave a successfully allocated resource.
+            cuda_res_lock(); let r: *CudaResource = cuda_res_find(error.resource, kind);
+            if r != null { if r.owner == device { id[0] = r.id; } }
+            cuda_res_unlock(); return Result::Err(error);
+        },
+    }
+    return Result::Ok(0);
+}
+
+fn cuda_dax_pipeline_initialize(p: *CudaDaxPipeline) -> Result<u64, CudaError> {
+    var i: i32 = 0;
+    while i < p.depth {
+        let s: *CudaDaxStaging = p.flights[i].staging;
+        cuda_dax_pipeline_allocate(&s.slot0, p.device, p.chunk, 7)?;
+        cuda_dax_pipeline_allocate(&s.slot1, p.device, p.chunk, 7)?;
+        cuda_dax_pipeline_allocate(&s.event0, p.device, 0, 6)?;
+        cuda_dax_pipeline_allocate(&s.event1, p.device, 0, 6)?;
+        i = i+1;
+    }
+    return Result::Ok(0);
+}
+
+fn cuda_dax_pipeline_create(stream: u64, pool: u64, depth: i32, chunk_bytes: u64) -> Result<u64, CudaError> {
+    let held: u64 = cuda_dax_pool_acquire(pool)?;
+    let result: Result<u64, CudaError> = cuda_dax_pipeline_new(stream, pool, depth, chunk_bytes);
+    cuda_dax_pool_release(pool); return result;
+}
+
+fn cuda_dax_pipeline_new(stream: u64, pool: u64, depth: i32, chunk: u64) -> Result<u64, CudaError> {
+    cuda_res_lock(); let s: *CudaResource = cuda_res_find(stream, 5);
+    if s == null || depth < 2 || depth > 255 || chunk == 0 { return cuda_res_fail(20, 0-1, stream); }
+    if chunk > 18446744073709551615/((depth as u64)*2) { return cuda_res_fail(20, 0-2, stream); }
+    let d: *CudaResource = cuda_res_find(s.owner, 1);
+    if d.poisoned != 0 { return cuda_res_fail(20, 0-4, stream); }
+    var available: i32 = 0;
+    for i in 0..1024 { if g_cuda_res_table[i].kind == 0 { available = available+1; } }
+    if available < 1+4*depth { return cuda_res_fail(20, 0-2, stream); }
+    let r: *CudaResource = cuda_res_slot(); if r == null { return cuda_res_fail(20, 0-2, stream); }
+    let p: *CudaDaxPipeline = alloc(1);
+    p.stream = stream; p.pool = pool; p.device = s.owner; p.depth = depth; p.chunk = chunk;
+    p.last = 0; p.completed = 0; p.failed = 0; p.flights = alloc(depth); p.staging = alloc(depth);
+    var i: i32 = 0;
+    while i < depth {
+        p.staging[i] = CudaDaxStaging { slot0: 0, slot1: 0, event0: 0, event1: 0, chunk_bytes: chunk };
+        p.flights[i] = CudaDaxFlight { staging: &p.staging[i], ticket: 0, event: 0 }; i = i+1;
+    }
+    r.kind = 10; r.owner = s.owner; r.native = p as *u8; r.users = 1;
+    let id: u64 = r.id; s.users = s.users+1; cuda_res_unlock();
+    let initialized: Result<u64, CudaError> = cuda_dax_pipeline_initialize(p);
+    cuda_res_lock(); s.users = s.users-1; r.users = 0; cuda_res_unlock();
+    match initialized {
+        Result::Ok(value) => { return Result::Ok(id); },
+        Result::Err(error) => {
+            match cuda_dax_pipeline_close(id) {
+                Result::Ok(value) => { return Result::Err(error); },
+                Result::Err(cleanup) => { var prior: CudaError = error; cuda_error_close(&prior); return Result::Err(cleanup); },
+            }
+        },
+    }
+    return Result::Err(cuda_res_error(20, 0-1, id));
+}
+
+fn cuda_dax_pipeline_retire(p: *CudaDaxPipeline, ticket: u64) {
+    if ticket > p.completed { p.completed = ticket; }
+    var i: i32 = 0;
+    while i < p.depth {
+        if p.flights[i].ticket <= p.completed { p.flights[i].ticket = 0; p.flights[i].event = 0; }
+        i = i+1;
+    }
+}
+
+fn cuda_dax_pipeline_observe(p: *CudaDaxPipeline, ticket: u64, wait: i32) -> Result<u64, CudaError> {
+    if ticket == 0 || ticket > p.last { return Result::Err(cuda_res_error(20, 0-1, ticket)); }
+    if ticket <= p.completed { return Result::Ok(1); }
+    var i: i32 = 0;
+    while i < p.depth {
+        if p.flights[i].ticket == ticket {
+            var result: Result<u64, CudaError> = Result::Ok(0);
+            if wait == 1 { result = cuda_event_sync(p.flights[i].event); }
+            else { result = cuda_event_query(p.flights[i].event); }
+            match result {
+                Result::Ok(ready) => {
+                    if ready != 0 { cuda_dax_pipeline_retire(p, ticket); } return Result::Ok(ready);
+                },
+                Result::Err(error) => { p.failed = 1; return Result::Err(error); },
+            }
+        }
+        i = i+1;
+    }
+    return Result::Err(cuda_res_error(20, 0-1, ticket));
+}
+
+fn cuda_dax_pipeline_query(pipeline: u64, ticket: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
+    let result: Result<u64, CudaError> = cuda_dax_pipeline_observe(address as *CudaDaxPipeline, ticket, 0);
+    return cuda_dax_pipeline_release(pipeline, result);
+}
+
+fn cuda_dax_pipeline_wait(pipeline: u64, ticket: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
+    let result: Result<u64, CudaError> = cuda_dax_pipeline_observe(address as *CudaDaxPipeline, ticket, 1);
+    return cuda_dax_pipeline_release(pipeline, result);
+}
+
+fn cuda_dax_pipeline_validate(p: *CudaDaxPipeline, destination: CudaArgument,
+                              source: *DaxView, offset: u64, bytes: u64) -> Result<u64, CudaError> {
+    if p.failed != 0 { return Result::Err(cuda_res_error(20, 0-5, p.stream)); }
+    if cuda_dax_source_valid(source, offset, bytes) == 0 { return Result::Err(cuda_res_error(15, 0-1, p.stream)); }
+    cuda_res_lock(); let s: *CudaResource = cuda_res_find(p.stream, 5);
+    let b: *CudaResource = cuda_res_find(destination.buffer, 2);
+    if s == null || b == null || destination.kind != 2 { return cuda_res_fail(15, 0-1, p.stream); }
+    if s.owner != p.device || b.owner != p.device || destination.offset > b.bytes
+        || destination.bytes > b.bytes-destination.offset || bytes > destination.bytes { return cuda_res_fail(15, 0-1, destination.buffer); }
+    if cuda_res_find(p.device, 1).poisoned != 0 { return cuda_res_fail(15, 0-4, p.stream); }
+    return cuda_res_ok(0);
+}
+
+fn cuda_dax_pipeline_enqueue(p: *CudaDaxPipeline, destination: CudaArgument, source: *DaxView,
+                             offset: u64, bytes: u64, pool: *CudaDaxPool) -> Result<u64, CudaError> {
+    cuda_dax_pipeline_validate(p, destination, source, offset, bytes)?;
+    if bytes == 0 { return Result::Ok(0); }
+    if p.last == 18446744073709551615 { return Result::Err(cuda_res_error(20, 0-2, p.stream)); }
+    var slot: i32 = -1; var oldest: u64 = 18446744073709551615; var i: i32 = 0;
+    while i < p.depth {
+        let ticket: u64 = p.flights[i].ticket;
+        if ticket == 0 { if slot < 0 { slot = i; } }
+        else if ticket < oldest { oldest = ticket; }
+        i = i+1;
+    }
+    if slot < 0 {
+        if cuda_dax_pipeline_observe(p, oldest, 0)? == 0 { return Result::Err(cuda_res_error(20, 0-5, p.stream)); }
+        i = 0; while i < p.depth { if slot < 0 && p.flights[i].ticket == 0 { slot = i; } i = i+1; }
+    }
+    let flight: *CudaDaxFlight = &p.flights[slot];
+    let chunk: u64 = cuda_dax_staging_check(p.stream, destination, source, offset, bytes, flight.staging)?;
+    match cuda_dax_upload_chunks(p.stream, destination, source, offset, bytes, flight.staging, chunk, pool) {
+        Result::Ok(event) => {
+            p.last = p.last+1; flight.ticket = p.last; flight.event = event; return Result::Ok(p.last);
+        },
+        Result::Err(error) => { p.failed = 1; return Result::Err(error); },
+    }
+    return Result::Err(cuda_res_error(20, 0-1, p.stream));
+}
+
+fn cuda_dax_pipeline_submit(pipeline: u64, destination: CudaArgument, source: *DaxView,
+                            offset: u64, bytes: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
+    let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    match cuda_dax_pool_acquire(p.pool) {
+        Result::Ok(worker) => {
+            let result: Result<u64, CudaError> = cuda_dax_pipeline_enqueue(p, destination, source, offset, bytes, worker as *CudaDaxPool);
+            cuda_dax_pool_release(p.pool); return cuda_dax_pipeline_release(pipeline, result);
+        },
+        Result::Err(error) => { return cuda_dax_pipeline_release(pipeline, Result::Err(error)); },
+    }
+    return cuda_dax_pipeline_release(pipeline, Result::Err(cuda_res_error(20, 0-1, pipeline)));
+}
+
+fn cuda_dax_pipeline_drain(pipeline: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
+    let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    let result: Result<u64, CudaError> = cuda_stream_sync(p.stream);
+    match result {
+        Result::Ok(value) => { cuda_dax_pipeline_retire(p, p.last); p.failed = 0; },
+        Result::Err(error) => { p.failed = 1; },
+    }
+    return cuda_dax_pipeline_release(pipeline, result);
+}
+
+fn cuda_dax_pipeline_drop(id: *u64, kind: i32) -> Result<u64, CudaError> {
+    if id[0] == 0 { return Result::Ok(0); }
+    match cuda_resource_close(id[0], kind) {
+        Result::Ok(value) => { id[0] = 0; },
+        Result::Err(error) => {
+            cuda_res_lock(); if cuda_res_find(id[0], kind) == null { id[0] = 0; } cuda_res_unlock();
+            return Result::Err(error);
+        },
+    }
+    return Result::Ok(0);
+}
+
+fn cuda_dax_pipeline_cleanup(p: *CudaDaxPipeline) -> Result<u64, CudaError> {
+    var i: i32 = 0;
+    while i < p.depth {
+        let s: *CudaDaxStaging = p.flights[i].staging;
+        cuda_dax_pipeline_drop(&s.event0, 6)?; cuda_dax_pipeline_drop(&s.event1, 6)?;
+        cuda_dax_pipeline_drop(&s.slot0, 7)?; cuda_dax_pipeline_drop(&s.slot1, 7)?;
+        i = i+1;
+    }
+    return Result::Ok(0);
+}
+
+fn cuda_dax_pipeline_close(pipeline: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 1)?;
+    let p: *CudaDaxPipeline = address as *CudaDaxPipeline;
+    if p.failed != 0 || p.last != p.completed { return cuda_dax_pipeline_release(pipeline, Result::Err(cuda_res_error(20, 0-5, pipeline))); }
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(pipeline, 10); r.recorded = 1; cuda_res_unlock();
+    match cuda_dax_pipeline_cleanup(p) {
+        Result::Ok(value) => {
+            free(p.staging); free(p.flights); free(p); cuda_res_lock(); r.kind = 0; r.users = 0; return cuda_res_ok(0);
+        },
+        Result::Err(error) => {
+            var e: CudaError = error; e.resource = pipeline;
+            return cuda_dax_pipeline_release(pipeline, Result::Err(e));
+        },
+    }
+    return cuda_dax_pipeline_release(pipeline, Result::Err(cuda_res_error(20, 0-1, pipeline)));
+}
