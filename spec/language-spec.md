@@ -203,6 +203,7 @@ binary's read-only data section (the `str = &[u8]` slice type is planned — see
 let greeting: *u8 = "hello"    // bytes: [104, 101, 108, 108, 111, 0]
 let empty: *u8 = ""             // bytes: [0]
 let escaped: *u8 = "line\n"    // bytes: [108, 105, 110, 101, 10, 0]
+let embedded: *u8 = "a\0b"    // bytes: [97, 0, 98, 0]
 let hex: *u8 = "\x00\xFF"      // bytes: [0, 255, 0]
 ```
 
@@ -212,6 +213,15 @@ non-textual binary data.
 
 String literals have static lifetime: they are valid for the entire program
 execution. They point to immutable memory.
+
+An embedded NUL is part of the literal's storage; it does not discard the
+following bytes. `embedded[2]` is `98`, while a NUL-terminated operation such as
+`strlen(embedded)` returns `1`. Explicit-length byte operations can access the
+entire literal, including embedded zeros and the additional trailing terminator.
+
+The current compiler accepts at most 255 decoded bytes per literal and diagnoses
+longer or unterminated literals. Import paths, extern ABI names, and the textual
+hexadecimal arguments of `wide` and `field_wide` reject embedded NULs.
 
 ### 2.9 Polynomial Literals
 

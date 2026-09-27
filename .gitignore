@@ -3,6 +3,8 @@
 
 # Developer notes, archives, and non-shipped artifacts (local only)
 devnotes/
+/.opencode/
+/README.md.bak
 
 # Build outputs and generated LLVM IR
 # (gitignore has no inline comments — each pattern must stand alone on its line)

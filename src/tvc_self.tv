@@ -186,7 +186,7 @@ struct Token {
     line: i32,
     col: i32,
     text: [u8; 256],
-    int_val: u64,
+    int_val: u64,             // String tokens store the decoded byte length here.
 }
 
 // ===== WRITE HELPERS =====
@@ -519,6 +519,10 @@ fn lex(src: *u8, len: i32, tokens: *Token, cap: i32) -> i32 {
             col = col + 1;
             var j: i32 = 0;
             while pos < len && src[pos] != 34 {
+                if j >= 255 {
+                    diag_error_at(start_line, start_col, "string literal exceeds 255 decoded bytes");
+                    exit(1);
+                }
                 if src[pos] == 92 && pos + 1 < len {
                     pos = pos + 1;
                     col = col + 1;
@@ -536,11 +540,15 @@ fn lex(src: *u8, len: i32, tokens: *Token, cap: i32) -> i32 {
                 j = j + 1;
                 pos = pos + 1;
                 col = col + 1;
-                if j >= 255 { break; }
+            }
+            if pos >= len {
+                diag_error_at(start_line, start_col, "unterminated string literal");
+                exit(1);
             }
             tokens[ntok].text[j] = 0;
             if pos < len { pos = pos + 1; col = col + 1; }
             tokens[ntok].kind = TOK_STR_LIT;
+            tokens[ntok].int_val = j as u64;
             tokens[ntok].line = start_line;
             tokens[ntok].col = start_col;
             ntok = ntok + 1;
@@ -865,6 +873,11 @@ fn imp_lex_file(path: *u8, tokens: *Token, cap: i32, ntok_io: *i32) -> i32 {
     let n: i64 = read_bytes(fd, src, SRC_CAP);
     close(fd);
 
+    let saved_src: *u8 = g_src_buf;
+    let saved_len: i32 = g_src_len;
+    let saved_name: *u8 = g_src_name;
+    g_src_buf = src; g_src_len = n as i32; g_src_name = path;
+
     // Lex into a temporary token buffer.
     let tmp_cap: i32 = (n as i32) + 16;
     let tmp: *Token = alloc(tmp_cap);
@@ -890,6 +903,8 @@ fn imp_lex_file(path: *u8, tokens: *Token, cap: i32, ntok_io: *i32) -> i32 {
                 continue;
             }
             let rel: *u8 = &tmp[ti + 1].text[0];
+            literal_require_text(rel, tmp[ti + 1].int_val as i32,
+                tmp[ti + 1].line, tmp[ti + 1].col, "import path");
             let resolved: *u8 = alloc(4096);
             imp_resolve_path(path, rel, resolved);
             // Dedup: skip if already included (diamond/cycle safe).
@@ -916,6 +931,7 @@ fn imp_lex_file(path: *u8, tokens: *Token, cap: i32, ntok_io: *i32) -> i32 {
         ti = ti + 1;
     }
 
+    g_src_buf = saved_src; g_src_len = saved_len; g_src_name = saved_name;
     free(tmp);
     free(src);
     return ok;
@@ -1116,7 +1132,7 @@ let OP_ADDR: i32 = 22;
 //   AST_LIT_INT:         int_val; name0 → source digit text (wide-literal carrier)
 //   AST_LIT_BOOL:        int_val (0/1)
 //   AST_IDENT:           name0 → g_strings offset
-//   AST_STR_LIT:         name0 → g_strings offset
+//   AST_STR_LIT:         name0 → g_strings offset, int_val=decoded byte length
 //   AST_NULL:            (nothing)
 //   AST_BINARY:          op, child0=left, child1=right
 //   AST_UNARY:           op, child0=operand
@@ -1472,8 +1488,8 @@ var g_loop_end_labels: *i32 = null;
 var g_loop_cond_labels: *i32 = null;
 var g_loop_depth: i32 = 0;
 
-// Deferred string literal offsets (emitted after all functions)
-var g_str_lit_offs: *i32 = null;
+// Deferred string literal AST nodes (emitted after all functions).
+var g_str_lit_nodes: *i32 = null;
 let MAX_STR_LITS: i32 = 32768;
 
 // Poly repr tracking: compile-time only, no runtime cost
@@ -2004,6 +2020,36 @@ fn tok_intern(tok: *Token) -> i32 {
     return str_intern(&tok.text[0]);
 }
 
+// Binary literals share the byte arena but never enter the C-string name table.
+fn literal_store(s: *u8, len: i32) -> i32 {
+    if str_len(s) == len { return str_intern(s); }
+    grow_strings(len + 1);
+    let off: i32 = g_nstrings;
+    var i: i32 = 0;
+    while i < len { g_strings[off + i] = s[i]; i = i + 1; }
+    g_strings[off + len] = 0;
+    g_nstrings = off + len + 1;
+    return off;
+}
+
+fn literal_require_text(s: *u8, len: i32, line: i32, col: i32, context: *u8) {
+    var i: i32 = 0;
+    while i < len {
+        if s[i] == 0 {
+            diag_begin(line, col);
+            derr(context); derr(" cannot contain an embedded NUL");
+            diag_end();
+            exit(1);
+        }
+        i = i + 1;
+    }
+}
+
+fn literal_node_require_text(node: i32, context: *u8) {
+    literal_require_text(&g_strings[g_nodes[node].name0], g_nodes[node].int_val as i32,
+        g_nodes[node].line, g_nodes[node].col, context);
+}
+
 // Report an exhausted fixed-ceiling arena and abort cleanly (no silent
 // overflow). The input-proportional arenas grow instead of aborting.
 fn arena_overflow(name: *u8, max: i32) {
@@ -2036,7 +2082,7 @@ fn grow_strings(n: i32) {
 fn grow_str_lits() {
     if g_nstr_lits < g_cap_str_lits { return; }
     g_cap_str_lits = g_cap_str_lits * 2;
-    g_str_lit_offs = realloc(g_str_lit_offs, g_cap_str_lits);
+    g_str_lit_nodes = realloc(g_str_lit_nodes, g_cap_str_lits);
 }
 // The symbol table is INDEX-accessed (sym_find returns an index, never a held
 // pointer) so it reallocs safely; growable since symbol count scales with input (#42).
@@ -2398,7 +2444,20 @@ fn diag_found_current() {
     derr(tok_kind_name(k));
     if k == TOK_IDENT || k == TOK_INT_LIT || k == TOK_BOOL_LIT || k == TOK_STR_LIT {
         derr(" '");
-        derr(&g_tokens[g_tok_pos].text[0]);
+        if k == TOK_STR_LIT {
+            var i: i32 = 0;
+            var byte: [u8; 2] = 0;
+            while i < g_tokens[g_tok_pos].int_val as i32 {
+                byte[0] = g_tokens[g_tok_pos].text[i];
+                if byte[0] == 0 { derr("\\0"); }
+                else if byte[0] == 10 { derr("\\n"); }
+                else if byte[0] == 13 { derr("\\r"); }
+                else if byte[0] == 9 { derr("\\t"); }
+                else if byte[0] == 92 { derr("\\\\"); }
+                else { derr(&byte[0]); }
+                i = i + 1;
+            }
+        } else { derr(&g_tokens[g_tok_pos].text[0]); }
         derr("'");
     }
 }
@@ -3088,7 +3147,9 @@ fn parse_primary() -> i32 {
     // String literal
     if k == TOK_STR_LIT {
         let idx: i32 = node_alloc(AST_STR_LIT, ln, cl);
-        g_nodes[idx].name0 = tok_intern(&g_tokens[g_tok_pos]);
+        let len: i32 = g_tokens[g_tok_pos].int_val as i32;
+        g_nodes[idx].name0 = literal_store(&g_tokens[g_tok_pos].text[0], len);
+        g_nodes[idx].int_val = len as u64;
         p_advance();
         return idx;
     }
@@ -4202,7 +4263,11 @@ fn parse_extern_fn() -> i32 {
     let cl: i32 = p_cur_col();
     p_expect(TOK_KW_EXTERN);
     // consume "C" string literal
-    p_advance(); // TOK_STR_LIT "C"
+    if p_peek() == TOK_STR_LIT {
+        literal_require_text(&g_tokens[g_tok_pos].text[0], g_tokens[g_tok_pos].int_val as i32,
+            p_cur_line(), p_cur_col(), "extern ABI name");
+    }
+    p_expect(TOK_STR_LIT);
     p_expect(TOK_KW_FN);
     let idx: i32 = node_alloc(AST_EXTERN_FN, ln, cl);
     g_nodes[idx].name0 = tok_intern(&g_tokens[g_tok_pos]);
@@ -4900,9 +4965,9 @@ fn print_ast_node(fd: i32, node_idx: i32, depth: i32) {
     }
 
     if kind == AST_STR_LIT {
-        wr(fd, "(str \"");
-        print_str_at(fd, g_nodes[node_idx].name0);
-        wr(fd, "\")");
+        wr(fd, "(str ");
+        json_emit_escaped_fd(fd, &g_strings[g_nodes[node_idx].name0], g_nodes[node_idx].int_val as i32);
+        wr(fd, ")");
         return;
     }
 
@@ -13413,6 +13478,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let r: i32 = ir_tmp();
             if fw_n == 1 && g_nodes[a0node].kind == AST_STR_LIT {
                 // hex-string form: parse 4 limbs at compile time
+                literal_node_require_text(a0node, "field_wide hexadecimal literal");
                 let hs: *u8 = &g_strings[g_nodes[a0node].name0];
                 ir_wr("  "); ir_wr_reg(r); ir_wr(" = call ptr @__field_wide_init(i64 ");
                 ir_wr_u64(hex_str_limb(hs, 0)); ir_wr(", i64 ");
@@ -13438,6 +13504,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let wa0: i32 = g_args[g_nodes[node].args_start + 0];
             let bufv: IRValue = codegen_expr(g_args[g_nodes[node].args_start + 1], str_intern("i64"));
             if g_nodes[wa0].kind == AST_STR_LIT {
+                literal_node_require_text(wa0, "wide hexadecimal literal");
                 let hs: *u8 = &g_strings[g_nodes[wa0].name0];
                 var li: i32 = 0;
                 while li < 4 {
@@ -15022,15 +15089,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
 
     // ---- String literal ----
     if kind == AST_STR_LIT {
-        let soff: i32 = g_nodes[node].name0;
         // Record for deferred emission
         grow_str_lits();
         let str_id: i32 = g_nstr_lits;
-        g_str_lit_offs[str_id] = soff;
+        g_str_lit_nodes[str_id] = node;
         g_nstr_lits = g_nstr_lits + 1;
         // Compute byte length — strings are already lexer-decoded, no escapes
-        let s: *u8 = &g_strings[soff];
-        var slen: i32 = str_len(s) + 1; // +1 for NUL
+        let slen: i32 = (g_nodes[node].int_val as i32) + 1;
         // Emit just the GEP reference — the constant is emitted at module end
         let r: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(r);
@@ -22364,15 +22429,16 @@ fn emit_wide_print() {
 fn emit_string_literals() {
     var i: i32 = 0;
     while i < g_nstr_lits {
-        let soff: i32 = g_str_lit_offs[i];
+        let node: i32 = g_str_lit_nodes[i];
+        let soff: i32 = g_nodes[node].name0;
         let s: *u8 = &g_strings[soff];
         // Strings are already lexer-decoded — no escape processing needed
-        let slen: i32 = str_len(s) + 1; // +1 for NUL
+        let slen: i32 = (g_nodes[node].int_val as i32) + 1;
         ir_wr("@.str."); ir_wr_int(i as i64);
         ir_wr(" = private unnamed_addr constant [");
         ir_wr_int(slen as i64); ir_wr(" x i8] c\"");
         var si: i32 = 0;
-        while s[si] != 0 {
+        while si < slen - 1 {
             ir_wr_hex_byte(s[si] as i32);
             si = si + 1;
         }
@@ -35227,6 +35293,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             g_eir[fwe].ival = EB_FW_INIT as u64;
             g_eir[fwe].type_off = str_intern("FieldWide");
             if nargs == 1 && g_nodes[fw_a0].kind == AST_STR_LIT {
+                literal_node_require_text(fw_a0, "field_wide hexadecimal literal");
                 let fw_hs: *u8 = &g_strings[g_nodes[fw_a0].name0];
                 g_eir[fwe].a = ewide_push(hex_str_limb(fw_hs, 0), hex_str_limb(fw_hs, 1),
                                           hex_str_limb(fw_hs, 2), hex_str_limb(fw_hs, 3));
@@ -35259,6 +35326,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             let wf_a0: i32 = g_args[abase];
             var wf_idx: i32 = 0 - 1;
             if g_nodes[wf_a0].kind == AST_STR_LIT {
+                literal_node_require_text(wf_a0, "wide hexadecimal literal");
                 let wf_hs: *u8 = &g_strings[g_nodes[wf_a0].name0];
                 wf_idx = ewide_push(hex_str_limb(wf_hs, 0), hex_str_limb(wf_hs, 1),
                                     hex_str_limb(wf_hs, 2), hex_str_limb(wf_hs, 3));
@@ -46499,7 +46567,7 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
     g_gen_sub_types = alloc(MAX_GEN_PARAMS);
     g_loop_end_labels = alloc(64);
     g_loop_cond_labels = alloc(64);
-    g_str_lit_offs = alloc(MAX_STR_LITS);
+    g_str_lit_nodes = alloc(MAX_STR_LITS);
     g_cap_str_lits = MAX_STR_LITS;
     g_structs = alloc(MAX_STRUCTS);
     g_enums = alloc(MAX_ENUMS);
@@ -46816,7 +46884,7 @@ fn main(argc: i32, argv: **u8, envp: **u8) {
     free(g_funcs);
     free(g_loop_end_labels);
     free(g_loop_cond_labels);
-    free(g_str_lit_offs);
+    free(g_str_lit_nodes);
     free(g_structs);
     free(g_enums);
     free(g_enum_variants);
