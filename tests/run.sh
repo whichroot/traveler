@@ -575,6 +575,17 @@ compile_obj_self struct_field_address
 link_objs struct_field_address struct_field_address
 run_test struct_field_address "$TIMEOUT_SINGLE"
 
+TOTAL=$((TOTAL + 1))
+if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ] || [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ]; then
+    echo "  struct_copies SKIP (requires python3, LLVM tools, and a linker)"
+    SKIP=$((SKIP + 1))
+elif python3 "$SCRIPT_DIR/check_struct_copies.py" "$TVC_SELF" "$LLC" "$OPT" "$LINKER"; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    FAILURES="$FAILURES struct_copies"
+fi
+
 # #54 gate: for-loop bound WIDTH ADOPTION — i64/usize/u32/narrow/wide-literal
 # bounds (serial + pfor-dispatched via the i64 ABI + the prepeek-miss call
 # bound). tvc_self-only — the frozen C seed refuses wide bounds (i32-only
