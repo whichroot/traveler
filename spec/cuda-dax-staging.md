@@ -228,7 +228,9 @@ retains the caller-side staging contract described in the previous section.
 
 Creation reserves a dedicated upload stream and the worker pool until close,
 preallocates a bounded job ring and descriptor arrays, and starts one persistent
-coordinator. The pinned capacity remains `2 * depth * chunk_bytes`. The stream
+coordinator. Each async record also owns a separate ticket-completion event,
+for five checked resources per record. The pinned capacity remains
+`2 * depth * chunk_bytes`. The stream
 cannot already belong to another pipeline. Checked external stream submissions,
 stream query/sync/close, pool use/close, and competing pipeline construction
 refuse while reserved. The coordinator is the authorized stream submitter.
@@ -270,12 +272,33 @@ changes; they do not add a separate 1 ms polling cycle. Multiple waiters are
 notified on completion or failure. Idle coordinators also sleep on a condition
 variable, regardless of the selected GPU polling interval.
 
-Use a separate compute stream for consumers. Poll upload completion before
-launching the corresponding consumer. Work on the current expert can run while
+Use a separate compute stream for consumers. Poll upload completion or install
+the ticket dependency described below before launching its consumer. Work on the current expert can run while
 the next expert stages and uploads. **Returning from submit does not establish
 CUDA enqueue order for a dependent kernel.** An event that the coordinator has
 not yet recorded is not a future promise; private slot events are not dependency
-handles. This API does not provide a GPU-side wait-on-ticket operation.
+handles.
+
+```tv
+fn cuda_dax_pipeline_try_wait_stream(pipeline: u64, ticket: u64,
+                                     stream: u64) -> Result<u64, CudaError>;
+```
+
+For async pipelines, this call returns `Ok(0)` while the ticket is still queued
+or staging and its final completion event is not yet recorded. It enqueues
+nothing in that case; retry before queuing the consumer. `Ok(1)` means a GPU
+stream wait has been enqueued, or that the ticket is already known complete and
+needs no wait. The call does not synchronize on the host. Multiple compute
+streams can depend on the same ticket. Streams must have the same device owner;
+reserved upload streams, invalid/stale tickets, and failed tickets refuse.
+
+Ticket events are separate from chunk-slot events. A successful stream wait
+retains that recording until the consumer stream's checked completion releases
+it. Its ring record cannot be reused while retained, even if its upload has
+completed. This bounded retention can make submit return busy and close refuse;
+query/synchronize the consumer stream to release completed holds. Retired tickets
+remain successful after record reuse. Keep destination buffers alive through
+their consumer's use as with any async launch.
 
 ```tv
 let pipeline = cuda_dax_pipeline_create_async(upload_stream, pool, 2, chunk_bytes)?;

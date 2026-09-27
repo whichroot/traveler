@@ -7,7 +7,7 @@ struct CudaDaxJob {
     ticket: u64, event: u64, state: i32,
 }
 struct CudaDaxQueue {
-    jobs: *CudaDaxJob, sources: *DaxView, destinations: *CudaArgument,
+    jobs: *CudaDaxJob, sources: *DaxView, destinations: *CudaArgument, completions: *u64,
     pool: *CudaDaxPool, mutex: *u64, ready: *u64,
     initialized: i32, started: i32, joined: i32, handle: *u8,
     stop: i32, draining: i32, drained: i32, drain_status: i32,
@@ -36,6 +36,12 @@ fn cuda_dax_queue_pause(q: *CudaDaxQueue) {
 
 fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32, chunk_bytes: u64) -> Result<u64, CudaError> {
     let worker: u64 = cuda_dax_pool_acquire(pool)?;
+    cuda_res_lock(); var available: i32 = 0;
+    for i in 0..1024 { if g_cuda_res_table[i].kind == 0 { available = available+1; } }
+    cuda_res_unlock();
+    if depth >= 2 && depth <= 255 && available < 1+5*depth {
+        cuda_dax_pool_release(pool); return Result::Err(cuda_res_error(20, 0-2, stream));
+    }
     var id: u64 = 0;
     match cuda_dax_pipeline_new(stream, pool, depth, chunk_bytes) {
         Result::Ok(value) => { id = value; },
@@ -61,6 +67,7 @@ fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32, chunk_byte
     let q: *CudaDaxQueue = alloc(1); p.queue = q;
     q.jobs = alloc(depth); q.pool = worker as *CudaDaxPool;
     q.sources = alloc(depth); q.destinations = alloc(depth);
+    q.completions = alloc(depth);
     q.mutex = alloc(8); q.ready = alloc(8); q.initialized = 0;
     q.started = 0; q.joined = 0; q.handle = null; q.stop = 0;
     q.draining = 0; q.drained = 1; q.drain_status = 0;
@@ -70,6 +77,14 @@ fn cuda_dax_pipeline_create_async(stream: u64, pool: u64, depth: i32, chunk_byte
         q.jobs[i].state = 0; q.jobs[i].source = &q.sources[i]; q.jobs[i].destination = &q.destinations[i];
     }
     s.reservation = id; s.users = s.users+1; cuda_res_unlock();
+    for i in 0..depth {
+        match cuda_dax_pipeline_allocate(&q.completions[i], p.device, 0, 6) {
+            Result::Ok(value) => {},
+            Result::Err(error) => {
+                cuda_dax_pipeline_close(id)?; return Result::Err(error);
+            },
+        }
+    }
     var status: i32 = pthread_mutex_init(q.mutex as *u8, null);
     if status == 0 { q.initialized = 1; status = pthread_cond_init(q.ready as *u8, null); }
     if status == 0 { q.initialized = 2; status = pthread_create((&q.handle) as *u8, null, &cuda_dax_queue_worker, p as *u8); }
@@ -91,7 +106,9 @@ fn cuda_dax_queue_submit(p: *CudaDaxPipeline, destination: CudaArgument, source:
     if bytes == 0 { return cuda_res_ok(0); }
     if p.last == 18446744073709551615 { return cuda_res_fail(20, 0-2, p.stream); }
     var slot: i32 = -1;
-    for i in 0..p.depth { if slot < 0 && q.jobs[i].state == 0 { slot = i; } }
+    for i in 0..p.depth {
+        if slot < 0 && q.jobs[i].state == 0 && cuda_res_find(q.completions[i], 6).users == 0 { slot = i; }
+    }
     if slot < 0 { return cuda_res_fail(20, 0-5, p.stream); }
     p.last = p.last+1; b.users = b.users+1; q.drained = 0;
     q.sources[slot] = source[0]; q.destinations[slot] = destination;
@@ -130,12 +147,46 @@ fn cuda_dax_queue_observe(p: *CudaDaxPipeline, ticket: u64, wait: i32) -> Result
     return Result::Ok(0);
 }
 
+fn cuda_dax_pipeline_try_wait_stream(pipeline: u64, ticket: u64, stream: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pipeline_acquire(pipeline, 0)?;
+    let result: Result<u64, CudaError> = cuda_dax_queue_wait_stream(address as *CudaDaxPipeline, ticket, stream);
+    return cuda_dax_pipeline_release(pipeline, result);
+}
+
+fn cuda_dax_queue_wait_stream(p: *CudaDaxPipeline, ticket: u64, stream: u64) -> Result<u64, CudaError> {
+    cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
+    let s: *CudaResource = cuda_res_find(stream, 5);
+    if q == null || s == null || ticket == 0 || ticket > p.last { return cuda_res_fail(20, 0-1, ticket); }
+    if s.owner != p.device { return cuda_res_fail(20, 0-1, stream); }
+    if cuda_res_stream_available(s) == 0 { return cuda_res_fail(20, 0-5, stream); }
+    if q.failed_ticket != 0 && ticket >= q.failed_ticket { return cuda_res_fail(q.boundary, q.status, q.resource); }
+    if cuda_res_find(p.device, 1).poisoned != 0 { return cuda_res_fail(20, 0-4, stream); }
+    if ticket <= p.completed { return cuda_res_ok(1); }
+    var event: u64 = 0;
+    for i in 0..p.depth {
+        if q.jobs[i].ticket == ticket && q.jobs[i].state == 3 { event = q.jobs[i].event; }
+    }
+    if event == 0 { return cuda_res_ok(0); }
+    let held: *CudaResource = cuda_res_find(event, 6); held.users = held.users+1;
+    cuda_res_unlock(); let result: Result<u64, CudaError> = cuda_stream_wait_event(stream, event);
+    cuda_res_lock(); held.users = held.users-1; cuda_res_unlock();
+    match result {
+        Result::Ok(value) => { return Result::Ok(1); },
+        Result::Err(error) => { return Result::Err(error); },
+    }
+    return Result::Ok(0);
+}
+
 // Only the coordinator reads job payloads; publication and retirement hold the table lock.
 fn cuda_dax_queue_upload(p: *CudaDaxPipeline, index: i32) -> Result<u64, CudaError> {
     let job: *CudaDaxJob = &p.queue.jobs[index];
     let staging: *CudaDaxStaging = &p.staging[index];
     let chunk: u64 = cuda_dax_staging_check(p.stream, job.destination[0], job.source, job.offset, job.bytes, staging)?;
-    var done: u64 = 0; var turn: i32 = 0; var chunks: u64 = 0; var completion: u64 = 0;
+    cuda_res_lock(); let available: u64 = 18446744073709551615-cuda_res_find(p.stream, 5).sequence;
+    let needed: u64 = job.bytes/chunk+((job.bytes%chunk != 0) as u64);
+    if available == 0 || needed > (available-1)/2 { return cuda_res_fail(20, 0-2, p.stream); }
+    cuda_res_unlock();
+    var done: u64 = 0; var turn: i32 = 0; var chunks: u64 = 0;
     while done < job.bytes {
         var slot: u64 = staging.slot0; var event: u64 = staging.event0;
         if turn == 1 { slot = staging.slot1; event = staging.event1; }
@@ -148,9 +199,10 @@ fn cuda_dax_queue_upload(p: *CudaDaxPipeline, index: i32) -> Result<u64, CudaErr
             buffer: job.destination.buffer, offset: job.destination.offset+done, bytes: count };
         cuda_dax_stage_pooled(pin, job.source, job.offset+done, count, p.queue.pool)?;
         cuda_upload_async(p.stream, target, pin, count)?; cuda_event_record(event, p.stream)?;
-        done = done+count; chunks = chunks+1; turn = 1-turn; completion = event;
+        done = done+count; chunks = chunks+1; turn = 1-turn;
     }
-    return Result::Ok(completion);
+    cuda_event_record(p.queue.completions[index], p.stream)?;
+    return Result::Ok(p.queue.completions[index]);
 }
 
 fn cuda_dax_queue_retire(p: *CudaDaxPipeline, ticket: u64) {
@@ -261,7 +313,14 @@ fn cuda_dax_queue_drain(p: *CudaDaxPipeline) -> Result<u64, CudaError> {
 
 fn cuda_dax_queue_close(id: u64, p: *CudaDaxPipeline) -> Result<u64, CudaError> {
     cuda_res_lock(); let q: *CudaDaxQueue = p.queue;
-    if q.draining != 0 || (p.failed != 0 && q.drained == 0) || (p.failed == 0 && p.last != p.completed) {
+    var retained: i32 = 0;
+    for i in 0..p.depth {
+        if q.completions[i] != 0 {
+            let event: *CudaResource = cuda_res_find(q.completions[i], 6);
+            if event != null { if event.users != 0 { retained = 1; } }
+        }
+    }
+    if retained != 0 || q.draining != 0 || (p.failed != 0 && q.drained == 0) || (p.failed == 0 && p.last != p.completed) {
         cuda_res_find(id, 10).recorded = 0;
         cuda_res_unlock(); return cuda_dax_pipeline_release(id, Result::Err(cuda_res_error(20, 0-5, id)));
     }
@@ -275,6 +334,14 @@ fn cuda_dax_queue_close(id: u64, p: *CudaDaxPipeline) -> Result<u64, CudaError> 
     if q.initialized == 2 { status = pthread_cond_destroy(q.ready as *u8); if status == 0 { q.initialized = 1; } }
     if status == 0 && q.initialized == 1 { status = pthread_mutex_destroy(q.mutex as *u8); if status == 0 { q.initialized = 0; } }
     if status != 0 { return cuda_dax_pipeline_release(id, Result::Err(cuda_res_error(20, status, id))); }
+    for i in 0..p.depth {
+        match cuda_dax_pipeline_drop(&q.completions[i], 6) {
+            Result::Ok(value) => {},
+            Result::Err(error) => {
+                var e: CudaError = error; e.resource = id; return cuda_dax_pipeline_release(id, Result::Err(e));
+            },
+        }
+    }
     match cuda_dax_pipeline_cleanup(p) {
         Result::Ok(value) => {},
         Result::Err(error) => {
@@ -285,6 +352,7 @@ fn cuda_dax_queue_close(id: u64, p: *CudaDaxPipeline) -> Result<u64, CudaError> 
     s.reservation = 0; s.executor = 0; s.users = s.users-1;
     cuda_res_find(p.pool, 9).users = 0;
     let r: *CudaResource = cuda_res_find(id, 10); r.kind = 0; r.users = 0;
-    cuda_res_unlock(); free(q.jobs); free(q.sources); free(q.destinations); free(q.ready); free(q.mutex); free(q);
+    cuda_res_unlock(); free(q.jobs); free(q.sources); free(q.destinations); free(q.completions);
+    free(q.ready); free(q.mutex); free(q);
     free(p.staging); free(p.flights); free(p); return Result::Ok(0);
 }

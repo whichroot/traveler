@@ -122,6 +122,7 @@ fn dax_async_faults() {
     for test in 0..3 {
         mock_async_progress(1);
         let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let consumer: u64 = resident_need(cuda_stream_create(d));
         let pool: u64 = resident_need(cuda_dax_pool_create(1));
         let pipeline: u64 = resident_need(cuda_dax_pipeline_create_async(s, pool, 2, 17));
         let b: u64 = resident_need(cuda_buffer_alloc(d, 97)); let target: CudaArgument = resident_typed_view(b, 0, 97, 0-8);
@@ -138,13 +139,15 @@ fn dax_async_faults() {
         if test == 2 { mock_fail(19, 0); boundary = 12; status = 819; }
         dax_copy_release(); dax_error(cuda_dax_pipeline_wait(pipeline, bad), boundary, status);
         dax_error(cuda_dax_pipeline_query(pipeline, cancelled), boundary, status);
+        dax_error(cuda_dax_pipeline_try_wait_stream(pipeline, bad, consumer), boundary, status);
         dax_error(cuda_dax_pipeline_submit(pipeline, target, &source, 0, 1), 20, 0-5);
         dax_error(cuda_dax_pipeline_close(pipeline), 20, 0-5);
         resident_need(cuda_dax_pipeline_drain(pipeline));
         dax_error(cuda_dax_pipeline_query(pipeline, bad), boundary, status);
         if resident_need(cuda_dax_pipeline_query(pipeline, good)) != 1 { exit(164); }
         resident_need(cuda_dax_pipeline_close(pipeline)); resident_need(cuda_dax_pool_close(pool));
-        resident_need(cuda_stream_close(s)); resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(data);
+        resident_need(cuda_stream_close(s)); resident_need(cuda_stream_close(consumer));
+        resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d)); free(data);
         if mock_clean() == 0 || dax_sync_live() != 0 { exit(165); }
     }
     for test in 0..3 {
@@ -160,6 +163,7 @@ fn dax_async_faults() {
     let legacy: u64 = resident_need(cuda_dax_pipeline_create(s, pool, 2, 17));
     dax_error(cuda_dax_pipeline_create_async(s, pool, 2, 17), 20, 0-5);
     resident_need(cuda_dax_pipeline_close(legacy));
+    mock_fail(13, 4); dax_error(cuda_dax_pipeline_create_async(s, pool, 2, 17), 10, 813);
     let pipeline: u64 = resident_need(cuda_dax_pipeline_create_async(s, pool, 2, 17));
     mock_fail(16, 0); dax_error(cuda_dax_pipeline_drain(pipeline), 12, 816);
     dax_error(cuda_dax_pipeline_close(pipeline), 20, 0-5);
@@ -171,6 +175,55 @@ fn dax_async_faults() {
 }
 
 fn main() -> i32 {
-    dax_async_round(1); dax_async_round(4); dax_async_faults();
+    dax_async_round(1); dax_async_round(4); dax_async_faults(); dax_ticket_streams();
     puts("DAX nonblocking PASS: paused workers, slot reuse, queued holds, FIFO, drain, faults, and cleanup"); return 0;
+}
+
+fn dax_ticket_streams() {
+    mock_async_progress(0);
+    let d: u64 = resident_need(cuda_device_open(0));
+    let upload: u64 = resident_need(cuda_stream_create(d));
+    let compute: u64 = resident_need(cuda_stream_create(d));
+    let compute2: u64 = resident_need(cuda_stream_create(d));
+    let pool: u64 = resident_need(cuda_dax_pool_create(1));
+    let pipeline: u64 = resident_need(cuda_dax_pipeline_create_async(upload, pool, 2, 8));
+    let buffer: u64 = resident_need(cuda_buffer_alloc(d, 16));
+    let pin: u64 = resident_need(cuda_pinned_alloc(d, 16));
+    let data: *u8 = alloc(8); for i in 0..8 { data[i] = dax_pattern(i as i64); }
+    var source: DaxView = DaxView { ptr: data, offset: 0, length: 8 };
+    let a: CudaArgument = resident_typed_view(buffer, 0, 8, 0-8);
+    let b: CudaArgument = resident_typed_view(buffer, 8, 8, 0-8);
+    dax_copy_pause(data, 8);
+    let first: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, a, &source, 0, 8));
+    dax_copy_wait(1);
+    if resident_need(cuda_dax_pipeline_try_wait_stream(pipeline, first, compute)) != 0 { exit(171); }
+    dax_error(cuda_dax_pipeline_try_wait_stream(pipeline, first, upload), 20, 0-5);
+    dax_error(cuda_dax_pipeline_try_wait_stream(pipeline, 0, compute), 20, 0-1);
+    let foreign_device: u64 = resident_need(cuda_device_open(1));
+    let foreign_stream: u64 = resident_need(cuda_stream_create(foreign_device));
+    dax_error(cuda_dax_pipeline_try_wait_stream(pipeline, first, foreign_stream), 20, 0-1);
+    resident_need(cuda_stream_close(foreign_stream)); resident_need(cuda_device_close(foreign_device));
+    let second: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, b, &source, 0, 8));
+    dax_copy_release();
+    while resident_need(cuda_dax_pipeline_try_wait_stream(pipeline, first, compute)) == 0 { usleep(1000); }
+    while resident_need(cuda_dax_pipeline_try_wait_stream(pipeline, second, compute)) == 0 { usleep(1000); }
+    if resident_need(cuda_dax_pipeline_try_wait_stream(pipeline, first, compute2)) != 1 { exit(172); }
+    if resident_need(cuda_dax_pipeline_try_wait_stream(pipeline, second, compute2)) != 1 { exit(172); }
+    let host: CudaArgument = dax_pin(pin, 16);
+    resident_need(cuda_download_async(compute, host, resident_typed_view(buffer, 0, 16, 0-8), 16));
+    resident_need(cuda_stream_sync(compute)); resident_need(cuda_dax_pipeline_wait(pipeline, second));
+    dax_error(cuda_dax_pipeline_submit(pipeline, a, &source, 0, 8), 20, 0-5);
+    dax_error(cuda_dax_pipeline_close(pipeline), 20, 0-5);
+    let back: *u8 = alloc(16); resident_need(cuda_pinned_read(back, host, 16));
+    for i in 0..16 { if back[i] != dax_pattern((i%8) as i64) { exit(173); } }
+    if resident_need(cuda_dax_pipeline_try_wait_stream(pipeline, first, compute)) != 1 { exit(174); }
+    resident_need(cuda_stream_sync(compute2));
+    mock_async_progress(1);
+    let third: u64 = resident_need(cuda_dax_pipeline_submit(pipeline, a, &source, 0, 8));
+    resident_need(cuda_dax_pipeline_wait(pipeline, third));
+    resident_need(cuda_dax_pipeline_close(pipeline)); resident_need(cuda_dax_pool_close(pool));
+    resident_need(cuda_buffer_close(buffer)); resident_need(cuda_pinned_close(pin));
+    resident_need(cuda_stream_close(upload)); resident_need(cuda_stream_close(compute)); resident_need(cuda_stream_close(compute2));
+    resident_need(cuda_device_close(d)); free(data); free(back);
+    if mock_clean() == 0 || dax_sync_live() != 0 { exit(175); }
 }
