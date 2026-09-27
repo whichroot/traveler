@@ -33,13 +33,42 @@ The helper copies each source chunk into alternating pinned buffers with
 event. Before overwriting a previously submitted slot, it waits for that event.
 Thus CPU staging of the next chunk can overlap the preceding GPU upload.
 
-`cuda_upload_dax_parallel` uses the same checks and submission protocol. For each
-chunk it starts up to `threads` CPU workers over balanced, disjoint byte ranges.
+`cuda_upload_dax_parallel` uses the same checks and submission protocol. It creates
+one temporary worker pool per nonempty multi-thread call and reuses it for every
+chunk. Each chunk activates up to `threads` workers over disjoint byte ranges.
 The first remainder workers copy one extra byte. The active count is capped at
-the chunk's byte count; one worker or one byte uses the serial copy path.
+the chunk's byte count; a one-thread call uses the serial copy path.
 `threads` must be positive, including for empty transfers. This explicit worker
-count is independent of `TRAVELER_THREADS`. All started workers finish before
-the chunk is uploaded or a worker error is returned.
+count is independent of `TRAVELER_THREADS`. All active workers finish copying
+before the chunk is uploaded.
+
+## Persistent worker pools
+
+```tv
+fn cuda_dax_pool_create(threads: i32) -> Result<u64, CudaError>;
+fn cuda_dax_pool_close(pool: u64) -> Result<u64, CudaError>;
+fn cuda_upload_dax_pooled(stream: u64, destination: CudaArgument,
+                         source: *DaxView, offset: u64, bytes: u64,
+                         staging: *CudaDaxStaging, pool: u64) -> Result<u64, CudaError>;
+```
+
+Create a pool once and pass its checked handle to successive uploads. Its fixed,
+positive thread count is independent of `TRAVELER_THREADS`. A one-thread pool
+copies on the caller; larger pools start all workers at creation. Idle workers
+sleep on condition variables. Dispatch reuses descriptors and creates, joins,
+and allocates nothing. Pool close wakes and joins workers.
+
+A pool accepts one upload call at a time. Concurrent submission or close reports
+busy. Separate pools operate independently. The pool borrows source and pinned
+addresses only during a copy and owns no CUDA device resources. It can be closed
+after submission while the final GPU upload is still pending. Stale pool handles
+are rejected. Keep staging resources and destinations alive until completion.
+
+Partial startup failure stops and joins workers already started. A cleanup
+failure returns the pool handle in `CudaError.resource`; retry pool close to
+finish cleanup. A pool with unfinished close cannot accept new submissions.
+
+## Checked copies and completion
 
 Pinned CPU reads and writes validate and increment the buffer's `users` count
 under the resource lock, then copy outside that lock. Parallel staging retains
@@ -91,10 +120,11 @@ resources and ranges, but may use a null source data pointer.
 Validation failures use copy boundary 15: `-1` invalid arguments, `-2` sequence
 capacity, `-4` poisoned device, or `-5` busy staging resources. Copy/event/driver
 failures propagate their existing boundary and status.
-Nonpositive worker counts report boundary 15, status `-1`. Thread creation or
-join failures report boundary 14 with the pthread status and pinned-buffer ID.
-On a thread-start failure, all workers already started are joined, the CPU hold
-is released, and that chunk is not uploaded. Earlier uploads remain pending.
+Nonpositive counts on the parallel uploader report boundary 15, status `-1`.
+Pool errors use boundary 19: `-1` invalid count/handle, `-2` resource or dispatch
+generation capacity, `-5` busy/closing pool, or a positive pthread error status.
+Pool creation fails before the parallel uploader queues any chunks. Upload errors
+release the pool's busy hold; earlier CUDA work retains its completion holds.
 
 On an error after submission begins, earlier chunks may already be queued or
 complete; there is no rollback. The caller still owns all resources. Synchronize
@@ -116,6 +146,12 @@ counts and adds uneven slices, more workers than bytes, nonpositive counts, and
 partial thread-start failures. Instrumented copies pause all four workers at
 once to prove worker concurrency. Paused serial reads/writes and parallel copies
 also check lock availability, the CPU hold, DMA refusal, and unrelated progress.
+
+`tests/gpu/check_cuda_dax_pool.py` checks thread counts across repeated uploads,
+changing job generations, independent pools, busy and stale handles, closing
+before DMA completion, partial synchronization/thread initialization, failed-join
+cleanup retry, and reuse after upload failures. Both worker gates run raw and
+available optimized profiles at runtime thread settings one and four.
 
 This verifies the overlap mechanism and lifetime contract. Bandwidth and actual
 CPU/DMA overlap require a separate hardware measurement.

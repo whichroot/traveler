@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_async.tv";
+extern "C" fn pthread_create(t: *u8, attr: *u8, start: fn(*u8) -> *u8, arg: *u8) -> i32;
+extern "C" fn pthread_join(t: *u8, ret: **u8) -> i32;
+extern "C" fn pthread_mutex_init(mu: *u8, attr: *u8) -> i32;
+extern "C" fn pthread_mutex_lock(mu: *u8) -> i32;
+extern "C" fn pthread_mutex_unlock(mu: *u8) -> i32;
+extern "C" fn pthread_mutex_destroy(mu: *u8) -> i32;
+extern "C" fn pthread_cond_init(cv: *u8, attr: *u8) -> i32;
+extern "C" fn pthread_cond_wait(cv: *u8, mu: *u8) -> i32;
+extern "C" fn pthread_cond_broadcast(cv: *u8) -> i32;
+extern "C" fn pthread_cond_signal(cv: *u8) -> i32;
+extern "C" fn pthread_cond_destroy(cv: *u8) -> i32;
+
+struct CudaDaxWorker { pool: *CudaDaxPool, index: i32 }
+struct CudaDaxPool {
+    mutex: *u64, ready: *u64, complete: *u64,
+    initialized: i32, threads: i32, started: i32, joined: i32,
+    handles: **u8, workers: *CudaDaxWorker,
+    stop: i32, generation: u64, active: i32, remaining: i32,
+    destination: *u8, source: *u8, bytes: u64,
+}
+
+fn cuda_dax_pool_worker(arg: *u8) -> *u8 {
+    let worker: *CudaDaxWorker = arg as *CudaDaxWorker;
+    let p: *CudaDaxPool = worker.pool; let index: i32 = worker.index;
+    var seen: u64 = 0;
+    pthread_mutex_lock(p.mutex as *u8);
+    while p.stop == 0 {
+        while p.stop == 0 && seen == p.generation { pthread_cond_wait(p.ready as *u8, p.mutex as *u8); }
+        if p.stop == 0 {
+            seen = p.generation;
+            if index < p.active {
+                let part: u64 = p.bytes/(p.active as u64); let extra: u64 = p.bytes%(p.active as u64);
+                var prefix: u64 = index as u64; if prefix > extra { prefix = extra; }
+                let offset: u64 = (index as u64)*part+prefix;
+                var bytes: u64 = part; if (index as u64) < extra { bytes = bytes+1; }
+                let destination: *u8 = ((p.destination as u64)+offset) as *u8;
+                let source: *u8 = ((p.source as u64)+offset) as *u8;
+                pthread_mutex_unlock(p.mutex as *u8);
+                memcpy(destination, source, bytes as usize);
+                pthread_mutex_lock(p.mutex as *u8);
+                p.remaining = p.remaining-1;
+                if p.remaining == 0 { pthread_cond_signal(p.complete as *u8); }
+            }
+        }
+    }
+    pthread_mutex_unlock(p.mutex as *u8);
+    return null;
+}
+
+fn cuda_dax_pool_acquire(pool: u64) -> Result<u64, CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(pool, 9);
+    if r == null { return cuda_res_fail(19, 0-1, pool); }
+    if r.users != 0 || r.recorded != 0 { return cuda_res_fail(19, 0-5, pool); }
+    r.users = 1; return cuda_res_ok(r.native as u64);
+}
+
+fn cuda_dax_pool_release(pool: u64) {
+    cuda_res_lock(); cuda_res_find(pool, 9).users = 0; cuda_res_unlock();
+}
+
+fn cuda_dax_pool_close(pool: u64) -> Result<u64, CudaError> {
+    cuda_res_lock(); let r: *CudaResource = cuda_res_find(pool, 9);
+    if r == null { return cuda_res_fail(19, 0-1, pool); }
+    if r.users != 0 { return cuda_res_fail(19, 0-5, pool); }
+    r.users = 1; r.recorded = 1; let p: *CudaDaxPool = r.native as *CudaDaxPool;
+    cuda_res_unlock();
+    if p.joined < p.started {
+        pthread_mutex_lock(p.mutex as *u8); p.stop = 1;
+        pthread_cond_broadcast(p.ready as *u8); pthread_mutex_unlock(p.mutex as *u8);
+    }
+    var status: i32 = 0;
+    while p.joined < p.started && status == 0 {
+        status = pthread_join(p.handles[p.joined], null);
+        if status == 0 { p.joined = p.joined+1; }
+    }
+    if status == 0 && p.initialized == 3 {
+        status = pthread_cond_destroy(p.complete as *u8); if status == 0 { p.initialized = 2; }
+    }
+    if status == 0 && p.initialized == 2 {
+        status = pthread_cond_destroy(p.ready as *u8); if status == 0 { p.initialized = 1; }
+    }
+    if status == 0 && p.initialized == 1 {
+        status = pthread_mutex_destroy(p.mutex as *u8); if status == 0 { p.initialized = 0; }
+    }
+    if status != 0 { cuda_dax_pool_release(pool); return Result::Err(cuda_res_error(19, status, pool)); }
+    free(p.handles); free(p.workers); free(p.complete); free(p.ready); free(p.mutex); free(p);
+    cuda_res_lock(); r.kind = 0; r.users = 0; return cuda_res_ok(0);
+}
+
+fn cuda_dax_pool_create(threads: i32) -> Result<u64, CudaError> {
+    cuda_res_lock();
+    if threads <= 0 { return cuda_res_fail(19, 0-1, 0); }
+    let r: *CudaResource = cuda_res_slot(); if r == null { return cuda_res_fail(19, 0-2, 0); }
+    let p: *CudaDaxPool = alloc(1);
+    p.threads = threads; p.started = 0; p.joined = 0; p.initialized = 0;
+    p.stop = 0; p.generation = 0; p.active = 0; p.remaining = 0;
+    p.destination = null; p.source = null; p.bytes = 0;
+    p.mutex = null; p.ready = null; p.complete = null; p.handles = null; p.workers = null;
+    r.kind = 9; r.native = p as *u8; r.users = 1; let id: u64 = r.id; cuda_res_unlock();
+    var status: i32 = 0;
+    if threads > 1 {
+        // Eight aligned words cover pthread mutexes and conditions on Linux and macOS.
+        p.mutex = alloc(8); p.ready = alloc(8); p.complete = alloc(8);
+        p.handles = alloc(threads); p.workers = alloc(threads);
+        status = pthread_mutex_init(p.mutex as *u8, null);
+        if status == 0 { p.initialized = 1; status = pthread_cond_init(p.ready as *u8, null); }
+        if status == 0 { p.initialized = 2; status = pthread_cond_init(p.complete as *u8, null); }
+        if status == 0 { p.initialized = 3; }
+        while p.started < threads && status == 0 {
+            let i: i32 = p.started; p.workers[i] = CudaDaxWorker { pool: p, index: i };
+            status = pthread_create((&p.handles[i]) as *u8, null, &cuda_dax_pool_worker, (&p.workers[i]) as *u8);
+            if status == 0 { p.started = p.started+1; }
+        }
+    }
+    cuda_dax_pool_release(id);
+    if status != 0 {
+        cuda_dax_pool_close(id)?;
+        return Result::Err(cuda_res_error(19, status, id));
+    }
+    return Result::Ok(id);
+}
+
+// The caller holds the pool for the upload and retains the checked pinned range.
+fn cuda_dax_pool_copy(p: *CudaDaxPool, destination: *u8, source: *u8, bytes: u64) -> Result<u64, CudaError> {
+    if bytes == 0 { return Result::Ok(0); }
+    if p.threads == 1 { memcpy(destination, source, bytes as usize); return Result::Ok(0); }
+    if p.generation == 18446744073709551615 { return Result::Err(cuda_res_error(19, 0-2, 0)); }
+    pthread_mutex_lock(p.mutex as *u8);
+    p.destination = destination; p.source = source; p.bytes = bytes;
+    p.active = p.threads; if bytes < p.active as u64 { p.active = bytes as i32; }
+    p.remaining = p.active; p.generation = p.generation+1;
+    pthread_cond_broadcast(p.ready as *u8);
+    while p.remaining != 0 { pthread_cond_wait(p.complete as *u8, p.mutex as *u8); }
+    p.destination = null; p.source = null; p.bytes = 0;
+    pthread_mutex_unlock(p.mutex as *u8);
+    return Result::Ok(0);
+}

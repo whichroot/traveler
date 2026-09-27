@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 TVC, LLC, OPT, LINK = sys.argv[1:5]
+FIXTURE = sys.argv[5] if len(sys.argv) > 5 else 'parallel'
 HERE = Path(__file__).resolve().parent
 
 
@@ -28,13 +29,17 @@ with tempfile.TemporaryDirectory(prefix='traveler-dax-parallel-') as directory:
     source = source.replace('fn main()', 'fn dax_staging_suite()')
     source = source.replace('    dax_faults();', '')
     source += '\n' + (HERE/'cuda_dax_parallel.tv').read_text()
+    if FIXTURE != 'parallel':
+        source = source.replace('fn main()', 'fn dax_parallel_suite()')
+        source += '\n' + (HERE/f'cuda_dax_{FIXTURE}.tv').read_text()
     source = source.replace('"../../src/lib/gpu/cuda_graph.tv"',
                             f'"{HERE.parents[1]}/src/lib/gpu/cuda_graph.tv"')
     (temp/'parallel.tv').write_text(source)
     run(TVC, temp/'parallel.tv', '--emit', 'ir', '--opt-level', 'none', '-o', temp/'raw.ll')
     ir = (temp/'raw.ll').read_text()
     # Rename before optimization so libc folding cannot remove the pause points.
-    for symbol in ('memcpy', 'pthread_create', 'pthread_join'):
+    for symbol in ('memcpy', 'pthread_create', 'pthread_join', 'pthread_mutex_init',
+                   'pthread_cond_init', 'pthread_mutex_destroy', 'pthread_cond_destroy'):
         assert f'@{symbol}(' in ir, symbol
         ir = ir.replace(f'@{symbol}(', f'@dax_test_{symbol}(')
     (temp/'checked.ll').write_text(ir)
@@ -54,5 +59,5 @@ with tempfile.TemporaryDirectory(prefix='traveler-dax-parallel-') as directory:
             HERE/'cuda_driver_mock.c', HERE/'cuda_dax_parallel_mock.c', '-o', temp/mode)
         for threads in (1, 4):
             output = run(temp/mode, threads=threads).stdout
-            assert 'DAX parallel PASS:' in output, output
-    print(f'DAX parallel mock PASS: {"/".join(modes)}, runtime threads 1/4, copy workers 1/2/4/32')
+            assert f'DAX {FIXTURE} PASS:' in output, output
+    print(f'DAX {FIXTURE} mock PASS: {"/".join(modes)}, runtime threads 1/4')

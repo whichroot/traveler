@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+extern "C" fn dax_threads_started() -> i32;
+extern "C" fn dax_threads_joined() -> i32;
+extern "C" fn dax_join_fail();
+extern "C" fn dax_init_fail(after: i32);
+extern "C" fn dax_sync_live() -> i32;
+var g_dax_sync_base: i32 = 0;
+
+struct DaxPoolJob {
+    stream: u64, target: CudaArgument, source: DaxView,
+    staging: CudaDaxStaging, pool: u64, event: u64,
+}
+
+fn dax_pool_job(arg: *u8) -> *u8 {
+    let j: *DaxPoolJob = arg as *DaxPoolJob;
+    j.event = resident_need(cuda_upload_dax_pooled(j.stream, j.target, &j.source, 0, 1031, &j.staging, j.pool));
+    return null;
+}
+
+fn dax_pool_lifetime() {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 1031)); let data: *u8 = alloc(1031);
+    for i in 0..1031 { data[i] = dax_pattern(i as i64); }
+    var job: DaxPoolJob = DaxPoolJob { stream: s, target: resident_typed_view(b, 0, 1031, 0-8),
+        source: DaxView { ptr: data, offset: 0, length: 1031 }, staging: dax_staging_new(d, 1031),
+        pool: resident_need(cuda_dax_pool_create(4)), event: 0 };
+    cuda_res_lock(); let pointer: *u8 = cuda_res_find(job.staging.slot0, 7).native; cuda_res_unlock();
+    dax_copy_pause(pointer, 1031); let handle: **u8 = alloc(1);
+    if pthread_create(handle as *u8, null, &dax_pool_job, (&job) as *u8) != 0 { exit(80); }
+    dax_copy_wait(4);
+    dax_error(cuda_dax_pool_close(job.pool), 19, 0-5);
+    dax_error(cuda_upload_dax_pooled(s, job.target, &job.source, 0, 1, &job.staging, job.pool), 19, 0-5);
+    let other: u64 = resident_need(cuda_dax_pool_create(1));
+    var spare: CudaDaxStaging = dax_staging_new(d, 17);
+    let done: u64 = resident_need(cuda_upload_dax_pooled(s, job.target, &job.source, 0, 1, &spare, other));
+    resident_need(cuda_event_sync(done)); resident_need(cuda_dax_pool_close(other)); dax_staging_close(&spare);
+    dax_copy_release(); if pthread_join(handle[0], null) != 0 { exit(81); } free(handle);
+    if resident_need(cuda_event_query(job.event)) != 0 { exit(82); }
+    resident_need(cuda_dax_pool_close(job.pool));
+    dax_error(cuda_dax_pool_close(job.pool), 19, 0-1);
+    resident_need(cuda_event_sync(job.event));
+    resident_need(cuda_download(data, job.target, 1031));
+    for i in 0..1031 { if data[i] != dax_pattern(i as i64) { exit(83); } }
+    dax_staging_close(&job.staging); resident_need(cuda_buffer_close(b));
+    resident_need(cuda_stream_close(s)); resident_need(cuda_device_close(d)); free(data);
+}
+
+fn dax_pool_failures() {
+    dax_error(cuda_dax_pool_create(0), 19, 0-1); dax_error(cuda_dax_pool_create(-1), 19, 0-1);
+    dax_error(cuda_dax_pool_close(0), 19, 0-1);
+    var i: i32 = 0;
+    while i < 3 {
+        dax_init_fail(i); dax_error(cuda_dax_pool_create(4), 19, 11);
+        if dax_sync_live() != g_dax_sync_base { exit(84); } i = i+1;
+    }
+    i = 0;
+    while i < 4 {
+        dax_thread_fail(i); dax_error(cuda_dax_pool_create(4), 19, 11);
+        if dax_threads_drained() == 0 || dax_sync_live() != g_dax_sync_base { exit(85); } i = i+1;
+    }
+    dax_thread_fail(-1);
+    let pool: u64 = resident_need(cuda_dax_pool_create(4));
+    dax_join_fail(); dax_error(cuda_dax_pool_close(pool), 19, 11);
+    dax_error(cuda_dax_pool_acquire(pool), 19, 0-5);
+    resident_need(cuda_dax_pool_close(pool));
+    if dax_threads_drained() == 0 || dax_sync_live() != g_dax_sync_base { exit(86); }
+}
+
+fn main() -> i32 {
+    dax_round(0, 17);
+    g_dax_sync_base = dax_sync_live();
+    dax_thread_fail(-1);
+    g_dax_pool = resident_need(cuda_dax_pool_create(4));
+    if dax_threads_started() != 4 || dax_threads_joined() != 0 { return 87; }
+    dax_staging_suite(); dax_staging_suite();
+    if dax_threads_started() != 4 || dax_threads_joined() != 0 { return 88; }
+    resident_need(cuda_dax_pool_close(g_dax_pool)); g_dax_pool = 0;
+    if dax_threads_started() != 4 || dax_threads_joined() != 4 { return 89; }
+    dax_pool_lifetime(); dax_pool_failures();
+    g_dax_pool = resident_need(cuda_dax_pool_create(4)); dax_faults();
+    resident_need(cuda_dax_pool_close(g_dax_pool)); g_dax_pool = 0;
+    if mock_clean() == 0 || dax_sync_live() != g_dax_sync_base { return 90; }
+    puts("DAX pool PASS: persistent workers, generations, busy handles, pending DMA, and failure cleanup");
+    return 0;
+}

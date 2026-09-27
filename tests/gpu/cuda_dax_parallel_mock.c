@@ -11,6 +11,7 @@ static uintptr_t watched;
 static size_t watched_bytes;
 static int arrivals, released = 1;
 static _Atomic int fail_after = -1, started, joined;
+static int join_fail, init_fail = -1, sync_live;
 
 void dax_copy_pause(void *pointer, uint64_t bytes) {
     pthread_mutex_lock(&lock);
@@ -64,9 +65,47 @@ int dax_test_pthread_create(pthread_t *t, const pthread_attr_t *attr,
 }
 
 int dax_test_pthread_join(pthread_t t, void **ret) {
+    if (join_fail) { join_fail = 0; return 11; }
     int status = pthread_join(t, ret);
     if (!status) ++joined;
     return status;
 }
 
 int dax_threads_drained(void) { return started == joined; }
+int dax_threads_started(void) { return started; }
+int dax_threads_joined(void) { return joined; }
+void dax_join_fail(void) { join_fail = 1; }
+void dax_init_fail(int after) { init_fail = after; }
+int dax_sync_live(void) { return sync_live; }
+
+static int fail_init(void) {
+    if (init_fail == 0) { init_fail = -1; return 1; }
+    if (init_fail > 0) --init_fail;
+    return 0;
+}
+
+int dax_test_pthread_mutex_init(pthread_mutex_t *mu, const pthread_mutexattr_t *attr) {
+    if (fail_init()) return 11;
+    int status = pthread_mutex_init(mu, attr);
+    if (!status) ++sync_live;
+    return status;
+}
+
+int dax_test_pthread_cond_init(pthread_cond_t *cv, const pthread_condattr_t *attr) {
+    if (fail_init()) return 11;
+    int status = pthread_cond_init(cv, attr);
+    if (!status) ++sync_live;
+    return status;
+}
+
+int dax_test_pthread_mutex_destroy(pthread_mutex_t *mu) {
+    int status = pthread_mutex_destroy(mu);
+    if (!status) --sync_live;
+    return status;
+}
+
+int dax_test_pthread_cond_destroy(pthread_cond_t *cv) {
+    int status = pthread_cond_destroy(cv);
+    if (!status) --sync_live;
+    return status;
+}

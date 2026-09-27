@@ -6,9 +6,11 @@ extern "C" fn dax_copy_release();
 extern "C" fn dax_thread_fail(after: i32);
 extern "C" fn dax_threads_drained() -> i32;
 var g_dax_threads: i32 = 1;
+var g_dax_pool: u64 = 0;
 
 fn dax_parallel_upload(stream: u64, destination: CudaArgument, source: *DaxView,
                        offset: u64, bytes: u64, staging: *CudaDaxStaging) -> Result<u64, CudaError> {
+    if g_dax_pool != 0 { return cuda_upload_dax_pooled(stream, destination, source, offset, bytes, staging, g_dax_pool); }
     return cuda_upload_dax_parallel(stream, destination, source, offset, bytes, staging, g_dax_threads);
 }
 
@@ -85,10 +87,10 @@ fn dax_thread_faults() {
     dax_error(cuda_upload_dax_parallel(s, target, &source, 0, 0, &staging, -1), 15, 0-1);
     if mock_async_uploads() != 0 { exit(75); }
     var after: i32 = 0;
-    while after < 11 {
+    while after < 4 {
         dax_thread_fail(after); mock_async_reset_counts();
-        dax_error(cuda_upload_dax_parallel(s, target, &source, 0, 100, &staging, 4), 14, 11);
-        if dax_threads_drained() == 0 || mock_async_uploads() != after/4 { exit(76); }
+        dax_error(cuda_upload_dax_parallel(s, target, &source, 0, 100, &staging, 4), 19, 11);
+        if dax_threads_drained() == 0 || mock_async_uploads() != 0 { exit(76); }
         resident_need(cuda_stream_sync(s));
         resident_need(cuda_pinned_write(dax_pin(staging.slot0, 17), data, 17));
         resident_need(cuda_pinned_write(dax_pin(staging.slot1, 17), data, 17));

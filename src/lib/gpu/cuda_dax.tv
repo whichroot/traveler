@@ -1,22 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import "cuda_async.tv";
+import "cuda_dax_pool.tv";
 import "../mem/dax.tv";
-extern "C" fn pthread_create(t: *u8, attr: *u8, start: fn(*u8) -> *u8, arg: *u8) -> i32;
-extern "C" fn pthread_join(t: *u8, ret: **u8) -> i32;
-
-struct CudaDaxCopy {
-    destination: *u8,
-    source: *u8,
-    bytes: u64,
-    done: i32,
-}
-
-fn cuda_dax_copy_worker(arg: *u8) -> *u8 {
-    let work: *CudaDaxCopy = arg as *CudaDaxCopy;
-    memcpy(work.destination, work.source, work.bytes as usize);
-    atomic_store(&work.done, 1, release);
-    return null;
-}
 
 fn cuda_pinned_stage_dax_parallel(destination: CudaArgument, source: *DaxView,
                                   offset: u64, bytes: u64, threads: i32) -> Result<u64, CudaError> {
@@ -24,32 +8,32 @@ fn cuda_pinned_stage_dax_parallel(destination: CudaArgument, source: *DaxView,
         return Result::Err(cuda_res_error(14, 0-1, destination.buffer));
     }
     if threads == 1 || bytes <= 1 { return cuda_pinned_stage_dax(destination, source, offset, bytes); }
+    let pool: u64 = cuda_dax_pool_create(threads)?;
+    let address: u64 = cuda_dax_pool_acquire(pool)?;
+    let result: Result<u64, CudaError> = cuda_dax_stage_pooled(destination, source, offset, bytes, address as *CudaDaxPool);
+    cuda_dax_pool_release(pool);
+    return cuda_dax_pool_finish(pool, result);
+}
+
+fn cuda_dax_pool_finish(pool: u64, result: Result<u64, CudaError>) -> Result<u64, CudaError> {
+    match cuda_dax_pool_close(pool) {
+        Result::Ok(value) => {},
+        Result::Err(error) => {
+            match result { Result::Ok(value) => {}, Result::Err(prior) => { var e: CudaError = prior; cuda_error_close(&e); } }
+            return Result::Err(error);
+        },
+    }
+    return result;
+}
+
+fn cuda_dax_stage_pooled(destination: CudaArgument, source: *DaxView, offset: u64,
+                         bytes: u64, pool: *CudaDaxPool) -> Result<u64, CudaError> {
+    if cuda_dax_source_valid(source, offset, bytes) == 0 { return Result::Err(cuda_res_error(14, 0-1, destination.buffer)); }
     let host: *u8 = ((source.ptr as u64)+offset) as *u8;
     let address: u64 = cuda_res_pinned_begin(destination, host, bytes)?;
-    var count: i32 = threads;
-    if bytes < count as u64 { count = bytes as i32; }
-    let work: *CudaDaxCopy = alloc(count);
-    let handles: **u8 = alloc(count);
-    let part: u64 = bytes/(count as u64); let extra: u64 = bytes%(count as u64);
-    var start: u64 = 0; var launched: i32 = 0; var status: i32 = 0;
-    while launched < count && status == 0 {
-        var size: u64 = part; if (launched as u64) < extra { size = size+1; }
-        work[launched] = CudaDaxCopy { destination: (address+start) as *u8,
-            source: ((host as u64)+start) as *u8, bytes: size, done: 0 };
-        status = pthread_create((&handles[launched]) as *u8, null, &cuda_dax_copy_worker, (&work[launched]) as *u8);
-        if status == 0 { launched = launched+1; start = start+size; }
-    }
-    var i: i32 = 0;
-    while i < launched {
-        let joined: i32 = pthread_join(handles[i], null);
-        // Completion protects the borrowed bytes even if joining reports an error.
-        while atomic_load(&work[i].done, acquire) == 0 { sched_yield(); }
-        if status == 0 { status = joined; }
-        i = i+1;
-    }
-    free(handles); free(work); cuda_res_pinned_end(destination.buffer);
-    if status != 0 { return Result::Err(cuda_res_error(14, status, destination.buffer)); }
-    return Result::Ok(0);
+    if bytes == 0 { return Result::Ok(0); }
+    let result: Result<u64, CudaError> = cuda_dax_pool_copy(pool, address as *u8, host, bytes);
+    cuda_res_pinned_end(destination.buffer); return result;
 }
 
 fn cuda_dax_source_valid(source: *DaxView, offset: u64, bytes: u64) -> i32 {
@@ -140,6 +124,27 @@ fn cuda_upload_dax_parallel(stream: u64, destination: CudaArgument, source: *Dax
     if threads <= 0 { return Result::Err(cuda_res_error(15, 0-1, stream)); }
     let chunk: u64 = cuda_dax_staging_check(stream, destination, source, offset, bytes, staging)?;
     if bytes == 0 { return Result::Ok(0); }
+    if threads == 1 { return cuda_dax_upload_chunks(stream, destination, source, offset, bytes, staging, chunk, null); }
+    let pool: u64 = cuda_dax_pool_create(threads)?;
+    let result: Result<u64, CudaError> = cuda_upload_dax_pooled(stream, destination, source, offset, bytes, staging, pool);
+    return cuda_dax_pool_finish(pool, result);
+}
+
+fn cuda_upload_dax_pooled(stream: u64, destination: CudaArgument, source: *DaxView,
+                         offset: u64, bytes: u64, staging: *CudaDaxStaging, pool: u64) -> Result<u64, CudaError> {
+    let address: u64 = cuda_dax_pool_acquire(pool)?;
+    let result: Result<u64, CudaError> = cuda_dax_upload_checked(stream, destination, source, offset, bytes, staging, address as *CudaDaxPool);
+    cuda_dax_pool_release(pool); return result;
+}
+
+fn cuda_dax_upload_checked(stream: u64, destination: CudaArgument, source: *DaxView,
+                           offset: u64, bytes: u64, staging: *CudaDaxStaging, pool: *CudaDaxPool) -> Result<u64, CudaError> {
+    let chunk: u64 = cuda_dax_staging_check(stream, destination, source, offset, bytes, staging)?;
+    return cuda_dax_upload_chunks(stream, destination, source, offset, bytes, staging, chunk, pool);
+}
+
+fn cuda_dax_upload_chunks(stream: u64, destination: CudaArgument, source: *DaxView,
+                          offset: u64, bytes: u64, staging: *CudaDaxStaging, chunk: u64, pool: *CudaDaxPool) -> Result<u64, CudaError> {
     var done: u64 = 0;
     var turn: i32 = 0;
     var used0: i32 = 0;
@@ -157,7 +162,8 @@ fn cuda_upload_dax_parallel(stream: u64, destination: CudaArgument, source: *Dax
             buffer: slot, offset: 0, bytes: chunk };
         let target: CudaArgument = CudaArgument { kind: 2, type_code: destination.type_code, value: 0,
             buffer: destination.buffer, offset: destination.offset+done, bytes: count };
-        cuda_pinned_stage_dax_parallel(pin, source, offset+done, count, threads)?;
+        if pool == null { cuda_pinned_stage_dax(pin, source, offset+done, count)?; }
+        else { cuda_dax_stage_pooled(pin, source, offset+done, count, pool)?; }
         cuda_upload_async(stream, target, pin, count)?;
         cuda_event_record(event, stream)?;
         if turn == 0 { used0 = 1; } else { used1 = 1; }
