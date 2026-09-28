@@ -165,6 +165,11 @@ an existing destination and remove intermediates.
 
 ### CPU middle-end profiles
 
+The [CPU integer SIMD contract](spec/cpu-integer-simd.md) documents explicit
+VNNI/IFMA builtins, the routed expert library, and the Jane benchmark adapter.
+Pass `-mcpu sapphirerapids` to Traveler during codegen to select these intrinsics;
+setting it only on a later `opt` or `llc` invocation is insufficient.
+
 Traveler exposes four closed profiles through the same IR/object/executable
 flow:
 

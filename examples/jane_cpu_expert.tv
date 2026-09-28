@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Import this adapter in Jane's cpubench in place of kernels/cpu_expert.tv.
+import "../src/lib/nn/cpu_expert.tv";
+
+let CX_D: i64 = 3584;
+let CX_F: i64 = 3072;
+fn cx_now() -> i64 { var clock: i64 = 0; return cpu_expert_clock(&clock); }
+fn cx_w1(rec: *u8) -> *u8 { return rec; }
+fn cx_w3(rec: *u8) -> *u8 { return &rec[CX_F*CX_D/2+CX_F*CX_D/32]; }
+fn cx_w2(rec: *u8) -> *u8 { return &rec[2*(CX_F*CX_D/2+CX_F*CX_D/32)]; }
+fn cx_scratch(m: i64) -> CpuExpertScratch {
+    match cpu_expert_scratch(m,CX_D,CX_F) {
+        Result::Ok(sc) => { return sc; }
+        Result::Err(err) => { exit(1); }
+    }
+    exit(1);
+}
+fn cx_expert_timed(rec: *u8, z: *i64, y: *i64, sc: *CpuExpertScratch, beta: i64, lb: i64, clk: *i64) {
+    cpu_expert_run(rec,z,y,sc,beta,lb,clk);
+}

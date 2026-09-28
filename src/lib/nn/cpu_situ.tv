@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cpu_q32.tv";
+
+// Magnitudes below 2^52, result below 2^63; all eight inputs precede output stores.
+fn cpu_q_mul8(out: *i64, a: *i64, b: *i64) {
+    var am: [u64;8] = 0; var bm: [u64;8] = 0; var negative: [i64;8] = 0;
+    var zero: [u64;8] = 0; var lo: [u64;8] = 0; var hi: [u64;8] = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        var av: i64 = a[i]; var bv: i64 = b[i];
+        if (av < 0) != (bv < 0) { negative[i] = 1; }
+        if av < 0 { av = 0-av; } if bv < 0 { bv = 0-bv; }
+        am[i] = av as u64; bm[i] = bv as u64; i = i+1;
+    }
+    cpu_madd52lo_512(&lo[0],&zero[0],&am[0],&bm[0]);
+    cpu_madd52hi_512(&hi[0],&zero[0],&am[0],&bm[0]);
+    i = 0;
+    while i < 8 {
+        var q: u64 = (lo[i] >> 32)+(hi[i] << 20);
+        let rem: u64 = lo[i] & 4294967295;
+        if rem > 2147483648 || (rem == 2147483648 && (q & 1) != 0) { q = q+1; }
+        var v: i64 = q as i64; if negative[i] != 0 { v = 0-v; }
+        out[i] = v; i = i+1;
+    }
+}
+
+// RNE(|a|/m), with 1 <= m < 256; two exact 32-bit division steps.
+fn cpu_q_ratio_int8(out: *i64, a: *i64, m: u64) {
+    var magnitude: [u64;8] = 0; var x: [u64;8] = 0; var den: [u64;8] = 0;
+    var qh: [u64;8] = 0; var ql: [u64;8] = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        var v: i64 = a[i]; if v < 0 { v = 0-v; }
+        magnitude[i] = v as u64; x[i] = magnitude[i] >> 32; den[i] = m; i = i+1;
+    }
+    cpu_div_u53_512(&qh[0],&x[0],&den[0]);
+    i = 0;
+    while i < 8 { x[i] = ((x[i]-qh[i]*m) << 32) | (magnitude[i] & 4294967295); i = i+1; }
+    cpu_div_u53_512(&ql[0],&x[0],&den[0]);
+    i = 0;
+    while i < 8 {
+        var q: u64 = (qh[i] << 32)+ql[i]; let twice: u64 = (x[i]-ql[i]*m)*2;
+        if twice > m || (twice == m && (q & 1) != 0) { q = q+1; }
+        var v: i64 = q as i64; if a[i] < 0 { v = 0-v; } out[i] = v; i = i+1;
+    }
+}
+
+// Three independent eight-lane Taylor chains share each iteration's denominator.
+fn cpu_q_exp_neg24(x: *i64, out: *u64) {
+    var mag: [u64;24] = 0; var sum: [i64;24] = 0; var k: [u64;24] = 0;
+    var rabs: [u64;24] = 0; var nz: [u64;24] = 0;
+    var den: [u64;8] = 0; var zero: [u64;8] = 0;
+    var lo: [u64;8] = 0; var hi: [u64;8] = 0; var rounded: [u64;8] = 0;
+    var i: i64 = 0;
+    while i < 8 { den[i] = 195103586505167; i = i+1; }
+    i = 0;
+    while i < 24 {
+        var xs: i64 = x[i]; if xs >= 0 || xs <= -137438953472 { xs = 0-1; }
+        nz[i] = (0-(xs*65536)) as u64;
+        mag[i] = 281474976710656; sum[i] = 281474976710656; i = i+1;
+    }
+    var c: i64 = 0;
+    while c < 24 { cpu_div_u53_512(&k[c],&nz[c],&den[0]); c = c+8; }
+    i = 0;
+    while i < 24 { rabs[i] = nz[i]-k[i]*195103586505167; i = i+1; }
+    var j: u64 = 1;
+    while j <= 14 {
+        i = 0; while i < 8 { den[i] = j; i = i+1; }
+        c = 0;
+        while c < 24 {
+            cpu_madd52lo_512(&lo[0],&zero[0],&mag[c],&rabs[c]);
+            cpu_madd52hi_512(&hi[0],&zero[0],&mag[c],&rabs[c]);
+            i = 0;
+            while i < 8 {
+                var q: u64 = (lo[i] >> 48)+(hi[i] << 4);
+                let rem: u64 = lo[i] & 281474976710655;
+                if rem > 140737488355328 || (rem == 140737488355328 && (q & 1) != 0) { q = q+1; }
+                rounded[i] = q; i = i+1;
+            }
+            cpu_div_u53_512(&mag[c],&rounded[0],&den[0]);
+            i = 0;
+            while i < 8 {
+                var term: i64 = mag[c+i] as i64; if (j & 1) != 0 { term = 0-term; }
+                sum[c+i] = sum[c+i]+term; i = i+1;
+            }
+            c = c+8;
+        }
+        j = j+1;
+    }
+    i = 0;
+    while i < 24 {
+        let sh: u64 = 16+k[i]; let value: u64 = sum[i] as u64;
+        var q: u64 = value >> sh;
+        let rem: u64 = value & (((1 as u64) << sh)-1); let half: u64 = (1 as u64) << (sh-1);
+        if rem > half || (rem == half && (q & 1) != 0) { q = q+1; }
+        if x[i] >= 0 { q = 4294967296; } if x[i] <= -137438953472 { q = 0; }
+        out[i] = q; i = i+1;
+    }
+}
+
+// Full chunks use IFMA; tails, exceptional lanes, and other positive betas use scalar Q32.
+fn cpu_situ(g: *i64, u: *i64, y: *i64, n: i64, beta: i64, linear_beta: i64) {
+    let m1: i64 = beta >> 32; let m2: i64 = linear_beta >> 32;
+    var at: i64 = 0;
+    if (beta & 4294967295) == 0 && (linear_beta & 4294967295) == 0
+        && m1 >= 1 && m1 < 256 && m2 >= 1 && m2 < 256 {
+        var gv: [i64;8] = 0; var uv: [i64;8] = 0; var a: [i64;8] = 0; var b: [i64;8] = 0;
+        var ex: [i64;24] = 0; var e: [u64;24] = 0; var numerator: [u64;24] = 0;
+        var denominator: [u64;24] = 0; var ratios: [u64;24] = 0;
+        var ta: [i64;8] = 0; var sg: [i64;8] = 0; var tb: [i64;8] = 0;
+        var left: [i64;8] = 0; var right: [i64;8] = 0; var result: [i64;8] = 0;
+        while at+8 <= n {
+            var i: i64 = 0;
+            while i < 8 { gv[i] = g[at+i]; uv[i] = u[at+i]; i = i+1; }
+            cpu_q_ratio_int8(&a[0],&gv[0],m1 as u64); cpu_q_ratio_int8(&b[0],&uv[0],m2 as u64);
+            i = 0;
+            while i < 8 {
+                var av: i64 = a[i]; var bv: i64 = b[i]; var gg: i64 = gv[i];
+                if av < 0 { av = 0-av; } if bv < 0 { bv = 0-bv; } if gg < 0 { gg = 0-gg; }
+                ex[i] = 0-2*av; ex[8+i] = 0-gg; ex[16+i] = 0-2*bv; i = i+1;
+            }
+            cpu_q_exp_neg24(&ex[0],&e[0]);
+            i = 0;
+            while i < 8 {
+                numerator[i] = 4294967296-e[i]; denominator[i] = 4294967296+e[i];
+                numerator[8+i] = 4294967296; if gv[i] < 0 { numerator[8+i] = e[8+i]; }
+                denominator[8+i] = 4294967296+e[8+i];
+                numerator[16+i] = 4294967296-e[16+i]; denominator[16+i] = 4294967296+e[16+i]; i = i+1;
+            }
+            cpu_ratio_q32_512(&ratios[0],&numerator[0],&denominator[0]);
+            cpu_ratio_q32_512(&ratios[8],&numerator[8],&denominator[8]);
+            cpu_ratio_q32_512(&ratios[16],&numerator[16],&denominator[16]);
+            i = 0;
+            while i < 8 {
+                ta[i] = ratios[i] as i64; if a[i] < 0 { ta[i] = 0-ta[i]; }
+                sg[i] = ratios[8+i] as i64;
+                tb[i] = ratios[16+i] as i64; if b[i] < 0 { tb[i] = 0-tb[i]; }
+                left[i] = beta; right[i] = linear_beta; i = i+1;
+            }
+            cpu_q_mul8(&left[0],&left[0],&ta[0]); cpu_q_mul8(&left[0],&left[0],&sg[0]);
+            cpu_q_mul8(&right[0],&right[0],&tb[0]); cpu_q_mul8(&result[0],&left[0],&right[0]);
+            i = 0;
+            while i < 8 {
+                if gv[i] == (0-9223372036854775807-1) || uv[i] == (0-9223372036854775807-1) {
+                    result[i] = cpu_q_situ(gv[i],uv[i],beta,linear_beta);
+                }
+                y[at+i] = result[i]; i = i+1;
+            }
+            at = at+8;
+        }
+    }
+    while at < n { y[at] = cpu_q_situ(g[at],u[at],beta,linear_beta); at = at+1; }
+}

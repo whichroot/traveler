@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: Apache-2.0
+// Exact Q32 arithmetic for the CPU expert contract.
+
+fn cpu_q_rne(a: i128, bits: i64) -> i64 {
+    if bits == 0 { return a as i64; }
+    if bits >= 128 { return 0; }
+    let q: i128 = a >> bits;
+    let rem: i128 = a & (((1 as i128) << bits)-1);
+    let half: i128 = (1 as i128) << (bits-1);
+    var up: i128 = 0;
+    if rem > half || (rem == half && (q & 1) != 0) { up = 1; }
+    return (q+up) as i64;
+}
+
+fn cpu_q_mul(a: i64, b: i64) -> i64 { return cpu_q_rne((a as i128)*(b as i128), 32); }
+
+fn cpu_q_ratio(a: i64, b: i64) -> i64 {
+    var rem: i128 = (a as i128) << 32;
+    let den: i128 = b as i128;
+    var out: i64 = 0; var bit: i64 = 62;
+    while bit >= 0 {
+        if rem >= (den << bit) { rem = rem-(den << bit); out = out | ((1 as i64) << bit); }
+        bit = bit-1;
+    }
+    if rem*2 > den || (rem*2 == den && (out & 1) != 0) { out = out+1; }
+    return out;
+}
+
+fn cpu_q_exp_neg(x: i64) -> i64 {
+    if x >= 0 { return 4294967296; }
+    if x <= -137438953472 { return 0; }
+    let z: i64 = x*65536;
+    let k: i64 = (0-z)/195103586505167;
+    let r: i64 = z+k*195103586505167;
+    var term: i64 = 281474976710656; var sum: i64 = term; var j: i64 = 1;
+    while j <= 14 { term = cpu_q_rne((term as i128)*(r as i128),48)/j; sum = sum+term; j = j+1; }
+    return cpu_q_rne(sum as i128,16+k);
+}
+
+fn cpu_q_sigmoid(x: i64) -> i64 {
+    var a: i64 = x; if a < 0 { a = 0-a; }
+    let e: i64 = cpu_q_exp_neg(0-a);
+    if x < 0 { return cpu_q_ratio(e,4294967296+e); }
+    return cpu_q_ratio(4294967296,4294967296+e);
+}
+
+fn cpu_q_tanh(x: i64) -> i64 {
+    var a: i64 = x; if a < 0 { a = 0-a; }
+    let e: i64 = cpu_q_exp_neg(0-2*a);
+    let y: i64 = cpu_q_ratio(4294967296-e,4294967296+e);
+    if x < 0 { return 0-y; } return y;
+}
+
+fn cpu_q_situ(g: i64, u: i64, beta: i64, linear_beta: i64) -> i64 {
+    var a: i64 = g; if a < 0 { a = 0-a; }
+    var b: i64 = u; if b < 0 { b = 0-b; }
+    a = cpu_q_ratio(a,beta); b = cpu_q_ratio(b,linear_beta);
+    if g < 0 { a = 0-a; } if u < 0 { b = 0-b; }
+    return cpu_q_mul(cpu_q_mul(cpu_q_mul(beta,cpu_q_tanh(a)),cpu_q_sigmoid(g)),cpu_q_mul(linear_beta,cpu_q_tanh(b)));
+}
+
+fn cpu_block18(x: *i64, mant: *i32, exponent: *i64, groups: i64) {
+    var g: i64 = 0;
+    while g < groups {
+        var mx: i64 = 0; var j: i64 = 0;
+        while j < 32 { var a: i64 = x[g*32+j]; if a < 0 { a = 0-a; } if a > mx { mx = a; } j = j+1; }
+        var bits: i64 = 0; var v: i64 = mx;
+        while v > 0 { bits = bits+1; v = v >> 1; }
+        var shift: i64 = bits-18;
+        if shift > 0 && cpu_q_rne(mx as i128,shift) == 262144 { shift = shift+1; }
+        exponent[g] = shift-32; j = 0;
+        while j < 32 {
+            if shift > 0 { mant[g*32+j] = cpu_q_rne(x[g*32+j] as i128,shift) as i32; }
+            else { mant[g*32+j] = (x[g*32+j] << (0-shift)) as i32; }
+            j = j+1;
+        }
+        if mx == 0 { exponent[g] = 0; } g = g+1;
+    }
+}

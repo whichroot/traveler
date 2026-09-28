@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cpu_mxfp4.tv";
+import "cpu_situ.tv";
+import "../time/time.tv";
+
+enum CpuExpertError { InvalidShape }
+struct CpuExpertScratch {
+    m: i64, d: i64, f: i64,
+    zm: *i32, ze: *i64, g: *i64, u: *i64, a: *i64,
+    am: *i32, ae: *i64, e: *i64, planes: *u8, weights: *i8,
+}
+
+fn cpu_expert_scratch(m: i64, d: i64, f: i64) -> Result<CpuExpertScratch,CpuExpertError> {
+    if m <= 0 || d <= 0 || f <= 0 || d % 64 != 0 || f % 64 != 0 {
+        return Result::Err(CpuExpertError::InvalidShape);
+    }
+    var width: i64 = d; if f > width { width = f; }
+    if m > 9223372036854775807/width/8 || f > 9223372036854775807/d/2 {
+        return Result::Err(CpuExpertError::InvalidShape);
+    }
+    return Result::Ok(CpuExpertScratch {
+        m: m, d: d, f: f, zm: alloc(m*d), ze: alloc(m*d/32),
+        g: alloc(m*f), u: alloc(m*f), a: alloc(m*f), am: alloc(m*f), ae: alloc(m*f/32),
+        e: alloc(width/32), planes: alloc(m*3*width), weights: alloc(width),
+    });
+}
+
+fn cpu_expert_scratch_free(sc: *CpuExpertScratch) {
+    free(sc.zm); free(sc.ze); free(sc.g); free(sc.u); free(sc.a); free(sc.am); free(sc.ae);
+    free(sc.e); free(sc.planes); free(sc.weights);
+    sc.zm = null; sc.ze = null; sc.g = null; sc.u = null; sc.a = null; sc.am = null; sc.ae = null;
+    sc.e = null; sc.planes = null; sc.weights = null; sc.m = 0;
+}
+
+fn cpu_expert_clock(clk: *i64) -> i64 {
+    if clk == null { return 0; }
+    match time_mono_ns() { Result::Ok(v) => { return v; } Result::Err(err) => { return 0; } }
+    return 0;
+}
+
+// Record: W1 packed/scales, W3 packed/scales, W2 packed/scales. clk is null or five counters.
+fn cpu_expert_run(rec: *u8, z: *i64, y: *i64, sc: *CpuExpertScratch, beta: i64, lb: i64, clk: *i64) {
+    let m: i64 = sc.m; let d: i64 = sc.d; let f: i64 = sc.f;
+    let w1: *u8 = rec; let w3: *u8 = &rec[f*d/2+f*d/32]; let w2: *u8 = &rec[2*(f*d/2+f*d/32)];
+    var t0: i64 = cpu_expert_clock(clk);
+    cpu_block18(z,sc.zm,sc.ze,m*d/32); cpu_mxfp4_planes(sc.zm,sc.planes,m,d);
+    var t1: i64 = cpu_expert_clock(clk); if clk != null { clk[0] = clk[0]+t1-t0; }
+    cpu_mxfp4_rows(sc.planes,sc.ze,w1,&w1[f*d/2],sc.g,m,f,d,0,f,sc.e,sc.weights);
+    cpu_mxfp4_rows(sc.planes,sc.ze,w3,&w3[f*d/2],sc.u,m,f,d,0,f,sc.e,sc.weights);
+    t0 = cpu_expert_clock(clk); if clk != null { clk[1] = clk[1]+t0-t1; }
+    cpu_situ(sc.g,sc.u,sc.a,m*f,beta,lb);
+    t1 = cpu_expert_clock(clk); if clk != null { clk[2] = clk[2]+t1-t0; }
+    cpu_block18(sc.a,sc.am,sc.ae,m*f/32); cpu_mxfp4_planes(sc.am,sc.planes,m,f);
+    t0 = cpu_expert_clock(clk); if clk != null { clk[3] = clk[3]+t0-t1; }
+    cpu_mxfp4_rows(sc.planes,sc.ae,w2,&w2[d*f/2],y,m,d,f,0,d,sc.e,sc.weights);
+    t1 = cpu_expert_clock(clk); if clk != null { clk[4] = clk[4]+t1-t0; }
+}
