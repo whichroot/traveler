@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: Apache-2.0
+// Linux native probe: device, mode (0 check / 1 direct / 2 NT), seconds, window MiB, workers.
+import "../src/lib/gpu/cuda_dax_registered.tv";
+import "../src/lib/gpu/cuda_dax_pipeline.tv";
+import "../src/lib/time/time.tv";
+extern "C" fn atoll(s: *u8) -> i64;
+extern "C" fn puts(s: *u8) -> i32;
+extern "C" fn fflush(stream: *u8) -> i32;
+extern "C" fn memcmp(a: *u8, b: *u8, n: usize) -> i32;
+extern "C" fn mprotect(p: *u8, n: usize, prot: i32) -> i32;
+
+fn probe_need(r: Result<u64,CudaError>) -> u64 {
+    match r {
+        Result::Ok(v) => { return v; }
+        Result::Err(e) => { puts("cuda_error"); print(e.boundary); print(e.status); print(e.resource); exit(2); }
+    }
+    return 0;
+}
+fn probe_clock(id: i32) -> i64 {
+    var ts: [i64;2] = 0;
+    if clock_gettime(id,&ts[0]) != 0 { exit(3); }
+    return ts[0]*1000000000+ts[1];
+}
+fn probe_busy(r: Result<u64,CudaError>) {
+    match r {
+        Result::Ok(v) => { puts("premature_unregister"); exit(4); }
+        Result::Err(e) => { if e.boundary != 9 || e.status != 0-5 { exit(5); } }
+    }
+}
+fn probe_registered(r: u64, offset: u64, bytes: u64) -> CudaArgument {
+    match cuda_dax_registered_view(r,offset,bytes) {
+        Result::Ok(v) => { return v; } Result::Err(e) => { exit(6); }
+    }
+    return cuda_arg_u64(0);
+}
+fn probe_destination(b: u64, offset: u64, bytes: u64) -> CudaArgument {
+    match cuda_buffer_view(b,offset,bytes,0-8) {
+        Result::Ok(v) => { return v; } Result::Err(e) => { exit(7); }
+    }
+    return cuda_arg_u64(0);
+}
+fn main(argc: i32, argv: **u8) -> i32 {
+    if argc != 6 { puts("usage: probe DEVICE MODE SECONDS WINDOW_MIB WORKERS"); return 1; }
+    let mode: i64 = atoll(argv[2]); let seconds: i64 = atoll(argv[3]);
+    let mib: i64 = atoll(argv[4]); let workers: i64 = atoll(argv[5]);
+    if mode < 0 || mode > 2 || seconds < 1 || seconds > 600 || mib < 256 || mib > 32768
+        || workers < 1 || workers > 64 { return 1; }
+    var dev: DaxDevice = DaxDevice { fd: 0-1, writable: 0, size: 0, align: 0 };
+    match dax_open_rw(argv[1]) { Result::Ok(v) => { dev = v; } Result::Err(e) => { return 8; } }
+    var header: DaxRegion = DaxRegion { base: null, offset: 0, length: 0, align: 0, writable: 0 };
+    match dax_map(&dev,1073741824,2097152) { Result::Ok(v) => { header = v; } Result::Err(e) => { return 9; } }
+    var hv: DaxView = DaxView { ptr: header.base, offset: header.offset, length: header.length };
+    if memcmp(header.base,"JANE-K3-BANK-v1",15) != 0 || dax_load_acquire_u64(&hv,256) != 3554551000339793230 { return 10; }
+    let base: i64 = dax_load_i64(&hv,112); let stride: u64 = dax_load_u64(&hv,120);
+    let bytes: u64 = 17547264; let window: i64 = mib*1048576;
+    if stride < bytes || stride > window as u64 { return 11; }
+    match dax_unmap(&header) { Result::Ok(v) => {} Result::Err(e) => { return 12; } }
+    var region: DaxRegion = DaxRegion { base: null, offset: 0, length: 0, align: 0, writable: 0 };
+    match dax_map_rw(&dev,base,window) { Result::Ok(v) => { region = v; } Result::Err(e) => { return 13; } }
+    var source: DaxView = DaxView { ptr: region.base, offset: base, length: window };
+    let choices: u64 = ((window as u64)-bytes)/stride+1;
+    let d: u64 = probe_need(cuda_device_open(0));
+    let s: u64 = probe_need(cuda_stream_create(d)); let s2: u64 = probe_need(cuda_stream_create(d));
+    let b: u64 = probe_need(cuda_buffer_alloc(d,7*bytes));
+    let before: i64 = probe_clock(1);
+    let r: u64 = probe_need(cuda_dax_register(d,&source,0,window as u64));
+    puts("registration_ns"); print(probe_clock(1)-before);
+    if mprotect(region.base,window as usize,1) != 0 { return 14; }
+    var offsets: [u64;7] = 0;
+    for i in 0..7 {
+        let off: u64 = (((i as u64)*17+3)%choices)*stride; offsets[i] = off;
+        var stream: u64 = s; if (i & 1) != 0 { stream = s2; }
+        probe_need(cuda_upload_async(stream,probe_destination(b,(i as u64)*bytes,bytes),probe_registered(r,off,bytes),bytes));
+    }
+    probe_busy(cuda_dax_unregister(r)); probe_need(cuda_stream_sync(s)); probe_busy(cuda_dax_unregister(r));
+    probe_need(cuda_stream_sync(s2));
+    let back: *u8 = alloc(bytes);
+    for i in 0..7 {
+        probe_need(cuda_download(back,probe_destination(b,(i as u64)*bytes,bytes),bytes));
+        if memcmp(back,&source.ptr[offsets[i]],bytes as usize) != 0 { puts("byte_mismatch"); return 15; }
+    }
+    puts("verified_records"); print(7); puts("readonly_after_registration"); print(1);
+    var pool: u64 = 0; var pipeline: u64 = 0;
+    if mode != 1 { probe_need(cuda_dax_unregister(r)); }
+    if mode == 2 {
+        pool = probe_need(cuda_dax_pool_create(workers as i32)); probe_need(cuda_dax_pool_set_copy_mode(pool,1));
+        pipeline = probe_need(cuda_dax_pipeline_create_async(s,pool,8,bytes));
+        probe_need(cuda_dax_pipeline_set_poll_interval(pipeline,13));
+    }
+    var state: u64 = 12345; var records: u64 = 0;
+    puts("benchmark_begin"); fflush(null);
+    let start: i64 = probe_clock(1); let cpu_start: i64 = probe_clock(2);
+    if mode != 0 {
+        while probe_clock(1)-start < seconds*1000000000 {
+            for i in 0..7 {
+                state = state*6364136223846793005+1442695040888963407;
+                let off: u64 = ((state >> 32)%choices)*stride; offsets[i] = off;
+                let dst: CudaArgument = probe_destination(b,(i as u64)*bytes,bytes);
+                if mode == 1 { probe_need(cuda_upload_async(s,dst,probe_registered(r,off,bytes),bytes)); }
+                else { probe_need(cuda_dax_pipeline_submit(pipeline,dst,&source,off,bytes)); }
+            }
+            if mode == 1 { probe_need(cuda_stream_sync(s)); }
+            else { probe_need(cuda_dax_pipeline_drain(pipeline)); }
+            records = records+7;
+        }
+    }
+    let cpu_ns: i64 = probe_clock(2)-cpu_start; let wall_ns: i64 = probe_clock(1)-start;
+    puts("benchmark_end"); fflush(null);
+    puts("mode"); print(mode); puts("records"); print(records); puts("bytes"); print(records*bytes);
+    puts("wall_ns"); print(wall_ns); puts("cpu_ns"); print(cpu_ns);
+    for i in 0..7 {
+        probe_need(cuda_download(back,probe_destination(b,(i as u64)*bytes,bytes),bytes));
+        if memcmp(back,&source.ptr[offsets[i]],bytes as usize) != 0 { puts("final_byte_mismatch"); return 16; }
+    }
+    if mode == 1 { probe_need(cuda_dax_unregister(r)); }
+    if mode == 2 { probe_need(cuda_dax_pipeline_close(pipeline)); probe_need(cuda_dax_pool_close(pool)); }
+    match cuda_dax_registered_view(r,0,bytes) { Result::Ok(v) => { return 17; } Result::Err(e) => {} }
+    probe_need(cuda_buffer_close(b)); probe_need(cuda_stream_close(s)); probe_need(cuda_stream_close(s2));
+    probe_need(cuda_device_close(d)); free(back);
+    match dax_unmap(&region) { Result::Ok(v) => {} Result::Err(e) => { return 18; } }
+    if dax_close(&dev) != 0 { return 19; }
+    puts("native_checked_registration_PASS"); return 0;
+}

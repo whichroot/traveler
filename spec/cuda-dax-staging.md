@@ -398,7 +398,51 @@ unregistration costs belong outside steady-state upload timings.
 `check_cuda_dax_registered.py` verifies raw/O1/O3 byte parity, alignment/bounds,
 upload-only views, overlap/cross-device/stale-handle refusals, budget fallback,
 multiple-stream retention, and driver/context cleanup failures with the mock.
-Real mapping admission and bandwidth still require a native hardware gate.
+Native admission is covered by `examples/cuda_dax_registered_probe.tv`. It uses
+Jane's committed K3 bank header to locate real expert records, registers one
+bounded window, makes its CPU mapping read-only, checks full-record byte parity,
+checks two-stream retention and stale handles, and unregisters before unmapping.
+On Jane's RTX PRO 6000 Blackwell with driver 595.99.02, this gate passed with
+1 GiB and 16 GiB windows on September 27, 2026. This is platform-specific
+admission evidence, not a promise that every DAX/driver combination can register.
+
+For registered-window hits, use an upload stream separate from a stream reserved
+by an asynchronous staging pipeline. Record a checked event after the upload and
+use `cuda_stream_wait_event` to order the compute stream. Window misses retain
+the staging path. Keep windows registered across transfers instead of registering
+each record in the hot path; adjacent records can share host pages.
+
+### Native probe and energy comparison
+
+Build on Linux with LLVM 21 and the CUDA driver library:
+
+```sh
+src/bootstrap/out/stage1 examples/cuda_dax_registered_probe.tv \
+    --emit ir --opt-level o3 -mcpu x86-64 -o /tmp/dax-probe.ll
+llc -O2 -filetype=obj /tmp/dax-probe.ll -o /tmp/dax-probe.o
+cc -no-pie -pthread /tmp/dax-probe.o -L/run/opengl-driver/lib \
+    -Wl,-rpath,/run/opengl-driver/lib -lcuda -o /tmp/dax-probe
+sudo /tmp/dax-probe /dev/dax0.0 0 1 1024 16
+sudo python3 tools/measure_dax_registered.py /tmp/dax-probe /tmp/dax-energy.json \
+    --seconds 20 --window-mib 16384 --workers 16 --modes 1,2,2,1
+```
+
+Probe arguments are device, mode, duration seconds, window MiB, and workers.
+Mode 0 validates only; mode 1 uses direct registered DMA; mode 2 uses the
+non-temporal asynchronous staging pipeline with 16 workers by default, ring
+depth 8, one-record chunks, and a 13 us polling interval. Both replay the same
+seeded sequence in seven-record bursts and verify the final GPU payloads.
+The mapping is initially writable for registration; the probe never stores to it.
+
+The measurement tool expects Jane's `/tmp/nvdimm_smart` helper (override with
+`--smart`), samples all four DIMMs, and waits for media temperatures at most 70 C
+before each run. It captures Linux RAPL domains at explicit benchmark markers;
+registration, validation, allocation, and cleanup are outside that energy interval.
+Process CPU time includes copy workers. RAPL package energy is not wall-plug energy,
+and its DRAM domain must not be interpreted as an isolated Optane power meter.
+
+Persistent-window microbenchmarks do not establish full-decoder savings: the
+registered-window hit rate and simultaneous staging traffic still matter.
 
 ## Verification
 
