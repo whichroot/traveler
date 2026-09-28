@@ -13422,6 +13422,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         if str_eq(&g_strings[call_name], "stream_copy_bytes") == 1 && find_func(call_name) < 0 {
             return codegen_stream_copy(node);
         }
+        if cpu_simd_operation(call_name) >= 0 && find_func(call_name) < 0 {
+            return codegen_cpu_simd(node, cpu_simd_operation(call_name));
+        }
         if str_eq(&g_strings[call_name], "stream_store_fence") == 1
             && find_func(call_name) < 0 {
             if g_nodes[node].nargs != 0 || (g_nodes[node].flags & 1048576) == 0 {
@@ -32777,6 +32780,113 @@ fn global_const_init(prog: i32, upto: i32, ginit: i32, ok_io: *i32) -> u64 {
 
 var g_stream_store_count: i64 = 0;
 var g_use_stream_copy: i32 = 0;
+var g_use_cpu_simd: u64 = 0;
+
+fn cpu_simd_operation(name: i32) -> i32 {
+    let s: *u8 = &g_strings[name];
+    if str_eq(s, "cpu_dpbusd_512") == 1 { return 0; }
+    if str_eq(s, "cpu_madd52lo_512") == 1 { return 1; }
+    if str_eq(s, "cpu_madd52hi_512") == 1 { return 2; }
+    if str_eq(s, "cpu_shuffle8_512") == 1 { return 3; }
+    if str_eq(s, "cpu_div_u53_512") == 1 { return 4; }
+    if str_eq(s, "cpu_ratio_q32_512") == 1 { return 5; }
+    return 0-1;
+}
+
+fn codegen_cpu_simd(node: i32, op: i32) -> IRValue {
+    var count: i32 = 4; if op >= 3 { count = 3; }
+    if g_nodes[node].nargs != count || (g_nodes[node].flags & 1048576) == 0
+        || g_eval_mode == 1 || g_emit_gpu_mode == 1 || g_agx_dispatch_mode == 1 {
+        diag_error_at(g_nodes[node].line, g_nodes[node].col, "CPU SIMD builtin requires native CPU codegen, a standalone statement, and its pointer arguments");
+        return IRValue { reg: 0, type_off: NULL_STR };
+    }
+    var regs: [i32; 4] = 0;
+    for i in 0..count {
+        var ty: i32 = str_intern("*u64");
+        if op == 0 {
+            ty = str_intern("*i32");
+            if i == 2 { ty = str_intern("*u8"); }
+            if i == 3 { ty = str_intern("*i8"); }
+        }
+        if op == 3 { ty = str_intern("*u8"); }
+        let v: IRValue = codegen_expr(g_args[g_nodes[node].args_start+i], ty);
+        let elem: i32 = atomic_static_elem(g_args[g_nodes[node].args_start+i], v.type_off);
+        if elem != type_pointee(ty) { diag_error_at(g_nodes[node].line, g_nodes[node].col, "CPU SIMD builtin pointer type mismatch"); }
+        regs[i] = v.reg;
+    }
+    g_use_cpu_simd = g_use_cpu_simd | ((1 as u64) << (op as u64));
+    ir_wr("  call void @__traveler_cpu_simd_"); ir_wr_int(op as i64); ir_wr("(");
+    for i in 0..count { if i > 0 { ir_wr(", "); } ir_wr("ptr "); ir_wr_reg(regs[i]); }
+    ir_wr(")\n"); return IRValue { reg: 0, type_off: NULL_STR };
+}
+
+fn cpu_simd_splat(value: i64) {
+    ir_wr("<");
+    for i in 0..8 { if i > 0 { ir_wr(", "); } ir_wr("i64 "); ir_wr_int(value); }
+    ir_wr(">");
+}
+
+fn emit_cpu_simd() {
+    var spr: i32 = 0;
+    if g_cpu_name != null { spr = str_eq(g_cpu_name, "sapphirerapids"); }
+    for op in 0..6 {
+        if (g_use_cpu_simd & ((1 as u64) << (op as u64))) == 0 { continue; }
+        ir_wr("define internal void @__traveler_cpu_simd_"); ir_wr_int(op as i64);
+        ir_wr("(ptr %dst, ptr %ap, ptr %bp"); if op < 3 { ir_wr(", ptr %cp"); }
+        ir_wr(") alwaysinline {\n");
+        if op == 0 {
+            ir_wr("  %a = load <16 x i32>, ptr %ap, align 1\n  %b = load <64 x i8>, ptr %bp, align 1\n  %c = load <64 x i8>, ptr %cp, align 1\n");
+            if spr == 1 {
+                ir_wr("  %bb = bitcast <64 x i8> %b to <16 x i32>\n  %cc = bitcast <64 x i8> %c to <16 x i32>\n  %r = call <16 x i32> @llvm.x86.avx512.vpdpbusd.512(<16 x i32> %a, <16 x i32> %bb, <16 x i32> %cc)\n");
+            } else {
+                ir_wr("  %bu = zext <64 x i8> %b to <64 x i32>\n  %cs = sext <64 x i8> %c to <64 x i32>\n  %p = mul <64 x i32> %bu, %cs\n");
+                for j in 0..4 {
+                    ir_wr("  %s"); ir_wr_int(j as i64); ir_wr(" = shufflevector <64 x i32> %p, <64 x i32> poison, <16 x i32> <");
+                    for i in 0..16 { if i > 0 { ir_wr(", "); } ir_wr("i32 "); ir_wr_int((4*i+j) as i64); }
+                    ir_wr(">\n");
+                }
+                ir_wr("  %s01 = add <16 x i32> %s0, %s1\n  %s23 = add <16 x i32> %s2, %s3\n  %sum = add <16 x i32> %s01, %s23\n  %r = add <16 x i32> %a, %sum\n");
+            }
+            ir_wr("  store <16 x i32> %r, ptr %dst, align 1\n");
+        } else if op == 1 || op == 2 {
+            ir_wr("  %a = load <8 x i64>, ptr %ap, align 1\n  %b = load <8 x i64>, ptr %bp, align 1\n  %c = load <8 x i64>, ptr %cp, align 1\n");
+            if spr == 1 {
+                ir_wr("  %r = call <8 x i64> @llvm.x86.avx512.vpmadd52"); if op == 1 { ir_wr("l"); } else { ir_wr("h"); }
+                ir_wr(".uq.512(<8 x i64> %a, <8 x i64> %b, <8 x i64> %c)\n");
+            } else {
+                ir_wr("  %bm = and <8 x i64> %b, "); cpu_simd_splat(4503599627370495); ir_wr("\n  %cm = and <8 x i64> %c, "); cpu_simd_splat(4503599627370495);
+                ir_wr("\n  %bw = zext <8 x i64> %bm to <8 x i128>\n  %cw = zext <8 x i64> %cm to <8 x i128>\n  %p = mul <8 x i128> %bw, %cw\n");
+                if op == 2 { ir_wr("  %ph = lshr <8 x i128> %p, <i128 52, i128 52, i128 52, i128 52, i128 52, i128 52, i128 52, i128 52>\n  %v = trunc <8 x i128> %ph to <8 x i64>\n"); }
+                else { ir_wr("  %pl = trunc <8 x i128> %p to <8 x i64>\n  %v = and <8 x i64> %pl, "); cpu_simd_splat(4503599627370495); ir_wr("\n"); }
+                ir_wr("  %r = add <8 x i64> %a, %v\n");
+            }
+            ir_wr("  store <8 x i64> %r, ptr %dst, align 1\n");
+        } else if op == 3 {
+            ir_wr("  %a = load <64 x i8>, ptr %ap, align 1\n  %b = load <64 x i8>, ptr %bp, align 1\n");
+            if spr == 1 { ir_wr("  %r = call <64 x i8> @llvm.x86.avx512.pshuf.b.512(<64 x i8> %a, <64 x i8> %b)\n  store <64 x i8> %r, ptr %dst, align 1\n"); }
+            else {
+                ir_wr("  br label %loop\nloop:\n  %i = phi i64 [0, %0], [%next, %loop]\n  %v = phi <64 x i8> [zeroinitializer, %0], [%out, %loop]\n  %idx = extractelement <64 x i8> %b, i64 %i\n  %zero = icmp slt i8 %idx, 0\n  %low = and i8 %idx, 15\n  %wide = zext i8 %low to i64\n  %base = and i64 %i, -16\n  %at = add i64 %base, %wide\n  %byte = extractelement <64 x i8> %a, i64 %at\n  %value = select i1 %zero, i8 0, i8 %byte\n  %out = insertelement <64 x i8> %v, i8 %value, i64 %i\n  %next = add i64 %i, 1\n  %more = icmp ult i64 %next, 64\n  br i1 %more, label %loop, label %done\ndone:\n  store <64 x i8> %out, ptr %dst, align 1\n");
+            }
+        } else {
+            ir_wr("  %a = load <8 x i64>, ptr %ap, align 1\n  %b = load <8 x i64>, ptr %bp, align 1\n  %af = uitofp <8 x i64> %a to <8 x double>\n  %bf = uitofp <8 x i64> %b to <8 x double>\n");
+            if op == 5 { ir_wr("  %scaled = fmul <8 x double> %af, <double 4294967296.0, double 4294967296.0, double 4294967296.0, double 4294967296.0, double 4294967296.0, double 4294967296.0, double 4294967296.0, double 4294967296.0>\n  %f = fdiv <8 x double> %scaled, %bf\n  %n = shl <8 x i64> %a, "); cpu_simd_splat(32); ir_wr("\n"); }
+            else { ir_wr("  %f = fdiv <8 x double> %af, %bf\n  %n = add <8 x i64> %a, zeroinitializer\n"); }
+            ir_wr("  %q = fptoui <8 x double> %f to <8 x i64>\n  %prod = mul <8 x i64> %q, %b\n  %rem = sub <8 x i64> %n, %prod\n  %low = icmp slt <8 x i64> %rem, zeroinitializer\n  %down = zext <8 x i1> %low to <8 x i64>\n  %q1 = sub <8 x i64> %q, %down\n  %fix = select <8 x i1> %low, <8 x i64> %b, <8 x i64> zeroinitializer\n  %r1 = add <8 x i64> %rem, %fix\n  %high = icmp uge <8 x i64> %r1, %b\n  %up = zext <8 x i1> %high to <8 x i64>\n  %q2 = add <8 x i64> %q1, %up\n");
+            if op == 5 {
+                ir_wr("  %fix2 = select <8 x i1> %high, <8 x i64> %b, <8 x i64> zeroinitializer\n  %r2 = sub <8 x i64> %r1, %fix2\n  %twice = add <8 x i64> %r2, %r2\n  %gt = icmp ugt <8 x i64> %twice, %b\n  %eq = icmp eq <8 x i64> %twice, %b\n  %odd = trunc <8 x i64> %q2 to <8 x i1>\n  %tie = and <8 x i1> %eq, %odd\n  %round = or <8 x i1> %gt, %tie\n  %inc = zext <8 x i1> %round to <8 x i64>\n  %r = add <8 x i64> %q2, %inc\n  store <8 x i64> %r, ptr %dst, align 1\n");
+            } else { ir_wr("  store <8 x i64> %q2, ptr %dst, align 1\n"); }
+        }
+        ir_wr("  ret void\n}\n");
+        if spr == 1 {
+            if op == 0 { ir_wr("declare <16 x i32> @llvm.x86.avx512.vpdpbusd.512(<16 x i32>, <16 x i32>, <16 x i32>)\n"); }
+            if op == 1 || op == 2 {
+                ir_wr("declare <8 x i64> @llvm.x86.avx512.vpmadd52"); if op == 1 { ir_wr("l"); } else { ir_wr("h"); }
+                ir_wr(".uq.512(<8 x i64>, <8 x i64>, <8 x i64>)\n");
+            }
+            if op == 3 { ir_wr("declare <64 x i8> @llvm.x86.avx512.pshuf.b.512(<64 x i8>, <64 x i8>)\n"); }
+        }
+    }
+}
 
 fn codegen_stream_copy(node: i32) -> IRValue {
     if g_nodes[node].nargs != 3 || (g_nodes[node].flags & 1048576) == 0 {
@@ -32874,7 +32984,8 @@ fn prepare_stream_stores(prog: i32) {
             let call: i32 = g_nodes[n].child0;
             if call >= 0 && g_nodes[call].kind == AST_CALL
                 && (str_eq(&g_strings[g_nodes[call].name0], "stream_store_fence") == 1
-                    || str_eq(&g_strings[g_nodes[call].name0], "stream_copy_bytes") == 1) {
+                    || str_eq(&g_strings[g_nodes[call].name0], "stream_copy_bytes") == 1
+                    || cpu_simd_operation(g_nodes[call].name0) >= 0) {
                 g_nodes[call].flags = g_nodes[call].flags | 1048576;
             }
             if shadowed == 0 && call >= 0 && g_nodes[call].kind == AST_CALL
@@ -32898,6 +33009,7 @@ fn prepare_stream_stores(prog: i32) {
 
 fn codegen_program(prog: i32) {
     g_use_stream_copy = 0;
+    g_use_cpu_simd = 0;
     prepare_stream_stores(prog);
     emit_preamble();
 
@@ -33343,6 +33455,7 @@ fn codegen_program(prog: i32) {
     emit_wide_print();
     emit_checked_integer_helpers();
     emit_stream_copy();
+    emit_cpu_simd();
 
     // Lazy: declared only when a wide-element alloc was emitted above.
     if g_used_aligned_alloc == 1 {
