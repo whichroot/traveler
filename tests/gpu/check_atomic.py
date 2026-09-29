@@ -161,13 +161,100 @@ with tempfile.TemporaryDirectory() as directory:
                 good.replace('output[', 'let other=gpu_atomic_add_u64(buffer,modulus,0,1,0,1); output['),
                 good.replace(',0,1);', ',count as i32,1);'),
                 good.replace(',0,1);', ',0,18446744073709551617);'),
-                good.replace('output[', 'let read=buffer[gpu_global_index(t)]; output['),
-                'if t.thread_x==0 {' + good + '}']
+                good.replace('output[', 'let read=buffer[gpu_global_index(t)]; output[')]
     for body in failures:
         source.write_text(header + f'#[kernel] fn bad{signature.format(bits=64)} {{ {body} }}\n' + bodies[0])
         target = temp / 'bad.ll'; target.write_text('previous')
         run(TVC, '--emit-gpu-nvptx', source, '-o', target, code=1)
         assert target.read_text() == 'previous'
+
+    controlled = []
+    for operation, name in enumerate(('add', 'exchange', 'compare_exchange')):
+        for bits, order in itertools.product((32, 64), range(4)):
+            expected = f', {(1 << bits) - 16}' if operation == 2 else ''
+            body = (f'let i=gpu_global_index(t); var j:u64=0; var total:u64=0; '
+                    'while j < i%4 { if ((i+j)&1)==0 { '
+                    f'let old=gpu_atomic_{name}_u{bits}(buffer,count,(i*3+j)%modulus,(i+j+1) as u{bits},{order},1{expected}); '
+                    'total=total+(old as u64); } j=j+1; } output[i]=total;')
+            controlled.append(f'#[kernel] fn control_{name}_{bits}_{order}{signature.format(bits=bits)} {{ {body} }}')
+    source.write_text(header + '\n'.join(controlled))
+    control_ir = temp / 'control.ll'
+    run(TVC, '--emit-gpu-nvptx', source, '-o', control_ir)
+    control_entries = package.descriptors(control_ir.read_text())
+    assert len(control_entries) == 24
+    for entry in control_entries:
+        assert entry['parameters'][0]['access'] == 'read-write'
+        assert entry['parameters'][0]['footprint']['count_parameter'] == 2
+        assert entry['disjoint'] == [[0, 1]]
+
+    def control_expected(bits, count, modulus, lanes, operation, launches):
+        mask = (1 << bits) - 1
+        counters = [mask - 15] * count
+        for _ in range(launches):
+            output = [0] * lanes
+            for i in range(lanes):
+                for j in range(i % 4):
+                    slot = (i * 3 + j) % modulus
+                    if (i + j) % 2 or slot >= count:
+                        continue
+                    old = counters[slot]
+                    output[i] = (output[i] + old) & ((1 << 64) - 1)
+                    if operation == 0:
+                        counters[slot] = (old + i + j + 1) & mask
+                    elif operation == 1 or old == mask - 15:
+                        counters[slot] = i + j + 1
+        return counters, output
+
+    for profile in ('raw', 'O3'):
+        selected = control_ir
+        if profile != 'raw':
+            selected = temp / 'control-opt.ll'
+            run(OPT, '-passes=default<O3>', '-verify-each', '-S', control_ir, '-o', selected)
+        run(OPT, '-passes=verify', '-disable-output', selected)
+        run(LLC, '-mcpu=sm_90', selected, '-o', temp / 'control.ptx')
+        native = selected.read_text().replace('define ptx_kernel', 'define').replace('ptr addrspace(1)', 'ptr')
+        native = re.sub(r'(%\w+) = (?:tail )?call i(32|64) asm sideeffect "atom\.(\w+)\.gpu\.global\.(add|exch|cas)\.[ub]\d+[^\n]+"\(ptr (%\w+), i\d+ (%\w+|-?\d+)(?:, i\d+ (%\w+|-?\d+))?\)(?: #\d+)?', host_atomic, native)
+        native = re.sub(r'addrspacecast ptr (%\w+) to ptr', r'getelementptr i8, ptr \1, i64 0', native)
+        for kind in ('tid', 'ctaid', 'ntid', 'nctaid'):
+            for axis in 'xyz':
+                native = native.replace(f'llvm.nvvm.read.ptx.sreg.{kind}.{axis}', f'test_{kind}_{axis}')
+        native_ir = temp / f'control-{profile}.ll'
+        native_ir.write_text(native)
+        run(OPT, '-passes=verify', '-disable-output', native_ir)
+        run(LLC, f'-mtriple={TRIPLE}', '-relocation-model=pic', '-filetype=obj', native_ir, '-o', temp / 'control.o')
+        library = temp / f'control-{profile}.so'
+        run(LINK, '-shared', '-fPIC', '-pthread', temp / 'control.o', HERE / 'shared_sim.c', '-o', library)
+        control_lib = ctypes.CDLL(str(library))
+        control_sim = control_lib.simulate_dynamic
+        control_sim.argtypes = simulate.argtypes
+        control_sim.restype = None
+        shape = (2, 1, 1, 4, 3, 2)
+        lanes = math.prod(shape)
+        for count in (0, 19, lanes * 3):
+            for index, entry in enumerate(control_entries):
+                bits = 32 if index % 8 < 4 else 64
+                operation = index // 8
+                ctype = ctypes.c_uint32 if bits == 32 else ctypes.c_uint64
+                counters = (ctype * count)(*([(1 << bits) - 16] * count))
+                output = (ctypes.c_uint64 * lanes)()
+                control_sim(getattr(control_lib, entry['symbol']), counters if count else None, output,
+                            count, lanes * 3 + 1, (ctypes.c_uint32 * 6)(*shape))
+                assert (list(counters), list(output)) == control_expected(bits, count, lanes * 3 + 1, lanes, operation, 1)
+        if CUDA:
+            control_package = temp / f'control-{profile}.tvcp'
+            package.build(selected, control_package, LLC, SM)
+            for count in (0, 19, lanes * 3):
+                for index, entry in enumerate(control_entries):
+                    bits = 32 if index % 8 < 4 else 64
+                    run(temp / 'gate', control_package, entry['owner'], temp / 'result', bits, count, lanes * 3 + 1, *shape)
+                    data = (temp / 'result').read_bytes()
+                    width = bits // 8
+                    offset = 16 + ((count * width + 7) // 8) * 8
+                    counters = [int.from_bytes(data[16+i*width:16+(i+1)*width], 'little') for i in range(count)]
+                    output = [int.from_bytes(data[offset+i*8:offset+(i+1)*8], 'little') for i in range(lanes)]
+                    assert data[:16] == data[-16:] == b'\xa5' * 16
+                    assert (counters, output) == control_expected(bits, count, lanes * 3 + 1, lanes, index // 8, 2)
+    print('atomic control PASS: divergent loops/branches, 32/64-bit add/exchange/CAS, four orders, bounds, and returned values')
     source.write_text(header + '#[kernel] fn discarded(t:GpuThread,buffer:*u64,count:u64) { gpu_atomic_add_u64(buffer,count,0,1,0,1); }')
     run(TVC, '--emit-gpu-nvptx', source, '-o', temp / 'discarded.ll')
     package.descriptors((temp / 'discarded.ll').read_text())

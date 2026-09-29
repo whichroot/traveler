@@ -1931,6 +1931,7 @@ declare i32 @fflush(ptr)
 @DEVICE_LOOP_NEXT = global i32 1024
 @DEVICE_LOOP_END = global i32 1025
 @DEVICE_LOOP_RESULT = global i32 1026
+@DEVICE_SCALAR_CAPACITY = global i32 16384
 @g_gpu_emitted = global i32 0
 @ZK_SEL_NEG1 = global i64 -1
 @g_stream_store_count = global i64 0
@@ -150946,7 +150947,7 @@ L26:
   %t39 = icmp eq i32 %t37, %t38
   br i1 %t39, label %L27, label %L29
 L27:
-  %t40 = getelementptr [37 x i8], ptr @.str.6156, i32 0, i32 0
+  %t40 = getelementptr [38 x i8], ptr @.str.6156, i32 0, i32 0
   ret ptr %t40
 L29:
   %t41 = load i32, ptr %t0
@@ -150962,7 +150963,7 @@ L32:
   %t47 = icmp eq i32 %t45, %t46
   br i1 %t47, label %L33, label %L35
 L33:
-  %t48 = getelementptr [39 x i8], ptr @.str.6158, i32 0, i32 0
+  %t48 = getelementptr [40 x i8], ptr @.str.6158, i32 0, i32 0
   ret ptr %t48
 L35:
   %t49 = load i32, ptr %t0
@@ -150970,7 +150971,7 @@ L35:
   %t51 = icmp eq i32 %t49, %t50
   br i1 %t51, label %L36, label %L38
 L36:
-  %t52 = getelementptr [45 x i8], ptr @.str.6159, i32 0, i32 0
+  %t52 = getelementptr [46 x i8], ptr @.str.6159, i32 0, i32 0
   ret ptr %t52
 L38:
   %t53 = load i32, ptr %t0
@@ -151012,7 +151013,7 @@ L2:
   %t12 = load ptr, ptr %t0
   %t13 = getelementptr %DeviceScalarPlan, ptr %t12, i32 0, i32 6
   %t14 = load i32, ptr %t13
-  %t15 = add i32 0, 4096
+  %t15 = load i32, ptr @DEVICE_SCALAR_CAPACITY
   %t16 = icmp sge i32 %t14, %t15
   br i1 %t16, label %L3, label %L5
 L3:
@@ -152710,7 +152711,7 @@ L2:
   %t16 = load ptr, ptr %t0
   %t17 = getelementptr %DeviceScalarPlan, ptr %t16, i32 0, i32 21
   %t18 = load i32, ptr %t17
-  %t19 = add i32 0, 4096
+  %t19 = load i32, ptr @DEVICE_SCALAR_CAPACITY
   %t20 = load i32, ptr %t5
   %t21 = sub i32 %t19, %t20
   %t22 = icmp sgt i32 %t18, %t21
@@ -154489,7 +154490,7 @@ L15:
   %t98 = load ptr, ptr %t0
   %t99 = getelementptr %DeviceScalarPlan, ptr %t98, i32 0, i32 7
   %t100 = load i32, ptr %t99
-  %t101 = add i32 0, 4096
+  %t101 = load i32, ptr @DEVICE_SCALAR_CAPACITY
   %t102 = icmp sgt i32 %t100, %t101
   br i1 %t102, label %L19, label %L21
 L19:
@@ -157869,7 +157870,7 @@ L5:
   %t27 = load ptr, ptr %t0
   %t28 = getelementptr %DeviceScalarPlan, ptr %t27, i32 0, i32 7
   %t29 = load i32, ptr %t28
-  %t30 = add i32 0, 4096
+  %t30 = load i32, ptr @DEVICE_SCALAR_CAPACITY
   %t31 = icmp sgt i32 %t29, %t30
   br i1 %t31, label %L6, label %L8
 L6:
@@ -161692,23 +161693,22 @@ entry:
   %t1444 = alloca i1
   %t1448 = alloca i1
   %t1449 = alloca i1
-  %t1450 = alloca i1
-  %t1478 = alloca i1
-  %t1479 = alloca i1
-  %t1500 = alloca i32
-  %t1512 = alloca i32
+  %t1473 = alloca i1
+  %t1474 = alloca i1
+  %t1495 = alloca i32
+  %t1507 = alloca i32
+  %t1530 = alloca i1
+  %t1534 = alloca i1
   %t1535 = alloca i1
-  %t1539 = alloca i1
-  %t1540 = alloca i1
-  %t1561 = alloca i1
-  %t1565 = alloca i1
-  %t1620 = alloca i1
-  %t1651 = alloca i32
-  %t1660 = alloca i32
-  %t1661 = alloca i1
-  %t1662 = alloca i1
-  %t1663 = alloca i1
-  %t1682 = alloca i1
+  %t1556 = alloca i1
+  %t1560 = alloca i1
+  %t1615 = alloca i1
+  %t1646 = alloca i32
+  %t1655 = alloca i32
+  %t1656 = alloca i1
+  %t1657 = alloca i1
+  %t1658 = alloca i1
+  %t1677 = alloca i1
   call void @llvm.memset.p0.i64(ptr %t3, i8 0, i64 256, i1 false)
   %t4 = add i32 0, 0
   store i32 %t4, ptr %t5
@@ -163870,442 +163870,432 @@ L243:
   store i1 %t1447, ptr %t1444
   br i1 %t1447, label %L344, label %L345
 L344:
-  %t1451 = load i32, ptr %t23
-  %t1452 = load i32, ptr @DEVICE_SHARED_INIT
-  %t1453 = icmp sge i32 %t1451, %t1452
-  store i1 %t1453, ptr %t1450
-  br i1 %t1453, label %L346, label %L347
+  %t1450 = load i32, ptr %t23
+  %t1451 = load i32, ptr @DEVICE_SHARED_INIT
+  %t1452 = icmp sge i32 %t1450, %t1451
+  store i1 %t1452, ptr %t1449
+  br i1 %t1452, label %L346, label %L347
 L346:
-  %t1454 = load i32, ptr %t23
-  %t1455 = load i32, ptr @DEVICE_BLOCK_BARRIER
-  %t1456 = icmp sle i32 %t1454, %t1455
-  store i1 %t1456, ptr %t1450
+  %t1453 = load i32, ptr %t23
+  %t1454 = load i32, ptr @DEVICE_BLOCK_BARRIER
+  %t1455 = icmp sle i32 %t1453, %t1454
+  store i1 %t1455, ptr %t1449
   br label %L347
 L347:
-  %t1457 = load i1, ptr %t1450
-  store i1 %t1457, ptr %t1449
-  br i1 %t1457, label %L349, label %L348
+  %t1456 = load i1, ptr %t1449
+  store i1 %t1456, ptr %t1448
+  br i1 %t1456, label %L349, label %L348
 L348:
-  %t1458 = load i32, ptr %t23
-  %t1459 = load i32, ptr @DEVICE_ATOMIC_ADD
-  %t1460 = icmp eq i32 %t1458, %t1459
-  store i1 %t1460, ptr %t1449
+  %t1457 = load i32, ptr %t23
+  %t1458 = load i32, ptr @DEVICE_SHARED_ATOMIC
+  %t1459 = icmp eq i32 %t1457, %t1458
+  store i1 %t1459, ptr %t1448
   br label %L349
 L349:
-  %t1461 = load i1, ptr %t1449
-  store i1 %t1461, ptr %t1448
-  br i1 %t1461, label %L351, label %L350
-L350:
-  %t1462 = load i32, ptr %t23
-  %t1463 = load i32, ptr @DEVICE_SHARED_ATOMIC
-  %t1464 = icmp eq i32 %t1462, %t1463
-  store i1 %t1464, ptr %t1448
-  br label %L351
-L351:
-  %t1465 = load i1, ptr %t1448
-  store i1 %t1465, ptr %t1444
+  %t1460 = load i1, ptr %t1448
+  store i1 %t1460, ptr %t1444
   br label %L345
 L345:
-  %t1466 = load i1, ptr %t1444
-  br i1 %t1466, label %L352, label %L354
+  %t1461 = load i1, ptr %t1444
+  br i1 %t1461, label %L350, label %L352
+L350:
+  %t1462 = load ptr, ptr %t0
+  %t1463 = add i32 0, 8
+  %t1464 = load i32, ptr %t9
+  %t1465 = sext i32 %t1464 to i64
+  %t1466 = load ptr, ptr %t0
+  %t1467 = getelementptr %DeviceScalarPlan, ptr %t1466, i32 0, i32 1
+  %t1468 = load ptr, ptr %t1467
+  %t1469 = getelementptr i32, ptr %t1468, i64 %t1465
+  %t1470 = load i32, ptr %t1469
+  %t1471 = call i32 @device_scalar_fail(ptr %t1462, i32 %t1463, i32 %t1470)
+  %t1472 = add i32 0, 0
+  ret i32 %t1472
 L352:
-  %t1467 = load ptr, ptr %t0
-  %t1468 = add i32 0, 8
-  %t1469 = load i32, ptr %t9
-  %t1470 = sext i32 %t1469 to i64
-  %t1471 = load ptr, ptr %t0
-  %t1472 = getelementptr %DeviceScalarPlan, ptr %t1471, i32 0, i32 1
-  %t1473 = load ptr, ptr %t1472
-  %t1474 = getelementptr i32, ptr %t1473, i64 %t1470
-  %t1475 = load i32, ptr %t1474
-  %t1476 = call i32 @device_scalar_fail(ptr %t1467, i32 %t1468, i32 %t1475)
-  %t1477 = add i32 0, 0
-  ret i32 %t1477
+  %t1475 = load i32, ptr %t23
+  %t1476 = load i32, ptr @DEVICE_ATOMIC_ADD
+  %t1477 = icmp eq i32 %t1475, %t1476
+  store i1 %t1477, ptr %t1474
+  br i1 %t1477, label %L354, label %L353
+L353:
+  %t1478 = load i32, ptr %t23
+  %t1479 = load i32, ptr @DEVICE_SHARED_ATOMIC
+  %t1480 = icmp eq i32 %t1478, %t1479
+  store i1 %t1480, ptr %t1474
+  br label %L354
 L354:
-  %t1480 = load i32, ptr %t23
-  %t1481 = load i32, ptr @DEVICE_ATOMIC_ADD
-  %t1482 = icmp eq i32 %t1480, %t1481
-  store i1 %t1482, ptr %t1479
-  br i1 %t1482, label %L356, label %L355
+  %t1481 = load i1, ptr %t1474
+  store i1 %t1481, ptr %t1473
+  br i1 %t1481, label %L355, label %L356
 L355:
-  %t1483 = load i32, ptr %t23
-  %t1484 = load i32, ptr @DEVICE_SHARED_ATOMIC
-  %t1485 = icmp eq i32 %t1483, %t1484
-  store i1 %t1485, ptr %t1479
+  %t1482 = load i32, ptr %t9
+  %t1483 = sext i32 %t1482 to i64
+  %t1484 = load ptr, ptr %t0
+  %t1485 = getelementptr %DeviceScalarPlan, ptr %t1484, i32 0, i32 0
+  %t1486 = load ptr, ptr %t1485
+  %t1487 = getelementptr %EIRNode, ptr %t1486, i64 %t1483
+  %t1488 = getelementptr %EIRNode, ptr %t1487, i32 0, i32 6
+  %t1489 = load i32, ptr %t1488
+  %t1490 = add i32 0, 2
+  %t1491 = icmp eq i32 %t1489, %t1490
+  store i1 %t1491, ptr %t1473
   br label %L356
 L356:
-  %t1486 = load i1, ptr %t1479
-  store i1 %t1486, ptr %t1478
-  br i1 %t1486, label %L357, label %L358
+  %t1492 = load i1, ptr %t1473
+  br i1 %t1492, label %L357, label %L359
 L357:
-  %t1487 = load i32, ptr %t9
-  %t1488 = sext i32 %t1487 to i64
-  %t1489 = load ptr, ptr %t0
-  %t1490 = getelementptr %DeviceScalarPlan, ptr %t1489, i32 0, i32 0
-  %t1491 = load ptr, ptr %t1490
-  %t1492 = getelementptr %EIRNode, ptr %t1491, i64 %t1488
-  %t1493 = getelementptr %EIRNode, ptr %t1492, i32 0, i32 6
-  %t1494 = load i32, ptr %t1493
-  %t1495 = add i32 0, 2
-  %t1496 = icmp eq i32 %t1494, %t1495
-  store i1 %t1496, ptr %t1478
-  br label %L358
-L358:
-  %t1497 = load i1, ptr %t1478
-  br i1 %t1497, label %L359, label %L361
+  %t1493 = add i32 0, 5
+  store i32 %t1493, ptr %t1180
+  br label %L359
 L359:
-  %t1498 = add i32 0, 5
-  store i32 %t1498, ptr %t1180
-  br label %L361
+  %t1494 = add i32 0, 0
+  store i32 %t1494, ptr %t1495
+  br label %L360
+L360:
+  %t1496 = load i32, ptr %t1495
+  %t1497 = load i32, ptr %t1180
+  %t1498 = icmp slt i32 %t1496, %t1497
+  br i1 %t1498, label %L361, label %L362
 L361:
-  %t1499 = add i32 0, 0
-  store i32 %t1499, ptr %t1500
-  br label %L362
-L362:
-  %t1501 = load i32, ptr %t1500
-  %t1502 = load i32, ptr %t1180
-  %t1503 = icmp slt i32 %t1501, %t1502
-  br i1 %t1503, label %L363, label %L364
+  %t1499 = load i32, ptr %t9
+  %t1500 = sext i32 %t1499 to i64
+  %t1501 = load ptr, ptr %t0
+  %t1502 = getelementptr %DeviceScalarPlan, ptr %t1501, i32 0, i32 0
+  %t1503 = load ptr, ptr %t1502
+  %t1504 = getelementptr %EIRNode, ptr %t1503, i64 %t1500
+  %t1505 = getelementptr %EIRNode, ptr %t1504, i32 0, i32 3
+  %t1506 = load i32, ptr %t1505
+  store i32 %t1506, ptr %t1507
+  %t1508 = load i32, ptr %t1495
+  %t1509 = add i32 0, 1
+  %t1510 = icmp eq i32 %t1508, %t1509
+  br i1 %t1510, label %L363, label %L365
 L363:
-  %t1504 = load i32, ptr %t9
-  %t1505 = sext i32 %t1504 to i64
-  %t1506 = load ptr, ptr %t0
-  %t1507 = getelementptr %DeviceScalarPlan, ptr %t1506, i32 0, i32 0
-  %t1508 = load ptr, ptr %t1507
-  %t1509 = getelementptr %EIRNode, ptr %t1508, i64 %t1505
-  %t1510 = getelementptr %EIRNode, ptr %t1509, i32 0, i32 3
-  %t1511 = load i32, ptr %t1510
-  store i32 %t1511, ptr %t1512
-  %t1513 = load i32, ptr %t1500
-  %t1514 = add i32 0, 1
-  %t1515 = icmp eq i32 %t1513, %t1514
-  br i1 %t1515, label %L365, label %L367
+  %t1511 = load i32, ptr %t9
+  %t1512 = sext i32 %t1511 to i64
+  %t1513 = load ptr, ptr %t0
+  %t1514 = getelementptr %DeviceScalarPlan, ptr %t1513, i32 0, i32 0
+  %t1515 = load ptr, ptr %t1514
+  %t1516 = getelementptr %EIRNode, ptr %t1515, i64 %t1512
+  %t1517 = getelementptr %EIRNode, ptr %t1516, i32 0, i32 4
+  %t1518 = load i32, ptr %t1517
+  store i32 %t1518, ptr %t1507
+  br label %L365
 L365:
-  %t1516 = load i32, ptr %t9
-  %t1517 = sext i32 %t1516 to i64
-  %t1518 = load ptr, ptr %t0
-  %t1519 = getelementptr %DeviceScalarPlan, ptr %t1518, i32 0, i32 0
-  %t1520 = load ptr, ptr %t1519
-  %t1521 = getelementptr %EIRNode, ptr %t1520, i64 %t1517
-  %t1522 = getelementptr %EIRNode, ptr %t1521, i32 0, i32 4
-  %t1523 = load i32, ptr %t1522
-  store i32 %t1523, ptr %t1512
-  br label %L367
-L367:
-  %t1524 = load i32, ptr %t1500
-  %t1525 = add i32 0, 2
-  %t1526 = icmp eq i32 %t1524, %t1525
-  br i1 %t1526, label %L368, label %L370
+  %t1519 = load i32, ptr %t1495
+  %t1520 = add i32 0, 2
+  %t1521 = icmp eq i32 %t1519, %t1520
+  br i1 %t1521, label %L366, label %L368
+L366:
+  %t1522 = load i32, ptr %t9
+  %t1523 = sext i32 %t1522 to i64
+  %t1524 = load ptr, ptr %t0
+  %t1525 = getelementptr %DeviceScalarPlan, ptr %t1524, i32 0, i32 0
+  %t1526 = load ptr, ptr %t1525
+  %t1527 = getelementptr %EIRNode, ptr %t1526, i64 %t1523
+  %t1528 = getelementptr %EIRNode, ptr %t1527, i32 0, i32 5
+  %t1529 = load i32, ptr %t1528
+  store i32 %t1529, ptr %t1507
+  br label %L368
 L368:
-  %t1527 = load i32, ptr %t9
-  %t1528 = sext i32 %t1527 to i64
-  %t1529 = load ptr, ptr %t0
-  %t1530 = getelementptr %DeviceScalarPlan, ptr %t1529, i32 0, i32 0
-  %t1531 = load ptr, ptr %t1530
-  %t1532 = getelementptr %EIRNode, ptr %t1531, i64 %t1528
-  %t1533 = getelementptr %EIRNode, ptr %t1532, i32 0, i32 5
-  %t1534 = load i32, ptr %t1533
-  store i32 %t1534, ptr %t1512
-  br label %L370
-L370:
-  %t1536 = load i32, ptr %t1500
-  %t1537 = add i32 0, 3
+  %t1531 = load i32, ptr %t1495
+  %t1532 = add i32 0, 3
+  %t1533 = icmp eq i32 %t1531, %t1532
+  store i1 %t1533, ptr %t1530
+  br i1 %t1533, label %L369, label %L370
+L369:
+  %t1536 = load i32, ptr %t23
+  %t1537 = load i32, ptr @DEVICE_MASKED_STORE
   %t1538 = icmp eq i32 %t1536, %t1537
   store i1 %t1538, ptr %t1535
-  br i1 %t1538, label %L371, label %L372
+  br i1 %t1538, label %L372, label %L371
 L371:
-  %t1541 = load i32, ptr %t23
-  %t1542 = load i32, ptr @DEVICE_MASKED_STORE
-  %t1543 = icmp eq i32 %t1541, %t1542
-  store i1 %t1543, ptr %t1540
-  br i1 %t1543, label %L374, label %L373
-L373:
-  %t1544 = load i32, ptr %t23
-  %t1545 = load i32, ptr @DEVICE_ATOMIC_ADD
-  %t1546 = icmp eq i32 %t1544, %t1545
-  store i1 %t1546, ptr %t1540
-  br label %L374
-L374:
-  %t1547 = load i1, ptr %t1540
-  store i1 %t1547, ptr %t1539
-  br i1 %t1547, label %L376, label %L375
-L375:
-  %t1548 = load i32, ptr %t23
-  %t1549 = load i32, ptr @DEVICE_SHARED_ATOMIC
-  %t1550 = icmp eq i32 %t1548, %t1549
-  store i1 %t1550, ptr %t1539
-  br label %L376
-L376:
-  %t1551 = load i1, ptr %t1539
-  store i1 %t1551, ptr %t1535
+  %t1539 = load i32, ptr %t23
+  %t1540 = load i32, ptr @DEVICE_ATOMIC_ADD
+  %t1541 = icmp eq i32 %t1539, %t1540
+  store i1 %t1541, ptr %t1535
   br label %L372
 L372:
-  %t1552 = load i1, ptr %t1535
-  br i1 %t1552, label %L377, label %L379
+  %t1542 = load i1, ptr %t1535
+  store i1 %t1542, ptr %t1534
+  br i1 %t1542, label %L374, label %L373
+L373:
+  %t1543 = load i32, ptr %t23
+  %t1544 = load i32, ptr @DEVICE_SHARED_ATOMIC
+  %t1545 = icmp eq i32 %t1543, %t1544
+  store i1 %t1545, ptr %t1534
+  br label %L374
+L374:
+  %t1546 = load i1, ptr %t1534
+  store i1 %t1546, ptr %t1530
+  br label %L370
+L370:
+  %t1547 = load i1, ptr %t1530
+  br i1 %t1547, label %L375, label %L377
+L375:
+  %t1548 = load i32, ptr %t9
+  %t1549 = sext i32 %t1548 to i64
+  %t1550 = load ptr, ptr %t0
+  %t1551 = getelementptr %DeviceScalarPlan, ptr %t1550, i32 0, i32 0
+  %t1552 = load ptr, ptr %t1551
+  %t1553 = getelementptr %EIRNode, ptr %t1552, i64 %t1549
+  %t1554 = getelementptr %EIRNode, ptr %t1553, i32 0, i32 1
+  %t1555 = load i32, ptr %t1554
+  store i32 %t1555, ptr %t1507
+  br label %L377
 L377:
-  %t1553 = load i32, ptr %t9
-  %t1554 = sext i32 %t1553 to i64
-  %t1555 = load ptr, ptr %t0
-  %t1556 = getelementptr %DeviceScalarPlan, ptr %t1555, i32 0, i32 0
-  %t1557 = load ptr, ptr %t1556
-  %t1558 = getelementptr %EIRNode, ptr %t1557, i64 %t1554
-  %t1559 = getelementptr %EIRNode, ptr %t1558, i32 0, i32 1
-  %t1560 = load i32, ptr %t1559
-  store i32 %t1560, ptr %t1512
-  br label %L379
-L379:
-  %t1562 = load i32, ptr %t1500
-  %t1563 = add i32 0, 4
-  %t1564 = icmp eq i32 %t1562, %t1563
-  store i1 %t1564, ptr %t1561
-  br i1 %t1564, label %L380, label %L381
+  %t1557 = load i32, ptr %t1495
+  %t1558 = add i32 0, 4
+  %t1559 = icmp eq i32 %t1557, %t1558
+  store i1 %t1559, ptr %t1556
+  br i1 %t1559, label %L378, label %L379
+L378:
+  %t1561 = load i32, ptr %t23
+  %t1562 = load i32, ptr @DEVICE_ATOMIC_ADD
+  %t1563 = icmp eq i32 %t1561, %t1562
+  store i1 %t1563, ptr %t1560
+  br i1 %t1563, label %L381, label %L380
 L380:
-  %t1566 = load i32, ptr %t23
-  %t1567 = load i32, ptr @DEVICE_ATOMIC_ADD
-  %t1568 = icmp eq i32 %t1566, %t1567
-  store i1 %t1568, ptr %t1565
-  br i1 %t1568, label %L383, label %L382
-L382:
-  %t1569 = load i32, ptr %t23
-  %t1570 = load i32, ptr @DEVICE_SHARED_ATOMIC
-  %t1571 = icmp eq i32 %t1569, %t1570
-  store i1 %t1571, ptr %t1565
-  br label %L383
-L383:
-  %t1572 = load i1, ptr %t1565
-  store i1 %t1572, ptr %t1561
+  %t1564 = load i32, ptr %t23
+  %t1565 = load i32, ptr @DEVICE_SHARED_ATOMIC
+  %t1566 = icmp eq i32 %t1564, %t1565
+  store i1 %t1566, ptr %t1560
   br label %L381
 L381:
-  %t1573 = load i1, ptr %t1561
-  br i1 %t1573, label %L384, label %L386
+  %t1567 = load i1, ptr %t1560
+  store i1 %t1567, ptr %t1556
+  br label %L379
+L379:
+  %t1568 = load i1, ptr %t1556
+  br i1 %t1568, label %L382, label %L384
+L382:
+  %t1569 = load i32, ptr %t9
+  %t1570 = sext i32 %t1569 to i64
+  %t1571 = load ptr, ptr %t0
+  %t1572 = getelementptr %DeviceScalarPlan, ptr %t1571, i32 0, i32 0
+  %t1573 = load ptr, ptr %t1572
+  %t1574 = getelementptr %EIRNode, ptr %t1573, i64 %t1570
+  %t1575 = getelementptr %EIRNode, ptr %t1574, i32 0, i32 7
+  %t1576 = load i32, ptr %t1575
+  store i32 %t1576, ptr %t1507
+  br label %L384
 L384:
-  %t1574 = load i32, ptr %t9
-  %t1575 = sext i32 %t1574 to i64
-  %t1576 = load ptr, ptr %t0
-  %t1577 = getelementptr %DeviceScalarPlan, ptr %t1576, i32 0, i32 0
-  %t1578 = load ptr, ptr %t1577
-  %t1579 = getelementptr %EIRNode, ptr %t1578, i64 %t1575
-  %t1580 = getelementptr %EIRNode, ptr %t1579, i32 0, i32 7
-  %t1581 = load i32, ptr %t1580
-  store i32 %t1581, ptr %t1512
-  br label %L386
-L386:
-  %t1582 = load i32, ptr %t23
-  %t1583 = load i32, ptr @EIR_STRUCT_LIT
-  %t1584 = icmp eq i32 %t1582, %t1583
-  br i1 %t1584, label %L387, label %L389
+  %t1577 = load i32, ptr %t23
+  %t1578 = load i32, ptr @EIR_STRUCT_LIT
+  %t1579 = icmp eq i32 %t1577, %t1578
+  br i1 %t1579, label %L385, label %L387
+L385:
+  %t1580 = load i32, ptr %t9
+  %t1581 = sext i32 %t1580 to i64
+  %t1582 = load ptr, ptr %t0
+  %t1583 = getelementptr %DeviceScalarPlan, ptr %t1582, i32 0, i32 0
+  %t1584 = load ptr, ptr %t1583
+  %t1585 = getelementptr %EIRNode, ptr %t1584, i64 %t1581
+  %t1586 = getelementptr %EIRNode, ptr %t1585, i32 0, i32 7
+  %t1587 = load i32, ptr %t1586
+  %t1588 = load i32, ptr %t1495
+  %t1589 = add i32 %t1587, %t1588
+  %t1590 = sext i32 %t1589 to i64
+  %t1591 = load ptr, ptr %t0
+  %t1592 = getelementptr %DeviceScalarPlan, ptr %t1591, i32 0, i32 20
+  %t1593 = load ptr, ptr %t1592
+  %t1594 = getelementptr i32, ptr %t1593, i64 %t1590
+  %t1595 = load i32, ptr %t1594
+  store i32 %t1595, ptr %t1507
+  br label %L387
 L387:
-  %t1585 = load i32, ptr %t9
-  %t1586 = sext i32 %t1585 to i64
-  %t1587 = load ptr, ptr %t0
-  %t1588 = getelementptr %DeviceScalarPlan, ptr %t1587, i32 0, i32 0
-  %t1589 = load ptr, ptr %t1588
-  %t1590 = getelementptr %EIRNode, ptr %t1589, i64 %t1586
-  %t1591 = getelementptr %EIRNode, ptr %t1590, i32 0, i32 7
-  %t1592 = load i32, ptr %t1591
-  %t1593 = load i32, ptr %t1500
-  %t1594 = add i32 %t1592, %t1593
-  %t1595 = sext i32 %t1594 to i64
-  %t1596 = load ptr, ptr %t0
-  %t1597 = getelementptr %DeviceScalarPlan, ptr %t1596, i32 0, i32 20
-  %t1598 = load ptr, ptr %t1597
-  %t1599 = getelementptr i32, ptr %t1598, i64 %t1595
-  %t1600 = load i32, ptr %t1599
-  store i32 %t1600, ptr %t1512
-  br label %L389
-L389:
-  %t1601 = load i32, ptr %t23
-  %t1602 = load i32, ptr @DEVICE_CLOSURE
-  %t1603 = icmp eq i32 %t1601, %t1602
-  br i1 %t1603, label %L390, label %L392
+  %t1596 = load i32, ptr %t23
+  %t1597 = load i32, ptr @DEVICE_CLOSURE
+  %t1598 = icmp eq i32 %t1596, %t1597
+  br i1 %t1598, label %L388, label %L390
+L388:
+  %t1599 = load i32, ptr %t9
+  %t1600 = sext i32 %t1599 to i64
+  %t1601 = load ptr, ptr %t0
+  %t1602 = getelementptr %DeviceScalarPlan, ptr %t1601, i32 0, i32 0
+  %t1603 = load ptr, ptr %t1602
+  %t1604 = getelementptr %EIRNode, ptr %t1603, i64 %t1600
+  %t1605 = getelementptr %EIRNode, ptr %t1604, i32 0, i32 7
+  %t1606 = load i32, ptr %t1605
+  %t1607 = load i32, ptr %t1495
+  %t1608 = add i32 %t1606, %t1607
+  %t1609 = sext i32 %t1608 to i64
+  %t1610 = load ptr, ptr %t0
+  %t1611 = getelementptr %DeviceScalarPlan, ptr %t1610, i32 0, i32 23
+  %t1612 = load ptr, ptr %t1611
+  %t1613 = getelementptr i32, ptr %t1612, i64 %t1609
+  %t1614 = load i32, ptr %t1613
+  store i32 %t1614, ptr %t1507
+  br label %L390
 L390:
-  %t1604 = load i32, ptr %t9
-  %t1605 = sext i32 %t1604 to i64
-  %t1606 = load ptr, ptr %t0
-  %t1607 = getelementptr %DeviceScalarPlan, ptr %t1606, i32 0, i32 0
-  %t1608 = load ptr, ptr %t1607
-  %t1609 = getelementptr %EIRNode, ptr %t1608, i64 %t1605
-  %t1610 = getelementptr %EIRNode, ptr %t1609, i32 0, i32 7
-  %t1611 = load i32, ptr %t1610
-  %t1612 = load i32, ptr %t1500
-  %t1613 = add i32 %t1611, %t1612
-  %t1614 = sext i32 %t1613 to i64
-  %t1615 = load ptr, ptr %t0
-  %t1616 = getelementptr %DeviceScalarPlan, ptr %t1615, i32 0, i32 23
-  %t1617 = load ptr, ptr %t1616
-  %t1618 = getelementptr i32, ptr %t1617, i64 %t1614
-  %t1619 = load i32, ptr %t1618
-  store i32 %t1619, ptr %t1512
+  %t1616 = load i32, ptr %t1507
+  %t1617 = add i32 0, 0
+  %t1618 = icmp slt i32 %t1616, %t1617
+  store i1 %t1618, ptr %t1615
+  br i1 %t1618, label %L392, label %L391
+L391:
+  %t1619 = load i32, ptr %t1507
+  %t1620 = load i32, ptr %t9
+  %t1621 = icmp sge i32 %t1619, %t1620
+  store i1 %t1621, ptr %t1615
   br label %L392
 L392:
-  %t1621 = load i32, ptr %t1512
-  %t1622 = add i32 0, 0
-  %t1623 = icmp slt i32 %t1621, %t1622
-  store i1 %t1623, ptr %t1620
-  br i1 %t1623, label %L394, label %L393
+  %t1622 = load i1, ptr %t1615
+  br i1 %t1622, label %L393, label %L395
 L393:
-  %t1624 = load i32, ptr %t1512
-  %t1625 = load i32, ptr %t9
-  %t1626 = icmp sge i32 %t1624, %t1625
-  store i1 %t1626, ptr %t1620
-  br label %L394
-L394:
-  %t1627 = load i1, ptr %t1620
-  br i1 %t1627, label %L395, label %L397
+  %t1623 = add i32 0, 0
+  ret i32 %t1623
 L395:
-  %t1628 = add i32 0, 0
-  ret i32 %t1628
-L397:
-  %t1629 = load ptr, ptr %t1
-  %t1630 = load ptr, ptr %t2
-  %t1631 = load i32, ptr %t1512
-  %t1632 = load i32, ptr %t7
-  %t1633 = call i32 @device_scalar_scope_contains(ptr %t1629, ptr %t1630, i32 %t1631, i32 %t1632)
-  %t1634 = add i32 0, 0
-  %t1635 = icmp eq i32 %t1633, %t1634
-  br i1 %t1635, label %L398, label %L400
+  %t1624 = load ptr, ptr %t1
+  %t1625 = load ptr, ptr %t2
+  %t1626 = load i32, ptr %t1507
+  %t1627 = load i32, ptr %t7
+  %t1628 = call i32 @device_scalar_scope_contains(ptr %t1624, ptr %t1625, i32 %t1626, i32 %t1627)
+  %t1629 = add i32 0, 0
+  %t1630 = icmp eq i32 %t1628, %t1629
+  br i1 %t1630, label %L396, label %L398
+L396:
+  %t1631 = add i32 0, 0
+  ret i32 %t1631
 L398:
-  %t1636 = add i32 0, 0
-  ret i32 %t1636
-L400:
-  %t1637 = load i32, ptr %t1500
-  %t1638 = add i32 0, 1
-  %t1639 = add i32 %t1637, %t1638
-  store i32 %t1639, ptr %t1500
-  br label %L362
-L364:
-  %t1640 = load i32, ptr %t23
-  %t1641 = load i32, ptr @EIR_IF
-  %t1642 = icmp eq i32 %t1640, %t1641
-  br i1 %t1642, label %L401, label %L403
-L401:
-  %t1643 = load i32, ptr %t9
-  %t1644 = sext i32 %t1643 to i64
-  %t1645 = load ptr, ptr %t0
-  %t1646 = getelementptr %DeviceScalarPlan, ptr %t1645, i32 0, i32 0
-  %t1647 = load ptr, ptr %t1646
-  %t1648 = getelementptr %EIRNode, ptr %t1647, i64 %t1644
-  %t1649 = getelementptr %EIRNode, ptr %t1648, i32 0, i32 4
-  %t1650 = load i32, ptr %t1649
-  store i32 %t1650, ptr %t1651
-  %t1652 = load i32, ptr %t9
-  %t1653 = sext i32 %t1652 to i64
-  %t1654 = load ptr, ptr %t0
-  %t1655 = getelementptr %DeviceScalarPlan, ptr %t1654, i32 0, i32 0
-  %t1656 = load ptr, ptr %t1655
-  %t1657 = getelementptr %EIRNode, ptr %t1656, i64 %t1653
-  %t1658 = getelementptr %EIRNode, ptr %t1657, i32 0, i32 5
-  %t1659 = load i32, ptr %t1658
-  store i32 %t1659, ptr %t1660
-  %t1664 = load i32, ptr %t5
-  %t1665 = add i32 0, 64
-  %t1666 = icmp sge i32 %t1664, %t1665
-  store i1 %t1666, ptr %t1663
-  br i1 %t1666, label %L405, label %L404
-L404:
-  %t1667 = load i32, ptr %t1651
-  %t1668 = load i32, ptr %t9
-  %t1669 = icmp sle i32 %t1667, %t1668
-  store i1 %t1669, ptr %t1663
-  br label %L405
-L405:
-  %t1670 = load i1, ptr %t1663
-  store i1 %t1670, ptr %t1662
-  br i1 %t1670, label %L407, label %L406
-L406:
-  %t1671 = load i32, ptr %t1660
-  %t1672 = load i32, ptr %t1651
-  %t1673 = icmp sle i32 %t1671, %t1672
-  store i1 %t1673, ptr %t1662
-  br label %L407
-L407:
-  %t1674 = load i1, ptr %t1662
-  store i1 %t1674, ptr %t1661
-  br i1 %t1674, label %L409, label %L408
-L408:
-  %t1675 = load i32, ptr %t1660
-  %t1676 = load ptr, ptr %t0
-  %t1677 = getelementptr %DeviceScalarPlan, ptr %t1676, i32 0, i32 6
-  %t1678 = load i32, ptr %t1677
-  %t1679 = icmp sge i32 %t1675, %t1678
-  store i1 %t1679, ptr %t1661
-  br label %L409
-L409:
-  %t1680 = load i1, ptr %t1661
-  br i1 %t1680, label %L410, label %L412
-L410:
-  %t1681 = add i32 0, 0
-  ret i32 %t1681
-L412:
-  %t1683 = load i32, ptr %t1651
-  %t1684 = sext i32 %t1683 to i64
-  %t1685 = load ptr, ptr %t0
-  %t1686 = getelementptr %DeviceScalarPlan, ptr %t1685, i32 0, i32 0
-  %t1687 = load ptr, ptr %t1686
-  %t1688 = getelementptr %EIRNode, ptr %t1687, i64 %t1684
-  %t1689 = getelementptr %EIRNode, ptr %t1688, i32 0, i32 0
-  %t1690 = load i32, ptr %t1689
-  %t1691 = load i32, ptr @EIR_BLOCK
-  %t1692 = icmp ne i32 %t1690, %t1691
-  store i1 %t1692, ptr %t1682
-  br i1 %t1692, label %L414, label %L413
-L413:
-  %t1693 = load i32, ptr %t1660
-  %t1694 = sext i32 %t1693 to i64
-  %t1695 = load ptr, ptr %t0
-  %t1696 = getelementptr %DeviceScalarPlan, ptr %t1695, i32 0, i32 0
-  %t1697 = load ptr, ptr %t1696
-  %t1698 = getelementptr %EIRNode, ptr %t1697, i64 %t1694
-  %t1699 = getelementptr %EIRNode, ptr %t1698, i32 0, i32 0
-  %t1700 = load i32, ptr %t1699
-  %t1701 = load i32, ptr @EIR_RET
-  %t1702 = icmp ne i32 %t1700, %t1701
-  store i1 %t1702, ptr %t1682
-  br label %L414
-L414:
-  %t1703 = load i1, ptr %t1682
-  br i1 %t1703, label %L415, label %L417
-L415:
-  %t1704 = add i32 0, 0
-  ret i32 %t1704
-L417:
-  %t1705 = load i32, ptr %t9
-  %t1706 = add i32 0, 2
-  %t1707 = mul i32 %t1705, %t1706
-  %t1708 = add i32 0, 1
-  %t1709 = add i32 %t1707, %t1708
-  %t1710 = sext i32 %t1709 to i64
-  %t1711 = load ptr, ptr %t2
-  %t1712 = getelementptr i32, ptr %t1711, i64 %t1710
-  %t1713 = load i32, ptr %t7
-  store i32 %t1713, ptr %t1712
-  %t1714 = load i32, ptr %t9
-  %t1715 = add i32 0, 2
-  %t1716 = mul i32 %t1714, %t1715
-  %t1717 = add i32 0, 2
-  %t1718 = add i32 %t1716, %t1717
-  %t1719 = sext i32 %t1718 to i64
-  %t1720 = load ptr, ptr %t2
-  %t1721 = getelementptr i32, ptr %t1720, i64 %t1719
-  %t1722 = load i32, ptr %t7
-  store i32 %t1722, ptr %t1721
-  %t1723 = load i32, ptr %t5
-  %t1724 = sext i32 %t1723 to i64
-  %t1725 = getelementptr [64 x i32], ptr %t3, i64 0, i64 %t1724
-  %t1726 = load i32, ptr %t9
-  store i32 %t1726, ptr %t1725
-  %t1727 = load i32, ptr %t5
-  %t1728 = add i32 0, 1
-  %t1729 = add i32 %t1727, %t1728
-  store i32 %t1729, ptr %t5
-  %t1730 = load i32, ptr %t9
-  %t1731 = add i32 0, 2
-  %t1732 = mul i32 %t1730, %t1731
-  %t1733 = add i32 0, 1
-  %t1734 = add i32 %t1732, %t1733
-  store i32 %t1734, ptr %t7
+  %t1632 = load i32, ptr %t1495
+  %t1633 = add i32 0, 1
+  %t1634 = add i32 %t1632, %t1633
+  store i32 %t1634, ptr %t1495
+  br label %L360
+L362:
+  %t1635 = load i32, ptr %t23
+  %t1636 = load i32, ptr @EIR_IF
+  %t1637 = icmp eq i32 %t1635, %t1636
+  br i1 %t1637, label %L399, label %L401
+L399:
+  %t1638 = load i32, ptr %t9
+  %t1639 = sext i32 %t1638 to i64
+  %t1640 = load ptr, ptr %t0
+  %t1641 = getelementptr %DeviceScalarPlan, ptr %t1640, i32 0, i32 0
+  %t1642 = load ptr, ptr %t1641
+  %t1643 = getelementptr %EIRNode, ptr %t1642, i64 %t1639
+  %t1644 = getelementptr %EIRNode, ptr %t1643, i32 0, i32 4
+  %t1645 = load i32, ptr %t1644
+  store i32 %t1645, ptr %t1646
+  %t1647 = load i32, ptr %t9
+  %t1648 = sext i32 %t1647 to i64
+  %t1649 = load ptr, ptr %t0
+  %t1650 = getelementptr %DeviceScalarPlan, ptr %t1649, i32 0, i32 0
+  %t1651 = load ptr, ptr %t1650
+  %t1652 = getelementptr %EIRNode, ptr %t1651, i64 %t1648
+  %t1653 = getelementptr %EIRNode, ptr %t1652, i32 0, i32 5
+  %t1654 = load i32, ptr %t1653
+  store i32 %t1654, ptr %t1655
+  %t1659 = load i32, ptr %t5
+  %t1660 = add i32 0, 64
+  %t1661 = icmp sge i32 %t1659, %t1660
+  store i1 %t1661, ptr %t1658
+  br i1 %t1661, label %L403, label %L402
+L402:
+  %t1662 = load i32, ptr %t1646
+  %t1663 = load i32, ptr %t9
+  %t1664 = icmp sle i32 %t1662, %t1663
+  store i1 %t1664, ptr %t1658
   br label %L403
 L403:
+  %t1665 = load i1, ptr %t1658
+  store i1 %t1665, ptr %t1657
+  br i1 %t1665, label %L405, label %L404
+L404:
+  %t1666 = load i32, ptr %t1655
+  %t1667 = load i32, ptr %t1646
+  %t1668 = icmp sle i32 %t1666, %t1667
+  store i1 %t1668, ptr %t1657
+  br label %L405
+L405:
+  %t1669 = load i1, ptr %t1657
+  store i1 %t1669, ptr %t1656
+  br i1 %t1669, label %L407, label %L406
+L406:
+  %t1670 = load i32, ptr %t1655
+  %t1671 = load ptr, ptr %t0
+  %t1672 = getelementptr %DeviceScalarPlan, ptr %t1671, i32 0, i32 6
+  %t1673 = load i32, ptr %t1672
+  %t1674 = icmp sge i32 %t1670, %t1673
+  store i1 %t1674, ptr %t1656
+  br label %L407
+L407:
+  %t1675 = load i1, ptr %t1656
+  br i1 %t1675, label %L408, label %L410
+L408:
+  %t1676 = add i32 0, 0
+  ret i32 %t1676
+L410:
+  %t1678 = load i32, ptr %t1646
+  %t1679 = sext i32 %t1678 to i64
+  %t1680 = load ptr, ptr %t0
+  %t1681 = getelementptr %DeviceScalarPlan, ptr %t1680, i32 0, i32 0
+  %t1682 = load ptr, ptr %t1681
+  %t1683 = getelementptr %EIRNode, ptr %t1682, i64 %t1679
+  %t1684 = getelementptr %EIRNode, ptr %t1683, i32 0, i32 0
+  %t1685 = load i32, ptr %t1684
+  %t1686 = load i32, ptr @EIR_BLOCK
+  %t1687 = icmp ne i32 %t1685, %t1686
+  store i1 %t1687, ptr %t1677
+  br i1 %t1687, label %L412, label %L411
+L411:
+  %t1688 = load i32, ptr %t1655
+  %t1689 = sext i32 %t1688 to i64
+  %t1690 = load ptr, ptr %t0
+  %t1691 = getelementptr %DeviceScalarPlan, ptr %t1690, i32 0, i32 0
+  %t1692 = load ptr, ptr %t1691
+  %t1693 = getelementptr %EIRNode, ptr %t1692, i64 %t1689
+  %t1694 = getelementptr %EIRNode, ptr %t1693, i32 0, i32 0
+  %t1695 = load i32, ptr %t1694
+  %t1696 = load i32, ptr @EIR_RET
+  %t1697 = icmp ne i32 %t1695, %t1696
+  store i1 %t1697, ptr %t1677
+  br label %L412
+L412:
+  %t1698 = load i1, ptr %t1677
+  br i1 %t1698, label %L413, label %L415
+L413:
+  %t1699 = add i32 0, 0
+  ret i32 %t1699
+L415:
+  %t1700 = load i32, ptr %t9
+  %t1701 = add i32 0, 2
+  %t1702 = mul i32 %t1700, %t1701
+  %t1703 = add i32 0, 1
+  %t1704 = add i32 %t1702, %t1703
+  %t1705 = sext i32 %t1704 to i64
+  %t1706 = load ptr, ptr %t2
+  %t1707 = getelementptr i32, ptr %t1706, i64 %t1705
+  %t1708 = load i32, ptr %t7
+  store i32 %t1708, ptr %t1707
+  %t1709 = load i32, ptr %t9
+  %t1710 = add i32 0, 2
+  %t1711 = mul i32 %t1709, %t1710
+  %t1712 = add i32 0, 2
+  %t1713 = add i32 %t1711, %t1712
+  %t1714 = sext i32 %t1713 to i64
+  %t1715 = load ptr, ptr %t2
+  %t1716 = getelementptr i32, ptr %t1715, i64 %t1714
+  %t1717 = load i32, ptr %t7
+  store i32 %t1717, ptr %t1716
+  %t1718 = load i32, ptr %t5
+  %t1719 = sext i32 %t1718 to i64
+  %t1720 = getelementptr [64 x i32], ptr %t3, i64 0, i64 %t1719
+  %t1721 = load i32, ptr %t9
+  store i32 %t1721, ptr %t1720
+  %t1722 = load i32, ptr %t5
+  %t1723 = add i32 0, 1
+  %t1724 = add i32 %t1722, %t1723
+  store i32 %t1724, ptr %t5
+  %t1725 = load i32, ptr %t9
+  %t1726 = add i32 0, 2
+  %t1727 = mul i32 %t1725, %t1726
+  %t1728 = add i32 0, 1
+  %t1729 = add i32 %t1727, %t1728
+  store i32 %t1729, ptr %t7
+  br label %L401
+L401:
   br label %L216
 L216:
   br label %L203
@@ -164324,22 +164314,22 @@ L66:
 L26:
   br label %L5
 L5:
-  %t1735 = load i32, ptr %t9
-  %t1736 = add i32 0, 1
-  %t1737 = add i32 %t1735, %t1736
-  store i32 %t1737, ptr %t9
+  %t1730 = load i32, ptr %t9
+  %t1731 = add i32 0, 1
+  %t1732 = add i32 %t1730, %t1731
+  store i32 %t1732, ptr %t9
   br label %L0
 L2:
-  %t1738 = load i32, ptr %t5
-  %t1739 = add i32 0, 0
-  %t1740 = icmp ne i32 %t1738, %t1739
-  br i1 %t1740, label %L418, label %L420
+  %t1733 = load i32, ptr %t5
+  %t1734 = add i32 0, 0
+  %t1735 = icmp ne i32 %t1733, %t1734
+  br i1 %t1735, label %L416, label %L418
+L416:
+  %t1736 = add i32 0, 0
+  ret i32 %t1736
 L418:
-  %t1741 = add i32 0, 0
-  ret i32 %t1741
-L420:
-  %t1742 = add i32 0, 1
-  ret i32 %t1742
+  %t1737 = add i32 0, 1
+  ret i32 %t1737
 }
 
 define internal void @device_scalar_warp_uniform(ptr %p0, ptr %p1) {
@@ -164796,1797 +164786,1804 @@ entry:
   store ptr %p1, ptr %t1
   %t2 = alloca ptr
   store ptr %p2, ptr %t2
-  %t6 = alloca ptr
-  %t10 = alloca i32
-  %t24 = alloca i32
-  %t25 = alloca i1
-  %t38 = alloca i32
-  %t47 = alloca i32
-  %t56 = alloca i32
-  %t3 = add i64 0, 4096
-  %t4 = mul i64 %t3, 4
-  %t5 = call ptr @malloc(i64 %t4)
-  call void @llvm.memset.p0.i64(ptr %t5, i8 0, i64 %t4, i1 false)
-  store ptr %t5, ptr %t6
-  %t7 = load ptr, ptr %t0
-  %t8 = load ptr, ptr %t6
-  call void @device_scalar_warp_uniform(ptr %t7, ptr %t8)
-  %t9 = add i32 0, 0
-  store i32 %t9, ptr %t10
+  %t7 = alloca ptr
+  %t11 = alloca i32
+  %t25 = alloca i32
+  %t26 = alloca i1
+  %t39 = alloca i32
+  %t48 = alloca i32
+  %t57 = alloca i32
+  %t3 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t4 = sext i32 %t3 to i64
+  %t5 = mul i64 %t4, 4
+  %t6 = call ptr @malloc(i64 %t5)
+  call void @llvm.memset.p0.i64(ptr %t6, i8 0, i64 %t5, i1 false)
+  store ptr %t6, ptr %t7
+  %t8 = load ptr, ptr %t0
+  %t9 = load ptr, ptr %t7
+  call void @device_scalar_warp_uniform(ptr %t8, ptr %t9)
+  %t10 = add i32 0, 0
+  store i32 %t10, ptr %t11
   br label %L0
 L0:
-  %t11 = load i32, ptr %t10
-  %t12 = load ptr, ptr %t0
-  %t13 = getelementptr %DeviceScalarPlan, ptr %t12, i32 0, i32 6
-  %t14 = load i32, ptr %t13
-  %t15 = icmp slt i32 %t11, %t14
-  br i1 %t15, label %L1, label %L2
+  %t12 = load i32, ptr %t11
+  %t13 = load ptr, ptr %t0
+  %t14 = getelementptr %DeviceScalarPlan, ptr %t13, i32 0, i32 6
+  %t15 = load i32, ptr %t14
+  %t16 = icmp slt i32 %t12, %t15
+  br i1 %t16, label %L1, label %L2
 L1:
-  %t16 = load i32, ptr %t10
-  %t17 = sext i32 %t16 to i64
-  %t18 = load ptr, ptr %t0
-  %t19 = getelementptr %DeviceScalarPlan, ptr %t18, i32 0, i32 0
-  %t20 = load ptr, ptr %t19
-  %t21 = getelementptr %EIRNode, ptr %t20, i64 %t17
-  %t22 = getelementptr %EIRNode, ptr %t21, i32 0, i32 0
-  %t23 = load i32, ptr %t22
-  store i32 %t23, ptr %t24
-  %t26 = load i32, ptr %t24
-  %t27 = load i32, ptr @DEVICE_WARP_SHUFFLE
-  %t28 = icmp sge i32 %t26, %t27
-  store i1 %t28, ptr %t25
-  br i1 %t28, label %L3, label %L4
+  %t17 = load i32, ptr %t11
+  %t18 = sext i32 %t17 to i64
+  %t19 = load ptr, ptr %t0
+  %t20 = getelementptr %DeviceScalarPlan, ptr %t19, i32 0, i32 0
+  %t21 = load ptr, ptr %t20
+  %t22 = getelementptr %EIRNode, ptr %t21, i64 %t18
+  %t23 = getelementptr %EIRNode, ptr %t22, i32 0, i32 0
+  %t24 = load i32, ptr %t23
+  store i32 %t24, ptr %t25
+  %t27 = load i32, ptr %t25
+  %t28 = load i32, ptr @DEVICE_WARP_SHUFFLE
+  %t29 = icmp sge i32 %t27, %t28
+  store i1 %t29, ptr %t26
+  br i1 %t29, label %L3, label %L4
 L3:
-  %t29 = load i32, ptr %t24
-  %t30 = load i32, ptr @DEVICE_WARP_SYNC
-  %t31 = icmp sle i32 %t29, %t30
-  store i1 %t31, ptr %t25
+  %t30 = load i32, ptr %t25
+  %t31 = load i32, ptr @DEVICE_WARP_SYNC
+  %t32 = icmp sle i32 %t30, %t31
+  store i1 %t32, ptr %t26
   br label %L4
 L4:
-  %t32 = load i1, ptr %t25
-  br i1 %t32, label %L5, label %L7
+  %t33 = load i1, ptr %t26
+  br i1 %t33, label %L5, label %L7
 L5:
-  %t33 = load i32, ptr %t10
-  %t34 = sext i32 %t33 to i64
-  %t35 = load ptr, ptr %t1
-  %t36 = getelementptr i32, ptr %t35, i64 %t34
-  %t37 = load i32, ptr %t36
-  store i32 %t37, ptr %t38
+  %t34 = load i32, ptr %t11
+  %t35 = sext i32 %t34 to i64
+  %t36 = load ptr, ptr %t1
+  %t37 = getelementptr i32, ptr %t36, i64 %t35
+  %t38 = load i32, ptr %t37
+  store i32 %t38, ptr %t39
   br label %L8
 L8:
-  %t39 = load i32, ptr %t38
-  %t40 = add i32 0, 0
-  %t41 = icmp ne i32 %t39, %t40
-  br i1 %t41, label %L9, label %L10
+  %t40 = load i32, ptr %t39
+  %t41 = add i32 0, 0
+  %t42 = icmp ne i32 %t40, %t41
+  br i1 %t42, label %L9, label %L10
 L9:
-  %t42 = load i32, ptr %t38
-  %t43 = add i32 0, 1
-  %t44 = sub i32 %t42, %t43
-  %t45 = add i32 0, 2
-  %t46 = call i32 @__tv_checked_0_32(i32 %t44, i32 %t45)
-  store i32 %t46, ptr %t47
-  %t48 = load i32, ptr %t47
-  %t49 = sext i32 %t48 to i64
-  %t50 = load ptr, ptr %t0
-  %t51 = getelementptr %DeviceScalarPlan, ptr %t50, i32 0, i32 0
-  %t52 = load ptr, ptr %t51
-  %t53 = getelementptr %EIRNode, ptr %t52, i64 %t49
-  %t54 = getelementptr %EIRNode, ptr %t53, i32 0, i32 3
-  %t55 = load i32, ptr %t54
-  store i32 %t55, ptr %t56
-  %t57 = load i32, ptr %t47
-  %t58 = sext i32 %t57 to i64
-  %t59 = load ptr, ptr %t0
-  %t60 = getelementptr %DeviceScalarPlan, ptr %t59, i32 0, i32 0
-  %t61 = load ptr, ptr %t60
-  %t62 = getelementptr %EIRNode, ptr %t61, i64 %t58
-  %t63 = getelementptr %EIRNode, ptr %t62, i32 0, i32 0
-  %t64 = load i32, ptr %t63
-  %t65 = load i32, ptr @DEVICE_LOOP
-  %t66 = icmp eq i32 %t64, %t65
-  br i1 %t66, label %L11, label %L13
+  %t43 = load i32, ptr %t39
+  %t44 = add i32 0, 1
+  %t45 = sub i32 %t43, %t44
+  %t46 = add i32 0, 2
+  %t47 = call i32 @__tv_checked_0_32(i32 %t45, i32 %t46)
+  store i32 %t47, ptr %t48
+  %t49 = load i32, ptr %t48
+  %t50 = sext i32 %t49 to i64
+  %t51 = load ptr, ptr %t0
+  %t52 = getelementptr %DeviceScalarPlan, ptr %t51, i32 0, i32 0
+  %t53 = load ptr, ptr %t52
+  %t54 = getelementptr %EIRNode, ptr %t53, i64 %t50
+  %t55 = getelementptr %EIRNode, ptr %t54, i32 0, i32 3
+  %t56 = load i32, ptr %t55
+  store i32 %t56, ptr %t57
+  %t58 = load i32, ptr %t48
+  %t59 = sext i32 %t58 to i64
+  %t60 = load ptr, ptr %t0
+  %t61 = getelementptr %DeviceScalarPlan, ptr %t60, i32 0, i32 0
+  %t62 = load ptr, ptr %t61
+  %t63 = getelementptr %EIRNode, ptr %t62, i64 %t59
+  %t64 = getelementptr %EIRNode, ptr %t63, i32 0, i32 0
+  %t65 = load i32, ptr %t64
+  %t66 = load i32, ptr @DEVICE_LOOP
+  %t67 = icmp eq i32 %t65, %t66
+  br i1 %t67, label %L11, label %L13
 L11:
-  %t67 = load i32, ptr %t56
-  %t68 = sext i32 %t67 to i64
-  %t69 = load ptr, ptr %t0
-  %t70 = getelementptr %DeviceScalarPlan, ptr %t69, i32 0, i32 0
-  %t71 = load ptr, ptr %t70
-  %t72 = getelementptr %EIRNode, ptr %t71, i64 %t68
-  %t73 = getelementptr %EIRNode, ptr %t72, i32 0, i32 3
-  %t74 = load i32, ptr %t73
-  store i32 %t74, ptr %t56
+  %t68 = load i32, ptr %t57
+  %t69 = sext i32 %t68 to i64
+  %t70 = load ptr, ptr %t0
+  %t71 = getelementptr %DeviceScalarPlan, ptr %t70, i32 0, i32 0
+  %t72 = load ptr, ptr %t71
+  %t73 = getelementptr %EIRNode, ptr %t72, i64 %t69
+  %t74 = getelementptr %EIRNode, ptr %t73, i32 0, i32 3
+  %t75 = load i32, ptr %t74
+  store i32 %t75, ptr %t57
   br label %L13
 L13:
-  %t75 = load i32, ptr %t56
-  %t76 = sext i32 %t75 to i64
-  %t77 = load ptr, ptr %t6
-  %t78 = getelementptr i32, ptr %t77, i64 %t76
-  %t79 = load i32, ptr %t78
-  %t80 = add i32 0, 0
-  %t81 = icmp eq i32 %t79, %t80
-  br i1 %t81, label %L14, label %L16
+  %t76 = load i32, ptr %t57
+  %t77 = sext i32 %t76 to i64
+  %t78 = load ptr, ptr %t7
+  %t79 = getelementptr i32, ptr %t78, i64 %t77
+  %t80 = load i32, ptr %t79
+  %t81 = add i32 0, 0
+  %t82 = icmp eq i32 %t80, %t81
+  br i1 %t82, label %L14, label %L16
 L14:
-  %t82 = load ptr, ptr %t6
-  call void @free(ptr %t82)
-  %t83 = load ptr, ptr %t0
-  %t84 = load i32, ptr %t10
-  %t85 = sext i32 %t84 to i64
-  %t86 = load ptr, ptr %t0
-  %t87 = getelementptr %DeviceScalarPlan, ptr %t86, i32 0, i32 2
-  %t88 = load ptr, ptr %t87
-  %t89 = getelementptr i32, ptr %t88, i64 %t85
-  %t90 = load i32, ptr %t89
-  %t91 = load ptr, ptr %t0
-  %t92 = getelementptr %DeviceScalarPlan, ptr %t91, i32 0, i32 4
-  store i32 %t90, ptr %t92
-  %t93 = load ptr, ptr %t0
-  %t94 = load i32, ptr %t56
-  %t95 = sext i32 %t94 to i64
-  %t96 = load ptr, ptr %t0
-  %t97 = getelementptr %DeviceScalarPlan, ptr %t96, i32 0, i32 1
-  %t98 = load ptr, ptr %t97
-  %t99 = getelementptr i32, ptr %t98, i64 %t95
-  %t100 = load i32, ptr %t99
-  %t101 = load ptr, ptr %t0
-  %t102 = getelementptr %DeviceScalarPlan, ptr %t101, i32 0, i32 5
-  store i32 %t100, ptr %t102
-  %t103 = load ptr, ptr %t0
-  %t104 = add i32 0, 8
-  %t105 = load i32, ptr %t10
-  %t106 = sext i32 %t105 to i64
-  %t107 = load ptr, ptr %t0
-  %t108 = getelementptr %DeviceScalarPlan, ptr %t107, i32 0, i32 1
-  %t109 = load ptr, ptr %t108
-  %t110 = getelementptr i32, ptr %t109, i64 %t106
-  %t111 = load i32, ptr %t110
-  %t112 = call i32 @device_scalar_fail(ptr %t103, i32 %t104, i32 %t111)
-  %t113 = add i32 0, 0
-  ret i32 %t113
+  %t83 = load ptr, ptr %t7
+  call void @free(ptr %t83)
+  %t84 = load ptr, ptr %t0
+  %t85 = load i32, ptr %t11
+  %t86 = sext i32 %t85 to i64
+  %t87 = load ptr, ptr %t0
+  %t88 = getelementptr %DeviceScalarPlan, ptr %t87, i32 0, i32 2
+  %t89 = load ptr, ptr %t88
+  %t90 = getelementptr i32, ptr %t89, i64 %t86
+  %t91 = load i32, ptr %t90
+  %t92 = load ptr, ptr %t0
+  %t93 = getelementptr %DeviceScalarPlan, ptr %t92, i32 0, i32 4
+  store i32 %t91, ptr %t93
+  %t94 = load ptr, ptr %t0
+  %t95 = load i32, ptr %t57
+  %t96 = sext i32 %t95 to i64
+  %t97 = load ptr, ptr %t0
+  %t98 = getelementptr %DeviceScalarPlan, ptr %t97, i32 0, i32 1
+  %t99 = load ptr, ptr %t98
+  %t100 = getelementptr i32, ptr %t99, i64 %t96
+  %t101 = load i32, ptr %t100
+  %t102 = load ptr, ptr %t0
+  %t103 = getelementptr %DeviceScalarPlan, ptr %t102, i32 0, i32 5
+  store i32 %t101, ptr %t103
+  %t104 = load ptr, ptr %t0
+  %t105 = add i32 0, 8
+  %t106 = load i32, ptr %t11
+  %t107 = sext i32 %t106 to i64
+  %t108 = load ptr, ptr %t0
+  %t109 = getelementptr %DeviceScalarPlan, ptr %t108, i32 0, i32 1
+  %t110 = load ptr, ptr %t109
+  %t111 = getelementptr i32, ptr %t110, i64 %t107
+  %t112 = load i32, ptr %t111
+  %t113 = call i32 @device_scalar_fail(ptr %t104, i32 %t105, i32 %t112)
+  %t114 = add i32 0, 0
+  ret i32 %t114
 L16:
-  %t114 = load i32, ptr %t38
-  %t115 = sext i32 %t114 to i64
-  %t116 = load ptr, ptr %t2
-  %t117 = getelementptr i32, ptr %t116, i64 %t115
-  %t118 = load i32, ptr %t117
-  store i32 %t118, ptr %t38
+  %t115 = load i32, ptr %t39
+  %t116 = sext i32 %t115 to i64
+  %t117 = load ptr, ptr %t2
+  %t118 = getelementptr i32, ptr %t117, i64 %t116
+  %t119 = load i32, ptr %t118
+  store i32 %t119, ptr %t39
   br label %L8
 L10:
   br label %L7
 L7:
-  %t119 = load i32, ptr %t10
-  %t120 = add i32 0, 1
-  %t121 = add i32 %t119, %t120
-  store i32 %t121, ptr %t10
+  %t120 = load i32, ptr %t11
+  %t121 = add i32 0, 1
+  %t122 = add i32 %t120, %t121
+  store i32 %t122, ptr %t11
   br label %L0
 L2:
-  %t122 = load ptr, ptr %t6
-  call void @free(ptr %t122)
-  %t123 = add i32 0, 1
-  ret i32 %t123
+  %t123 = load ptr, ptr %t7
+  call void @free(ptr %t123)
+  %t124 = add i32 0, 1
+  ret i32 %t124
 }
 
 define internal i32 @device_scalar_verify(ptr %p0) {
 entry:
   %t0 = alloca ptr
   store ptr %p0, ptr %t0
-  %t4 = alloca ptr
-  %t8 = alloca ptr
-  %t13 = alloca i32
-  %t14 = alloca i1
-  %t35 = alloca i32
-  %t37 = alloca i32
-  %t39 = alloca i32
+  %t5 = alloca ptr
+  %t14 = alloca ptr
+  %t19 = alloca i32
+  %t20 = alloca i1
   %t41 = alloca i32
   %t43 = alloca i32
-  %t57 = alloca i32
-  %t58 = alloca i1
-  %t62 = alloca i1
-  %t63 = alloca i1
-  %t77 = alloca i1
-  %t85 = alloca i1
-  %t106 = alloca i1
-  %t107 = alloca i1
-  %t108 = alloca i1
-  %t109 = alloca i1
-  %t110 = alloca i1
-  %t111 = alloca i1
+  %t45 = alloca i32
+  %t47 = alloca i32
+  %t49 = alloca i32
+  %t63 = alloca i32
+  %t64 = alloca i1
+  %t68 = alloca i1
+  %t69 = alloca i1
+  %t83 = alloca i1
+  %t91 = alloca i1
   %t112 = alloca i1
   %t113 = alloca i1
-  %t241 = alloca i1
-  %t242 = alloca i1
-  %t243 = alloca i1
-  %t244 = alloca i1
-  %t245 = alloca i1
-  %t246 = alloca i1
+  %t114 = alloca i1
+  %t115 = alloca i1
+  %t116 = alloca i1
+  %t117 = alloca i1
+  %t118 = alloca i1
+  %t119 = alloca i1
   %t247 = alloca i1
-  %t362 = alloca i32
-  %t363 = alloca i1
-  %t364 = alloca i1
-  %t404 = alloca i1
-  %t429 = alloca i1
-  %t457 = alloca i1
-  %t458 = alloca i1
-  %t459 = alloca i1
-  %t460 = alloca i1
-  %t461 = alloca i1
-  %t462 = alloca i1
-  %t574 = alloca i1
-  %t590 = alloca i32
-  %t591 = alloca i1
-  %t592 = alloca i1
-  %t593 = alloca i1
-  %t594 = alloca i1
-  %t595 = alloca i1
+  %t248 = alloca i1
+  %t249 = alloca i1
+  %t250 = alloca i1
+  %t251 = alloca i1
+  %t252 = alloca i1
+  %t253 = alloca i1
+  %t368 = alloca i32
+  %t369 = alloca i1
+  %t370 = alloca i1
+  %t410 = alloca i1
+  %t435 = alloca i1
+  %t463 = alloca i1
+  %t464 = alloca i1
+  %t465 = alloca i1
+  %t466 = alloca i1
+  %t467 = alloca i1
+  %t468 = alloca i1
+  %t580 = alloca i1
+  %t596 = alloca i32
+  %t597 = alloca i1
+  %t598 = alloca i1
+  %t599 = alloca i1
+  %t600 = alloca i1
   %t601 = alloca i1
-  %t680 = alloca i1
-  %t703 = alloca i1
-  %t736 = alloca i1
-  %t737 = alloca i1
-  %t793 = alloca i1
-  %t794 = alloca i1
-  %t795 = alloca i1
-  %t796 = alloca i1
-  %t840 = alloca i32
-  %t852 = alloca i1
-  %t879 = alloca i1
-  %t887 = alloca i1
-  %t903 = alloca i1
-  %t904 = alloca i1
-  %t905 = alloca i1
-  %t906 = alloca i1
-  %t974 = alloca i1
-  %t975 = alloca i1
-  %t1019 = alloca i32
-  %t1043 = alloca i1
-  %t1051 = alloca i1
-  %t1052 = alloca i1
-  %t1053 = alloca i1
-  %t1054 = alloca i1
-  %t1130 = alloca i1
-  %t1154 = alloca i1
-  %t1176 = alloca i1
-  %t1177 = alloca i1
-  %t1178 = alloca i1
-  %t1179 = alloca i1
-  %t1227 = alloca i1
-  %t1228 = alloca i1
-  %t1229 = alloca i1
-  %t1230 = alloca i1
-  %t1284 = alloca i1
-  %t1285 = alloca i1
-  %t1329 = alloca i1
-  %t1330 = alloca i1
-  %t1331 = alloca i1
-  %t1380 = alloca i1
-  %t1381 = alloca i1
-  %t1382 = alloca i1
-  %t1434 = alloca i32
-  %t1435 = alloca i1
-  %t1436 = alloca i1
-  %t1437 = alloca i1
-  %t1438 = alloca i1
-  %t1439 = alloca i1
-  %t1440 = alloca i1
-  %t1513 = alloca i32
-  %t1534 = alloca i32
-  %t1575 = alloca i32
-  %t1602 = alloca i32
-  %t1603 = alloca i1
-  %t1604 = alloca i1
-  %t1605 = alloca i1
-  %t1670 = alloca i32
-  %t1674 = alloca i1
-  %t1675 = alloca i1
-  %t1712 = alloca i1
-  %t1752 = alloca i32
-  %t1771 = alloca i32
-  %t1794 = alloca i32
-  %t1795 = alloca i1
-  %t1815 = alloca i1
-  %t1837 = alloca i1
-  %t1868 = alloca i1
-  %t1876 = alloca i1
-  %t1914 = alloca i1
-  %t1915 = alloca i1
-  %t1927 = alloca i1
-  %t1928 = alloca i1
-  %t1991 = alloca i1
-  %t1992 = alloca i1
-  %t2012 = alloca i32
-  %t2013 = alloca i1
-  %t2058 = alloca i1
-  %t2059 = alloca i1
-  %t2079 = alloca i32
-  %t2080 = alloca i1
-  %t2092 = alloca i1
-  %t2129 = alloca i1
-  %t2130 = alloca i1
-  %t2185 = alloca i32
-  %t2186 = alloca i1
-  %t2187 = alloca i1
-  %t1 = add i64 0, 4096
-  %t2 = mul i64 %t1, 4
-  %t3 = call ptr @malloc(i64 %t2)
-  call void @llvm.memset.p0.i64(ptr %t3, i8 0, i64 %t2, i1 false)
-  store ptr %t3, ptr %t4
-  %t5 = add i64 0, 8193
-  %t6 = mul i64 %t5, 4
-  %t7 = call ptr @malloc(i64 %t6)
-  call void @llvm.memset.p0.i64(ptr %t7, i8 0, i64 %t6, i1 false)
-  store ptr %t7, ptr %t8
-  %t9 = load ptr, ptr %t0
-  %t10 = load ptr, ptr %t4
-  %t11 = load ptr, ptr %t8
-  %t12 = call i32 @device_scalar_verify_scopes(ptr %t9, ptr %t10, ptr %t11)
-  store i32 %t12, ptr %t13
-  %t15 = load i32, ptr %t13
-  %t16 = add i32 0, 1
-  %t17 = icmp eq i32 %t15, %t16
-  store i1 %t17, ptr %t14
-  br i1 %t17, label %L0, label %L1
+  %t607 = alloca i1
+  %t686 = alloca i1
+  %t709 = alloca i1
+  %t742 = alloca i1
+  %t743 = alloca i1
+  %t799 = alloca i1
+  %t800 = alloca i1
+  %t801 = alloca i1
+  %t802 = alloca i1
+  %t846 = alloca i32
+  %t858 = alloca i1
+  %t885 = alloca i1
+  %t893 = alloca i1
+  %t909 = alloca i1
+  %t910 = alloca i1
+  %t911 = alloca i1
+  %t912 = alloca i1
+  %t980 = alloca i1
+  %t981 = alloca i1
+  %t1025 = alloca i32
+  %t1049 = alloca i1
+  %t1057 = alloca i1
+  %t1058 = alloca i1
+  %t1059 = alloca i1
+  %t1060 = alloca i1
+  %t1136 = alloca i1
+  %t1160 = alloca i1
+  %t1182 = alloca i1
+  %t1183 = alloca i1
+  %t1184 = alloca i1
+  %t1185 = alloca i1
+  %t1233 = alloca i1
+  %t1234 = alloca i1
+  %t1235 = alloca i1
+  %t1236 = alloca i1
+  %t1290 = alloca i1
+  %t1291 = alloca i1
+  %t1335 = alloca i1
+  %t1336 = alloca i1
+  %t1337 = alloca i1
+  %t1386 = alloca i1
+  %t1387 = alloca i1
+  %t1388 = alloca i1
+  %t1440 = alloca i32
+  %t1441 = alloca i1
+  %t1442 = alloca i1
+  %t1443 = alloca i1
+  %t1444 = alloca i1
+  %t1445 = alloca i1
+  %t1446 = alloca i1
+  %t1519 = alloca i32
+  %t1540 = alloca i32
+  %t1581 = alloca i32
+  %t1608 = alloca i32
+  %t1609 = alloca i1
+  %t1610 = alloca i1
+  %t1611 = alloca i1
+  %t1676 = alloca i32
+  %t1680 = alloca i1
+  %t1681 = alloca i1
+  %t1718 = alloca i1
+  %t1758 = alloca i32
+  %t1777 = alloca i32
+  %t1800 = alloca i32
+  %t1801 = alloca i1
+  %t1821 = alloca i1
+  %t1843 = alloca i1
+  %t1874 = alloca i1
+  %t1882 = alloca i1
+  %t1920 = alloca i1
+  %t1921 = alloca i1
+  %t1933 = alloca i1
+  %t1934 = alloca i1
+  %t1997 = alloca i1
+  %t1998 = alloca i1
+  %t2018 = alloca i32
+  %t2019 = alloca i1
+  %t2064 = alloca i1
+  %t2065 = alloca i1
+  %t2085 = alloca i32
+  %t2086 = alloca i1
+  %t2098 = alloca i1
+  %t2135 = alloca i1
+  %t2136 = alloca i1
+  %t2191 = alloca i32
+  %t2192 = alloca i1
+  %t2193 = alloca i1
+  %t1 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t2 = sext i32 %t1 to i64
+  %t3 = mul i64 %t2, 4
+  %t4 = call ptr @malloc(i64 %t3)
+  call void @llvm.memset.p0.i64(ptr %t4, i8 0, i64 %t3, i1 false)
+  store ptr %t4, ptr %t5
+  %t6 = add i64 0, 2
+  %t7 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t8 = sext i32 %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = add i64 0, 1
+  %t11 = add i64 %t9, %t10
+  %t12 = mul i64 %t11, 4
+  %t13 = call ptr @malloc(i64 %t12)
+  call void @llvm.memset.p0.i64(ptr %t13, i8 0, i64 %t12, i1 false)
+  store ptr %t13, ptr %t14
+  %t15 = load ptr, ptr %t0
+  %t16 = load ptr, ptr %t5
+  %t17 = load ptr, ptr %t14
+  %t18 = call i32 @device_scalar_verify_scopes(ptr %t15, ptr %t16, ptr %t17)
+  store i32 %t18, ptr %t19
+  %t21 = load i32, ptr %t19
+  %t22 = add i32 0, 1
+  %t23 = icmp eq i32 %t21, %t22
+  store i1 %t23, ptr %t20
+  br i1 %t23, label %L0, label %L1
 L0:
-  %t18 = load ptr, ptr %t0
-  %t19 = getelementptr %DeviceScalarPlan, ptr %t18, i32 0, i32 37
-  %t20 = load i32, ptr %t19
-  %t21 = add i32 0, 1
-  %t22 = icmp eq i32 %t20, %t21
-  store i1 %t22, ptr %t14
+  %t24 = load ptr, ptr %t0
+  %t25 = getelementptr %DeviceScalarPlan, ptr %t24, i32 0, i32 37
+  %t26 = load i32, ptr %t25
+  %t27 = add i32 0, 1
+  %t28 = icmp eq i32 %t26, %t27
+  store i1 %t28, ptr %t20
   br label %L1
 L1:
-  %t23 = load i1, ptr %t14
-  br i1 %t23, label %L2, label %L4
+  %t29 = load i1, ptr %t20
+  br i1 %t29, label %L2, label %L4
 L2:
-  %t24 = load ptr, ptr %t0
-  %t25 = load ptr, ptr %t4
-  %t26 = load ptr, ptr %t8
-  %t27 = call i32 @device_scalar_verify_warps(ptr %t24, ptr %t25, ptr %t26)
-  store i32 %t27, ptr %t13
+  %t30 = load ptr, ptr %t0
+  %t31 = load ptr, ptr %t5
+  %t32 = load ptr, ptr %t14
+  %t33 = call i32 @device_scalar_verify_warps(ptr %t30, ptr %t31, ptr %t32)
+  store i32 %t33, ptr %t19
   br label %L4
 L4:
-  %t28 = load ptr, ptr %t4
-  call void @free(ptr %t28)
-  %t29 = load ptr, ptr %t8
-  call void @free(ptr %t29)
-  %t30 = load i32, ptr %t13
-  %t31 = add i32 0, 0
-  %t32 = icmp eq i32 %t30, %t31
-  br i1 %t32, label %L5, label %L7
+  %t34 = load ptr, ptr %t5
+  call void @free(ptr %t34)
+  %t35 = load ptr, ptr %t14
+  call void @free(ptr %t35)
+  %t36 = load i32, ptr %t19
+  %t37 = add i32 0, 0
+  %t38 = icmp eq i32 %t36, %t37
+  br i1 %t38, label %L5, label %L7
 L5:
-  %t33 = add i32 0, 0
-  ret i32 %t33
+  %t39 = add i32 0, 0
+  ret i32 %t39
 L7:
-  %t34 = add i32 0, 0
-  store i32 %t34, ptr %t35
-  %t36 = add i32 0, 0
-  store i32 %t36, ptr %t37
-  %t38 = add i32 0, 0
-  store i32 %t38, ptr %t39
   %t40 = add i32 0, 0
   store i32 %t40, ptr %t41
   %t42 = add i32 0, 0
   store i32 %t42, ptr %t43
+  %t44 = add i32 0, 0
+  store i32 %t44, ptr %t45
+  %t46 = add i32 0, 0
+  store i32 %t46, ptr %t47
+  %t48 = add i32 0, 0
+  store i32 %t48, ptr %t49
   br label %L8
 L8:
-  %t44 = load i32, ptr %t43
-  %t45 = load ptr, ptr %t0
-  %t46 = getelementptr %DeviceScalarPlan, ptr %t45, i32 0, i32 6
-  %t47 = load i32, ptr %t46
-  %t48 = icmp slt i32 %t44, %t47
-  br i1 %t48, label %L9, label %L10
-L9:
-  %t49 = load i32, ptr %t43
-  %t50 = sext i32 %t49 to i64
+  %t50 = load i32, ptr %t49
   %t51 = load ptr, ptr %t0
-  %t52 = getelementptr %DeviceScalarPlan, ptr %t51, i32 0, i32 0
-  %t53 = load ptr, ptr %t52
-  %t54 = getelementptr %EIRNode, ptr %t53, i64 %t50
-  %t55 = getelementptr %EIRNode, ptr %t54, i32 0, i32 0
-  %t56 = load i32, ptr %t55
-  store i32 %t56, ptr %t57
-  %t59 = load i32, ptr %t41
-  %t60 = add i32 0, 0
-  %t61 = icmp ne i32 %t59, %t60
-  store i1 %t61, ptr %t58
-  br i1 %t61, label %L11, label %L12
+  %t52 = getelementptr %DeviceScalarPlan, ptr %t51, i32 0, i32 6
+  %t53 = load i32, ptr %t52
+  %t54 = icmp slt i32 %t50, %t53
+  br i1 %t54, label %L9, label %L10
+L9:
+  %t55 = load i32, ptr %t49
+  %t56 = sext i32 %t55 to i64
+  %t57 = load ptr, ptr %t0
+  %t58 = getelementptr %DeviceScalarPlan, ptr %t57, i32 0, i32 0
+  %t59 = load ptr, ptr %t58
+  %t60 = getelementptr %EIRNode, ptr %t59, i64 %t56
+  %t61 = getelementptr %EIRNode, ptr %t60, i32 0, i32 0
+  %t62 = load i32, ptr %t61
+  store i32 %t62, ptr %t63
+  %t65 = load i32, ptr %t47
+  %t66 = add i32 0, 0
+  %t67 = icmp ne i32 %t65, %t66
+  store i1 %t67, ptr %t64
+  br i1 %t67, label %L11, label %L12
 L11:
-  %t64 = load i32, ptr %t57
-  %t65 = load i32, ptr @DEVICE_SHARED_INIT
-  %t66 = icmp sge i32 %t64, %t65
-  store i1 %t66, ptr %t63
-  br i1 %t66, label %L13, label %L14
+  %t70 = load i32, ptr %t63
+  %t71 = load i32, ptr @DEVICE_SHARED_INIT
+  %t72 = icmp sge i32 %t70, %t71
+  store i1 %t72, ptr %t69
+  br i1 %t72, label %L13, label %L14
 L13:
-  %t67 = load i32, ptr %t57
-  %t68 = load i32, ptr @DEVICE_BLOCK_BARRIER
-  %t69 = icmp sle i32 %t67, %t68
-  store i1 %t69, ptr %t63
+  %t73 = load i32, ptr %t63
+  %t74 = load i32, ptr @DEVICE_BLOCK_BARRIER
+  %t75 = icmp sle i32 %t73, %t74
+  store i1 %t75, ptr %t69
   br label %L14
 L14:
-  %t70 = load i1, ptr %t63
-  store i1 %t70, ptr %t62
-  br i1 %t70, label %L16, label %L15
+  %t76 = load i1, ptr %t69
+  store i1 %t76, ptr %t68
+  br i1 %t76, label %L16, label %L15
 L15:
-  %t71 = load i32, ptr %t57
-  %t72 = load i32, ptr @DEVICE_SHARED_ATOMIC
-  %t73 = icmp eq i32 %t71, %t72
-  store i1 %t73, ptr %t62
+  %t77 = load i32, ptr %t63
+  %t78 = load i32, ptr @DEVICE_SHARED_ATOMIC
+  %t79 = icmp eq i32 %t77, %t78
+  store i1 %t79, ptr %t68
   br label %L16
 L16:
-  %t74 = load i1, ptr %t62
-  store i1 %t74, ptr %t58
+  %t80 = load i1, ptr %t68
+  store i1 %t80, ptr %t64
   br label %L12
 L12:
-  %t75 = load i1, ptr %t58
-  br i1 %t75, label %L17, label %L19
+  %t81 = load i1, ptr %t64
+  br i1 %t81, label %L17, label %L19
 L17:
-  %t76 = add i32 0, 0
-  ret i32 %t76
+  %t82 = add i32 0, 0
+  ret i32 %t82
 L19:
-  %t78 = load i32, ptr %t57
-  %t79 = load i32, ptr @DEVICE_ASYNC_COPY
-  %t80 = icmp sge i32 %t78, %t79
-  store i1 %t80, ptr %t77
-  br i1 %t80, label %L20, label %L21
+  %t84 = load i32, ptr %t63
+  %t85 = load i32, ptr @DEVICE_ASYNC_COPY
+  %t86 = icmp sge i32 %t84, %t85
+  store i1 %t86, ptr %t83
+  br i1 %t86, label %L20, label %L21
 L20:
-  %t81 = load i32, ptr %t57
-  %t82 = load i32, ptr @DEVICE_ASYNC_WAIT
-  %t83 = icmp sle i32 %t81, %t82
-  store i1 %t83, ptr %t77
+  %t87 = load i32, ptr %t63
+  %t88 = load i32, ptr @DEVICE_ASYNC_WAIT
+  %t89 = icmp sle i32 %t87, %t88
+  store i1 %t89, ptr %t83
   br label %L21
 L21:
-  %t84 = load i1, ptr %t77
-  br i1 %t84, label %L22, label %L23
+  %t90 = load i1, ptr %t83
+  br i1 %t90, label %L22, label %L23
 L22:
-  %t86 = load ptr, ptr %t0
-  %t87 = getelementptr %DeviceScalarPlan, ptr %t86, i32 0, i32 27
-  %t88 = load i32, ptr %t87
-  %t89 = add i32 0, 1
-  %t90 = icmp ne i32 %t88, %t89
-  store i1 %t90, ptr %t85
-  br i1 %t90, label %L26, label %L25
+  %t92 = load ptr, ptr %t0
+  %t93 = getelementptr %DeviceScalarPlan, ptr %t92, i32 0, i32 27
+  %t94 = load i32, ptr %t93
+  %t95 = add i32 0, 1
+  %t96 = icmp ne i32 %t94, %t95
+  store i1 %t96, ptr %t91
+  br i1 %t96, label %L26, label %L25
 L25:
-  %t91 = load i32, ptr %t43
-  %t92 = sext i32 %t91 to i64
-  %t93 = load ptr, ptr %t0
-  %t94 = getelementptr %DeviceScalarPlan, ptr %t93, i32 0, i32 0
-  %t95 = load ptr, ptr %t94
-  %t96 = getelementptr %EIRNode, ptr %t95, i64 %t92
-  %t97 = getelementptr %EIRNode, ptr %t96, i32 0, i32 8
-  %t98 = load i32, ptr %t97
-  %t99 = load i32, ptr @NULL_STR
-  %t100 = icmp ne i32 %t98, %t99
-  store i1 %t100, ptr %t85
+  %t97 = load i32, ptr %t49
+  %t98 = sext i32 %t97 to i64
+  %t99 = load ptr, ptr %t0
+  %t100 = getelementptr %DeviceScalarPlan, ptr %t99, i32 0, i32 0
+  %t101 = load ptr, ptr %t100
+  %t102 = getelementptr %EIRNode, ptr %t101, i64 %t98
+  %t103 = getelementptr %EIRNode, ptr %t102, i32 0, i32 8
+  %t104 = load i32, ptr %t103
+  %t105 = load i32, ptr @NULL_STR
+  %t106 = icmp ne i32 %t104, %t105
+  store i1 %t106, ptr %t91
   br label %L26
 L26:
-  %t101 = load i1, ptr %t85
-  br i1 %t101, label %L27, label %L29
+  %t107 = load i1, ptr %t91
+  br i1 %t107, label %L27, label %L29
 L27:
-  %t102 = add i32 0, 0
-  ret i32 %t102
+  %t108 = add i32 0, 0
+  ret i32 %t108
 L29:
-  %t103 = load i32, ptr %t57
-  %t104 = load i32, ptr @DEVICE_ASYNC_COPY
-  %t105 = icmp eq i32 %t103, %t104
-  br i1 %t105, label %L30, label %L31
+  %t109 = load i32, ptr %t63
+  %t110 = load i32, ptr @DEVICE_ASYNC_COPY
+  %t111 = icmp eq i32 %t109, %t110
+  br i1 %t111, label %L30, label %L31
 L30:
-  %t114 = load i32, ptr %t35
-  %t115 = add i32 0, 1
-  %t116 = icmp ne i32 %t114, %t115
-  store i1 %t116, ptr %t113
-  br i1 %t116, label %L34, label %L33
+  %t120 = load i32, ptr %t41
+  %t121 = add i32 0, 1
+  %t122 = icmp ne i32 %t120, %t121
+  store i1 %t122, ptr %t119
+  br i1 %t122, label %L34, label %L33
 L33:
-  %t117 = load i32, ptr %t41
-  %t118 = add i32 0, 0
-  %t119 = icmp ne i32 %t117, %t118
-  store i1 %t119, ptr %t113
+  %t123 = load i32, ptr %t47
+  %t124 = add i32 0, 0
+  %t125 = icmp ne i32 %t123, %t124
+  store i1 %t125, ptr %t119
   br label %L34
 L34:
-  %t120 = load i1, ptr %t113
-  store i1 %t120, ptr %t112
-  br i1 %t120, label %L36, label %L35
+  %t126 = load i1, ptr %t119
+  store i1 %t126, ptr %t118
+  br i1 %t126, label %L36, label %L35
 L35:
-  %t121 = load i32, ptr %t37
-  %t122 = add i32 0, 0
-  %t123 = icmp ne i32 %t121, %t122
-  store i1 %t123, ptr %t112
+  %t127 = load i32, ptr %t43
+  %t128 = add i32 0, 0
+  %t129 = icmp ne i32 %t127, %t128
+  store i1 %t129, ptr %t118
   br label %L36
 L36:
-  %t124 = load i1, ptr %t112
-  store i1 %t124, ptr %t111
-  br i1 %t124, label %L38, label %L37
+  %t130 = load i1, ptr %t118
+  store i1 %t130, ptr %t117
+  br i1 %t130, label %L38, label %L37
 L37:
-  %t125 = load i32, ptr %t39
-  %t126 = add i32 0, 0
-  %t127 = icmp ne i32 %t125, %t126
-  store i1 %t127, ptr %t111
+  %t131 = load i32, ptr %t45
+  %t132 = add i32 0, 0
+  %t133 = icmp ne i32 %t131, %t132
+  store i1 %t133, ptr %t117
   br label %L38
 L38:
-  %t128 = load i1, ptr %t111
-  store i1 %t128, ptr %t110
-  br i1 %t128, label %L40, label %L39
+  %t134 = load i1, ptr %t117
+  store i1 %t134, ptr %t116
+  br i1 %t134, label %L40, label %L39
 L39:
-  %t129 = load i32, ptr %t43
-  %t130 = sext i32 %t129 to i64
-  %t131 = load ptr, ptr %t0
-  %t132 = getelementptr %DeviceScalarPlan, ptr %t131, i32 0, i32 0
-  %t133 = load ptr, ptr %t132
-  %t134 = getelementptr %EIRNode, ptr %t133, i64 %t130
-  %t135 = getelementptr %EIRNode, ptr %t134, i32 0, i32 3
-  %t136 = load i32, ptr %t135
-  %t137 = sext i32 %t136 to i64
-  %t138 = load ptr, ptr %t0
-  %t139 = getelementptr %DeviceScalarPlan, ptr %t138, i32 0, i32 0
-  %t140 = load ptr, ptr %t139
-  %t141 = getelementptr %EIRNode, ptr %t140, i64 %t137
-  %t142 = getelementptr %EIRNode, ptr %t141, i32 0, i32 0
-  %t143 = load i32, ptr %t142
-  %t144 = load i32, ptr @EIR_LOCAL
-  %t145 = icmp ne i32 %t143, %t144
-  store i1 %t145, ptr %t110
+  %t135 = load i32, ptr %t49
+  %t136 = sext i32 %t135 to i64
+  %t137 = load ptr, ptr %t0
+  %t138 = getelementptr %DeviceScalarPlan, ptr %t137, i32 0, i32 0
+  %t139 = load ptr, ptr %t138
+  %t140 = getelementptr %EIRNode, ptr %t139, i64 %t136
+  %t141 = getelementptr %EIRNode, ptr %t140, i32 0, i32 3
+  %t142 = load i32, ptr %t141
+  %t143 = sext i32 %t142 to i64
+  %t144 = load ptr, ptr %t0
+  %t145 = getelementptr %DeviceScalarPlan, ptr %t144, i32 0, i32 0
+  %t146 = load ptr, ptr %t145
+  %t147 = getelementptr %EIRNode, ptr %t146, i64 %t143
+  %t148 = getelementptr %EIRNode, ptr %t147, i32 0, i32 0
+  %t149 = load i32, ptr %t148
+  %t150 = load i32, ptr @EIR_LOCAL
+  %t151 = icmp ne i32 %t149, %t150
+  store i1 %t151, ptr %t116
   br label %L40
 L40:
-  %t146 = load i1, ptr %t110
-  store i1 %t146, ptr %t109
-  br i1 %t146, label %L42, label %L41
+  %t152 = load i1, ptr %t116
+  store i1 %t152, ptr %t115
+  br i1 %t152, label %L42, label %L41
 L41:
-  %t147 = load i32, ptr %t43
-  %t148 = sext i32 %t147 to i64
-  %t149 = load ptr, ptr %t0
-  %t150 = getelementptr %DeviceScalarPlan, ptr %t149, i32 0, i32 0
-  %t151 = load ptr, ptr %t150
-  %t152 = getelementptr %EIRNode, ptr %t151, i64 %t148
-  %t153 = getelementptr %EIRNode, ptr %t152, i32 0, i32 3
-  %t154 = load i32, ptr %t153
-  %t155 = sext i32 %t154 to i64
-  %t156 = load ptr, ptr %t0
-  %t157 = getelementptr %DeviceScalarPlan, ptr %t156, i32 0, i32 0
-  %t158 = load ptr, ptr %t157
-  %t159 = getelementptr %EIRNode, ptr %t158, i64 %t155
-  %t160 = getelementptr %EIRNode, ptr %t159, i32 0, i32 8
-  %t161 = load i32, ptr %t160
-  %t162 = getelementptr [5 x i8], ptr @.str.6200, i32 0, i32 0
-  %t163 = call i32 @str_intern(ptr %t162)
-  %t164 = icmp ne i32 %t161, %t163
-  store i1 %t164, ptr %t109
+  %t153 = load i32, ptr %t49
+  %t154 = sext i32 %t153 to i64
+  %t155 = load ptr, ptr %t0
+  %t156 = getelementptr %DeviceScalarPlan, ptr %t155, i32 0, i32 0
+  %t157 = load ptr, ptr %t156
+  %t158 = getelementptr %EIRNode, ptr %t157, i64 %t154
+  %t159 = getelementptr %EIRNode, ptr %t158, i32 0, i32 3
+  %t160 = load i32, ptr %t159
+  %t161 = sext i32 %t160 to i64
+  %t162 = load ptr, ptr %t0
+  %t163 = getelementptr %DeviceScalarPlan, ptr %t162, i32 0, i32 0
+  %t164 = load ptr, ptr %t163
+  %t165 = getelementptr %EIRNode, ptr %t164, i64 %t161
+  %t166 = getelementptr %EIRNode, ptr %t165, i32 0, i32 8
+  %t167 = load i32, ptr %t166
+  %t168 = getelementptr [5 x i8], ptr @.str.6200, i32 0, i32 0
+  %t169 = call i32 @str_intern(ptr %t168)
+  %t170 = icmp ne i32 %t167, %t169
+  store i1 %t170, ptr %t115
   br label %L42
 L42:
-  %t165 = load i1, ptr %t109
-  store i1 %t165, ptr %t108
-  br i1 %t165, label %L44, label %L43
+  %t171 = load i1, ptr %t115
+  store i1 %t171, ptr %t114
+  br i1 %t171, label %L44, label %L43
 L43:
-  %t166 = load i32, ptr %t43
-  %t167 = sext i32 %t166 to i64
-  %t168 = load ptr, ptr %t0
-  %t169 = getelementptr %DeviceScalarPlan, ptr %t168, i32 0, i32 0
-  %t170 = load ptr, ptr %t169
-  %t171 = getelementptr %EIRNode, ptr %t170, i64 %t167
-  %t172 = getelementptr %EIRNode, ptr %t171, i32 0, i32 4
-  %t173 = load i32, ptr %t172
-  %t174 = sext i32 %t173 to i64
-  %t175 = load ptr, ptr %t0
-  %t176 = getelementptr %DeviceScalarPlan, ptr %t175, i32 0, i32 0
-  %t177 = load ptr, ptr %t176
-  %t178 = getelementptr %EIRNode, ptr %t177, i64 %t174
-  %t179 = getelementptr %EIRNode, ptr %t178, i32 0, i32 0
-  %t180 = load i32, ptr %t179
-  %t181 = load i32, ptr @EIR_LOCAL
-  %t182 = icmp ne i32 %t180, %t181
-  store i1 %t182, ptr %t108
+  %t172 = load i32, ptr %t49
+  %t173 = sext i32 %t172 to i64
+  %t174 = load ptr, ptr %t0
+  %t175 = getelementptr %DeviceScalarPlan, ptr %t174, i32 0, i32 0
+  %t176 = load ptr, ptr %t175
+  %t177 = getelementptr %EIRNode, ptr %t176, i64 %t173
+  %t178 = getelementptr %EIRNode, ptr %t177, i32 0, i32 4
+  %t179 = load i32, ptr %t178
+  %t180 = sext i32 %t179 to i64
+  %t181 = load ptr, ptr %t0
+  %t182 = getelementptr %DeviceScalarPlan, ptr %t181, i32 0, i32 0
+  %t183 = load ptr, ptr %t182
+  %t184 = getelementptr %EIRNode, ptr %t183, i64 %t180
+  %t185 = getelementptr %EIRNode, ptr %t184, i32 0, i32 0
+  %t186 = load i32, ptr %t185
+  %t187 = load i32, ptr @EIR_LOCAL
+  %t188 = icmp ne i32 %t186, %t187
+  store i1 %t188, ptr %t114
   br label %L44
 L44:
-  %t183 = load i1, ptr %t108
-  store i1 %t183, ptr %t107
-  br i1 %t183, label %L46, label %L45
+  %t189 = load i1, ptr %t114
+  store i1 %t189, ptr %t113
+  br i1 %t189, label %L46, label %L45
 L45:
-  %t184 = load i32, ptr %t43
-  %t185 = sext i32 %t184 to i64
-  %t186 = load ptr, ptr %t0
-  %t187 = getelementptr %DeviceScalarPlan, ptr %t186, i32 0, i32 0
-  %t188 = load ptr, ptr %t187
-  %t189 = getelementptr %EIRNode, ptr %t188, i64 %t185
-  %t190 = getelementptr %EIRNode, ptr %t189, i32 0, i32 4
-  %t191 = load i32, ptr %t190
-  %t192 = sext i32 %t191 to i64
-  %t193 = load ptr, ptr %t0
-  %t194 = getelementptr %DeviceScalarPlan, ptr %t193, i32 0, i32 0
-  %t195 = load ptr, ptr %t194
-  %t196 = getelementptr %EIRNode, ptr %t195, i64 %t192
-  %t197 = getelementptr %EIRNode, ptr %t196, i32 0, i32 8
-  %t198 = load i32, ptr %t197
-  %t199 = getelementptr [4 x i8], ptr @.str.6201, i32 0, i32 0
-  %t200 = call i32 @str_intern(ptr %t199)
-  %t201 = icmp ne i32 %t198, %t200
-  store i1 %t201, ptr %t107
+  %t190 = load i32, ptr %t49
+  %t191 = sext i32 %t190 to i64
+  %t192 = load ptr, ptr %t0
+  %t193 = getelementptr %DeviceScalarPlan, ptr %t192, i32 0, i32 0
+  %t194 = load ptr, ptr %t193
+  %t195 = getelementptr %EIRNode, ptr %t194, i64 %t191
+  %t196 = getelementptr %EIRNode, ptr %t195, i32 0, i32 4
+  %t197 = load i32, ptr %t196
+  %t198 = sext i32 %t197 to i64
+  %t199 = load ptr, ptr %t0
+  %t200 = getelementptr %DeviceScalarPlan, ptr %t199, i32 0, i32 0
+  %t201 = load ptr, ptr %t200
+  %t202 = getelementptr %EIRNode, ptr %t201, i64 %t198
+  %t203 = getelementptr %EIRNode, ptr %t202, i32 0, i32 8
+  %t204 = load i32, ptr %t203
+  %t205 = getelementptr [4 x i8], ptr @.str.6201, i32 0, i32 0
+  %t206 = call i32 @str_intern(ptr %t205)
+  %t207 = icmp ne i32 %t204, %t206
+  store i1 %t207, ptr %t113
   br label %L46
 L46:
-  %t202 = load i1, ptr %t107
-  store i1 %t202, ptr %t106
-  br i1 %t202, label %L48, label %L47
+  %t208 = load i1, ptr %t113
+  store i1 %t208, ptr %t112
+  br i1 %t208, label %L48, label %L47
 L47:
-  %t203 = load i32, ptr %t43
-  %t204 = sext i32 %t203 to i64
-  %t205 = load ptr, ptr %t0
-  %t206 = getelementptr %DeviceScalarPlan, ptr %t205, i32 0, i32 0
-  %t207 = load ptr, ptr %t206
-  %t208 = getelementptr %EIRNode, ptr %t207, i64 %t204
-  %t209 = getelementptr %EIRNode, ptr %t208, i32 0, i32 5
-  %t210 = load i32, ptr %t209
-  %t211 = sext i32 %t210 to i64
-  %t212 = load ptr, ptr %t0
-  %t213 = getelementptr %DeviceScalarPlan, ptr %t212, i32 0, i32 0
-  %t214 = load ptr, ptr %t213
-  %t215 = getelementptr %EIRNode, ptr %t214, i64 %t211
-  %t216 = getelementptr %EIRNode, ptr %t215, i32 0, i32 8
-  %t217 = load i32, ptr %t216
-  %t218 = getelementptr [4 x i8], ptr @.str.6202, i32 0, i32 0
-  %t219 = call i32 @str_intern(ptr %t218)
-  %t220 = icmp ne i32 %t217, %t219
-  store i1 %t220, ptr %t106
+  %t209 = load i32, ptr %t49
+  %t210 = sext i32 %t209 to i64
+  %t211 = load ptr, ptr %t0
+  %t212 = getelementptr %DeviceScalarPlan, ptr %t211, i32 0, i32 0
+  %t213 = load ptr, ptr %t212
+  %t214 = getelementptr %EIRNode, ptr %t213, i64 %t210
+  %t215 = getelementptr %EIRNode, ptr %t214, i32 0, i32 5
+  %t216 = load i32, ptr %t215
+  %t217 = sext i32 %t216 to i64
+  %t218 = load ptr, ptr %t0
+  %t219 = getelementptr %DeviceScalarPlan, ptr %t218, i32 0, i32 0
+  %t220 = load ptr, ptr %t219
+  %t221 = getelementptr %EIRNode, ptr %t220, i64 %t217
+  %t222 = getelementptr %EIRNode, ptr %t221, i32 0, i32 8
+  %t223 = load i32, ptr %t222
+  %t224 = getelementptr [4 x i8], ptr @.str.6202, i32 0, i32 0
+  %t225 = call i32 @str_intern(ptr %t224)
+  %t226 = icmp ne i32 %t223, %t225
+  store i1 %t226, ptr %t112
   br label %L48
 L48:
-  %t221 = load i1, ptr %t106
-  br i1 %t221, label %L49, label %L51
+  %t227 = load i1, ptr %t112
+  br i1 %t227, label %L49, label %L51
 L49:
-  %t222 = add i32 0, 0
-  ret i32 %t222
+  %t228 = add i32 0, 0
+  ret i32 %t228
 L51:
-  %t223 = add i32 0, 1
-  store i32 %t223, ptr %t41
-  %t224 = add i32 0, 1
-  store i32 %t224, ptr %t37
+  %t229 = add i32 0, 1
+  store i32 %t229, ptr %t47
+  %t230 = add i32 0, 1
+  store i32 %t230, ptr %t43
   br label %L32
 L31:
-  %t225 = load i32, ptr %t57
-  %t226 = load i32, ptr @DEVICE_ASYNC_COMMIT
-  %t227 = icmp eq i32 %t225, %t226
-  br i1 %t227, label %L52, label %L53
+  %t231 = load i32, ptr %t63
+  %t232 = load i32, ptr @DEVICE_ASYNC_COMMIT
+  %t233 = icmp eq i32 %t231, %t232
+  br i1 %t233, label %L52, label %L53
 L52:
-  %t228 = load i32, ptr %t41
-  %t229 = add i32 0, 1
-  %t230 = icmp ne i32 %t228, %t229
-  br i1 %t230, label %L55, label %L57
+  %t234 = load i32, ptr %t47
+  %t235 = add i32 0, 1
+  %t236 = icmp ne i32 %t234, %t235
+  br i1 %t236, label %L55, label %L57
 L55:
-  %t231 = add i32 0, 0
-  ret i32 %t231
+  %t237 = add i32 0, 0
+  ret i32 %t237
 L57:
-  %t232 = add i32 0, 2
-  store i32 %t232, ptr %t41
+  %t238 = add i32 0, 2
+  store i32 %t238, ptr %t47
   br label %L54
 L53:
-  %t233 = load i32, ptr %t41
-  %t234 = add i32 0, 2
-  %t235 = icmp ne i32 %t233, %t234
-  br i1 %t235, label %L58, label %L60
+  %t239 = load i32, ptr %t47
+  %t240 = add i32 0, 2
+  %t241 = icmp ne i32 %t239, %t240
+  br i1 %t241, label %L58, label %L60
 L58:
-  %t236 = add i32 0, 0
-  ret i32 %t236
+  %t242 = add i32 0, 0
+  ret i32 %t242
 L60:
-  %t237 = add i32 0, 0
-  store i32 %t237, ptr %t41
+  %t243 = add i32 0, 0
+  store i32 %t243, ptr %t47
   br label %L54
 L54:
   br label %L32
 L32:
   br label %L24
 L23:
-  %t238 = load i32, ptr %t57
-  %t239 = load i32, ptr @DEVICE_NATIVE_MMA
-  %t240 = icmp eq i32 %t238, %t239
-  br i1 %t240, label %L61, label %L62
+  %t244 = load i32, ptr %t63
+  %t245 = load i32, ptr @DEVICE_NATIVE_MMA
+  %t246 = icmp eq i32 %t244, %t245
+  br i1 %t246, label %L61, label %L62
 L61:
-  %t248 = load ptr, ptr %t0
-  %t249 = getelementptr %DeviceScalarPlan, ptr %t248, i32 0, i32 27
-  %t250 = load i32, ptr %t249
-  %t251 = add i32 0, 1
-  %t252 = icmp ne i32 %t250, %t251
-  store i1 %t252, ptr %t247
-  br i1 %t252, label %L65, label %L64
+  %t254 = load ptr, ptr %t0
+  %t255 = getelementptr %DeviceScalarPlan, ptr %t254, i32 0, i32 27
+  %t256 = load i32, ptr %t255
+  %t257 = add i32 0, 1
+  %t258 = icmp ne i32 %t256, %t257
+  store i1 %t258, ptr %t253
+  br i1 %t258, label %L65, label %L64
 L64:
-  %t253 = load ptr, ptr %t0
-  %t254 = getelementptr %DeviceScalarPlan, ptr %t253, i32 0, i32 37
-  %t255 = load i32, ptr %t254
-  %t256 = add i32 0, 1
-  %t257 = icmp ne i32 %t255, %t256
-  store i1 %t257, ptr %t247
+  %t259 = load ptr, ptr %t0
+  %t260 = getelementptr %DeviceScalarPlan, ptr %t259, i32 0, i32 37
+  %t261 = load i32, ptr %t260
+  %t262 = add i32 0, 1
+  %t263 = icmp ne i32 %t261, %t262
+  store i1 %t263, ptr %t253
   br label %L65
 L65:
-  %t258 = load i1, ptr %t247
-  store i1 %t258, ptr %t246
-  br i1 %t258, label %L67, label %L66
+  %t264 = load i1, ptr %t253
+  store i1 %t264, ptr %t252
+  br i1 %t264, label %L67, label %L66
 L66:
-  %t259 = load i32, ptr %t43
-  %t260 = sext i32 %t259 to i64
-  %t261 = load ptr, ptr %t0
-  %t262 = getelementptr %DeviceScalarPlan, ptr %t261, i32 0, i32 0
-  %t263 = load ptr, ptr %t262
-  %t264 = getelementptr %EIRNode, ptr %t263, i64 %t260
-  %t265 = getelementptr %EIRNode, ptr %t264, i32 0, i32 1
-  %t266 = load i32, ptr %t265
-  %t267 = add i32 0, 0
-  %t268 = icmp slt i32 %t266, %t267
-  store i1 %t268, ptr %t246
+  %t265 = load i32, ptr %t49
+  %t266 = sext i32 %t265 to i64
+  %t267 = load ptr, ptr %t0
+  %t268 = getelementptr %DeviceScalarPlan, ptr %t267, i32 0, i32 0
+  %t269 = load ptr, ptr %t268
+  %t270 = getelementptr %EIRNode, ptr %t269, i64 %t266
+  %t271 = getelementptr %EIRNode, ptr %t270, i32 0, i32 1
+  %t272 = load i32, ptr %t271
+  %t273 = add i32 0, 0
+  %t274 = icmp slt i32 %t272, %t273
+  store i1 %t274, ptr %t252
   br label %L67
 L67:
-  %t269 = load i1, ptr %t246
-  store i1 %t269, ptr %t245
-  br i1 %t269, label %L69, label %L68
+  %t275 = load i1, ptr %t252
+  store i1 %t275, ptr %t251
+  br i1 %t275, label %L69, label %L68
 L68:
-  %t270 = load i32, ptr %t43
-  %t271 = sext i32 %t270 to i64
-  %t272 = load ptr, ptr %t0
-  %t273 = getelementptr %DeviceScalarPlan, ptr %t272, i32 0, i32 0
-  %t274 = load ptr, ptr %t273
-  %t275 = getelementptr %EIRNode, ptr %t274, i64 %t271
-  %t276 = getelementptr %EIRNode, ptr %t275, i32 0, i32 1
-  %t277 = load i32, ptr %t276
-  %t278 = add i32 0, 1
-  %t279 = icmp sgt i32 %t277, %t278
-  store i1 %t279, ptr %t245
+  %t276 = load i32, ptr %t49
+  %t277 = sext i32 %t276 to i64
+  %t278 = load ptr, ptr %t0
+  %t279 = getelementptr %DeviceScalarPlan, ptr %t278, i32 0, i32 0
+  %t280 = load ptr, ptr %t279
+  %t281 = getelementptr %EIRNode, ptr %t280, i64 %t277
+  %t282 = getelementptr %EIRNode, ptr %t281, i32 0, i32 1
+  %t283 = load i32, ptr %t282
+  %t284 = add i32 0, 1
+  %t285 = icmp sgt i32 %t283, %t284
+  store i1 %t285, ptr %t251
   br label %L69
 L69:
-  %t280 = load i1, ptr %t245
-  store i1 %t280, ptr %t244
-  br i1 %t280, label %L71, label %L70
+  %t286 = load i1, ptr %t251
+  store i1 %t286, ptr %t250
+  br i1 %t286, label %L71, label %L70
 L70:
-  %t281 = load i32, ptr %t43
-  %t282 = sext i32 %t281 to i64
-  %t283 = load ptr, ptr %t0
-  %t284 = getelementptr %DeviceScalarPlan, ptr %t283, i32 0, i32 0
-  %t285 = load ptr, ptr %t284
-  %t286 = getelementptr %EIRNode, ptr %t285, i64 %t282
-  %t287 = getelementptr %EIRNode, ptr %t286, i32 0, i32 8
-  %t288 = load i32, ptr %t287
-  %t289 = getelementptr [5 x i8], ptr @.str.6203, i32 0, i32 0
-  %t290 = call i32 @str_intern(ptr %t289)
-  %t291 = icmp ne i32 %t288, %t290
-  store i1 %t291, ptr %t244
+  %t287 = load i32, ptr %t49
+  %t288 = sext i32 %t287 to i64
+  %t289 = load ptr, ptr %t0
+  %t290 = getelementptr %DeviceScalarPlan, ptr %t289, i32 0, i32 0
+  %t291 = load ptr, ptr %t290
+  %t292 = getelementptr %EIRNode, ptr %t291, i64 %t288
+  %t293 = getelementptr %EIRNode, ptr %t292, i32 0, i32 8
+  %t294 = load i32, ptr %t293
+  %t295 = getelementptr [5 x i8], ptr @.str.6203, i32 0, i32 0
+  %t296 = call i32 @str_intern(ptr %t295)
+  %t297 = icmp ne i32 %t294, %t296
+  store i1 %t297, ptr %t250
   br label %L71
 L71:
-  %t292 = load i1, ptr %t244
-  store i1 %t292, ptr %t243
-  br i1 %t292, label %L73, label %L72
+  %t298 = load i1, ptr %t250
+  store i1 %t298, ptr %t249
+  br i1 %t298, label %L73, label %L72
 L72:
-  %t293 = load i32, ptr %t43
-  %t294 = sext i32 %t293 to i64
-  %t295 = load ptr, ptr %t0
-  %t296 = getelementptr %DeviceScalarPlan, ptr %t295, i32 0, i32 0
-  %t297 = load ptr, ptr %t296
-  %t298 = getelementptr %EIRNode, ptr %t297, i64 %t294
-  %t299 = getelementptr %EIRNode, ptr %t298, i32 0, i32 3
-  %t300 = load i32, ptr %t299
-  %t301 = sext i32 %t300 to i64
-  %t302 = load ptr, ptr %t0
-  %t303 = getelementptr %DeviceScalarPlan, ptr %t302, i32 0, i32 0
-  %t304 = load ptr, ptr %t303
-  %t305 = getelementptr %EIRNode, ptr %t304, i64 %t301
-  %t306 = getelementptr %EIRNode, ptr %t305, i32 0, i32 8
-  %t307 = load i32, ptr %t306
-  %t308 = getelementptr [5 x i8], ptr @.str.6204, i32 0, i32 0
-  %t309 = call i32 @str_intern(ptr %t308)
-  %t310 = icmp ne i32 %t307, %t309
-  store i1 %t310, ptr %t243
+  %t299 = load i32, ptr %t49
+  %t300 = sext i32 %t299 to i64
+  %t301 = load ptr, ptr %t0
+  %t302 = getelementptr %DeviceScalarPlan, ptr %t301, i32 0, i32 0
+  %t303 = load ptr, ptr %t302
+  %t304 = getelementptr %EIRNode, ptr %t303, i64 %t300
+  %t305 = getelementptr %EIRNode, ptr %t304, i32 0, i32 3
+  %t306 = load i32, ptr %t305
+  %t307 = sext i32 %t306 to i64
+  %t308 = load ptr, ptr %t0
+  %t309 = getelementptr %DeviceScalarPlan, ptr %t308, i32 0, i32 0
+  %t310 = load ptr, ptr %t309
+  %t311 = getelementptr %EIRNode, ptr %t310, i64 %t307
+  %t312 = getelementptr %EIRNode, ptr %t311, i32 0, i32 8
+  %t313 = load i32, ptr %t312
+  %t314 = getelementptr [5 x i8], ptr @.str.6204, i32 0, i32 0
+  %t315 = call i32 @str_intern(ptr %t314)
+  %t316 = icmp ne i32 %t313, %t315
+  store i1 %t316, ptr %t249
   br label %L73
 L73:
-  %t311 = load i1, ptr %t243
-  store i1 %t311, ptr %t242
-  br i1 %t311, label %L75, label %L74
+  %t317 = load i1, ptr %t249
+  store i1 %t317, ptr %t248
+  br i1 %t317, label %L75, label %L74
 L74:
-  %t312 = load i32, ptr %t43
-  %t313 = sext i32 %t312 to i64
-  %t314 = load ptr, ptr %t0
-  %t315 = getelementptr %DeviceScalarPlan, ptr %t314, i32 0, i32 0
-  %t316 = load ptr, ptr %t315
-  %t317 = getelementptr %EIRNode, ptr %t316, i64 %t313
-  %t318 = getelementptr %EIRNode, ptr %t317, i32 0, i32 4
-  %t319 = load i32, ptr %t318
-  %t320 = sext i32 %t319 to i64
-  %t321 = load ptr, ptr %t0
-  %t322 = getelementptr %DeviceScalarPlan, ptr %t321, i32 0, i32 0
-  %t323 = load ptr, ptr %t322
-  %t324 = getelementptr %EIRNode, ptr %t323, i64 %t320
-  %t325 = getelementptr %EIRNode, ptr %t324, i32 0, i32 8
-  %t326 = load i32, ptr %t325
-  %t327 = getelementptr [4 x i8], ptr @.str.6205, i32 0, i32 0
-  %t328 = call i32 @str_intern(ptr %t327)
-  %t329 = icmp ne i32 %t326, %t328
-  store i1 %t329, ptr %t242
+  %t318 = load i32, ptr %t49
+  %t319 = sext i32 %t318 to i64
+  %t320 = load ptr, ptr %t0
+  %t321 = getelementptr %DeviceScalarPlan, ptr %t320, i32 0, i32 0
+  %t322 = load ptr, ptr %t321
+  %t323 = getelementptr %EIRNode, ptr %t322, i64 %t319
+  %t324 = getelementptr %EIRNode, ptr %t323, i32 0, i32 4
+  %t325 = load i32, ptr %t324
+  %t326 = sext i32 %t325 to i64
+  %t327 = load ptr, ptr %t0
+  %t328 = getelementptr %DeviceScalarPlan, ptr %t327, i32 0, i32 0
+  %t329 = load ptr, ptr %t328
+  %t330 = getelementptr %EIRNode, ptr %t329, i64 %t326
+  %t331 = getelementptr %EIRNode, ptr %t330, i32 0, i32 8
+  %t332 = load i32, ptr %t331
+  %t333 = getelementptr [4 x i8], ptr @.str.6205, i32 0, i32 0
+  %t334 = call i32 @str_intern(ptr %t333)
+  %t335 = icmp ne i32 %t332, %t334
+  store i1 %t335, ptr %t248
   br label %L75
 L75:
-  %t330 = load i1, ptr %t242
-  store i1 %t330, ptr %t241
-  br i1 %t330, label %L77, label %L76
+  %t336 = load i1, ptr %t248
+  store i1 %t336, ptr %t247
+  br i1 %t336, label %L77, label %L76
 L76:
-  %t331 = load i32, ptr %t43
-  %t332 = sext i32 %t331 to i64
-  %t333 = load ptr, ptr %t0
-  %t334 = getelementptr %DeviceScalarPlan, ptr %t333, i32 0, i32 0
-  %t335 = load ptr, ptr %t334
-  %t336 = getelementptr %EIRNode, ptr %t335, i64 %t332
-  %t337 = getelementptr %EIRNode, ptr %t336, i32 0, i32 5
-  %t338 = load i32, ptr %t337
-  %t339 = sext i32 %t338 to i64
-  %t340 = load ptr, ptr %t0
-  %t341 = getelementptr %DeviceScalarPlan, ptr %t340, i32 0, i32 0
-  %t342 = load ptr, ptr %t341
-  %t343 = getelementptr %EIRNode, ptr %t342, i64 %t339
-  %t344 = getelementptr %EIRNode, ptr %t343, i32 0, i32 8
-  %t345 = load i32, ptr %t344
-  %t346 = getelementptr [5 x i8], ptr @.str.6206, i32 0, i32 0
-  %t347 = call i32 @str_intern(ptr %t346)
-  %t348 = icmp ne i32 %t345, %t347
-  store i1 %t348, ptr %t241
+  %t337 = load i32, ptr %t49
+  %t338 = sext i32 %t337 to i64
+  %t339 = load ptr, ptr %t0
+  %t340 = getelementptr %DeviceScalarPlan, ptr %t339, i32 0, i32 0
+  %t341 = load ptr, ptr %t340
+  %t342 = getelementptr %EIRNode, ptr %t341, i64 %t338
+  %t343 = getelementptr %EIRNode, ptr %t342, i32 0, i32 5
+  %t344 = load i32, ptr %t343
+  %t345 = sext i32 %t344 to i64
+  %t346 = load ptr, ptr %t0
+  %t347 = getelementptr %DeviceScalarPlan, ptr %t346, i32 0, i32 0
+  %t348 = load ptr, ptr %t347
+  %t349 = getelementptr %EIRNode, ptr %t348, i64 %t345
+  %t350 = getelementptr %EIRNode, ptr %t349, i32 0, i32 8
+  %t351 = load i32, ptr %t350
+  %t352 = getelementptr [5 x i8], ptr @.str.6206, i32 0, i32 0
+  %t353 = call i32 @str_intern(ptr %t352)
+  %t354 = icmp ne i32 %t351, %t353
+  store i1 %t354, ptr %t247
   br label %L77
 L77:
-  %t349 = load i1, ptr %t241
-  br i1 %t349, label %L78, label %L80
+  %t355 = load i1, ptr %t247
+  br i1 %t355, label %L78, label %L80
 L78:
-  %t350 = add i32 0, 0
-  ret i32 %t350
+  %t356 = add i32 0, 0
+  ret i32 %t356
 L80:
   br label %L63
 L62:
-  %t351 = load i32, ptr %t57
-  %t352 = load i32, ptr @DEVICE_IEEE_BITS
-  %t353 = icmp eq i32 %t351, %t352
-  br i1 %t353, label %L81, label %L82
+  %t357 = load i32, ptr %t63
+  %t358 = load i32, ptr @DEVICE_IEEE_BITS
+  %t359 = icmp eq i32 %t357, %t358
+  br i1 %t359, label %L81, label %L82
 L81:
-  %t354 = load i32, ptr %t43
-  %t355 = sext i32 %t354 to i64
-  %t356 = load ptr, ptr %t0
-  %t357 = getelementptr %DeviceScalarPlan, ptr %t356, i32 0, i32 0
-  %t358 = load ptr, ptr %t357
-  %t359 = getelementptr %EIRNode, ptr %t358, i64 %t355
-  %t360 = getelementptr %EIRNode, ptr %t359, i32 0, i32 1
-  %t361 = load i32, ptr %t360
-  store i32 %t361, ptr %t362
-  %t365 = load i32, ptr %t362
-  %t366 = add i32 0, 0
-  %t367 = icmp slt i32 %t365, %t366
-  store i1 %t367, ptr %t364
-  br i1 %t367, label %L85, label %L84
+  %t360 = load i32, ptr %t49
+  %t361 = sext i32 %t360 to i64
+  %t362 = load ptr, ptr %t0
+  %t363 = getelementptr %DeviceScalarPlan, ptr %t362, i32 0, i32 0
+  %t364 = load ptr, ptr %t363
+  %t365 = getelementptr %EIRNode, ptr %t364, i64 %t361
+  %t366 = getelementptr %EIRNode, ptr %t365, i32 0, i32 1
+  %t367 = load i32, ptr %t366
+  store i32 %t367, ptr %t368
+  %t371 = load i32, ptr %t368
+  %t372 = add i32 0, 0
+  %t373 = icmp slt i32 %t371, %t372
+  store i1 %t373, ptr %t370
+  br i1 %t373, label %L85, label %L84
 L84:
-  %t368 = load i32, ptr %t362
-  %t369 = add i32 0, 13
-  %t370 = icmp sgt i32 %t368, %t369
-  store i1 %t370, ptr %t364
+  %t374 = load i32, ptr %t368
+  %t375 = add i32 0, 13
+  %t376 = icmp sgt i32 %t374, %t375
+  store i1 %t376, ptr %t370
   br label %L85
 L85:
-  %t371 = load i1, ptr %t364
-  store i1 %t371, ptr %t363
-  br i1 %t371, label %L87, label %L86
+  %t377 = load i1, ptr %t370
+  store i1 %t377, ptr %t369
+  br i1 %t377, label %L87, label %L86
 L86:
-  %t372 = load i32, ptr %t43
-  %t373 = sext i32 %t372 to i64
-  %t374 = load ptr, ptr %t0
-  %t375 = getelementptr %DeviceScalarPlan, ptr %t374, i32 0, i32 0
-  %t376 = load ptr, ptr %t375
-  %t377 = getelementptr %EIRNode, ptr %t376, i64 %t373
-  %t378 = getelementptr %EIRNode, ptr %t377, i32 0, i32 8
-  %t379 = load i32, ptr %t378
-  %t380 = load i32, ptr %t362
-  %t381 = call i32 @ieee_result_type(i32 %t380)
-  %t382 = icmp ne i32 %t379, %t381
-  store i1 %t382, ptr %t363
+  %t378 = load i32, ptr %t49
+  %t379 = sext i32 %t378 to i64
+  %t380 = load ptr, ptr %t0
+  %t381 = getelementptr %DeviceScalarPlan, ptr %t380, i32 0, i32 0
+  %t382 = load ptr, ptr %t381
+  %t383 = getelementptr %EIRNode, ptr %t382, i64 %t379
+  %t384 = getelementptr %EIRNode, ptr %t383, i32 0, i32 8
+  %t385 = load i32, ptr %t384
+  %t386 = load i32, ptr %t368
+  %t387 = call i32 @ieee_result_type(i32 %t386)
+  %t388 = icmp ne i32 %t385, %t387
+  store i1 %t388, ptr %t369
   br label %L87
 L87:
-  %t383 = load i1, ptr %t363
-  br i1 %t383, label %L88, label %L90
+  %t389 = load i1, ptr %t369
+  br i1 %t389, label %L88, label %L90
 L88:
-  %t384 = add i32 0, 0
-  ret i32 %t384
+  %t390 = add i32 0, 0
+  ret i32 %t390
 L90:
-  %t385 = load i32, ptr %t43
-  %t386 = sext i32 %t385 to i64
-  %t387 = load ptr, ptr %t0
-  %t388 = getelementptr %DeviceScalarPlan, ptr %t387, i32 0, i32 0
-  %t389 = load ptr, ptr %t388
-  %t390 = getelementptr %EIRNode, ptr %t389, i64 %t386
-  %t391 = getelementptr %EIRNode, ptr %t390, i32 0, i32 3
-  %t392 = load i32, ptr %t391
-  %t393 = sext i32 %t392 to i64
-  %t394 = load ptr, ptr %t0
-  %t395 = getelementptr %DeviceScalarPlan, ptr %t394, i32 0, i32 0
-  %t396 = load ptr, ptr %t395
-  %t397 = getelementptr %EIRNode, ptr %t396, i64 %t393
-  %t398 = getelementptr %EIRNode, ptr %t397, i32 0, i32 8
-  %t399 = load i32, ptr %t398
-  %t400 = load i32, ptr %t362
-  %t401 = call i32 @ieee_input_type(i32 %t400)
-  %t402 = icmp ne i32 %t399, %t401
-  br i1 %t402, label %L91, label %L93
+  %t391 = load i32, ptr %t49
+  %t392 = sext i32 %t391 to i64
+  %t393 = load ptr, ptr %t0
+  %t394 = getelementptr %DeviceScalarPlan, ptr %t393, i32 0, i32 0
+  %t395 = load ptr, ptr %t394
+  %t396 = getelementptr %EIRNode, ptr %t395, i64 %t392
+  %t397 = getelementptr %EIRNode, ptr %t396, i32 0, i32 3
+  %t398 = load i32, ptr %t397
+  %t399 = sext i32 %t398 to i64
+  %t400 = load ptr, ptr %t0
+  %t401 = getelementptr %DeviceScalarPlan, ptr %t400, i32 0, i32 0
+  %t402 = load ptr, ptr %t401
+  %t403 = getelementptr %EIRNode, ptr %t402, i64 %t399
+  %t404 = getelementptr %EIRNode, ptr %t403, i32 0, i32 8
+  %t405 = load i32, ptr %t404
+  %t406 = load i32, ptr %t368
+  %t407 = call i32 @ieee_input_type(i32 %t406)
+  %t408 = icmp ne i32 %t405, %t407
+  br i1 %t408, label %L91, label %L93
 L91:
-  %t403 = add i32 0, 0
-  ret i32 %t403
+  %t409 = add i32 0, 0
+  ret i32 %t409
 L93:
-  %t405 = load i32, ptr %t362
-  %t406 = call i32 @ieee_arity(i32 %t405)
-  %t407 = add i32 0, 2
-  %t408 = icmp sge i32 %t406, %t407
-  store i1 %t408, ptr %t404
-  br i1 %t408, label %L94, label %L95
+  %t411 = load i32, ptr %t368
+  %t412 = call i32 @ieee_arity(i32 %t411)
+  %t413 = add i32 0, 2
+  %t414 = icmp sge i32 %t412, %t413
+  store i1 %t414, ptr %t410
+  br i1 %t414, label %L94, label %L95
 L94:
-  %t409 = load i32, ptr %t43
-  %t410 = sext i32 %t409 to i64
-  %t411 = load ptr, ptr %t0
-  %t412 = getelementptr %DeviceScalarPlan, ptr %t411, i32 0, i32 0
-  %t413 = load ptr, ptr %t412
-  %t414 = getelementptr %EIRNode, ptr %t413, i64 %t410
-  %t415 = getelementptr %EIRNode, ptr %t414, i32 0, i32 4
-  %t416 = load i32, ptr %t415
-  %t417 = sext i32 %t416 to i64
-  %t418 = load ptr, ptr %t0
-  %t419 = getelementptr %DeviceScalarPlan, ptr %t418, i32 0, i32 0
-  %t420 = load ptr, ptr %t419
-  %t421 = getelementptr %EIRNode, ptr %t420, i64 %t417
-  %t422 = getelementptr %EIRNode, ptr %t421, i32 0, i32 8
-  %t423 = load i32, ptr %t422
-  %t424 = load i32, ptr %t362
-  %t425 = call i32 @ieee_input_type(i32 %t424)
-  %t426 = icmp ne i32 %t423, %t425
-  store i1 %t426, ptr %t404
+  %t415 = load i32, ptr %t49
+  %t416 = sext i32 %t415 to i64
+  %t417 = load ptr, ptr %t0
+  %t418 = getelementptr %DeviceScalarPlan, ptr %t417, i32 0, i32 0
+  %t419 = load ptr, ptr %t418
+  %t420 = getelementptr %EIRNode, ptr %t419, i64 %t416
+  %t421 = getelementptr %EIRNode, ptr %t420, i32 0, i32 4
+  %t422 = load i32, ptr %t421
+  %t423 = sext i32 %t422 to i64
+  %t424 = load ptr, ptr %t0
+  %t425 = getelementptr %DeviceScalarPlan, ptr %t424, i32 0, i32 0
+  %t426 = load ptr, ptr %t425
+  %t427 = getelementptr %EIRNode, ptr %t426, i64 %t423
+  %t428 = getelementptr %EIRNode, ptr %t427, i32 0, i32 8
+  %t429 = load i32, ptr %t428
+  %t430 = load i32, ptr %t368
+  %t431 = call i32 @ieee_input_type(i32 %t430)
+  %t432 = icmp ne i32 %t429, %t431
+  store i1 %t432, ptr %t410
   br label %L95
 L95:
-  %t427 = load i1, ptr %t404
-  br i1 %t427, label %L96, label %L98
+  %t433 = load i1, ptr %t410
+  br i1 %t433, label %L96, label %L98
 L96:
-  %t428 = add i32 0, 0
-  ret i32 %t428
+  %t434 = add i32 0, 0
+  ret i32 %t434
 L98:
-  %t430 = load i32, ptr %t362
-  %t431 = call i32 @ieee_arity(i32 %t430)
-  %t432 = add i32 0, 3
-  %t433 = icmp eq i32 %t431, %t432
-  store i1 %t433, ptr %t429
-  br i1 %t433, label %L99, label %L100
+  %t436 = load i32, ptr %t368
+  %t437 = call i32 @ieee_arity(i32 %t436)
+  %t438 = add i32 0, 3
+  %t439 = icmp eq i32 %t437, %t438
+  store i1 %t439, ptr %t435
+  br i1 %t439, label %L99, label %L100
 L99:
-  %t434 = load i32, ptr %t43
-  %t435 = sext i32 %t434 to i64
-  %t436 = load ptr, ptr %t0
-  %t437 = getelementptr %DeviceScalarPlan, ptr %t436, i32 0, i32 0
-  %t438 = load ptr, ptr %t437
-  %t439 = getelementptr %EIRNode, ptr %t438, i64 %t435
-  %t440 = getelementptr %EIRNode, ptr %t439, i32 0, i32 5
-  %t441 = load i32, ptr %t440
-  %t442 = sext i32 %t441 to i64
-  %t443 = load ptr, ptr %t0
-  %t444 = getelementptr %DeviceScalarPlan, ptr %t443, i32 0, i32 0
-  %t445 = load ptr, ptr %t444
-  %t446 = getelementptr %EIRNode, ptr %t445, i64 %t442
-  %t447 = getelementptr %EIRNode, ptr %t446, i32 0, i32 8
-  %t448 = load i32, ptr %t447
-  %t449 = load i32, ptr %t362
-  %t450 = call i32 @ieee_input_type(i32 %t449)
-  %t451 = icmp ne i32 %t448, %t450
-  store i1 %t451, ptr %t429
+  %t440 = load i32, ptr %t49
+  %t441 = sext i32 %t440 to i64
+  %t442 = load ptr, ptr %t0
+  %t443 = getelementptr %DeviceScalarPlan, ptr %t442, i32 0, i32 0
+  %t444 = load ptr, ptr %t443
+  %t445 = getelementptr %EIRNode, ptr %t444, i64 %t441
+  %t446 = getelementptr %EIRNode, ptr %t445, i32 0, i32 5
+  %t447 = load i32, ptr %t446
+  %t448 = sext i32 %t447 to i64
+  %t449 = load ptr, ptr %t0
+  %t450 = getelementptr %DeviceScalarPlan, ptr %t449, i32 0, i32 0
+  %t451 = load ptr, ptr %t450
+  %t452 = getelementptr %EIRNode, ptr %t451, i64 %t448
+  %t453 = getelementptr %EIRNode, ptr %t452, i32 0, i32 8
+  %t454 = load i32, ptr %t453
+  %t455 = load i32, ptr %t368
+  %t456 = call i32 @ieee_input_type(i32 %t455)
+  %t457 = icmp ne i32 %t454, %t456
+  store i1 %t457, ptr %t435
   br label %L100
 L100:
-  %t452 = load i1, ptr %t429
-  br i1 %t452, label %L101, label %L103
+  %t458 = load i1, ptr %t435
+  br i1 %t458, label %L101, label %L103
 L101:
-  %t453 = add i32 0, 0
-  ret i32 %t453
+  %t459 = add i32 0, 0
+  ret i32 %t459
 L103:
   br label %L83
 L82:
-  %t454 = load i32, ptr %t57
-  %t455 = load i32, ptr @DEVICE_BOUNDED_LOAD
-  %t456 = icmp eq i32 %t454, %t455
-  br i1 %t456, label %L104, label %L105
+  %t460 = load i32, ptr %t63
+  %t461 = load i32, ptr @DEVICE_BOUNDED_LOAD
+  %t462 = icmp eq i32 %t460, %t461
+  br i1 %t462, label %L104, label %L105
 L104:
-  %t463 = load ptr, ptr %t0
-  %t464 = getelementptr %DeviceScalarPlan, ptr %t463, i32 0, i32 27
-  %t465 = load i32, ptr %t464
-  %t466 = add i32 0, 1
-  %t467 = icmp ne i32 %t465, %t466
-  store i1 %t467, ptr %t462
-  br i1 %t467, label %L108, label %L107
+  %t469 = load ptr, ptr %t0
+  %t470 = getelementptr %DeviceScalarPlan, ptr %t469, i32 0, i32 27
+  %t471 = load i32, ptr %t470
+  %t472 = add i32 0, 1
+  %t473 = icmp ne i32 %t471, %t472
+  store i1 %t473, ptr %t468
+  br i1 %t473, label %L108, label %L107
 L107:
-  %t468 = load i32, ptr %t43
-  %t469 = sext i32 %t468 to i64
-  %t470 = load ptr, ptr %t0
-  %t471 = getelementptr %DeviceScalarPlan, ptr %t470, i32 0, i32 0
-  %t472 = load ptr, ptr %t471
-  %t473 = getelementptr %EIRNode, ptr %t472, i64 %t469
-  %t474 = getelementptr %EIRNode, ptr %t473, i32 0, i32 8
-  %t475 = load i32, ptr %t474
-  %t476 = getelementptr [4 x i8], ptr @.str.6207, i32 0, i32 0
-  %t477 = call i32 @str_intern(ptr %t476)
-  %t478 = icmp ne i32 %t475, %t477
-  store i1 %t478, ptr %t462
+  %t474 = load i32, ptr %t49
+  %t475 = sext i32 %t474 to i64
+  %t476 = load ptr, ptr %t0
+  %t477 = getelementptr %DeviceScalarPlan, ptr %t476, i32 0, i32 0
+  %t478 = load ptr, ptr %t477
+  %t479 = getelementptr %EIRNode, ptr %t478, i64 %t475
+  %t480 = getelementptr %EIRNode, ptr %t479, i32 0, i32 8
+  %t481 = load i32, ptr %t480
+  %t482 = getelementptr [4 x i8], ptr @.str.6207, i32 0, i32 0
+  %t483 = call i32 @str_intern(ptr %t482)
+  %t484 = icmp ne i32 %t481, %t483
+  store i1 %t484, ptr %t468
   br label %L108
 L108:
-  %t479 = load i1, ptr %t462
-  store i1 %t479, ptr %t461
-  br i1 %t479, label %L110, label %L109
+  %t485 = load i1, ptr %t468
+  store i1 %t485, ptr %t467
+  br i1 %t485, label %L110, label %L109
 L109:
-  %t480 = load i32, ptr %t43
-  %t481 = sext i32 %t480 to i64
-  %t482 = load ptr, ptr %t0
-  %t483 = getelementptr %DeviceScalarPlan, ptr %t482, i32 0, i32 0
-  %t484 = load ptr, ptr %t483
-  %t485 = getelementptr %EIRNode, ptr %t484, i64 %t481
-  %t486 = getelementptr %EIRNode, ptr %t485, i32 0, i32 3
-  %t487 = load i32, ptr %t486
-  %t488 = sext i32 %t487 to i64
-  %t489 = load ptr, ptr %t0
-  %t490 = getelementptr %DeviceScalarPlan, ptr %t489, i32 0, i32 0
-  %t491 = load ptr, ptr %t490
-  %t492 = getelementptr %EIRNode, ptr %t491, i64 %t488
-  %t493 = getelementptr %EIRNode, ptr %t492, i32 0, i32 0
-  %t494 = load i32, ptr %t493
-  %t495 = load i32, ptr @EIR_LOCAL
-  %t496 = icmp ne i32 %t494, %t495
-  store i1 %t496, ptr %t461
+  %t486 = load i32, ptr %t49
+  %t487 = sext i32 %t486 to i64
+  %t488 = load ptr, ptr %t0
+  %t489 = getelementptr %DeviceScalarPlan, ptr %t488, i32 0, i32 0
+  %t490 = load ptr, ptr %t489
+  %t491 = getelementptr %EIRNode, ptr %t490, i64 %t487
+  %t492 = getelementptr %EIRNode, ptr %t491, i32 0, i32 3
+  %t493 = load i32, ptr %t492
+  %t494 = sext i32 %t493 to i64
+  %t495 = load ptr, ptr %t0
+  %t496 = getelementptr %DeviceScalarPlan, ptr %t495, i32 0, i32 0
+  %t497 = load ptr, ptr %t496
+  %t498 = getelementptr %EIRNode, ptr %t497, i64 %t494
+  %t499 = getelementptr %EIRNode, ptr %t498, i32 0, i32 0
+  %t500 = load i32, ptr %t499
+  %t501 = load i32, ptr @EIR_LOCAL
+  %t502 = icmp ne i32 %t500, %t501
+  store i1 %t502, ptr %t467
   br label %L110
 L110:
-  %t497 = load i1, ptr %t461
-  store i1 %t497, ptr %t460
-  br i1 %t497, label %L112, label %L111
+  %t503 = load i1, ptr %t467
+  store i1 %t503, ptr %t466
+  br i1 %t503, label %L112, label %L111
 L111:
-  %t498 = load i32, ptr %t43
-  %t499 = sext i32 %t498 to i64
-  %t500 = load ptr, ptr %t0
-  %t501 = getelementptr %DeviceScalarPlan, ptr %t500, i32 0, i32 0
-  %t502 = load ptr, ptr %t501
-  %t503 = getelementptr %EIRNode, ptr %t502, i64 %t499
-  %t504 = getelementptr %EIRNode, ptr %t503, i32 0, i32 3
-  %t505 = load i32, ptr %t504
-  %t506 = sext i32 %t505 to i64
-  %t507 = load ptr, ptr %t0
-  %t508 = getelementptr %DeviceScalarPlan, ptr %t507, i32 0, i32 0
-  %t509 = load ptr, ptr %t508
-  %t510 = getelementptr %EIRNode, ptr %t509, i64 %t506
-  %t511 = getelementptr %EIRNode, ptr %t510, i32 0, i32 8
-  %t512 = load i32, ptr %t511
-  %t513 = getelementptr [5 x i8], ptr @.str.6208, i32 0, i32 0
-  %t514 = call i32 @str_intern(ptr %t513)
-  %t515 = icmp ne i32 %t512, %t514
-  store i1 %t515, ptr %t460
+  %t504 = load i32, ptr %t49
+  %t505 = sext i32 %t504 to i64
+  %t506 = load ptr, ptr %t0
+  %t507 = getelementptr %DeviceScalarPlan, ptr %t506, i32 0, i32 0
+  %t508 = load ptr, ptr %t507
+  %t509 = getelementptr %EIRNode, ptr %t508, i64 %t505
+  %t510 = getelementptr %EIRNode, ptr %t509, i32 0, i32 3
+  %t511 = load i32, ptr %t510
+  %t512 = sext i32 %t511 to i64
+  %t513 = load ptr, ptr %t0
+  %t514 = getelementptr %DeviceScalarPlan, ptr %t513, i32 0, i32 0
+  %t515 = load ptr, ptr %t514
+  %t516 = getelementptr %EIRNode, ptr %t515, i64 %t512
+  %t517 = getelementptr %EIRNode, ptr %t516, i32 0, i32 8
+  %t518 = load i32, ptr %t517
+  %t519 = getelementptr [5 x i8], ptr @.str.6208, i32 0, i32 0
+  %t520 = call i32 @str_intern(ptr %t519)
+  %t521 = icmp ne i32 %t518, %t520
+  store i1 %t521, ptr %t466
   br label %L112
 L112:
-  %t516 = load i1, ptr %t460
-  store i1 %t516, ptr %t459
-  br i1 %t516, label %L114, label %L113
+  %t522 = load i1, ptr %t466
+  store i1 %t522, ptr %t465
+  br i1 %t522, label %L114, label %L113
 L113:
-  %t517 = load i32, ptr %t43
-  %t518 = sext i32 %t517 to i64
-  %t519 = load ptr, ptr %t0
-  %t520 = getelementptr %DeviceScalarPlan, ptr %t519, i32 0, i32 0
-  %t521 = load ptr, ptr %t520
-  %t522 = getelementptr %EIRNode, ptr %t521, i64 %t518
-  %t523 = getelementptr %EIRNode, ptr %t522, i32 0, i32 4
-  %t524 = load i32, ptr %t523
-  %t525 = sext i32 %t524 to i64
-  %t526 = load ptr, ptr %t0
-  %t527 = getelementptr %DeviceScalarPlan, ptr %t526, i32 0, i32 0
-  %t528 = load ptr, ptr %t527
-  %t529 = getelementptr %EIRNode, ptr %t528, i64 %t525
-  %t530 = getelementptr %EIRNode, ptr %t529, i32 0, i32 0
-  %t531 = load i32, ptr %t530
-  %t532 = load i32, ptr @EIR_LOCAL
-  %t533 = icmp ne i32 %t531, %t532
-  store i1 %t533, ptr %t459
+  %t523 = load i32, ptr %t49
+  %t524 = sext i32 %t523 to i64
+  %t525 = load ptr, ptr %t0
+  %t526 = getelementptr %DeviceScalarPlan, ptr %t525, i32 0, i32 0
+  %t527 = load ptr, ptr %t526
+  %t528 = getelementptr %EIRNode, ptr %t527, i64 %t524
+  %t529 = getelementptr %EIRNode, ptr %t528, i32 0, i32 4
+  %t530 = load i32, ptr %t529
+  %t531 = sext i32 %t530 to i64
+  %t532 = load ptr, ptr %t0
+  %t533 = getelementptr %DeviceScalarPlan, ptr %t532, i32 0, i32 0
+  %t534 = load ptr, ptr %t533
+  %t535 = getelementptr %EIRNode, ptr %t534, i64 %t531
+  %t536 = getelementptr %EIRNode, ptr %t535, i32 0, i32 0
+  %t537 = load i32, ptr %t536
+  %t538 = load i32, ptr @EIR_LOCAL
+  %t539 = icmp ne i32 %t537, %t538
+  store i1 %t539, ptr %t465
   br label %L114
 L114:
-  %t534 = load i1, ptr %t459
-  store i1 %t534, ptr %t458
-  br i1 %t534, label %L116, label %L115
+  %t540 = load i1, ptr %t465
+  store i1 %t540, ptr %t464
+  br i1 %t540, label %L116, label %L115
 L115:
-  %t535 = load i32, ptr %t43
-  %t536 = sext i32 %t535 to i64
-  %t537 = load ptr, ptr %t0
-  %t538 = getelementptr %DeviceScalarPlan, ptr %t537, i32 0, i32 0
-  %t539 = load ptr, ptr %t538
-  %t540 = getelementptr %EIRNode, ptr %t539, i64 %t536
-  %t541 = getelementptr %EIRNode, ptr %t540, i32 0, i32 4
-  %t542 = load i32, ptr %t541
-  %t543 = sext i32 %t542 to i64
-  %t544 = load ptr, ptr %t0
-  %t545 = getelementptr %DeviceScalarPlan, ptr %t544, i32 0, i32 0
-  %t546 = load ptr, ptr %t545
-  %t547 = getelementptr %EIRNode, ptr %t546, i64 %t543
-  %t548 = getelementptr %EIRNode, ptr %t547, i32 0, i32 8
-  %t549 = load i32, ptr %t548
-  %t550 = getelementptr [4 x i8], ptr @.str.6209, i32 0, i32 0
-  %t551 = call i32 @str_intern(ptr %t550)
-  %t552 = icmp ne i32 %t549, %t551
-  store i1 %t552, ptr %t458
+  %t541 = load i32, ptr %t49
+  %t542 = sext i32 %t541 to i64
+  %t543 = load ptr, ptr %t0
+  %t544 = getelementptr %DeviceScalarPlan, ptr %t543, i32 0, i32 0
+  %t545 = load ptr, ptr %t544
+  %t546 = getelementptr %EIRNode, ptr %t545, i64 %t542
+  %t547 = getelementptr %EIRNode, ptr %t546, i32 0, i32 4
+  %t548 = load i32, ptr %t547
+  %t549 = sext i32 %t548 to i64
+  %t550 = load ptr, ptr %t0
+  %t551 = getelementptr %DeviceScalarPlan, ptr %t550, i32 0, i32 0
+  %t552 = load ptr, ptr %t551
+  %t553 = getelementptr %EIRNode, ptr %t552, i64 %t549
+  %t554 = getelementptr %EIRNode, ptr %t553, i32 0, i32 8
+  %t555 = load i32, ptr %t554
+  %t556 = getelementptr [4 x i8], ptr @.str.6209, i32 0, i32 0
+  %t557 = call i32 @str_intern(ptr %t556)
+  %t558 = icmp ne i32 %t555, %t557
+  store i1 %t558, ptr %t464
   br label %L116
 L116:
-  %t553 = load i1, ptr %t458
-  store i1 %t553, ptr %t457
-  br i1 %t553, label %L118, label %L117
+  %t559 = load i1, ptr %t464
+  store i1 %t559, ptr %t463
+  br i1 %t559, label %L118, label %L117
 L117:
-  %t554 = load i32, ptr %t43
-  %t555 = sext i32 %t554 to i64
-  %t556 = load ptr, ptr %t0
-  %t557 = getelementptr %DeviceScalarPlan, ptr %t556, i32 0, i32 0
-  %t558 = load ptr, ptr %t557
-  %t559 = getelementptr %EIRNode, ptr %t558, i64 %t555
-  %t560 = getelementptr %EIRNode, ptr %t559, i32 0, i32 5
-  %t561 = load i32, ptr %t560
-  %t562 = sext i32 %t561 to i64
-  %t563 = load ptr, ptr %t0
-  %t564 = getelementptr %DeviceScalarPlan, ptr %t563, i32 0, i32 0
-  %t565 = load ptr, ptr %t564
-  %t566 = getelementptr %EIRNode, ptr %t565, i64 %t562
-  %t567 = getelementptr %EIRNode, ptr %t566, i32 0, i32 8
-  %t568 = load i32, ptr %t567
-  %t569 = getelementptr [4 x i8], ptr @.str.6210, i32 0, i32 0
-  %t570 = call i32 @str_intern(ptr %t569)
-  %t571 = icmp ne i32 %t568, %t570
-  store i1 %t571, ptr %t457
+  %t560 = load i32, ptr %t49
+  %t561 = sext i32 %t560 to i64
+  %t562 = load ptr, ptr %t0
+  %t563 = getelementptr %DeviceScalarPlan, ptr %t562, i32 0, i32 0
+  %t564 = load ptr, ptr %t563
+  %t565 = getelementptr %EIRNode, ptr %t564, i64 %t561
+  %t566 = getelementptr %EIRNode, ptr %t565, i32 0, i32 5
+  %t567 = load i32, ptr %t566
+  %t568 = sext i32 %t567 to i64
+  %t569 = load ptr, ptr %t0
+  %t570 = getelementptr %DeviceScalarPlan, ptr %t569, i32 0, i32 0
+  %t571 = load ptr, ptr %t570
+  %t572 = getelementptr %EIRNode, ptr %t571, i64 %t568
+  %t573 = getelementptr %EIRNode, ptr %t572, i32 0, i32 8
+  %t574 = load i32, ptr %t573
+  %t575 = getelementptr [4 x i8], ptr @.str.6210, i32 0, i32 0
+  %t576 = call i32 @str_intern(ptr %t575)
+  %t577 = icmp ne i32 %t574, %t576
+  store i1 %t577, ptr %t463
   br label %L118
 L118:
-  %t572 = load i1, ptr %t457
-  br i1 %t572, label %L119, label %L121
+  %t578 = load i1, ptr %t463
+  br i1 %t578, label %L119, label %L121
 L119:
-  %t573 = add i32 0, 0
-  ret i32 %t573
+  %t579 = add i32 0, 0
+  ret i32 %t579
 L121:
   br label %L106
 L105:
-  %t575 = load i32, ptr %t57
-  %t576 = load i32, ptr @DEVICE_ATOMIC_ADD
-  %t577 = icmp eq i32 %t575, %t576
-  store i1 %t577, ptr %t574
-  br i1 %t577, label %L123, label %L122
+  %t581 = load i32, ptr %t63
+  %t582 = load i32, ptr @DEVICE_ATOMIC_ADD
+  %t583 = icmp eq i32 %t581, %t582
+  store i1 %t583, ptr %t580
+  br i1 %t583, label %L123, label %L122
 L122:
-  %t578 = load i32, ptr %t57
-  %t579 = load i32, ptr @DEVICE_SHARED_ATOMIC
-  %t580 = icmp eq i32 %t578, %t579
-  store i1 %t580, ptr %t574
+  %t584 = load i32, ptr %t63
+  %t585 = load i32, ptr @DEVICE_SHARED_ATOMIC
+  %t586 = icmp eq i32 %t584, %t585
+  store i1 %t586, ptr %t580
   br label %L123
 L123:
-  %t581 = load i1, ptr %t574
-  br i1 %t581, label %L124, label %L125
+  %t587 = load i1, ptr %t580
+  br i1 %t587, label %L124, label %L125
 L124:
-  %t582 = load i32, ptr %t43
-  %t583 = sext i32 %t582 to i64
-  %t584 = load ptr, ptr %t0
-  %t585 = getelementptr %DeviceScalarPlan, ptr %t584, i32 0, i32 0
-  %t586 = load ptr, ptr %t585
-  %t587 = getelementptr %EIRNode, ptr %t586, i64 %t583
-  %t588 = getelementptr %EIRNode, ptr %t587, i32 0, i32 8
-  %t589 = load i32, ptr %t588
-  store i32 %t589, ptr %t590
-  %t596 = load ptr, ptr %t0
-  %t597 = getelementptr %DeviceScalarPlan, ptr %t596, i32 0, i32 27
-  %t598 = load i32, ptr %t597
-  %t599 = add i32 0, 1
-  %t600 = icmp ne i32 %t598, %t599
-  store i1 %t600, ptr %t595
-  br i1 %t600, label %L128, label %L127
+  %t588 = load i32, ptr %t49
+  %t589 = sext i32 %t588 to i64
+  %t590 = load ptr, ptr %t0
+  %t591 = getelementptr %DeviceScalarPlan, ptr %t590, i32 0, i32 0
+  %t592 = load ptr, ptr %t591
+  %t593 = getelementptr %EIRNode, ptr %t592, i64 %t589
+  %t594 = getelementptr %EIRNode, ptr %t593, i32 0, i32 8
+  %t595 = load i32, ptr %t594
+  store i32 %t595, ptr %t596
+  %t602 = load ptr, ptr %t0
+  %t603 = getelementptr %DeviceScalarPlan, ptr %t602, i32 0, i32 27
+  %t604 = load i32, ptr %t603
+  %t605 = add i32 0, 1
+  %t606 = icmp ne i32 %t604, %t605
+  store i1 %t606, ptr %t601
+  br i1 %t606, label %L128, label %L127
 L127:
-  %t602 = load i32, ptr %t590
-  %t603 = getelementptr [4 x i8], ptr @.str.6211, i32 0, i32 0
-  %t604 = call i32 @str_intern(ptr %t603)
-  %t605 = icmp ne i32 %t602, %t604
-  store i1 %t605, ptr %t601
-  br i1 %t605, label %L129, label %L130
+  %t608 = load i32, ptr %t596
+  %t609 = getelementptr [4 x i8], ptr @.str.6211, i32 0, i32 0
+  %t610 = call i32 @str_intern(ptr %t609)
+  %t611 = icmp ne i32 %t608, %t610
+  store i1 %t611, ptr %t607
+  br i1 %t611, label %L129, label %L130
 L129:
-  %t606 = load i32, ptr %t590
-  %t607 = getelementptr [4 x i8], ptr @.str.6212, i32 0, i32 0
-  %t608 = call i32 @str_intern(ptr %t607)
-  %t609 = icmp ne i32 %t606, %t608
-  store i1 %t609, ptr %t601
+  %t612 = load i32, ptr %t596
+  %t613 = getelementptr [4 x i8], ptr @.str.6212, i32 0, i32 0
+  %t614 = call i32 @str_intern(ptr %t613)
+  %t615 = icmp ne i32 %t612, %t614
+  store i1 %t615, ptr %t607
   br label %L130
 L130:
-  %t610 = load i1, ptr %t601
-  store i1 %t610, ptr %t595
+  %t616 = load i1, ptr %t607
+  store i1 %t616, ptr %t601
   br label %L128
 L128:
-  %t611 = load i1, ptr %t595
-  store i1 %t611, ptr %t594
-  br i1 %t611, label %L132, label %L131
+  %t617 = load i1, ptr %t601
+  store i1 %t617, ptr %t600
+  br i1 %t617, label %L132, label %L131
 L131:
-  %t612 = load i32, ptr %t43
-  %t613 = sext i32 %t612 to i64
-  %t614 = load ptr, ptr %t0
-  %t615 = getelementptr %DeviceScalarPlan, ptr %t614, i32 0, i32 0
-  %t616 = load ptr, ptr %t615
-  %t617 = getelementptr %EIRNode, ptr %t616, i64 %t613
-  %t618 = getelementptr %EIRNode, ptr %t617, i32 0, i32 4
-  %t619 = load i32, ptr %t618
-  %t620 = sext i32 %t619 to i64
-  %t621 = load ptr, ptr %t0
-  %t622 = getelementptr %DeviceScalarPlan, ptr %t621, i32 0, i32 0
-  %t623 = load ptr, ptr %t622
-  %t624 = getelementptr %EIRNode, ptr %t623, i64 %t620
-  %t625 = getelementptr %EIRNode, ptr %t624, i32 0, i32 8
-  %t626 = load i32, ptr %t625
-  %t627 = getelementptr [4 x i8], ptr @.str.6213, i32 0, i32 0
-  %t628 = call i32 @str_intern(ptr %t627)
-  %t629 = icmp ne i32 %t626, %t628
-  store i1 %t629, ptr %t594
+  %t618 = load i32, ptr %t49
+  %t619 = sext i32 %t618 to i64
+  %t620 = load ptr, ptr %t0
+  %t621 = getelementptr %DeviceScalarPlan, ptr %t620, i32 0, i32 0
+  %t622 = load ptr, ptr %t621
+  %t623 = getelementptr %EIRNode, ptr %t622, i64 %t619
+  %t624 = getelementptr %EIRNode, ptr %t623, i32 0, i32 4
+  %t625 = load i32, ptr %t624
+  %t626 = sext i32 %t625 to i64
+  %t627 = load ptr, ptr %t0
+  %t628 = getelementptr %DeviceScalarPlan, ptr %t627, i32 0, i32 0
+  %t629 = load ptr, ptr %t628
+  %t630 = getelementptr %EIRNode, ptr %t629, i64 %t626
+  %t631 = getelementptr %EIRNode, ptr %t630, i32 0, i32 8
+  %t632 = load i32, ptr %t631
+  %t633 = getelementptr [4 x i8], ptr @.str.6213, i32 0, i32 0
+  %t634 = call i32 @str_intern(ptr %t633)
+  %t635 = icmp ne i32 %t632, %t634
+  store i1 %t635, ptr %t600
   br label %L132
 L132:
-  %t630 = load i1, ptr %t594
-  store i1 %t630, ptr %t593
-  br i1 %t630, label %L134, label %L133
+  %t636 = load i1, ptr %t600
+  store i1 %t636, ptr %t599
+  br i1 %t636, label %L134, label %L133
 L133:
-  %t631 = load i32, ptr %t43
-  %t632 = sext i32 %t631 to i64
-  %t633 = load ptr, ptr %t0
-  %t634 = getelementptr %DeviceScalarPlan, ptr %t633, i32 0, i32 0
-  %t635 = load ptr, ptr %t634
-  %t636 = getelementptr %EIRNode, ptr %t635, i64 %t632
-  %t637 = getelementptr %EIRNode, ptr %t636, i32 0, i32 5
-  %t638 = load i32, ptr %t637
-  %t639 = sext i32 %t638 to i64
-  %t640 = load ptr, ptr %t0
-  %t641 = getelementptr %DeviceScalarPlan, ptr %t640, i32 0, i32 0
-  %t642 = load ptr, ptr %t641
-  %t643 = getelementptr %EIRNode, ptr %t642, i64 %t639
-  %t644 = getelementptr %EIRNode, ptr %t643, i32 0, i32 8
-  %t645 = load i32, ptr %t644
-  %t646 = getelementptr [4 x i8], ptr @.str.6214, i32 0, i32 0
-  %t647 = call i32 @str_intern(ptr %t646)
-  %t648 = icmp ne i32 %t645, %t647
-  store i1 %t648, ptr %t593
+  %t637 = load i32, ptr %t49
+  %t638 = sext i32 %t637 to i64
+  %t639 = load ptr, ptr %t0
+  %t640 = getelementptr %DeviceScalarPlan, ptr %t639, i32 0, i32 0
+  %t641 = load ptr, ptr %t640
+  %t642 = getelementptr %EIRNode, ptr %t641, i64 %t638
+  %t643 = getelementptr %EIRNode, ptr %t642, i32 0, i32 5
+  %t644 = load i32, ptr %t643
+  %t645 = sext i32 %t644 to i64
+  %t646 = load ptr, ptr %t0
+  %t647 = getelementptr %DeviceScalarPlan, ptr %t646, i32 0, i32 0
+  %t648 = load ptr, ptr %t647
+  %t649 = getelementptr %EIRNode, ptr %t648, i64 %t645
+  %t650 = getelementptr %EIRNode, ptr %t649, i32 0, i32 8
+  %t651 = load i32, ptr %t650
+  %t652 = getelementptr [4 x i8], ptr @.str.6214, i32 0, i32 0
+  %t653 = call i32 @str_intern(ptr %t652)
+  %t654 = icmp ne i32 %t651, %t653
+  store i1 %t654, ptr %t599
   br label %L134
 L134:
-  %t649 = load i1, ptr %t593
-  store i1 %t649, ptr %t592
-  br i1 %t649, label %L136, label %L135
+  %t655 = load i1, ptr %t599
+  store i1 %t655, ptr %t598
+  br i1 %t655, label %L136, label %L135
 L135:
-  %t650 = load i32, ptr %t43
-  %t651 = sext i32 %t650 to i64
-  %t652 = load ptr, ptr %t0
-  %t653 = getelementptr %DeviceScalarPlan, ptr %t652, i32 0, i32 0
-  %t654 = load ptr, ptr %t653
-  %t655 = getelementptr %EIRNode, ptr %t654, i64 %t651
-  %t656 = getelementptr %EIRNode, ptr %t655, i32 0, i32 1
-  %t657 = load i32, ptr %t656
-  %t658 = sext i32 %t657 to i64
-  %t659 = load ptr, ptr %t0
-  %t660 = getelementptr %DeviceScalarPlan, ptr %t659, i32 0, i32 0
-  %t661 = load ptr, ptr %t660
-  %t662 = getelementptr %EIRNode, ptr %t661, i64 %t658
-  %t663 = getelementptr %EIRNode, ptr %t662, i32 0, i32 8
-  %t664 = load i32, ptr %t663
-  %t665 = load i32, ptr %t590
-  %t666 = icmp ne i32 %t664, %t665
-  store i1 %t666, ptr %t592
+  %t656 = load i32, ptr %t49
+  %t657 = sext i32 %t656 to i64
+  %t658 = load ptr, ptr %t0
+  %t659 = getelementptr %DeviceScalarPlan, ptr %t658, i32 0, i32 0
+  %t660 = load ptr, ptr %t659
+  %t661 = getelementptr %EIRNode, ptr %t660, i64 %t657
+  %t662 = getelementptr %EIRNode, ptr %t661, i32 0, i32 1
+  %t663 = load i32, ptr %t662
+  %t664 = sext i32 %t663 to i64
+  %t665 = load ptr, ptr %t0
+  %t666 = getelementptr %DeviceScalarPlan, ptr %t665, i32 0, i32 0
+  %t667 = load ptr, ptr %t666
+  %t668 = getelementptr %EIRNode, ptr %t667, i64 %t664
+  %t669 = getelementptr %EIRNode, ptr %t668, i32 0, i32 8
+  %t670 = load i32, ptr %t669
+  %t671 = load i32, ptr %t596
+  %t672 = icmp ne i32 %t670, %t671
+  store i1 %t672, ptr %t598
   br label %L136
 L136:
-  %t667 = load i1, ptr %t592
-  store i1 %t667, ptr %t591
-  br i1 %t667, label %L138, label %L137
+  %t673 = load i1, ptr %t598
+  store i1 %t673, ptr %t597
+  br i1 %t673, label %L138, label %L137
 L137:
-  %t668 = load i32, ptr %t43
-  %t669 = sext i32 %t668 to i64
-  %t670 = load ptr, ptr %t0
-  %t671 = getelementptr %DeviceScalarPlan, ptr %t670, i32 0, i32 0
-  %t672 = load ptr, ptr %t671
-  %t673 = getelementptr %EIRNode, ptr %t672, i64 %t669
-  %t674 = getelementptr %EIRNode, ptr %t673, i32 0, i32 10
-  %t675 = load i64, ptr %t674
-  %t676 = add i64 0, 3
-  %t677 = icmp ugt i64 %t675, %t676
-  store i1 %t677, ptr %t591
+  %t674 = load i32, ptr %t49
+  %t675 = sext i32 %t674 to i64
+  %t676 = load ptr, ptr %t0
+  %t677 = getelementptr %DeviceScalarPlan, ptr %t676, i32 0, i32 0
+  %t678 = load ptr, ptr %t677
+  %t679 = getelementptr %EIRNode, ptr %t678, i64 %t675
+  %t680 = getelementptr %EIRNode, ptr %t679, i32 0, i32 10
+  %t681 = load i64, ptr %t680
+  %t682 = add i64 0, 3
+  %t683 = icmp ugt i64 %t681, %t682
+  store i1 %t683, ptr %t597
   br label %L138
 L138:
-  %t678 = load i1, ptr %t591
-  br i1 %t678, label %L139, label %L141
+  %t684 = load i1, ptr %t597
+  br i1 %t684, label %L139, label %L141
 L139:
-  %t679 = add i32 0, 0
-  ret i32 %t679
+  %t685 = add i32 0, 0
+  ret i32 %t685
 L141:
-  %t681 = load i32, ptr %t43
-  %t682 = sext i32 %t681 to i64
-  %t683 = load ptr, ptr %t0
-  %t684 = getelementptr %DeviceScalarPlan, ptr %t683, i32 0, i32 0
-  %t685 = load ptr, ptr %t684
-  %t686 = getelementptr %EIRNode, ptr %t685, i64 %t682
-  %t687 = getelementptr %EIRNode, ptr %t686, i32 0, i32 6
-  %t688 = load i32, ptr %t687
-  %t689 = add i32 0, 0
-  %t690 = icmp slt i32 %t688, %t689
-  store i1 %t690, ptr %t680
-  br i1 %t690, label %L143, label %L142
+  %t687 = load i32, ptr %t49
+  %t688 = sext i32 %t687 to i64
+  %t689 = load ptr, ptr %t0
+  %t690 = getelementptr %DeviceScalarPlan, ptr %t689, i32 0, i32 0
+  %t691 = load ptr, ptr %t690
+  %t692 = getelementptr %EIRNode, ptr %t691, i64 %t688
+  %t693 = getelementptr %EIRNode, ptr %t692, i32 0, i32 6
+  %t694 = load i32, ptr %t693
+  %t695 = add i32 0, 0
+  %t696 = icmp slt i32 %t694, %t695
+  store i1 %t696, ptr %t686
+  br i1 %t696, label %L143, label %L142
 L142:
-  %t691 = load i32, ptr %t43
-  %t692 = sext i32 %t691 to i64
-  %t693 = load ptr, ptr %t0
-  %t694 = getelementptr %DeviceScalarPlan, ptr %t693, i32 0, i32 0
-  %t695 = load ptr, ptr %t694
-  %t696 = getelementptr %EIRNode, ptr %t695, i64 %t692
-  %t697 = getelementptr %EIRNode, ptr %t696, i32 0, i32 6
-  %t698 = load i32, ptr %t697
-  %t699 = add i32 0, 2
-  %t700 = icmp sgt i32 %t698, %t699
-  store i1 %t700, ptr %t680
+  %t697 = load i32, ptr %t49
+  %t698 = sext i32 %t697 to i64
+  %t699 = load ptr, ptr %t0
+  %t700 = getelementptr %DeviceScalarPlan, ptr %t699, i32 0, i32 0
+  %t701 = load ptr, ptr %t700
+  %t702 = getelementptr %EIRNode, ptr %t701, i64 %t698
+  %t703 = getelementptr %EIRNode, ptr %t702, i32 0, i32 6
+  %t704 = load i32, ptr %t703
+  %t705 = add i32 0, 2
+  %t706 = icmp sgt i32 %t704, %t705
+  store i1 %t706, ptr %t686
   br label %L143
 L143:
-  %t701 = load i1, ptr %t680
-  br i1 %t701, label %L144, label %L146
+  %t707 = load i1, ptr %t686
+  br i1 %t707, label %L144, label %L146
 L144:
-  %t702 = add i32 0, 0
-  ret i32 %t702
+  %t708 = add i32 0, 0
+  ret i32 %t708
 L146:
-  %t704 = load i32, ptr %t43
-  %t705 = sext i32 %t704 to i64
-  %t706 = load ptr, ptr %t0
-  %t707 = getelementptr %DeviceScalarPlan, ptr %t706, i32 0, i32 0
-  %t708 = load ptr, ptr %t707
-  %t709 = getelementptr %EIRNode, ptr %t708, i64 %t705
-  %t710 = getelementptr %EIRNode, ptr %t709, i32 0, i32 6
-  %t711 = load i32, ptr %t710
-  %t712 = add i32 0, 2
-  %t713 = icmp eq i32 %t711, %t712
-  store i1 %t713, ptr %t703
-  br i1 %t713, label %L147, label %L148
+  %t710 = load i32, ptr %t49
+  %t711 = sext i32 %t710 to i64
+  %t712 = load ptr, ptr %t0
+  %t713 = getelementptr %DeviceScalarPlan, ptr %t712, i32 0, i32 0
+  %t714 = load ptr, ptr %t713
+  %t715 = getelementptr %EIRNode, ptr %t714, i64 %t711
+  %t716 = getelementptr %EIRNode, ptr %t715, i32 0, i32 6
+  %t717 = load i32, ptr %t716
+  %t718 = add i32 0, 2
+  %t719 = icmp eq i32 %t717, %t718
+  store i1 %t719, ptr %t709
+  br i1 %t719, label %L147, label %L148
 L147:
-  %t714 = load i32, ptr %t43
-  %t715 = sext i32 %t714 to i64
-  %t716 = load ptr, ptr %t0
-  %t717 = getelementptr %DeviceScalarPlan, ptr %t716, i32 0, i32 0
-  %t718 = load ptr, ptr %t717
-  %t719 = getelementptr %EIRNode, ptr %t718, i64 %t715
-  %t720 = getelementptr %EIRNode, ptr %t719, i32 0, i32 7
-  %t721 = load i32, ptr %t720
-  %t722 = sext i32 %t721 to i64
-  %t723 = load ptr, ptr %t0
-  %t724 = getelementptr %DeviceScalarPlan, ptr %t723, i32 0, i32 0
-  %t725 = load ptr, ptr %t724
-  %t726 = getelementptr %EIRNode, ptr %t725, i64 %t722
-  %t727 = getelementptr %EIRNode, ptr %t726, i32 0, i32 8
-  %t728 = load i32, ptr %t727
-  %t729 = load i32, ptr %t590
-  %t730 = icmp ne i32 %t728, %t729
-  store i1 %t730, ptr %t703
+  %t720 = load i32, ptr %t49
+  %t721 = sext i32 %t720 to i64
+  %t722 = load ptr, ptr %t0
+  %t723 = getelementptr %DeviceScalarPlan, ptr %t722, i32 0, i32 0
+  %t724 = load ptr, ptr %t723
+  %t725 = getelementptr %EIRNode, ptr %t724, i64 %t721
+  %t726 = getelementptr %EIRNode, ptr %t725, i32 0, i32 7
+  %t727 = load i32, ptr %t726
+  %t728 = sext i32 %t727 to i64
+  %t729 = load ptr, ptr %t0
+  %t730 = getelementptr %DeviceScalarPlan, ptr %t729, i32 0, i32 0
+  %t731 = load ptr, ptr %t730
+  %t732 = getelementptr %EIRNode, ptr %t731, i64 %t728
+  %t733 = getelementptr %EIRNode, ptr %t732, i32 0, i32 8
+  %t734 = load i32, ptr %t733
+  %t735 = load i32, ptr %t596
+  %t736 = icmp ne i32 %t734, %t735
+  store i1 %t736, ptr %t709
   br label %L148
 L148:
-  %t731 = load i1, ptr %t703
-  br i1 %t731, label %L149, label %L151
+  %t737 = load i1, ptr %t709
+  br i1 %t737, label %L149, label %L151
 L149:
-  %t732 = add i32 0, 0
-  ret i32 %t732
+  %t738 = add i32 0, 0
+  ret i32 %t738
 L151:
-  %t733 = load i32, ptr %t57
-  %t734 = load i32, ptr @DEVICE_ATOMIC_ADD
-  %t735 = icmp eq i32 %t733, %t734
-  br i1 %t735, label %L152, label %L153
+  %t739 = load i32, ptr %t63
+  %t740 = load i32, ptr @DEVICE_ATOMIC_ADD
+  %t741 = icmp eq i32 %t739, %t740
+  br i1 %t741, label %L152, label %L153
 L152:
-  %t738 = load i32, ptr %t43
-  %t739 = sext i32 %t738 to i64
-  %t740 = load ptr, ptr %t0
-  %t741 = getelementptr %DeviceScalarPlan, ptr %t740, i32 0, i32 0
-  %t742 = load ptr, ptr %t741
-  %t743 = getelementptr %EIRNode, ptr %t742, i64 %t739
-  %t744 = getelementptr %EIRNode, ptr %t743, i32 0, i32 3
-  %t745 = load i32, ptr %t744
-  %t746 = sext i32 %t745 to i64
-  %t747 = load ptr, ptr %t0
-  %t748 = getelementptr %DeviceScalarPlan, ptr %t747, i32 0, i32 0
-  %t749 = load ptr, ptr %t748
-  %t750 = getelementptr %EIRNode, ptr %t749, i64 %t746
-  %t751 = getelementptr %EIRNode, ptr %t750, i32 0, i32 0
-  %t752 = load i32, ptr %t751
-  %t753 = load i32, ptr @EIR_LOCAL
-  %t754 = icmp ne i32 %t752, %t753
-  store i1 %t754, ptr %t737
-  br i1 %t754, label %L156, label %L155
+  %t744 = load i32, ptr %t49
+  %t745 = sext i32 %t744 to i64
+  %t746 = load ptr, ptr %t0
+  %t747 = getelementptr %DeviceScalarPlan, ptr %t746, i32 0, i32 0
+  %t748 = load ptr, ptr %t747
+  %t749 = getelementptr %EIRNode, ptr %t748, i64 %t745
+  %t750 = getelementptr %EIRNode, ptr %t749, i32 0, i32 3
+  %t751 = load i32, ptr %t750
+  %t752 = sext i32 %t751 to i64
+  %t753 = load ptr, ptr %t0
+  %t754 = getelementptr %DeviceScalarPlan, ptr %t753, i32 0, i32 0
+  %t755 = load ptr, ptr %t754
+  %t756 = getelementptr %EIRNode, ptr %t755, i64 %t752
+  %t757 = getelementptr %EIRNode, ptr %t756, i32 0, i32 0
+  %t758 = load i32, ptr %t757
+  %t759 = load i32, ptr @EIR_LOCAL
+  %t760 = icmp ne i32 %t758, %t759
+  store i1 %t760, ptr %t743
+  br i1 %t760, label %L156, label %L155
 L155:
-  %t755 = load i32, ptr %t43
-  %t756 = sext i32 %t755 to i64
-  %t757 = load ptr, ptr %t0
-  %t758 = getelementptr %DeviceScalarPlan, ptr %t757, i32 0, i32 0
-  %t759 = load ptr, ptr %t758
-  %t760 = getelementptr %EIRNode, ptr %t759, i64 %t756
-  %t761 = getelementptr %EIRNode, ptr %t760, i32 0, i32 4
-  %t762 = load i32, ptr %t761
-  %t763 = sext i32 %t762 to i64
-  %t764 = load ptr, ptr %t0
-  %t765 = getelementptr %DeviceScalarPlan, ptr %t764, i32 0, i32 0
-  %t766 = load ptr, ptr %t765
-  %t767 = getelementptr %EIRNode, ptr %t766, i64 %t763
-  %t768 = getelementptr %EIRNode, ptr %t767, i32 0, i32 0
-  %t769 = load i32, ptr %t768
-  %t770 = load i32, ptr @EIR_LOCAL
-  %t771 = icmp ne i32 %t769, %t770
-  store i1 %t771, ptr %t737
+  %t761 = load i32, ptr %t49
+  %t762 = sext i32 %t761 to i64
+  %t763 = load ptr, ptr %t0
+  %t764 = getelementptr %DeviceScalarPlan, ptr %t763, i32 0, i32 0
+  %t765 = load ptr, ptr %t764
+  %t766 = getelementptr %EIRNode, ptr %t765, i64 %t762
+  %t767 = getelementptr %EIRNode, ptr %t766, i32 0, i32 4
+  %t768 = load i32, ptr %t767
+  %t769 = sext i32 %t768 to i64
+  %t770 = load ptr, ptr %t0
+  %t771 = getelementptr %DeviceScalarPlan, ptr %t770, i32 0, i32 0
+  %t772 = load ptr, ptr %t771
+  %t773 = getelementptr %EIRNode, ptr %t772, i64 %t769
+  %t774 = getelementptr %EIRNode, ptr %t773, i32 0, i32 0
+  %t775 = load i32, ptr %t774
+  %t776 = load i32, ptr @EIR_LOCAL
+  %t777 = icmp ne i32 %t775, %t776
+  store i1 %t777, ptr %t743
   br label %L156
 L156:
-  %t772 = load i1, ptr %t737
-  store i1 %t772, ptr %t736
-  br i1 %t772, label %L158, label %L157
+  %t778 = load i1, ptr %t743
+  store i1 %t778, ptr %t742
+  br i1 %t778, label %L158, label %L157
 L157:
-  %t773 = load i32, ptr %t43
-  %t774 = sext i32 %t773 to i64
-  %t775 = load ptr, ptr %t0
-  %t776 = getelementptr %DeviceScalarPlan, ptr %t775, i32 0, i32 0
-  %t777 = load ptr, ptr %t776
-  %t778 = getelementptr %EIRNode, ptr %t777, i64 %t774
-  %t779 = getelementptr %EIRNode, ptr %t778, i32 0, i32 3
-  %t780 = load i32, ptr %t779
-  %t781 = sext i32 %t780 to i64
-  %t782 = load ptr, ptr %t0
-  %t783 = getelementptr %DeviceScalarPlan, ptr %t782, i32 0, i32 0
-  %t784 = load ptr, ptr %t783
-  %t785 = getelementptr %EIRNode, ptr %t784, i64 %t781
-  %t786 = getelementptr %EIRNode, ptr %t785, i32 0, i32 8
-  %t787 = load i32, ptr %t786
-  %t788 = call i32 @type_pointee(i32 %t787)
-  %t789 = load i32, ptr %t590
-  %t790 = icmp ne i32 %t788, %t789
-  store i1 %t790, ptr %t736
+  %t779 = load i32, ptr %t49
+  %t780 = sext i32 %t779 to i64
+  %t781 = load ptr, ptr %t0
+  %t782 = getelementptr %DeviceScalarPlan, ptr %t781, i32 0, i32 0
+  %t783 = load ptr, ptr %t782
+  %t784 = getelementptr %EIRNode, ptr %t783, i64 %t780
+  %t785 = getelementptr %EIRNode, ptr %t784, i32 0, i32 3
+  %t786 = load i32, ptr %t785
+  %t787 = sext i32 %t786 to i64
+  %t788 = load ptr, ptr %t0
+  %t789 = getelementptr %DeviceScalarPlan, ptr %t788, i32 0, i32 0
+  %t790 = load ptr, ptr %t789
+  %t791 = getelementptr %EIRNode, ptr %t790, i64 %t787
+  %t792 = getelementptr %EIRNode, ptr %t791, i32 0, i32 8
+  %t793 = load i32, ptr %t792
+  %t794 = call i32 @type_pointee(i32 %t793)
+  %t795 = load i32, ptr %t596
+  %t796 = icmp ne i32 %t794, %t795
+  store i1 %t796, ptr %t742
   br label %L158
 L158:
-  %t791 = load i1, ptr %t736
-  br i1 %t791, label %L159, label %L161
+  %t797 = load i1, ptr %t742
+  br i1 %t797, label %L159, label %L161
 L159:
-  %t792 = add i32 0, 0
-  ret i32 %t792
+  %t798 = add i32 0, 0
+  ret i32 %t798
 L161:
   br label %L154
 L153:
-  %t797 = load i32, ptr %t35
-  %t798 = add i32 0, 0
-  %t799 = icmp eq i32 %t797, %t798
-  store i1 %t799, ptr %t796
-  br i1 %t799, label %L163, label %L162
+  %t803 = load i32, ptr %t41
+  %t804 = add i32 0, 0
+  %t805 = icmp eq i32 %t803, %t804
+  store i1 %t805, ptr %t802
+  br i1 %t805, label %L163, label %L162
 L162:
-  %t800 = load i32, ptr %t37
-  %t801 = add i32 0, 1
-  %t802 = icmp eq i32 %t800, %t801
-  store i1 %t802, ptr %t796
+  %t806 = load i32, ptr %t43
+  %t807 = add i32 0, 1
+  %t808 = icmp eq i32 %t806, %t807
+  store i1 %t808, ptr %t802
   br label %L163
 L163:
-  %t803 = load i1, ptr %t796
-  store i1 %t803, ptr %t795
-  br i1 %t803, label %L165, label %L164
+  %t809 = load i1, ptr %t802
+  store i1 %t809, ptr %t801
+  br i1 %t809, label %L165, label %L164
 L164:
-  %t804 = load i32, ptr %t39
-  %t805 = add i32 0, 0
-  %t806 = icmp ne i32 %t804, %t805
-  store i1 %t806, ptr %t795
+  %t810 = load i32, ptr %t45
+  %t811 = add i32 0, 0
+  %t812 = icmp ne i32 %t810, %t811
+  store i1 %t812, ptr %t801
   br label %L165
 L165:
-  %t807 = load i1, ptr %t795
-  store i1 %t807, ptr %t794
-  br i1 %t807, label %L167, label %L166
+  %t813 = load i1, ptr %t801
+  store i1 %t813, ptr %t800
+  br i1 %t813, label %L167, label %L166
 L166:
-  %t808 = load i32, ptr %t590
-  %t809 = getelementptr [4 x i8], ptr @.str.6215, i32 0, i32 0
-  %t810 = call i32 @str_intern(ptr %t809)
-  %t811 = icmp ne i32 %t808, %t810
-  store i1 %t811, ptr %t794
+  %t814 = load i32, ptr %t596
+  %t815 = getelementptr [4 x i8], ptr @.str.6215, i32 0, i32 0
+  %t816 = call i32 @str_intern(ptr %t815)
+  %t817 = icmp ne i32 %t814, %t816
+  store i1 %t817, ptr %t800
   br label %L167
 L167:
-  %t812 = load i1, ptr %t794
-  store i1 %t812, ptr %t793
-  br i1 %t812, label %L169, label %L168
+  %t818 = load i1, ptr %t800
+  store i1 %t818, ptr %t799
+  br i1 %t818, label %L169, label %L168
 L168:
-  %t813 = load i32, ptr %t43
-  %t814 = sext i32 %t813 to i64
-  %t815 = load ptr, ptr %t0
-  %t816 = getelementptr %DeviceScalarPlan, ptr %t815, i32 0, i32 0
-  %t817 = load ptr, ptr %t816
-  %t818 = getelementptr %EIRNode, ptr %t817, i64 %t814
-  %t819 = getelementptr %EIRNode, ptr %t818, i32 0, i32 3
-  %t820 = load i32, ptr %t819
-  %t821 = load i32, ptr %t43
-  %t822 = sext i32 %t821 to i64
-  %t823 = load ptr, ptr %t0
-  %t824 = getelementptr %DeviceScalarPlan, ptr %t823, i32 0, i32 0
-  %t825 = load ptr, ptr %t824
-  %t826 = getelementptr %EIRNode, ptr %t825, i64 %t822
-  %t827 = getelementptr %EIRNode, ptr %t826, i32 0, i32 5
-  %t828 = load i32, ptr %t827
-  %t829 = icmp ne i32 %t820, %t828
-  store i1 %t829, ptr %t793
+  %t819 = load i32, ptr %t49
+  %t820 = sext i32 %t819 to i64
+  %t821 = load ptr, ptr %t0
+  %t822 = getelementptr %DeviceScalarPlan, ptr %t821, i32 0, i32 0
+  %t823 = load ptr, ptr %t822
+  %t824 = getelementptr %EIRNode, ptr %t823, i64 %t820
+  %t825 = getelementptr %EIRNode, ptr %t824, i32 0, i32 3
+  %t826 = load i32, ptr %t825
+  %t827 = load i32, ptr %t49
+  %t828 = sext i32 %t827 to i64
+  %t829 = load ptr, ptr %t0
+  %t830 = getelementptr %DeviceScalarPlan, ptr %t829, i32 0, i32 0
+  %t831 = load ptr, ptr %t830
+  %t832 = getelementptr %EIRNode, ptr %t831, i64 %t828
+  %t833 = getelementptr %EIRNode, ptr %t832, i32 0, i32 5
+  %t834 = load i32, ptr %t833
+  %t835 = icmp ne i32 %t826, %t834
+  store i1 %t835, ptr %t799
   br label %L169
 L169:
-  %t830 = load i1, ptr %t793
-  br i1 %t830, label %L170, label %L172
+  %t836 = load i1, ptr %t799
+  br i1 %t836, label %L170, label %L172
 L170:
-  %t831 = add i32 0, 0
-  ret i32 %t831
+  %t837 = add i32 0, 0
+  ret i32 %t837
 L172:
-  %t832 = load i32, ptr %t43
-  %t833 = sext i32 %t832 to i64
-  %t834 = load ptr, ptr %t0
-  %t835 = getelementptr %DeviceScalarPlan, ptr %t834, i32 0, i32 0
-  %t836 = load ptr, ptr %t835
-  %t837 = getelementptr %EIRNode, ptr %t836, i64 %t833
-  %t838 = getelementptr %EIRNode, ptr %t837, i32 0, i32 4
-  %t839 = load i32, ptr %t838
-  store i32 %t839, ptr %t840
-  %t841 = load ptr, ptr %t0
-  %t842 = getelementptr %DeviceScalarPlan, ptr %t841, i32 0, i32 35
-  %t843 = load i32, ptr %t842
-  %t844 = add i32 0, 1
-  %t845 = icmp eq i32 %t843, %t844
-  br i1 %t845, label %L173, label %L174
-L173:
-  %t846 = load i32, ptr %t840
+  %t838 = load i32, ptr %t49
+  %t839 = sext i32 %t838 to i64
+  %t840 = load ptr, ptr %t0
+  %t841 = getelementptr %DeviceScalarPlan, ptr %t840, i32 0, i32 0
+  %t842 = load ptr, ptr %t841
+  %t843 = getelementptr %EIRNode, ptr %t842, i64 %t839
+  %t844 = getelementptr %EIRNode, ptr %t843, i32 0, i32 4
+  %t845 = load i32, ptr %t844
+  store i32 %t845, ptr %t846
   %t847 = load ptr, ptr %t0
-  %t848 = getelementptr %DeviceScalarPlan, ptr %t847, i32 0, i32 36
+  %t848 = getelementptr %DeviceScalarPlan, ptr %t847, i32 0, i32 35
   %t849 = load i32, ptr %t848
-  %t850 = icmp ne i32 %t846, %t849
-  br i1 %t850, label %L176, label %L178
+  %t850 = add i32 0, 1
+  %t851 = icmp eq i32 %t849, %t850
+  br i1 %t851, label %L173, label %L174
+L173:
+  %t852 = load i32, ptr %t846
+  %t853 = load ptr, ptr %t0
+  %t854 = getelementptr %DeviceScalarPlan, ptr %t853, i32 0, i32 36
+  %t855 = load i32, ptr %t854
+  %t856 = icmp ne i32 %t852, %t855
+  br i1 %t856, label %L176, label %L178
 L176:
-  %t851 = add i32 0, 0
-  ret i32 %t851
+  %t857 = add i32 0, 0
+  ret i32 %t857
 L178:
   br label %L175
 L174:
-  %t853 = load i32, ptr %t840
-  %t854 = sext i32 %t853 to i64
-  %t855 = load ptr, ptr %t0
-  %t856 = getelementptr %DeviceScalarPlan, ptr %t855, i32 0, i32 0
-  %t857 = load ptr, ptr %t856
-  %t858 = getelementptr %EIRNode, ptr %t857, i64 %t854
-  %t859 = getelementptr %EIRNode, ptr %t858, i32 0, i32 0
-  %t860 = load i32, ptr %t859
-  %t861 = load i32, ptr @EIR_CONST
-  %t862 = icmp ne i32 %t860, %t861
-  store i1 %t862, ptr %t852
-  br i1 %t862, label %L180, label %L179
+  %t859 = load i32, ptr %t846
+  %t860 = sext i32 %t859 to i64
+  %t861 = load ptr, ptr %t0
+  %t862 = getelementptr %DeviceScalarPlan, ptr %t861, i32 0, i32 0
+  %t863 = load ptr, ptr %t862
+  %t864 = getelementptr %EIRNode, ptr %t863, i64 %t860
+  %t865 = getelementptr %EIRNode, ptr %t864, i32 0, i32 0
+  %t866 = load i32, ptr %t865
+  %t867 = load i32, ptr @EIR_CONST
+  %t868 = icmp ne i32 %t866, %t867
+  store i1 %t868, ptr %t858
+  br i1 %t868, label %L180, label %L179
 L179:
-  %t863 = load i32, ptr %t840
-  %t864 = sext i32 %t863 to i64
-  %t865 = load ptr, ptr %t0
-  %t866 = getelementptr %DeviceScalarPlan, ptr %t865, i32 0, i32 0
-  %t867 = load ptr, ptr %t866
-  %t868 = getelementptr %EIRNode, ptr %t867, i64 %t864
-  %t869 = getelementptr %EIRNode, ptr %t868, i32 0, i32 10
-  %t870 = load i64, ptr %t869
+  %t869 = load i32, ptr %t846
+  %t870 = sext i32 %t869 to i64
   %t871 = load ptr, ptr %t0
-  %t872 = getelementptr %DeviceScalarPlan, ptr %t871, i32 0, i32 31
-  %t873 = load i32, ptr %t872
-  %t874 = sext i32 %t873 to i64
-  %t875 = icmp ne i64 %t870, %t874
-  store i1 %t875, ptr %t852
+  %t872 = getelementptr %DeviceScalarPlan, ptr %t871, i32 0, i32 0
+  %t873 = load ptr, ptr %t872
+  %t874 = getelementptr %EIRNode, ptr %t873, i64 %t870
+  %t875 = getelementptr %EIRNode, ptr %t874, i32 0, i32 10
+  %t876 = load i64, ptr %t875
+  %t877 = load ptr, ptr %t0
+  %t878 = getelementptr %DeviceScalarPlan, ptr %t877, i32 0, i32 31
+  %t879 = load i32, ptr %t878
+  %t880 = sext i32 %t879 to i64
+  %t881 = icmp ne i64 %t876, %t880
+  store i1 %t881, ptr %t858
   br label %L180
 L180:
-  %t876 = load i1, ptr %t852
-  br i1 %t876, label %L181, label %L183
+  %t882 = load i1, ptr %t858
+  br i1 %t882, label %L181, label %L183
 L181:
-  %t877 = add i32 0, 0
-  ret i32 %t877
+  %t883 = add i32 0, 0
+  ret i32 %t883
 L183:
   br label %L175
 L175:
-  %t878 = add i32 0, 2
-  store i32 %t878, ptr %t37
+  %t884 = add i32 0, 2
+  store i32 %t884, ptr %t43
   br label %L154
 L154:
   br label %L126
 L125:
-  %t880 = load i32, ptr %t57
-  %t881 = load i32, ptr @DEVICE_WARP_SHUFFLE
-  %t882 = icmp sge i32 %t880, %t881
-  store i1 %t882, ptr %t879
-  br i1 %t882, label %L184, label %L185
+  %t886 = load i32, ptr %t63
+  %t887 = load i32, ptr @DEVICE_WARP_SHUFFLE
+  %t888 = icmp sge i32 %t886, %t887
+  store i1 %t888, ptr %t885
+  br i1 %t888, label %L184, label %L185
 L184:
-  %t883 = load i32, ptr %t57
-  %t884 = load i32, ptr @DEVICE_WARP_SYNC
-  %t885 = icmp sle i32 %t883, %t884
-  store i1 %t885, ptr %t879
+  %t889 = load i32, ptr %t63
+  %t890 = load i32, ptr @DEVICE_WARP_SYNC
+  %t891 = icmp sle i32 %t889, %t890
+  store i1 %t891, ptr %t885
   br label %L185
 L185:
-  %t886 = load i1, ptr %t879
-  br i1 %t886, label %L186, label %L187
+  %t892 = load i1, ptr %t885
+  br i1 %t892, label %L186, label %L187
 L186:
-  %t888 = load ptr, ptr %t0
-  %t889 = getelementptr %DeviceScalarPlan, ptr %t888, i32 0, i32 27
-  %t890 = load i32, ptr %t889
-  %t891 = add i32 0, 1
-  %t892 = icmp ne i32 %t890, %t891
-  store i1 %t892, ptr %t887
-  br i1 %t892, label %L190, label %L189
+  %t894 = load ptr, ptr %t0
+  %t895 = getelementptr %DeviceScalarPlan, ptr %t894, i32 0, i32 27
+  %t896 = load i32, ptr %t895
+  %t897 = add i32 0, 1
+  %t898 = icmp ne i32 %t896, %t897
+  store i1 %t898, ptr %t893
+  br i1 %t898, label %L190, label %L189
 L189:
-  %t893 = load ptr, ptr %t0
-  %t894 = getelementptr %DeviceScalarPlan, ptr %t893, i32 0, i32 37
-  %t895 = load i32, ptr %t894
-  %t896 = add i32 0, 1
-  %t897 = icmp ne i32 %t895, %t896
-  store i1 %t897, ptr %t887
+  %t899 = load ptr, ptr %t0
+  %t900 = getelementptr %DeviceScalarPlan, ptr %t899, i32 0, i32 37
+  %t901 = load i32, ptr %t900
+  %t902 = add i32 0, 1
+  %t903 = icmp ne i32 %t901, %t902
+  store i1 %t903, ptr %t893
   br label %L190
 L190:
-  %t898 = load i1, ptr %t887
-  br i1 %t898, label %L191, label %L193
+  %t904 = load i1, ptr %t893
+  br i1 %t904, label %L191, label %L193
 L191:
-  %t899 = add i32 0, 0
-  ret i32 %t899
+  %t905 = add i32 0, 0
+  ret i32 %t905
 L193:
-  %t900 = load i32, ptr %t57
-  %t901 = load i32, ptr @DEVICE_WARP_SHUFFLE
-  %t902 = icmp eq i32 %t900, %t901
-  br i1 %t902, label %L194, label %L195
+  %t906 = load i32, ptr %t63
+  %t907 = load i32, ptr @DEVICE_WARP_SHUFFLE
+  %t908 = icmp eq i32 %t906, %t907
+  br i1 %t908, label %L194, label %L195
 L194:
-  %t907 = load i32, ptr %t43
-  %t908 = sext i32 %t907 to i64
-  %t909 = load ptr, ptr %t0
-  %t910 = getelementptr %DeviceScalarPlan, ptr %t909, i32 0, i32 0
-  %t911 = load ptr, ptr %t910
-  %t912 = getelementptr %EIRNode, ptr %t911, i64 %t908
-  %t913 = getelementptr %EIRNode, ptr %t912, i32 0, i32 1
-  %t914 = load i32, ptr %t913
-  %t915 = add i32 0, 0
-  %t916 = icmp slt i32 %t914, %t915
-  store i1 %t916, ptr %t906
-  br i1 %t916, label %L198, label %L197
+  %t913 = load i32, ptr %t49
+  %t914 = sext i32 %t913 to i64
+  %t915 = load ptr, ptr %t0
+  %t916 = getelementptr %DeviceScalarPlan, ptr %t915, i32 0, i32 0
+  %t917 = load ptr, ptr %t916
+  %t918 = getelementptr %EIRNode, ptr %t917, i64 %t914
+  %t919 = getelementptr %EIRNode, ptr %t918, i32 0, i32 1
+  %t920 = load i32, ptr %t919
+  %t921 = add i32 0, 0
+  %t922 = icmp slt i32 %t920, %t921
+  store i1 %t922, ptr %t912
+  br i1 %t922, label %L198, label %L197
 L197:
-  %t917 = load i32, ptr %t43
-  %t918 = sext i32 %t917 to i64
-  %t919 = load ptr, ptr %t0
-  %t920 = getelementptr %DeviceScalarPlan, ptr %t919, i32 0, i32 0
-  %t921 = load ptr, ptr %t920
-  %t922 = getelementptr %EIRNode, ptr %t921, i64 %t918
-  %t923 = getelementptr %EIRNode, ptr %t922, i32 0, i32 1
-  %t924 = load i32, ptr %t923
-  %t925 = add i32 0, 1
-  %t926 = icmp sgt i32 %t924, %t925
-  store i1 %t926, ptr %t906
+  %t923 = load i32, ptr %t49
+  %t924 = sext i32 %t923 to i64
+  %t925 = load ptr, ptr %t0
+  %t926 = getelementptr %DeviceScalarPlan, ptr %t925, i32 0, i32 0
+  %t927 = load ptr, ptr %t926
+  %t928 = getelementptr %EIRNode, ptr %t927, i64 %t924
+  %t929 = getelementptr %EIRNode, ptr %t928, i32 0, i32 1
+  %t930 = load i32, ptr %t929
+  %t931 = add i32 0, 1
+  %t932 = icmp sgt i32 %t930, %t931
+  store i1 %t932, ptr %t912
   br label %L198
 L198:
-  %t927 = load i1, ptr %t906
-  store i1 %t927, ptr %t905
-  br i1 %t927, label %L200, label %L199
+  %t933 = load i1, ptr %t912
+  store i1 %t933, ptr %t911
+  br i1 %t933, label %L200, label %L199
 L199:
-  %t928 = load i32, ptr %t43
-  %t929 = sext i32 %t928 to i64
-  %t930 = load ptr, ptr %t0
-  %t931 = getelementptr %DeviceScalarPlan, ptr %t930, i32 0, i32 0
-  %t932 = load ptr, ptr %t931
-  %t933 = getelementptr %EIRNode, ptr %t932, i64 %t929
-  %t934 = getelementptr %EIRNode, ptr %t933, i32 0, i32 10
-  %t935 = load i64, ptr %t934
-  %t936 = add i64 0, 31
-  %t937 = icmp ugt i64 %t935, %t936
-  store i1 %t937, ptr %t905
+  %t934 = load i32, ptr %t49
+  %t935 = sext i32 %t934 to i64
+  %t936 = load ptr, ptr %t0
+  %t937 = getelementptr %DeviceScalarPlan, ptr %t936, i32 0, i32 0
+  %t938 = load ptr, ptr %t937
+  %t939 = getelementptr %EIRNode, ptr %t938, i64 %t935
+  %t940 = getelementptr %EIRNode, ptr %t939, i32 0, i32 10
+  %t941 = load i64, ptr %t940
+  %t942 = add i64 0, 31
+  %t943 = icmp ugt i64 %t941, %t942
+  store i1 %t943, ptr %t911
   br label %L200
 L200:
-  %t938 = load i1, ptr %t905
-  store i1 %t938, ptr %t904
-  br i1 %t938, label %L202, label %L201
+  %t944 = load i1, ptr %t911
+  store i1 %t944, ptr %t910
+  br i1 %t944, label %L202, label %L201
 L201:
-  %t939 = load i32, ptr %t43
-  %t940 = sext i32 %t939 to i64
-  %t941 = load ptr, ptr %t0
-  %t942 = getelementptr %DeviceScalarPlan, ptr %t941, i32 0, i32 0
-  %t943 = load ptr, ptr %t942
-  %t944 = getelementptr %EIRNode, ptr %t943, i64 %t940
-  %t945 = getelementptr %EIRNode, ptr %t944, i32 0, i32 8
-  %t946 = load i32, ptr %t945
-  %t947 = getelementptr [4 x i8], ptr @.str.6216, i32 0, i32 0
-  %t948 = call i32 @str_intern(ptr %t947)
-  %t949 = icmp ne i32 %t946, %t948
-  store i1 %t949, ptr %t904
+  %t945 = load i32, ptr %t49
+  %t946 = sext i32 %t945 to i64
+  %t947 = load ptr, ptr %t0
+  %t948 = getelementptr %DeviceScalarPlan, ptr %t947, i32 0, i32 0
+  %t949 = load ptr, ptr %t948
+  %t950 = getelementptr %EIRNode, ptr %t949, i64 %t946
+  %t951 = getelementptr %EIRNode, ptr %t950, i32 0, i32 8
+  %t952 = load i32, ptr %t951
+  %t953 = getelementptr [4 x i8], ptr @.str.6216, i32 0, i32 0
+  %t954 = call i32 @str_intern(ptr %t953)
+  %t955 = icmp ne i32 %t952, %t954
+  store i1 %t955, ptr %t910
   br label %L202
 L202:
-  %t950 = load i1, ptr %t904
-  store i1 %t950, ptr %t903
-  br i1 %t950, label %L204, label %L203
+  %t956 = load i1, ptr %t910
+  store i1 %t956, ptr %t909
+  br i1 %t956, label %L204, label %L203
 L203:
-  %t951 = load i32, ptr %t43
-  %t952 = sext i32 %t951 to i64
-  %t953 = load ptr, ptr %t0
-  %t954 = getelementptr %DeviceScalarPlan, ptr %t953, i32 0, i32 0
-  %t955 = load ptr, ptr %t954
-  %t956 = getelementptr %EIRNode, ptr %t955, i64 %t952
-  %t957 = getelementptr %EIRNode, ptr %t956, i32 0, i32 3
-  %t958 = load i32, ptr %t957
-  %t959 = sext i32 %t958 to i64
-  %t960 = load ptr, ptr %t0
-  %t961 = getelementptr %DeviceScalarPlan, ptr %t960, i32 0, i32 0
-  %t962 = load ptr, ptr %t961
-  %t963 = getelementptr %EIRNode, ptr %t962, i64 %t959
-  %t964 = getelementptr %EIRNode, ptr %t963, i32 0, i32 8
-  %t965 = load i32, ptr %t964
-  %t966 = getelementptr [4 x i8], ptr @.str.6217, i32 0, i32 0
-  %t967 = call i32 @str_intern(ptr %t966)
-  %t968 = icmp ne i32 %t965, %t967
-  store i1 %t968, ptr %t903
+  %t957 = load i32, ptr %t49
+  %t958 = sext i32 %t957 to i64
+  %t959 = load ptr, ptr %t0
+  %t960 = getelementptr %DeviceScalarPlan, ptr %t959, i32 0, i32 0
+  %t961 = load ptr, ptr %t960
+  %t962 = getelementptr %EIRNode, ptr %t961, i64 %t958
+  %t963 = getelementptr %EIRNode, ptr %t962, i32 0, i32 3
+  %t964 = load i32, ptr %t963
+  %t965 = sext i32 %t964 to i64
+  %t966 = load ptr, ptr %t0
+  %t967 = getelementptr %DeviceScalarPlan, ptr %t966, i32 0, i32 0
+  %t968 = load ptr, ptr %t967
+  %t969 = getelementptr %EIRNode, ptr %t968, i64 %t965
+  %t970 = getelementptr %EIRNode, ptr %t969, i32 0, i32 8
+  %t971 = load i32, ptr %t970
+  %t972 = getelementptr [4 x i8], ptr @.str.6217, i32 0, i32 0
+  %t973 = call i32 @str_intern(ptr %t972)
+  %t974 = icmp ne i32 %t971, %t973
+  store i1 %t974, ptr %t909
   br label %L204
 L204:
-  %t969 = load i1, ptr %t903
-  br i1 %t969, label %L205, label %L207
+  %t975 = load i1, ptr %t909
+  br i1 %t975, label %L205, label %L207
 L205:
-  %t970 = add i32 0, 0
-  ret i32 %t970
+  %t976 = add i32 0, 0
+  ret i32 %t976
 L207:
   br label %L196
 L195:
-  %t971 = load i32, ptr %t57
-  %t972 = load i32, ptr @DEVICE_WARP_VOTE
-  %t973 = icmp eq i32 %t971, %t972
-  br i1 %t973, label %L208, label %L210
+  %t977 = load i32, ptr %t63
+  %t978 = load i32, ptr @DEVICE_WARP_VOTE
+  %t979 = icmp eq i32 %t977, %t978
+  br i1 %t979, label %L208, label %L210
 L208:
-  %t976 = load i32, ptr %t43
-  %t977 = sext i32 %t976 to i64
-  %t978 = load ptr, ptr %t0
-  %t979 = getelementptr %DeviceScalarPlan, ptr %t978, i32 0, i32 0
-  %t980 = load ptr, ptr %t979
-  %t981 = getelementptr %EIRNode, ptr %t980, i64 %t977
-  %t982 = getelementptr %EIRNode, ptr %t981, i32 0, i32 1
-  %t983 = load i32, ptr %t982
-  %t984 = add i32 0, 0
-  %t985 = icmp slt i32 %t983, %t984
-  store i1 %t985, ptr %t975
-  br i1 %t985, label %L212, label %L211
+  %t982 = load i32, ptr %t49
+  %t983 = sext i32 %t982 to i64
+  %t984 = load ptr, ptr %t0
+  %t985 = getelementptr %DeviceScalarPlan, ptr %t984, i32 0, i32 0
+  %t986 = load ptr, ptr %t985
+  %t987 = getelementptr %EIRNode, ptr %t986, i64 %t983
+  %t988 = getelementptr %EIRNode, ptr %t987, i32 0, i32 1
+  %t989 = load i32, ptr %t988
+  %t990 = add i32 0, 0
+  %t991 = icmp slt i32 %t989, %t990
+  store i1 %t991, ptr %t981
+  br i1 %t991, label %L212, label %L211
 L211:
-  %t986 = load i32, ptr %t43
-  %t987 = sext i32 %t986 to i64
-  %t988 = load ptr, ptr %t0
-  %t989 = getelementptr %DeviceScalarPlan, ptr %t988, i32 0, i32 0
-  %t990 = load ptr, ptr %t989
-  %t991 = getelementptr %EIRNode, ptr %t990, i64 %t987
-  %t992 = getelementptr %EIRNode, ptr %t991, i32 0, i32 1
-  %t993 = load i32, ptr %t992
-  %t994 = add i32 0, 2
-  %t995 = icmp sgt i32 %t993, %t994
-  store i1 %t995, ptr %t975
+  %t992 = load i32, ptr %t49
+  %t993 = sext i32 %t992 to i64
+  %t994 = load ptr, ptr %t0
+  %t995 = getelementptr %DeviceScalarPlan, ptr %t994, i32 0, i32 0
+  %t996 = load ptr, ptr %t995
+  %t997 = getelementptr %EIRNode, ptr %t996, i64 %t993
+  %t998 = getelementptr %EIRNode, ptr %t997, i32 0, i32 1
+  %t999 = load i32, ptr %t998
+  %t1000 = add i32 0, 2
+  %t1001 = icmp sgt i32 %t999, %t1000
+  store i1 %t1001, ptr %t981
   br label %L212
 L212:
-  %t996 = load i1, ptr %t975
-  store i1 %t996, ptr %t974
-  br i1 %t996, label %L214, label %L213
+  %t1002 = load i1, ptr %t981
+  store i1 %t1002, ptr %t980
+  br i1 %t1002, label %L214, label %L213
 L213:
-  %t997 = load i32, ptr %t43
-  %t998 = sext i32 %t997 to i64
-  %t999 = load ptr, ptr %t0
-  %t1000 = getelementptr %DeviceScalarPlan, ptr %t999, i32 0, i32 0
-  %t1001 = load ptr, ptr %t1000
-  %t1002 = getelementptr %EIRNode, ptr %t1001, i64 %t998
-  %t1003 = getelementptr %EIRNode, ptr %t1002, i32 0, i32 3
-  %t1004 = load i32, ptr %t1003
-  %t1005 = sext i32 %t1004 to i64
-  %t1006 = load ptr, ptr %t0
-  %t1007 = getelementptr %DeviceScalarPlan, ptr %t1006, i32 0, i32 0
-  %t1008 = load ptr, ptr %t1007
-  %t1009 = getelementptr %EIRNode, ptr %t1008, i64 %t1005
-  %t1010 = getelementptr %EIRNode, ptr %t1009, i32 0, i32 8
-  %t1011 = load i32, ptr %t1010
-  %t1012 = getelementptr [3 x i8], ptr @.str.6218, i32 0, i32 0
-  %t1013 = call i32 @str_intern(ptr %t1012)
-  %t1014 = icmp ne i32 %t1011, %t1013
-  store i1 %t1014, ptr %t974
+  %t1003 = load i32, ptr %t49
+  %t1004 = sext i32 %t1003 to i64
+  %t1005 = load ptr, ptr %t0
+  %t1006 = getelementptr %DeviceScalarPlan, ptr %t1005, i32 0, i32 0
+  %t1007 = load ptr, ptr %t1006
+  %t1008 = getelementptr %EIRNode, ptr %t1007, i64 %t1004
+  %t1009 = getelementptr %EIRNode, ptr %t1008, i32 0, i32 3
+  %t1010 = load i32, ptr %t1009
+  %t1011 = sext i32 %t1010 to i64
+  %t1012 = load ptr, ptr %t0
+  %t1013 = getelementptr %DeviceScalarPlan, ptr %t1012, i32 0, i32 0
+  %t1014 = load ptr, ptr %t1013
+  %t1015 = getelementptr %EIRNode, ptr %t1014, i64 %t1011
+  %t1016 = getelementptr %EIRNode, ptr %t1015, i32 0, i32 8
+  %t1017 = load i32, ptr %t1016
+  %t1018 = getelementptr [3 x i8], ptr @.str.6218, i32 0, i32 0
+  %t1019 = call i32 @str_intern(ptr %t1018)
+  %t1020 = icmp ne i32 %t1017, %t1019
+  store i1 %t1020, ptr %t980
   br label %L214
 L214:
-  %t1015 = load i1, ptr %t974
-  br i1 %t1015, label %L215, label %L217
+  %t1021 = load i1, ptr %t980
+  br i1 %t1021, label %L215, label %L217
 L215:
-  %t1016 = add i32 0, 0
-  ret i32 %t1016
+  %t1022 = add i32 0, 0
+  ret i32 %t1022
 L217:
-  %t1017 = getelementptr [5 x i8], ptr @.str.6219, i32 0, i32 0
-  %t1018 = call i32 @str_intern(ptr %t1017)
-  store i32 %t1018, ptr %t1019
-  %t1020 = load i32, ptr %t43
-  %t1021 = sext i32 %t1020 to i64
-  %t1022 = load ptr, ptr %t0
-  %t1023 = getelementptr %DeviceScalarPlan, ptr %t1022, i32 0, i32 0
-  %t1024 = load ptr, ptr %t1023
-  %t1025 = getelementptr %EIRNode, ptr %t1024, i64 %t1021
-  %t1026 = getelementptr %EIRNode, ptr %t1025, i32 0, i32 1
-  %t1027 = load i32, ptr %t1026
-  %t1028 = add i32 0, 0
-  %t1029 = icmp eq i32 %t1027, %t1028
-  br i1 %t1029, label %L218, label %L220
+  %t1023 = getelementptr [5 x i8], ptr @.str.6219, i32 0, i32 0
+  %t1024 = call i32 @str_intern(ptr %t1023)
+  store i32 %t1024, ptr %t1025
+  %t1026 = load i32, ptr %t49
+  %t1027 = sext i32 %t1026 to i64
+  %t1028 = load ptr, ptr %t0
+  %t1029 = getelementptr %DeviceScalarPlan, ptr %t1028, i32 0, i32 0
+  %t1030 = load ptr, ptr %t1029
+  %t1031 = getelementptr %EIRNode, ptr %t1030, i64 %t1027
+  %t1032 = getelementptr %EIRNode, ptr %t1031, i32 0, i32 1
+  %t1033 = load i32, ptr %t1032
+  %t1034 = add i32 0, 0
+  %t1035 = icmp eq i32 %t1033, %t1034
+  br i1 %t1035, label %L218, label %L220
 L218:
-  %t1030 = getelementptr [4 x i8], ptr @.str.6220, i32 0, i32 0
-  %t1031 = call i32 @str_intern(ptr %t1030)
-  store i32 %t1031, ptr %t1019
+  %t1036 = getelementptr [4 x i8], ptr @.str.6220, i32 0, i32 0
+  %t1037 = call i32 @str_intern(ptr %t1036)
+  store i32 %t1037, ptr %t1025
   br label %L220
 L220:
-  %t1032 = load i32, ptr %t43
-  %t1033 = sext i32 %t1032 to i64
-  %t1034 = load ptr, ptr %t0
-  %t1035 = getelementptr %DeviceScalarPlan, ptr %t1034, i32 0, i32 0
-  %t1036 = load ptr, ptr %t1035
-  %t1037 = getelementptr %EIRNode, ptr %t1036, i64 %t1033
-  %t1038 = getelementptr %EIRNode, ptr %t1037, i32 0, i32 8
-  %t1039 = load i32, ptr %t1038
-  %t1040 = load i32, ptr %t1019
-  %t1041 = icmp ne i32 %t1039, %t1040
-  br i1 %t1041, label %L221, label %L223
+  %t1038 = load i32, ptr %t49
+  %t1039 = sext i32 %t1038 to i64
+  %t1040 = load ptr, ptr %t0
+  %t1041 = getelementptr %DeviceScalarPlan, ptr %t1040, i32 0, i32 0
+  %t1042 = load ptr, ptr %t1041
+  %t1043 = getelementptr %EIRNode, ptr %t1042, i64 %t1039
+  %t1044 = getelementptr %EIRNode, ptr %t1043, i32 0, i32 8
+  %t1045 = load i32, ptr %t1044
+  %t1046 = load i32, ptr %t1025
+  %t1047 = icmp ne i32 %t1045, %t1046
+  br i1 %t1047, label %L221, label %L223
 L221:
-  %t1042 = add i32 0, 0
-  ret i32 %t1042
+  %t1048 = add i32 0, 0
+  ret i32 %t1048
 L223:
   br label %L210
 L210:
@@ -166594,499 +166591,499 @@ L210:
 L196:
   br label %L188
 L187:
-  %t1044 = load i32, ptr %t57
-  %t1045 = load i32, ptr @DEVICE_MASKED_LOAD
-  %t1046 = icmp eq i32 %t1044, %t1045
-  store i1 %t1046, ptr %t1043
-  br i1 %t1046, label %L225, label %L224
+  %t1050 = load i32, ptr %t63
+  %t1051 = load i32, ptr @DEVICE_MASKED_LOAD
+  %t1052 = icmp eq i32 %t1050, %t1051
+  store i1 %t1052, ptr %t1049
+  br i1 %t1052, label %L225, label %L224
 L224:
-  %t1047 = load i32, ptr %t57
-  %t1048 = load i32, ptr @DEVICE_MASKED_STORE
-  %t1049 = icmp eq i32 %t1047, %t1048
-  store i1 %t1049, ptr %t1043
+  %t1053 = load i32, ptr %t63
+  %t1054 = load i32, ptr @DEVICE_MASKED_STORE
+  %t1055 = icmp eq i32 %t1053, %t1054
+  store i1 %t1055, ptr %t1049
   br label %L225
 L225:
-  %t1050 = load i1, ptr %t1043
-  br i1 %t1050, label %L226, label %L227
+  %t1056 = load i1, ptr %t1049
+  br i1 %t1056, label %L226, label %L227
 L226:
-  %t1055 = load ptr, ptr %t0
-  %t1056 = getelementptr %DeviceScalarPlan, ptr %t1055, i32 0, i32 27
-  %t1057 = load i32, ptr %t1056
-  %t1058 = add i32 0, 1
-  %t1059 = icmp ne i32 %t1057, %t1058
-  store i1 %t1059, ptr %t1054
-  br i1 %t1059, label %L230, label %L229
+  %t1061 = load ptr, ptr %t0
+  %t1062 = getelementptr %DeviceScalarPlan, ptr %t1061, i32 0, i32 27
+  %t1063 = load i32, ptr %t1062
+  %t1064 = add i32 0, 1
+  %t1065 = icmp ne i32 %t1063, %t1064
+  store i1 %t1065, ptr %t1060
+  br i1 %t1065, label %L230, label %L229
 L229:
-  %t1060 = load i32, ptr %t43
-  %t1061 = sext i32 %t1060 to i64
-  %t1062 = load ptr, ptr %t0
-  %t1063 = getelementptr %DeviceScalarPlan, ptr %t1062, i32 0, i32 0
-  %t1064 = load ptr, ptr %t1063
-  %t1065 = getelementptr %EIRNode, ptr %t1064, i64 %t1061
-  %t1066 = getelementptr %EIRNode, ptr %t1065, i32 0, i32 8
-  %t1067 = load i32, ptr %t1066
-  %t1068 = getelementptr [4 x i8], ptr @.str.6221, i32 0, i32 0
-  %t1069 = call i32 @str_intern(ptr %t1068)
-  %t1070 = icmp ne i32 %t1067, %t1069
-  store i1 %t1070, ptr %t1054
+  %t1066 = load i32, ptr %t49
+  %t1067 = sext i32 %t1066 to i64
+  %t1068 = load ptr, ptr %t0
+  %t1069 = getelementptr %DeviceScalarPlan, ptr %t1068, i32 0, i32 0
+  %t1070 = load ptr, ptr %t1069
+  %t1071 = getelementptr %EIRNode, ptr %t1070, i64 %t1067
+  %t1072 = getelementptr %EIRNode, ptr %t1071, i32 0, i32 8
+  %t1073 = load i32, ptr %t1072
+  %t1074 = getelementptr [4 x i8], ptr @.str.6221, i32 0, i32 0
+  %t1075 = call i32 @str_intern(ptr %t1074)
+  %t1076 = icmp ne i32 %t1073, %t1075
+  store i1 %t1076, ptr %t1060
   br label %L230
 L230:
-  %t1071 = load i1, ptr %t1054
-  store i1 %t1071, ptr %t1053
-  br i1 %t1071, label %L232, label %L231
+  %t1077 = load i1, ptr %t1060
+  store i1 %t1077, ptr %t1059
+  br i1 %t1077, label %L232, label %L231
 L231:
-  %t1072 = load i32, ptr %t43
-  %t1073 = sext i32 %t1072 to i64
-  %t1074 = load ptr, ptr %t0
-  %t1075 = getelementptr %DeviceScalarPlan, ptr %t1074, i32 0, i32 0
-  %t1076 = load ptr, ptr %t1075
-  %t1077 = getelementptr %EIRNode, ptr %t1076, i64 %t1073
-  %t1078 = getelementptr %EIRNode, ptr %t1077, i32 0, i32 3
-  %t1079 = load i32, ptr %t1078
-  %t1080 = sext i32 %t1079 to i64
-  %t1081 = load ptr, ptr %t0
-  %t1082 = getelementptr %DeviceScalarPlan, ptr %t1081, i32 0, i32 0
-  %t1083 = load ptr, ptr %t1082
-  %t1084 = getelementptr %EIRNode, ptr %t1083, i64 %t1080
-  %t1085 = getelementptr %EIRNode, ptr %t1084, i32 0, i32 8
-  %t1086 = load i32, ptr %t1085
-  %t1087 = getelementptr [5 x i8], ptr @.str.6222, i32 0, i32 0
-  %t1088 = call i32 @str_intern(ptr %t1087)
-  %t1089 = icmp ne i32 %t1086, %t1088
-  store i1 %t1089, ptr %t1053
+  %t1078 = load i32, ptr %t49
+  %t1079 = sext i32 %t1078 to i64
+  %t1080 = load ptr, ptr %t0
+  %t1081 = getelementptr %DeviceScalarPlan, ptr %t1080, i32 0, i32 0
+  %t1082 = load ptr, ptr %t1081
+  %t1083 = getelementptr %EIRNode, ptr %t1082, i64 %t1079
+  %t1084 = getelementptr %EIRNode, ptr %t1083, i32 0, i32 3
+  %t1085 = load i32, ptr %t1084
+  %t1086 = sext i32 %t1085 to i64
+  %t1087 = load ptr, ptr %t0
+  %t1088 = getelementptr %DeviceScalarPlan, ptr %t1087, i32 0, i32 0
+  %t1089 = load ptr, ptr %t1088
+  %t1090 = getelementptr %EIRNode, ptr %t1089, i64 %t1086
+  %t1091 = getelementptr %EIRNode, ptr %t1090, i32 0, i32 8
+  %t1092 = load i32, ptr %t1091
+  %t1093 = getelementptr [5 x i8], ptr @.str.6222, i32 0, i32 0
+  %t1094 = call i32 @str_intern(ptr %t1093)
+  %t1095 = icmp ne i32 %t1092, %t1094
+  store i1 %t1095, ptr %t1059
   br label %L232
 L232:
-  %t1090 = load i1, ptr %t1053
-  store i1 %t1090, ptr %t1052
-  br i1 %t1090, label %L234, label %L233
+  %t1096 = load i1, ptr %t1059
+  store i1 %t1096, ptr %t1058
+  br i1 %t1096, label %L234, label %L233
 L233:
-  %t1091 = load i32, ptr %t43
-  %t1092 = sext i32 %t1091 to i64
-  %t1093 = load ptr, ptr %t0
-  %t1094 = getelementptr %DeviceScalarPlan, ptr %t1093, i32 0, i32 0
-  %t1095 = load ptr, ptr %t1094
-  %t1096 = getelementptr %EIRNode, ptr %t1095, i64 %t1092
-  %t1097 = getelementptr %EIRNode, ptr %t1096, i32 0, i32 4
-  %t1098 = load i32, ptr %t1097
-  %t1099 = sext i32 %t1098 to i64
-  %t1100 = load ptr, ptr %t0
-  %t1101 = getelementptr %DeviceScalarPlan, ptr %t1100, i32 0, i32 0
-  %t1102 = load ptr, ptr %t1101
-  %t1103 = getelementptr %EIRNode, ptr %t1102, i64 %t1099
-  %t1104 = getelementptr %EIRNode, ptr %t1103, i32 0, i32 8
-  %t1105 = load i32, ptr %t1104
-  %t1106 = getelementptr [4 x i8], ptr @.str.6223, i32 0, i32 0
-  %t1107 = call i32 @str_intern(ptr %t1106)
-  %t1108 = icmp ne i32 %t1105, %t1107
-  store i1 %t1108, ptr %t1052
+  %t1097 = load i32, ptr %t49
+  %t1098 = sext i32 %t1097 to i64
+  %t1099 = load ptr, ptr %t0
+  %t1100 = getelementptr %DeviceScalarPlan, ptr %t1099, i32 0, i32 0
+  %t1101 = load ptr, ptr %t1100
+  %t1102 = getelementptr %EIRNode, ptr %t1101, i64 %t1098
+  %t1103 = getelementptr %EIRNode, ptr %t1102, i32 0, i32 4
+  %t1104 = load i32, ptr %t1103
+  %t1105 = sext i32 %t1104 to i64
+  %t1106 = load ptr, ptr %t0
+  %t1107 = getelementptr %DeviceScalarPlan, ptr %t1106, i32 0, i32 0
+  %t1108 = load ptr, ptr %t1107
+  %t1109 = getelementptr %EIRNode, ptr %t1108, i64 %t1105
+  %t1110 = getelementptr %EIRNode, ptr %t1109, i32 0, i32 8
+  %t1111 = load i32, ptr %t1110
+  %t1112 = getelementptr [4 x i8], ptr @.str.6223, i32 0, i32 0
+  %t1113 = call i32 @str_intern(ptr %t1112)
+  %t1114 = icmp ne i32 %t1111, %t1113
+  store i1 %t1114, ptr %t1058
   br label %L234
 L234:
-  %t1109 = load i1, ptr %t1052
-  store i1 %t1109, ptr %t1051
-  br i1 %t1109, label %L236, label %L235
+  %t1115 = load i1, ptr %t1058
+  store i1 %t1115, ptr %t1057
+  br i1 %t1115, label %L236, label %L235
 L235:
-  %t1110 = load i32, ptr %t43
-  %t1111 = sext i32 %t1110 to i64
-  %t1112 = load ptr, ptr %t0
-  %t1113 = getelementptr %DeviceScalarPlan, ptr %t1112, i32 0, i32 0
-  %t1114 = load ptr, ptr %t1113
-  %t1115 = getelementptr %EIRNode, ptr %t1114, i64 %t1111
-  %t1116 = getelementptr %EIRNode, ptr %t1115, i32 0, i32 5
-  %t1117 = load i32, ptr %t1116
-  %t1118 = sext i32 %t1117 to i64
-  %t1119 = load ptr, ptr %t0
-  %t1120 = getelementptr %DeviceScalarPlan, ptr %t1119, i32 0, i32 0
-  %t1121 = load ptr, ptr %t1120
-  %t1122 = getelementptr %EIRNode, ptr %t1121, i64 %t1118
-  %t1123 = getelementptr %EIRNode, ptr %t1122, i32 0, i32 8
-  %t1124 = load i32, ptr %t1123
-  %t1125 = getelementptr [3 x i8], ptr @.str.6224, i32 0, i32 0
-  %t1126 = call i32 @str_intern(ptr %t1125)
-  %t1127 = icmp ne i32 %t1124, %t1126
-  store i1 %t1127, ptr %t1051
+  %t1116 = load i32, ptr %t49
+  %t1117 = sext i32 %t1116 to i64
+  %t1118 = load ptr, ptr %t0
+  %t1119 = getelementptr %DeviceScalarPlan, ptr %t1118, i32 0, i32 0
+  %t1120 = load ptr, ptr %t1119
+  %t1121 = getelementptr %EIRNode, ptr %t1120, i64 %t1117
+  %t1122 = getelementptr %EIRNode, ptr %t1121, i32 0, i32 5
+  %t1123 = load i32, ptr %t1122
+  %t1124 = sext i32 %t1123 to i64
+  %t1125 = load ptr, ptr %t0
+  %t1126 = getelementptr %DeviceScalarPlan, ptr %t1125, i32 0, i32 0
+  %t1127 = load ptr, ptr %t1126
+  %t1128 = getelementptr %EIRNode, ptr %t1127, i64 %t1124
+  %t1129 = getelementptr %EIRNode, ptr %t1128, i32 0, i32 8
+  %t1130 = load i32, ptr %t1129
+  %t1131 = getelementptr [3 x i8], ptr @.str.6224, i32 0, i32 0
+  %t1132 = call i32 @str_intern(ptr %t1131)
+  %t1133 = icmp ne i32 %t1130, %t1132
+  store i1 %t1133, ptr %t1057
   br label %L236
 L236:
-  %t1128 = load i1, ptr %t1051
-  br i1 %t1128, label %L237, label %L239
+  %t1134 = load i1, ptr %t1057
+  br i1 %t1134, label %L237, label %L239
 L237:
-  %t1129 = add i32 0, 0
-  ret i32 %t1129
+  %t1135 = add i32 0, 0
+  ret i32 %t1135
 L239:
-  %t1131 = load i32, ptr %t57
-  %t1132 = load i32, ptr @DEVICE_MASKED_STORE
-  %t1133 = icmp eq i32 %t1131, %t1132
-  store i1 %t1133, ptr %t1130
-  br i1 %t1133, label %L240, label %L241
+  %t1137 = load i32, ptr %t63
+  %t1138 = load i32, ptr @DEVICE_MASKED_STORE
+  %t1139 = icmp eq i32 %t1137, %t1138
+  store i1 %t1139, ptr %t1136
+  br i1 %t1139, label %L240, label %L241
 L240:
-  %t1134 = load i32, ptr %t43
-  %t1135 = sext i32 %t1134 to i64
-  %t1136 = load ptr, ptr %t0
-  %t1137 = getelementptr %DeviceScalarPlan, ptr %t1136, i32 0, i32 0
-  %t1138 = load ptr, ptr %t1137
-  %t1139 = getelementptr %EIRNode, ptr %t1138, i64 %t1135
-  %t1140 = getelementptr %EIRNode, ptr %t1139, i32 0, i32 1
-  %t1141 = load i32, ptr %t1140
-  %t1142 = sext i32 %t1141 to i64
-  %t1143 = load ptr, ptr %t0
-  %t1144 = getelementptr %DeviceScalarPlan, ptr %t1143, i32 0, i32 0
-  %t1145 = load ptr, ptr %t1144
-  %t1146 = getelementptr %EIRNode, ptr %t1145, i64 %t1142
-  %t1147 = getelementptr %EIRNode, ptr %t1146, i32 0, i32 8
-  %t1148 = load i32, ptr %t1147
-  %t1149 = getelementptr [4 x i8], ptr @.str.6225, i32 0, i32 0
-  %t1150 = call i32 @str_intern(ptr %t1149)
-  %t1151 = icmp ne i32 %t1148, %t1150
-  store i1 %t1151, ptr %t1130
+  %t1140 = load i32, ptr %t49
+  %t1141 = sext i32 %t1140 to i64
+  %t1142 = load ptr, ptr %t0
+  %t1143 = getelementptr %DeviceScalarPlan, ptr %t1142, i32 0, i32 0
+  %t1144 = load ptr, ptr %t1143
+  %t1145 = getelementptr %EIRNode, ptr %t1144, i64 %t1141
+  %t1146 = getelementptr %EIRNode, ptr %t1145, i32 0, i32 1
+  %t1147 = load i32, ptr %t1146
+  %t1148 = sext i32 %t1147 to i64
+  %t1149 = load ptr, ptr %t0
+  %t1150 = getelementptr %DeviceScalarPlan, ptr %t1149, i32 0, i32 0
+  %t1151 = load ptr, ptr %t1150
+  %t1152 = getelementptr %EIRNode, ptr %t1151, i64 %t1148
+  %t1153 = getelementptr %EIRNode, ptr %t1152, i32 0, i32 8
+  %t1154 = load i32, ptr %t1153
+  %t1155 = getelementptr [4 x i8], ptr @.str.6225, i32 0, i32 0
+  %t1156 = call i32 @str_intern(ptr %t1155)
+  %t1157 = icmp ne i32 %t1154, %t1156
+  store i1 %t1157, ptr %t1136
   br label %L241
 L241:
-  %t1152 = load i1, ptr %t1130
-  br i1 %t1152, label %L242, label %L244
+  %t1158 = load i1, ptr %t1136
+  br i1 %t1158, label %L242, label %L244
 L242:
-  %t1153 = add i32 0, 0
-  ret i32 %t1153
+  %t1159 = add i32 0, 0
+  ret i32 %t1159
 L244:
   br label %L228
 L227:
-  %t1155 = load i32, ptr %t57
-  %t1156 = load i32, ptr @DEVICE_SHARED_INIT
-  %t1157 = icmp sge i32 %t1155, %t1156
-  store i1 %t1157, ptr %t1154
-  br i1 %t1157, label %L245, label %L246
+  %t1161 = load i32, ptr %t63
+  %t1162 = load i32, ptr @DEVICE_SHARED_INIT
+  %t1163 = icmp sge i32 %t1161, %t1162
+  store i1 %t1163, ptr %t1160
+  br i1 %t1163, label %L245, label %L246
 L245:
-  %t1158 = load i32, ptr %t57
-  %t1159 = load i32, ptr @DEVICE_BLOCK_BARRIER
-  %t1160 = icmp sle i32 %t1158, %t1159
-  store i1 %t1160, ptr %t1154
+  %t1164 = load i32, ptr %t63
+  %t1165 = load i32, ptr @DEVICE_BLOCK_BARRIER
+  %t1166 = icmp sle i32 %t1164, %t1165
+  store i1 %t1166, ptr %t1160
   br label %L246
 L246:
-  %t1161 = load i1, ptr %t1154
-  br i1 %t1161, label %L247, label %L248
+  %t1167 = load i1, ptr %t1160
+  br i1 %t1167, label %L247, label %L248
 L247:
-  %t1162 = load ptr, ptr %t0
-  %t1163 = getelementptr %DeviceScalarPlan, ptr %t1162, i32 0, i32 27
-  %t1164 = load i32, ptr %t1163
-  %t1165 = add i32 0, 1
-  %t1166 = icmp ne i32 %t1164, %t1165
-  br i1 %t1166, label %L250, label %L252
+  %t1168 = load ptr, ptr %t0
+  %t1169 = getelementptr %DeviceScalarPlan, ptr %t1168, i32 0, i32 27
+  %t1170 = load i32, ptr %t1169
+  %t1171 = add i32 0, 1
+  %t1172 = icmp ne i32 %t1170, %t1171
+  br i1 %t1172, label %L250, label %L252
 L250:
-  %t1167 = add i32 0, 0
-  ret i32 %t1167
+  %t1173 = add i32 0, 0
+  ret i32 %t1173
 L252:
-  %t1168 = load i32, ptr %t57
-  %t1169 = load i32, ptr @DEVICE_BLOCK_BARRIER
-  %t1170 = icmp eq i32 %t1168, %t1169
-  br i1 %t1170, label %L253, label %L254
+  %t1174 = load i32, ptr %t63
+  %t1175 = load i32, ptr @DEVICE_BLOCK_BARRIER
+  %t1176 = icmp eq i32 %t1174, %t1175
+  br i1 %t1176, label %L253, label %L254
 L253:
-  %t1171 = add i32 0, 0
-  store i32 %t1171, ptr %t37
-  %t1172 = add i32 0, 0
-  store i32 %t1172, ptr %t39
+  %t1177 = add i32 0, 0
+  store i32 %t1177, ptr %t43
+  %t1178 = add i32 0, 0
+  store i32 %t1178, ptr %t45
   br label %L255
 L254:
-  %t1173 = load i32, ptr %t57
-  %t1174 = load i32, ptr @DEVICE_SHARED_INIT
-  %t1175 = icmp eq i32 %t1173, %t1174
-  br i1 %t1175, label %L256, label %L257
+  %t1179 = load i32, ptr %t63
+  %t1180 = load i32, ptr @DEVICE_SHARED_INIT
+  %t1181 = icmp eq i32 %t1179, %t1180
+  br i1 %t1181, label %L256, label %L257
 L256:
-  %t1180 = load i32, ptr %t35
-  %t1181 = add i32 0, 0
-  %t1182 = icmp ne i32 %t1180, %t1181
-  store i1 %t1182, ptr %t1179
-  br i1 %t1182, label %L260, label %L259
+  %t1186 = load i32, ptr %t41
+  %t1187 = add i32 0, 0
+  %t1188 = icmp ne i32 %t1186, %t1187
+  store i1 %t1188, ptr %t1185
+  br i1 %t1188, label %L260, label %L259
 L259:
-  %t1183 = load ptr, ptr %t0
-  %t1184 = getelementptr %DeviceScalarPlan, ptr %t1183, i32 0, i32 31
-  %t1185 = load i32, ptr %t1184
-  %t1186 = add i32 0, 1
-  %t1187 = icmp slt i32 %t1185, %t1186
-  store i1 %t1187, ptr %t1179
-  br label %L260
-L260:
-  %t1188 = load i1, ptr %t1179
-  store i1 %t1188, ptr %t1178
-  br i1 %t1188, label %L262, label %L261
-L261:
   %t1189 = load ptr, ptr %t0
   %t1190 = getelementptr %DeviceScalarPlan, ptr %t1189, i32 0, i32 31
   %t1191 = load i32, ptr %t1190
-  %t1192 = add i32 0, 1024
-  %t1193 = icmp sgt i32 %t1191, %t1192
-  store i1 %t1193, ptr %t1178
+  %t1192 = add i32 0, 1
+  %t1193 = icmp slt i32 %t1191, %t1192
+  store i1 %t1193, ptr %t1185
+  br label %L260
+L260:
+  %t1194 = load i1, ptr %t1185
+  store i1 %t1194, ptr %t1184
+  br i1 %t1194, label %L262, label %L261
+L261:
+  %t1195 = load ptr, ptr %t0
+  %t1196 = getelementptr %DeviceScalarPlan, ptr %t1195, i32 0, i32 31
+  %t1197 = load i32, ptr %t1196
+  %t1198 = add i32 0, 1024
+  %t1199 = icmp sgt i32 %t1197, %t1198
+  store i1 %t1199, ptr %t1184
   br label %L262
 L262:
-  %t1194 = load i1, ptr %t1178
-  store i1 %t1194, ptr %t1177
-  br i1 %t1194, label %L264, label %L263
+  %t1200 = load i1, ptr %t1184
+  store i1 %t1200, ptr %t1183
+  br i1 %t1200, label %L264, label %L263
 L263:
-  %t1195 = load i32, ptr %t43
-  %t1196 = sext i32 %t1195 to i64
-  %t1197 = load ptr, ptr %t0
-  %t1198 = getelementptr %DeviceScalarPlan, ptr %t1197, i32 0, i32 0
-  %t1199 = load ptr, ptr %t1198
-  %t1200 = getelementptr %EIRNode, ptr %t1199, i64 %t1196
-  %t1201 = getelementptr %EIRNode, ptr %t1200, i32 0, i32 3
-  %t1202 = load i32, ptr %t1201
+  %t1201 = load i32, ptr %t49
+  %t1202 = sext i32 %t1201 to i64
   %t1203 = load ptr, ptr %t0
-  %t1204 = getelementptr %DeviceScalarPlan, ptr %t1203, i32 0, i32 29
-  %t1205 = load i32, ptr %t1204
-  %t1206 = icmp ne i32 %t1202, %t1205
-  store i1 %t1206, ptr %t1177
+  %t1204 = getelementptr %DeviceScalarPlan, ptr %t1203, i32 0, i32 0
+  %t1205 = load ptr, ptr %t1204
+  %t1206 = getelementptr %EIRNode, ptr %t1205, i64 %t1202
+  %t1207 = getelementptr %EIRNode, ptr %t1206, i32 0, i32 3
+  %t1208 = load i32, ptr %t1207
+  %t1209 = load ptr, ptr %t0
+  %t1210 = getelementptr %DeviceScalarPlan, ptr %t1209, i32 0, i32 29
+  %t1211 = load i32, ptr %t1210
+  %t1212 = icmp ne i32 %t1208, %t1211
+  store i1 %t1212, ptr %t1183
   br label %L264
 L264:
-  %t1207 = load i1, ptr %t1177
-  store i1 %t1207, ptr %t1176
-  br i1 %t1207, label %L266, label %L265
+  %t1213 = load i1, ptr %t1183
+  store i1 %t1213, ptr %t1182
+  br i1 %t1213, label %L266, label %L265
 L265:
-  %t1208 = load i32, ptr %t43
-  %t1209 = sext i32 %t1208 to i64
-  %t1210 = load ptr, ptr %t0
-  %t1211 = getelementptr %DeviceScalarPlan, ptr %t1210, i32 0, i32 0
-  %t1212 = load ptr, ptr %t1211
-  %t1213 = getelementptr %EIRNode, ptr %t1212, i64 %t1209
-  %t1214 = getelementptr %EIRNode, ptr %t1213, i32 0, i32 4
-  %t1215 = load i32, ptr %t1214
+  %t1214 = load i32, ptr %t49
+  %t1215 = sext i32 %t1214 to i64
   %t1216 = load ptr, ptr %t0
-  %t1217 = getelementptr %DeviceScalarPlan, ptr %t1216, i32 0, i32 30
-  %t1218 = load i32, ptr %t1217
-  %t1219 = icmp ne i32 %t1215, %t1218
-  store i1 %t1219, ptr %t1176
+  %t1217 = getelementptr %DeviceScalarPlan, ptr %t1216, i32 0, i32 0
+  %t1218 = load ptr, ptr %t1217
+  %t1219 = getelementptr %EIRNode, ptr %t1218, i64 %t1215
+  %t1220 = getelementptr %EIRNode, ptr %t1219, i32 0, i32 4
+  %t1221 = load i32, ptr %t1220
+  %t1222 = load ptr, ptr %t0
+  %t1223 = getelementptr %DeviceScalarPlan, ptr %t1222, i32 0, i32 30
+  %t1224 = load i32, ptr %t1223
+  %t1225 = icmp ne i32 %t1221, %t1224
+  store i1 %t1225, ptr %t1182
   br label %L266
 L266:
-  %t1220 = load i1, ptr %t1176
-  br i1 %t1220, label %L267, label %L269
+  %t1226 = load i1, ptr %t1182
+  br i1 %t1226, label %L267, label %L269
 L267:
-  %t1221 = add i32 0, 0
-  ret i32 %t1221
+  %t1227 = add i32 0, 0
+  ret i32 %t1227
 L269:
-  %t1222 = load ptr, ptr %t0
-  %t1223 = getelementptr %DeviceScalarPlan, ptr %t1222, i32 0, i32 35
-  %t1224 = load i32, ptr %t1223
-  %t1225 = add i32 0, 1
-  %t1226 = icmp eq i32 %t1224, %t1225
-  br i1 %t1226, label %L270, label %L272
+  %t1228 = load ptr, ptr %t0
+  %t1229 = getelementptr %DeviceScalarPlan, ptr %t1228, i32 0, i32 35
+  %t1230 = load i32, ptr %t1229
+  %t1231 = add i32 0, 1
+  %t1232 = icmp eq i32 %t1230, %t1231
+  br i1 %t1232, label %L270, label %L272
 L270:
-  %t1231 = load ptr, ptr %t0
-  %t1232 = getelementptr %DeviceScalarPlan, ptr %t1231, i32 0, i32 36
-  %t1233 = load i32, ptr %t1232
-  %t1234 = add i32 0, 0
-  %t1235 = icmp slt i32 %t1233, %t1234
-  store i1 %t1235, ptr %t1230
-  br i1 %t1235, label %L274, label %L273
+  %t1237 = load ptr, ptr %t0
+  %t1238 = getelementptr %DeviceScalarPlan, ptr %t1237, i32 0, i32 36
+  %t1239 = load i32, ptr %t1238
+  %t1240 = add i32 0, 0
+  %t1241 = icmp slt i32 %t1239, %t1240
+  store i1 %t1241, ptr %t1236
+  br i1 %t1241, label %L274, label %L273
 L273:
-  %t1236 = load ptr, ptr %t0
-  %t1237 = getelementptr %DeviceScalarPlan, ptr %t1236, i32 0, i32 36
-  %t1238 = load i32, ptr %t1237
-  %t1239 = load i32, ptr %t43
-  %t1240 = icmp sge i32 %t1238, %t1239
-  store i1 %t1240, ptr %t1230
-  br label %L274
-L274:
-  %t1241 = load i1, ptr %t1230
-  store i1 %t1241, ptr %t1229
-  br i1 %t1241, label %L276, label %L275
-L275:
   %t1242 = load ptr, ptr %t0
   %t1243 = getelementptr %DeviceScalarPlan, ptr %t1242, i32 0, i32 36
   %t1244 = load i32, ptr %t1243
-  %t1245 = sext i32 %t1244 to i64
-  %t1246 = load ptr, ptr %t0
-  %t1247 = getelementptr %DeviceScalarPlan, ptr %t1246, i32 0, i32 0
-  %t1248 = load ptr, ptr %t1247
-  %t1249 = getelementptr %EIRNode, ptr %t1248, i64 %t1245
-  %t1250 = getelementptr %EIRNode, ptr %t1249, i32 0, i32 0
-  %t1251 = load i32, ptr %t1250
-  %t1252 = load i32, ptr @EIR_LOCAL
-  %t1253 = icmp ne i32 %t1251, %t1252
-  store i1 %t1253, ptr %t1229
+  %t1245 = load i32, ptr %t49
+  %t1246 = icmp sge i32 %t1244, %t1245
+  store i1 %t1246, ptr %t1236
+  br label %L274
+L274:
+  %t1247 = load i1, ptr %t1236
+  store i1 %t1247, ptr %t1235
+  br i1 %t1247, label %L276, label %L275
+L275:
+  %t1248 = load ptr, ptr %t0
+  %t1249 = getelementptr %DeviceScalarPlan, ptr %t1248, i32 0, i32 36
+  %t1250 = load i32, ptr %t1249
+  %t1251 = sext i32 %t1250 to i64
+  %t1252 = load ptr, ptr %t0
+  %t1253 = getelementptr %DeviceScalarPlan, ptr %t1252, i32 0, i32 0
+  %t1254 = load ptr, ptr %t1253
+  %t1255 = getelementptr %EIRNode, ptr %t1254, i64 %t1251
+  %t1256 = getelementptr %EIRNode, ptr %t1255, i32 0, i32 0
+  %t1257 = load i32, ptr %t1256
+  %t1258 = load i32, ptr @EIR_LOCAL
+  %t1259 = icmp ne i32 %t1257, %t1258
+  store i1 %t1259, ptr %t1235
   br label %L276
 L276:
-  %t1254 = load i1, ptr %t1229
-  store i1 %t1254, ptr %t1228
-  br i1 %t1254, label %L278, label %L277
+  %t1260 = load i1, ptr %t1235
+  store i1 %t1260, ptr %t1234
+  br i1 %t1260, label %L278, label %L277
 L277:
-  %t1255 = load ptr, ptr %t0
-  %t1256 = getelementptr %DeviceScalarPlan, ptr %t1255, i32 0, i32 36
-  %t1257 = load i32, ptr %t1256
-  %t1258 = sext i32 %t1257 to i64
-  %t1259 = load ptr, ptr %t0
-  %t1260 = getelementptr %DeviceScalarPlan, ptr %t1259, i32 0, i32 0
-  %t1261 = load ptr, ptr %t1260
-  %t1262 = getelementptr %EIRNode, ptr %t1261, i64 %t1258
-  %t1263 = getelementptr %EIRNode, ptr %t1262, i32 0, i32 8
-  %t1264 = load i32, ptr %t1263
-  %t1265 = getelementptr [4 x i8], ptr @.str.6226, i32 0, i32 0
-  %t1266 = call i32 @str_intern(ptr %t1265)
-  %t1267 = icmp ne i32 %t1264, %t1266
-  store i1 %t1267, ptr %t1228
+  %t1261 = load ptr, ptr %t0
+  %t1262 = getelementptr %DeviceScalarPlan, ptr %t1261, i32 0, i32 36
+  %t1263 = load i32, ptr %t1262
+  %t1264 = sext i32 %t1263 to i64
+  %t1265 = load ptr, ptr %t0
+  %t1266 = getelementptr %DeviceScalarPlan, ptr %t1265, i32 0, i32 0
+  %t1267 = load ptr, ptr %t1266
+  %t1268 = getelementptr %EIRNode, ptr %t1267, i64 %t1264
+  %t1269 = getelementptr %EIRNode, ptr %t1268, i32 0, i32 8
+  %t1270 = load i32, ptr %t1269
+  %t1271 = getelementptr [4 x i8], ptr @.str.6226, i32 0, i32 0
+  %t1272 = call i32 @str_intern(ptr %t1271)
+  %t1273 = icmp ne i32 %t1270, %t1272
+  store i1 %t1273, ptr %t1234
   br label %L278
 L278:
-  %t1268 = load i1, ptr %t1228
-  store i1 %t1268, ptr %t1227
-  br i1 %t1268, label %L280, label %L279
+  %t1274 = load i1, ptr %t1234
+  store i1 %t1274, ptr %t1233
+  br i1 %t1274, label %L280, label %L279
 L279:
-  %t1269 = load i32, ptr %t43
-  %t1270 = sext i32 %t1269 to i64
-  %t1271 = load ptr, ptr %t0
-  %t1272 = getelementptr %DeviceScalarPlan, ptr %t1271, i32 0, i32 0
-  %t1273 = load ptr, ptr %t1272
-  %t1274 = getelementptr %EIRNode, ptr %t1273, i64 %t1270
-  %t1275 = getelementptr %EIRNode, ptr %t1274, i32 0, i32 5
-  %t1276 = load i32, ptr %t1275
+  %t1275 = load i32, ptr %t49
+  %t1276 = sext i32 %t1275 to i64
   %t1277 = load ptr, ptr %t0
-  %t1278 = getelementptr %DeviceScalarPlan, ptr %t1277, i32 0, i32 36
-  %t1279 = load i32, ptr %t1278
-  %t1280 = icmp ne i32 %t1276, %t1279
-  store i1 %t1280, ptr %t1227
+  %t1278 = getelementptr %DeviceScalarPlan, ptr %t1277, i32 0, i32 0
+  %t1279 = load ptr, ptr %t1278
+  %t1280 = getelementptr %EIRNode, ptr %t1279, i64 %t1276
+  %t1281 = getelementptr %EIRNode, ptr %t1280, i32 0, i32 5
+  %t1282 = load i32, ptr %t1281
+  %t1283 = load ptr, ptr %t0
+  %t1284 = getelementptr %DeviceScalarPlan, ptr %t1283, i32 0, i32 36
+  %t1285 = load i32, ptr %t1284
+  %t1286 = icmp ne i32 %t1282, %t1285
+  store i1 %t1286, ptr %t1233
   br label %L280
 L280:
-  %t1281 = load i1, ptr %t1227
-  br i1 %t1281, label %L281, label %L283
+  %t1287 = load i1, ptr %t1233
+  br i1 %t1287, label %L281, label %L283
 L281:
-  %t1282 = add i32 0, 0
-  ret i32 %t1282
+  %t1288 = add i32 0, 0
+  ret i32 %t1288
 L283:
   br label %L272
 L272:
-  %t1283 = add i32 0, 1
-  store i32 %t1283, ptr %t35
+  %t1289 = add i32 0, 1
+  store i32 %t1289, ptr %t41
   br label %L258
 L257:
-  %t1286 = load i32, ptr %t35
-  %t1287 = add i32 0, 0
-  %t1288 = icmp eq i32 %t1286, %t1287
-  store i1 %t1288, ptr %t1285
-  br i1 %t1288, label %L285, label %L284
+  %t1292 = load i32, ptr %t41
+  %t1293 = add i32 0, 0
+  %t1294 = icmp eq i32 %t1292, %t1293
+  store i1 %t1294, ptr %t1291
+  br i1 %t1294, label %L285, label %L284
 L284:
-  %t1289 = load i32, ptr %t43
-  %t1290 = sext i32 %t1289 to i64
-  %t1291 = load ptr, ptr %t0
-  %t1292 = getelementptr %DeviceScalarPlan, ptr %t1291, i32 0, i32 0
-  %t1293 = load ptr, ptr %t1292
-  %t1294 = getelementptr %EIRNode, ptr %t1293, i64 %t1290
-  %t1295 = getelementptr %EIRNode, ptr %t1294, i32 0, i32 8
-  %t1296 = load i32, ptr %t1295
-  %t1297 = getelementptr [4 x i8], ptr @.str.6227, i32 0, i32 0
-  %t1298 = call i32 @str_intern(ptr %t1297)
-  %t1299 = icmp ne i32 %t1296, %t1298
-  store i1 %t1299, ptr %t1285
+  %t1295 = load i32, ptr %t49
+  %t1296 = sext i32 %t1295 to i64
+  %t1297 = load ptr, ptr %t0
+  %t1298 = getelementptr %DeviceScalarPlan, ptr %t1297, i32 0, i32 0
+  %t1299 = load ptr, ptr %t1298
+  %t1300 = getelementptr %EIRNode, ptr %t1299, i64 %t1296
+  %t1301 = getelementptr %EIRNode, ptr %t1300, i32 0, i32 8
+  %t1302 = load i32, ptr %t1301
+  %t1303 = getelementptr [4 x i8], ptr @.str.6227, i32 0, i32 0
+  %t1304 = call i32 @str_intern(ptr %t1303)
+  %t1305 = icmp ne i32 %t1302, %t1304
+  store i1 %t1305, ptr %t1291
   br label %L285
 L285:
-  %t1300 = load i1, ptr %t1285
-  store i1 %t1300, ptr %t1284
-  br i1 %t1300, label %L287, label %L286
+  %t1306 = load i1, ptr %t1291
+  store i1 %t1306, ptr %t1290
+  br i1 %t1306, label %L287, label %L286
 L286:
-  %t1301 = load i32, ptr %t43
-  %t1302 = sext i32 %t1301 to i64
-  %t1303 = load ptr, ptr %t0
-  %t1304 = getelementptr %DeviceScalarPlan, ptr %t1303, i32 0, i32 0
-  %t1305 = load ptr, ptr %t1304
-  %t1306 = getelementptr %EIRNode, ptr %t1305, i64 %t1302
-  %t1307 = getelementptr %EIRNode, ptr %t1306, i32 0, i32 3
-  %t1308 = load i32, ptr %t1307
-  %t1309 = sext i32 %t1308 to i64
-  %t1310 = load ptr, ptr %t0
-  %t1311 = getelementptr %DeviceScalarPlan, ptr %t1310, i32 0, i32 0
-  %t1312 = load ptr, ptr %t1311
-  %t1313 = getelementptr %EIRNode, ptr %t1312, i64 %t1309
-  %t1314 = getelementptr %EIRNode, ptr %t1313, i32 0, i32 8
-  %t1315 = load i32, ptr %t1314
-  %t1316 = getelementptr [4 x i8], ptr @.str.6228, i32 0, i32 0
-  %t1317 = call i32 @str_intern(ptr %t1316)
-  %t1318 = icmp ne i32 %t1315, %t1317
-  store i1 %t1318, ptr %t1284
+  %t1307 = load i32, ptr %t49
+  %t1308 = sext i32 %t1307 to i64
+  %t1309 = load ptr, ptr %t0
+  %t1310 = getelementptr %DeviceScalarPlan, ptr %t1309, i32 0, i32 0
+  %t1311 = load ptr, ptr %t1310
+  %t1312 = getelementptr %EIRNode, ptr %t1311, i64 %t1308
+  %t1313 = getelementptr %EIRNode, ptr %t1312, i32 0, i32 3
+  %t1314 = load i32, ptr %t1313
+  %t1315 = sext i32 %t1314 to i64
+  %t1316 = load ptr, ptr %t0
+  %t1317 = getelementptr %DeviceScalarPlan, ptr %t1316, i32 0, i32 0
+  %t1318 = load ptr, ptr %t1317
+  %t1319 = getelementptr %EIRNode, ptr %t1318, i64 %t1315
+  %t1320 = getelementptr %EIRNode, ptr %t1319, i32 0, i32 8
+  %t1321 = load i32, ptr %t1320
+  %t1322 = getelementptr [4 x i8], ptr @.str.6228, i32 0, i32 0
+  %t1323 = call i32 @str_intern(ptr %t1322)
+  %t1324 = icmp ne i32 %t1321, %t1323
+  store i1 %t1324, ptr %t1290
   br label %L287
 L287:
-  %t1319 = load i1, ptr %t1284
-  br i1 %t1319, label %L288, label %L290
+  %t1325 = load i1, ptr %t1290
+  br i1 %t1325, label %L288, label %L290
 L288:
-  %t1320 = add i32 0, 0
-  ret i32 %t1320
+  %t1326 = add i32 0, 0
+  ret i32 %t1326
 L290:
-  %t1321 = load i32, ptr %t57
-  %t1322 = load i32, ptr @DEVICE_SHARED_LOAD
-  %t1323 = icmp eq i32 %t1321, %t1322
-  br i1 %t1323, label %L291, label %L292
+  %t1327 = load i32, ptr %t63
+  %t1328 = load i32, ptr @DEVICE_SHARED_LOAD
+  %t1329 = icmp eq i32 %t1327, %t1328
+  br i1 %t1329, label %L291, label %L292
 L291:
-  %t1324 = load i32, ptr %t37
-  %t1325 = add i32 0, 0
-  %t1326 = icmp ne i32 %t1324, %t1325
-  br i1 %t1326, label %L294, label %L296
+  %t1330 = load i32, ptr %t43
+  %t1331 = add i32 0, 0
+  %t1332 = icmp ne i32 %t1330, %t1331
+  br i1 %t1332, label %L294, label %L296
 L294:
-  %t1327 = add i32 0, 0
-  ret i32 %t1327
+  %t1333 = add i32 0, 0
+  ret i32 %t1333
 L296:
-  %t1328 = add i32 0, 1
-  store i32 %t1328, ptr %t39
+  %t1334 = add i32 0, 1
+  store i32 %t1334, ptr %t45
   br label %L293
 L292:
-  %t1332 = load i32, ptr %t39
-  %t1333 = add i32 0, 0
-  %t1334 = icmp ne i32 %t1332, %t1333
-  store i1 %t1334, ptr %t1331
-  br i1 %t1334, label %L298, label %L297
+  %t1338 = load i32, ptr %t45
+  %t1339 = add i32 0, 0
+  %t1340 = icmp ne i32 %t1338, %t1339
+  store i1 %t1340, ptr %t1337
+  br i1 %t1340, label %L298, label %L297
 L297:
-  %t1335 = load i32, ptr %t37
-  %t1336 = add i32 0, 2
-  %t1337 = icmp eq i32 %t1335, %t1336
-  store i1 %t1337, ptr %t1331
+  %t1341 = load i32, ptr %t43
+  %t1342 = add i32 0, 2
+  %t1343 = icmp eq i32 %t1341, %t1342
+  store i1 %t1343, ptr %t1337
   br label %L298
 L298:
-  %t1338 = load i1, ptr %t1331
-  store i1 %t1338, ptr %t1330
-  br i1 %t1338, label %L300, label %L299
+  %t1344 = load i1, ptr %t1337
+  store i1 %t1344, ptr %t1336
+  br i1 %t1344, label %L300, label %L299
 L299:
-  %t1339 = load i32, ptr %t43
-  %t1340 = sext i32 %t1339 to i64
-  %t1341 = load ptr, ptr %t0
-  %t1342 = getelementptr %DeviceScalarPlan, ptr %t1341, i32 0, i32 0
-  %t1343 = load ptr, ptr %t1342
-  %t1344 = getelementptr %EIRNode, ptr %t1343, i64 %t1340
-  %t1345 = getelementptr %EIRNode, ptr %t1344, i32 0, i32 4
-  %t1346 = load i32, ptr %t1345
-  %t1347 = sext i32 %t1346 to i64
-  %t1348 = load ptr, ptr %t0
-  %t1349 = getelementptr %DeviceScalarPlan, ptr %t1348, i32 0, i32 0
-  %t1350 = load ptr, ptr %t1349
-  %t1351 = getelementptr %EIRNode, ptr %t1350, i64 %t1347
-  %t1352 = getelementptr %EIRNode, ptr %t1351, i32 0, i32 8
-  %t1353 = load i32, ptr %t1352
-  %t1354 = getelementptr [4 x i8], ptr @.str.6229, i32 0, i32 0
-  %t1355 = call i32 @str_intern(ptr %t1354)
-  %t1356 = icmp ne i32 %t1353, %t1355
-  store i1 %t1356, ptr %t1330
+  %t1345 = load i32, ptr %t49
+  %t1346 = sext i32 %t1345 to i64
+  %t1347 = load ptr, ptr %t0
+  %t1348 = getelementptr %DeviceScalarPlan, ptr %t1347, i32 0, i32 0
+  %t1349 = load ptr, ptr %t1348
+  %t1350 = getelementptr %EIRNode, ptr %t1349, i64 %t1346
+  %t1351 = getelementptr %EIRNode, ptr %t1350, i32 0, i32 4
+  %t1352 = load i32, ptr %t1351
+  %t1353 = sext i32 %t1352 to i64
+  %t1354 = load ptr, ptr %t0
+  %t1355 = getelementptr %DeviceScalarPlan, ptr %t1354, i32 0, i32 0
+  %t1356 = load ptr, ptr %t1355
+  %t1357 = getelementptr %EIRNode, ptr %t1356, i64 %t1353
+  %t1358 = getelementptr %EIRNode, ptr %t1357, i32 0, i32 8
+  %t1359 = load i32, ptr %t1358
+  %t1360 = getelementptr [4 x i8], ptr @.str.6229, i32 0, i32 0
+  %t1361 = call i32 @str_intern(ptr %t1360)
+  %t1362 = icmp ne i32 %t1359, %t1361
+  store i1 %t1362, ptr %t1336
   br label %L300
 L300:
-  %t1357 = load i1, ptr %t1330
-  store i1 %t1357, ptr %t1329
-  br i1 %t1357, label %L302, label %L301
+  %t1363 = load i1, ptr %t1336
+  store i1 %t1363, ptr %t1335
+  br i1 %t1363, label %L302, label %L301
 L301:
-  %t1358 = load ptr, ptr %t0
-  %t1359 = load i32, ptr %t43
-  %t1360 = sext i32 %t1359 to i64
-  %t1361 = load ptr, ptr %t0
-  %t1362 = getelementptr %DeviceScalarPlan, ptr %t1361, i32 0, i32 0
-  %t1363 = load ptr, ptr %t1362
-  %t1364 = getelementptr %EIRNode, ptr %t1363, i64 %t1360
-  %t1365 = getelementptr %EIRNode, ptr %t1364, i32 0, i32 3
-  %t1366 = load i32, ptr %t1365
+  %t1364 = load ptr, ptr %t0
+  %t1365 = load i32, ptr %t49
+  %t1366 = sext i32 %t1365 to i64
   %t1367 = load ptr, ptr %t0
-  %t1368 = getelementptr %DeviceScalarPlan, ptr %t1367, i32 0, i32 29
-  %t1369 = load i32, ptr %t1368
-  %t1370 = add i32 0, 0
-  %t1371 = call i32 @device_thread_same(ptr %t1358, i32 %t1366, i32 %t1369, i32 %t1370)
-  %t1372 = add i32 0, 0
-  %t1373 = icmp eq i32 %t1371, %t1372
-  store i1 %t1373, ptr %t1329
+  %t1368 = getelementptr %DeviceScalarPlan, ptr %t1367, i32 0, i32 0
+  %t1369 = load ptr, ptr %t1368
+  %t1370 = getelementptr %EIRNode, ptr %t1369, i64 %t1366
+  %t1371 = getelementptr %EIRNode, ptr %t1370, i32 0, i32 3
+  %t1372 = load i32, ptr %t1371
+  %t1373 = load ptr, ptr %t0
+  %t1374 = getelementptr %DeviceScalarPlan, ptr %t1373, i32 0, i32 29
+  %t1375 = load i32, ptr %t1374
+  %t1376 = add i32 0, 0
+  %t1377 = call i32 @device_thread_same(ptr %t1364, i32 %t1372, i32 %t1375, i32 %t1376)
+  %t1378 = add i32 0, 0
+  %t1379 = icmp eq i32 %t1377, %t1378
+  store i1 %t1379, ptr %t1335
   br label %L302
 L302:
-  %t1374 = load i1, ptr %t1329
-  br i1 %t1374, label %L303, label %L305
+  %t1380 = load i1, ptr %t1335
+  br i1 %t1380, label %L303, label %L305
 L303:
-  %t1375 = add i32 0, 0
-  ret i32 %t1375
+  %t1381 = add i32 0, 0
+  ret i32 %t1381
 L305:
-  %t1376 = add i32 0, 1
-  store i32 %t1376, ptr %t37
+  %t1382 = add i32 0, 1
+  store i32 %t1382, ptr %t43
   br label %L293
 L293:
   br label %L258
@@ -167095,1190 +167092,1190 @@ L258:
 L255:
   br label %L249
 L248:
-  %t1377 = load i32, ptr %t57
-  %t1378 = load i32, ptr @DEVICE_THREAD_ID
-  %t1379 = icmp eq i32 %t1377, %t1378
-  br i1 %t1379, label %L306, label %L307
+  %t1383 = load i32, ptr %t63
+  %t1384 = load i32, ptr @DEVICE_THREAD_ID
+  %t1385 = icmp eq i32 %t1383, %t1384
+  br i1 %t1385, label %L306, label %L307
 L306:
-  %t1383 = load ptr, ptr %t0
-  %t1384 = getelementptr %DeviceScalarPlan, ptr %t1383, i32 0, i32 27
-  %t1385 = load i32, ptr %t1384
-  %t1386 = add i32 0, 1
-  %t1387 = icmp ne i32 %t1385, %t1386
-  store i1 %t1387, ptr %t1382
-  br i1 %t1387, label %L310, label %L309
+  %t1389 = load ptr, ptr %t0
+  %t1390 = getelementptr %DeviceScalarPlan, ptr %t1389, i32 0, i32 27
+  %t1391 = load i32, ptr %t1390
+  %t1392 = add i32 0, 1
+  %t1393 = icmp ne i32 %t1391, %t1392
+  store i1 %t1393, ptr %t1388
+  br i1 %t1393, label %L310, label %L309
 L309:
-  %t1388 = load i32, ptr %t43
-  %t1389 = sext i32 %t1388 to i64
-  %t1390 = load ptr, ptr %t0
-  %t1391 = getelementptr %DeviceScalarPlan, ptr %t1390, i32 0, i32 0
-  %t1392 = load ptr, ptr %t1391
-  %t1393 = getelementptr %EIRNode, ptr %t1392, i64 %t1389
-  %t1394 = getelementptr %EIRNode, ptr %t1393, i32 0, i32 3
-  %t1395 = load i32, ptr %t1394
-  %t1396 = add i32 0, 0
-  %t1397 = icmp slt i32 %t1395, %t1396
-  store i1 %t1397, ptr %t1382
+  %t1394 = load i32, ptr %t49
+  %t1395 = sext i32 %t1394 to i64
+  %t1396 = load ptr, ptr %t0
+  %t1397 = getelementptr %DeviceScalarPlan, ptr %t1396, i32 0, i32 0
+  %t1398 = load ptr, ptr %t1397
+  %t1399 = getelementptr %EIRNode, ptr %t1398, i64 %t1395
+  %t1400 = getelementptr %EIRNode, ptr %t1399, i32 0, i32 3
+  %t1401 = load i32, ptr %t1400
+  %t1402 = add i32 0, 0
+  %t1403 = icmp slt i32 %t1401, %t1402
+  store i1 %t1403, ptr %t1388
   br label %L310
 L310:
-  %t1398 = load i1, ptr %t1382
-  store i1 %t1398, ptr %t1381
-  br i1 %t1398, label %L312, label %L311
+  %t1404 = load i1, ptr %t1388
+  store i1 %t1404, ptr %t1387
+  br i1 %t1404, label %L312, label %L311
 L311:
-  %t1399 = load i32, ptr %t43
-  %t1400 = sext i32 %t1399 to i64
-  %t1401 = load ptr, ptr %t0
-  %t1402 = getelementptr %DeviceScalarPlan, ptr %t1401, i32 0, i32 0
-  %t1403 = load ptr, ptr %t1402
-  %t1404 = getelementptr %EIRNode, ptr %t1403, i64 %t1400
-  %t1405 = getelementptr %EIRNode, ptr %t1404, i32 0, i32 3
-  %t1406 = load i32, ptr %t1405
-  %t1407 = add i32 0, 12
-  %t1408 = icmp sge i32 %t1406, %t1407
-  store i1 %t1408, ptr %t1381
+  %t1405 = load i32, ptr %t49
+  %t1406 = sext i32 %t1405 to i64
+  %t1407 = load ptr, ptr %t0
+  %t1408 = getelementptr %DeviceScalarPlan, ptr %t1407, i32 0, i32 0
+  %t1409 = load ptr, ptr %t1408
+  %t1410 = getelementptr %EIRNode, ptr %t1409, i64 %t1406
+  %t1411 = getelementptr %EIRNode, ptr %t1410, i32 0, i32 3
+  %t1412 = load i32, ptr %t1411
+  %t1413 = add i32 0, 12
+  %t1414 = icmp sge i32 %t1412, %t1413
+  store i1 %t1414, ptr %t1387
   br label %L312
 L312:
-  %t1409 = load i1, ptr %t1381
-  store i1 %t1409, ptr %t1380
-  br i1 %t1409, label %L314, label %L313
+  %t1415 = load i1, ptr %t1387
+  store i1 %t1415, ptr %t1386
+  br i1 %t1415, label %L314, label %L313
 L313:
-  %t1410 = load i32, ptr %t43
-  %t1411 = sext i32 %t1410 to i64
-  %t1412 = load ptr, ptr %t0
-  %t1413 = getelementptr %DeviceScalarPlan, ptr %t1412, i32 0, i32 0
-  %t1414 = load ptr, ptr %t1413
-  %t1415 = getelementptr %EIRNode, ptr %t1414, i64 %t1411
-  %t1416 = getelementptr %EIRNode, ptr %t1415, i32 0, i32 8
-  %t1417 = load i32, ptr %t1416
-  %t1418 = getelementptr [4 x i8], ptr @.str.6230, i32 0, i32 0
-  %t1419 = call i32 @str_intern(ptr %t1418)
-  %t1420 = icmp ne i32 %t1417, %t1419
-  store i1 %t1420, ptr %t1380
+  %t1416 = load i32, ptr %t49
+  %t1417 = sext i32 %t1416 to i64
+  %t1418 = load ptr, ptr %t0
+  %t1419 = getelementptr %DeviceScalarPlan, ptr %t1418, i32 0, i32 0
+  %t1420 = load ptr, ptr %t1419
+  %t1421 = getelementptr %EIRNode, ptr %t1420, i64 %t1417
+  %t1422 = getelementptr %EIRNode, ptr %t1421, i32 0, i32 8
+  %t1423 = load i32, ptr %t1422
+  %t1424 = getelementptr [4 x i8], ptr @.str.6230, i32 0, i32 0
+  %t1425 = call i32 @str_intern(ptr %t1424)
+  %t1426 = icmp ne i32 %t1423, %t1425
+  store i1 %t1426, ptr %t1386
   br label %L314
 L314:
-  %t1421 = load i1, ptr %t1380
-  br i1 %t1421, label %L315, label %L317
+  %t1427 = load i1, ptr %t1386
+  br i1 %t1427, label %L315, label %L317
 L315:
-  %t1422 = add i32 0, 0
-  ret i32 %t1422
+  %t1428 = add i32 0, 0
+  ret i32 %t1428
 L317:
   br label %L308
 L307:
-  %t1423 = load i32, ptr %t57
-  %t1424 = load i32, ptr @DEVICE_CLOSURE
-  %t1425 = icmp eq i32 %t1423, %t1424
-  br i1 %t1425, label %L318, label %L319
+  %t1429 = load i32, ptr %t63
+  %t1430 = load i32, ptr @DEVICE_CLOSURE
+  %t1431 = icmp eq i32 %t1429, %t1430
+  br i1 %t1431, label %L318, label %L319
 L318:
-  %t1426 = load i32, ptr %t43
-  %t1427 = sext i32 %t1426 to i64
-  %t1428 = load ptr, ptr %t0
-  %t1429 = getelementptr %DeviceScalarPlan, ptr %t1428, i32 0, i32 0
-  %t1430 = load ptr, ptr %t1429
-  %t1431 = getelementptr %EIRNode, ptr %t1430, i64 %t1427
-  %t1432 = getelementptr %EIRNode, ptr %t1431, i32 0, i32 3
-  %t1433 = load i32, ptr %t1432
-  store i32 %t1433, ptr %t1434
-  %t1441 = load i32, ptr %t1434
-  %t1442 = add i32 0, 0
-  %t1443 = icmp sle i32 %t1441, %t1442
-  store i1 %t1443, ptr %t1440
-  br i1 %t1443, label %L322, label %L321
+  %t1432 = load i32, ptr %t49
+  %t1433 = sext i32 %t1432 to i64
+  %t1434 = load ptr, ptr %t0
+  %t1435 = getelementptr %DeviceScalarPlan, ptr %t1434, i32 0, i32 0
+  %t1436 = load ptr, ptr %t1435
+  %t1437 = getelementptr %EIRNode, ptr %t1436, i64 %t1433
+  %t1438 = getelementptr %EIRNode, ptr %t1437, i32 0, i32 3
+  %t1439 = load i32, ptr %t1438
+  store i32 %t1439, ptr %t1440
+  %t1447 = load i32, ptr %t1440
+  %t1448 = add i32 0, 0
+  %t1449 = icmp sle i32 %t1447, %t1448
+  store i1 %t1449, ptr %t1446
+  br i1 %t1449, label %L322, label %L321
 L321:
-  %t1444 = load i32, ptr %t1434
-  %t1445 = load i32, ptr @g_nnodes
-  %t1446 = icmp sge i32 %t1444, %t1445
-  store i1 %t1446, ptr %t1440
+  %t1450 = load i32, ptr %t1440
+  %t1451 = load i32, ptr @g_nnodes
+  %t1452 = icmp sge i32 %t1450, %t1451
+  store i1 %t1452, ptr %t1446
   br label %L322
 L322:
-  %t1447 = load i1, ptr %t1440
-  store i1 %t1447, ptr %t1439
-  br i1 %t1447, label %L324, label %L323
+  %t1453 = load i1, ptr %t1446
+  store i1 %t1453, ptr %t1445
+  br i1 %t1453, label %L324, label %L323
 L323:
-  %t1448 = load i32, ptr %t1434
-  %t1449 = sext i32 %t1448 to i64
-  %t1450 = load ptr, ptr @g_nodes
-  %t1451 = getelementptr %ASTNode, ptr %t1450, i64 %t1449
-  %t1452 = getelementptr %ASTNode, ptr %t1451, i32 0, i32 0
-  %t1453 = load i32, ptr %t1452
-  %t1454 = load i32, ptr @AST_CLOSURE
-  %t1455 = icmp ne i32 %t1453, %t1454
-  store i1 %t1455, ptr %t1439
+  %t1454 = load i32, ptr %t1440
+  %t1455 = sext i32 %t1454 to i64
+  %t1456 = load ptr, ptr @g_nodes
+  %t1457 = getelementptr %ASTNode, ptr %t1456, i64 %t1455
+  %t1458 = getelementptr %ASTNode, ptr %t1457, i32 0, i32 0
+  %t1459 = load i32, ptr %t1458
+  %t1460 = load i32, ptr @AST_CLOSURE
+  %t1461 = icmp ne i32 %t1459, %t1460
+  store i1 %t1461, ptr %t1445
   br label %L324
 L324:
-  %t1456 = load i1, ptr %t1439
-  store i1 %t1456, ptr %t1438
-  br i1 %t1456, label %L326, label %L325
+  %t1462 = load i1, ptr %t1445
+  store i1 %t1462, ptr %t1444
+  br i1 %t1462, label %L326, label %L325
 L325:
-  %t1457 = load i32, ptr %t43
-  %t1458 = sext i32 %t1457 to i64
-  %t1459 = load ptr, ptr %t0
-  %t1460 = getelementptr %DeviceScalarPlan, ptr %t1459, i32 0, i32 0
-  %t1461 = load ptr, ptr %t1460
-  %t1462 = getelementptr %EIRNode, ptr %t1461, i64 %t1458
-  %t1463 = getelementptr %EIRNode, ptr %t1462, i32 0, i32 9
-  %t1464 = load i32, ptr %t1463
-  %t1465 = call i32 @device_closure_scalar(i32 %t1464)
-  %t1466 = add i32 0, 0
-  %t1467 = icmp eq i32 %t1465, %t1466
-  store i1 %t1467, ptr %t1438
+  %t1463 = load i32, ptr %t49
+  %t1464 = sext i32 %t1463 to i64
+  %t1465 = load ptr, ptr %t0
+  %t1466 = getelementptr %DeviceScalarPlan, ptr %t1465, i32 0, i32 0
+  %t1467 = load ptr, ptr %t1466
+  %t1468 = getelementptr %EIRNode, ptr %t1467, i64 %t1464
+  %t1469 = getelementptr %EIRNode, ptr %t1468, i32 0, i32 9
+  %t1470 = load i32, ptr %t1469
+  %t1471 = call i32 @device_closure_scalar(i32 %t1470)
+  %t1472 = add i32 0, 0
+  %t1473 = icmp eq i32 %t1471, %t1472
+  store i1 %t1473, ptr %t1444
   br label %L326
 L326:
-  %t1468 = load i1, ptr %t1438
-  store i1 %t1468, ptr %t1437
-  br i1 %t1468, label %L328, label %L327
+  %t1474 = load i1, ptr %t1444
+  store i1 %t1474, ptr %t1443
+  br i1 %t1474, label %L328, label %L327
 L327:
-  %t1469 = load i32, ptr %t43
-  %t1470 = sext i32 %t1469 to i64
-  %t1471 = load ptr, ptr %t0
-  %t1472 = getelementptr %DeviceScalarPlan, ptr %t1471, i32 0, i32 0
-  %t1473 = load ptr, ptr %t1472
-  %t1474 = getelementptr %EIRNode, ptr %t1473, i64 %t1470
-  %t1475 = getelementptr %EIRNode, ptr %t1474, i32 0, i32 9
-  %t1476 = load i32, ptr %t1475
-  %t1477 = load i32, ptr %t1434
-  %t1478 = sext i32 %t1477 to i64
-  %t1479 = load ptr, ptr @g_nodes
-  %t1480 = getelementptr %ASTNode, ptr %t1479, i64 %t1478
-  %t1481 = getelementptr %ASTNode, ptr %t1480, i32 0, i32 11
+  %t1475 = load i32, ptr %t49
+  %t1476 = sext i32 %t1475 to i64
+  %t1477 = load ptr, ptr %t0
+  %t1478 = getelementptr %DeviceScalarPlan, ptr %t1477, i32 0, i32 0
+  %t1479 = load ptr, ptr %t1478
+  %t1480 = getelementptr %EIRNode, ptr %t1479, i64 %t1476
+  %t1481 = getelementptr %EIRNode, ptr %t1480, i32 0, i32 9
   %t1482 = load i32, ptr %t1481
-  %t1483 = icmp ne i32 %t1476, %t1482
-  store i1 %t1483, ptr %t1437
+  %t1483 = load i32, ptr %t1440
+  %t1484 = sext i32 %t1483 to i64
+  %t1485 = load ptr, ptr @g_nodes
+  %t1486 = getelementptr %ASTNode, ptr %t1485, i64 %t1484
+  %t1487 = getelementptr %ASTNode, ptr %t1486, i32 0, i32 11
+  %t1488 = load i32, ptr %t1487
+  %t1489 = icmp ne i32 %t1482, %t1488
+  store i1 %t1489, ptr %t1443
   br label %L328
 L328:
-  %t1484 = load i1, ptr %t1437
-  store i1 %t1484, ptr %t1436
-  br i1 %t1484, label %L330, label %L329
+  %t1490 = load i1, ptr %t1443
+  store i1 %t1490, ptr %t1442
+  br i1 %t1490, label %L330, label %L329
 L329:
-  %t1485 = load i32, ptr %t1434
-  %t1486 = sext i32 %t1485 to i64
-  %t1487 = load ptr, ptr @g_nodes
-  %t1488 = getelementptr %ASTNode, ptr %t1487, i64 %t1486
-  %t1489 = getelementptr %ASTNode, ptr %t1488, i32 0, i32 6
-  %t1490 = load i32, ptr %t1489
-  %t1491 = add i32 0, 16
-  %t1492 = icmp sgt i32 %t1490, %t1491
-  store i1 %t1492, ptr %t1436
+  %t1491 = load i32, ptr %t1440
+  %t1492 = sext i32 %t1491 to i64
+  %t1493 = load ptr, ptr @g_nodes
+  %t1494 = getelementptr %ASTNode, ptr %t1493, i64 %t1492
+  %t1495 = getelementptr %ASTNode, ptr %t1494, i32 0, i32 6
+  %t1496 = load i32, ptr %t1495
+  %t1497 = add i32 0, 16
+  %t1498 = icmp sgt i32 %t1496, %t1497
+  store i1 %t1498, ptr %t1442
   br label %L330
 L330:
-  %t1493 = load i1, ptr %t1436
-  store i1 %t1493, ptr %t1435
-  br i1 %t1493, label %L332, label %L331
+  %t1499 = load i1, ptr %t1442
+  store i1 %t1499, ptr %t1441
+  br i1 %t1499, label %L332, label %L331
 L331:
-  %t1494 = load i32, ptr %t43
-  %t1495 = sext i32 %t1494 to i64
-  %t1496 = load ptr, ptr %t0
-  %t1497 = getelementptr %DeviceScalarPlan, ptr %t1496, i32 0, i32 0
-  %t1498 = load ptr, ptr %t1497
-  %t1499 = getelementptr %EIRNode, ptr %t1498, i64 %t1495
-  %t1500 = getelementptr %EIRNode, ptr %t1499, i32 0, i32 8
-  %t1501 = load i32, ptr %t1500
-  %t1502 = load i32, ptr %t1434
-  %t1503 = sext i32 %t1502 to i64
-  %t1504 = load ptr, ptr @g_nodes
-  %t1505 = getelementptr %ASTNode, ptr %t1504, i64 %t1503
-  %t1506 = getelementptr %ASTNode, ptr %t1505, i32 0, i32 12
+  %t1500 = load i32, ptr %t49
+  %t1501 = sext i32 %t1500 to i64
+  %t1502 = load ptr, ptr %t0
+  %t1503 = getelementptr %DeviceScalarPlan, ptr %t1502, i32 0, i32 0
+  %t1504 = load ptr, ptr %t1503
+  %t1505 = getelementptr %EIRNode, ptr %t1504, i64 %t1501
+  %t1506 = getelementptr %EIRNode, ptr %t1505, i32 0, i32 8
   %t1507 = load i32, ptr %t1506
-  %t1508 = call i32 @clo_type_string(i32 %t1507)
-  %t1509 = icmp ne i32 %t1501, %t1508
-  store i1 %t1509, ptr %t1435
+  %t1508 = load i32, ptr %t1440
+  %t1509 = sext i32 %t1508 to i64
+  %t1510 = load ptr, ptr @g_nodes
+  %t1511 = getelementptr %ASTNode, ptr %t1510, i64 %t1509
+  %t1512 = getelementptr %ASTNode, ptr %t1511, i32 0, i32 12
+  %t1513 = load i32, ptr %t1512
+  %t1514 = call i32 @clo_type_string(i32 %t1513)
+  %t1515 = icmp ne i32 %t1507, %t1514
+  store i1 %t1515, ptr %t1441
   br label %L332
 L332:
-  %t1510 = load i1, ptr %t1435
-  br i1 %t1510, label %L333, label %L335
+  %t1516 = load i1, ptr %t1441
+  br i1 %t1516, label %L333, label %L335
 L333:
-  %t1511 = add i32 0, 0
-  ret i32 %t1511
+  %t1517 = add i32 0, 0
+  ret i32 %t1517
 L335:
-  %t1512 = add i32 0, 0
-  store i32 %t1512, ptr %t1513
+  %t1518 = add i32 0, 0
+  store i32 %t1518, ptr %t1519
   br label %L336
 L336:
-  %t1514 = load i32, ptr %t1513
-  %t1515 = load i32, ptr %t1434
-  %t1516 = sext i32 %t1515 to i64
-  %t1517 = load ptr, ptr @g_nodes
-  %t1518 = getelementptr %ASTNode, ptr %t1517, i64 %t1516
-  %t1519 = getelementptr %ASTNode, ptr %t1518, i32 0, i32 6
   %t1520 = load i32, ptr %t1519
-  %t1521 = icmp slt i32 %t1514, %t1520
-  br i1 %t1521, label %L337, label %L338
+  %t1521 = load i32, ptr %t1440
+  %t1522 = sext i32 %t1521 to i64
+  %t1523 = load ptr, ptr @g_nodes
+  %t1524 = getelementptr %ASTNode, ptr %t1523, i64 %t1522
+  %t1525 = getelementptr %ASTNode, ptr %t1524, i32 0, i32 6
+  %t1526 = load i32, ptr %t1525
+  %t1527 = icmp slt i32 %t1520, %t1526
+  br i1 %t1527, label %L337, label %L338
 L337:
-  %t1522 = load i32, ptr %t1434
-  %t1523 = sext i32 %t1522 to i64
-  %t1524 = load ptr, ptr @g_nodes
-  %t1525 = getelementptr %ASTNode, ptr %t1524, i64 %t1523
-  %t1526 = getelementptr %ASTNode, ptr %t1525, i32 0, i32 13
-  %t1527 = load i32, ptr %t1526
-  %t1528 = load i32, ptr %t1513
-  %t1529 = add i32 %t1527, %t1528
-  %t1530 = sext i32 %t1529 to i64
-  %t1531 = load ptr, ptr @g_args
-  %t1532 = getelementptr i32, ptr %t1531, i64 %t1530
+  %t1528 = load i32, ptr %t1440
+  %t1529 = sext i32 %t1528 to i64
+  %t1530 = load ptr, ptr @g_nodes
+  %t1531 = getelementptr %ASTNode, ptr %t1530, i64 %t1529
+  %t1532 = getelementptr %ASTNode, ptr %t1531, i32 0, i32 13
   %t1533 = load i32, ptr %t1532
-  store i32 %t1533, ptr %t1534
-  %t1535 = load i32, ptr %t1534
+  %t1534 = load i32, ptr %t1519
+  %t1535 = add i32 %t1533, %t1534
   %t1536 = sext i32 %t1535 to i64
-  %t1537 = load ptr, ptr @g_nodes
-  %t1538 = getelementptr %ASTNode, ptr %t1537, i64 %t1536
-  %t1539 = getelementptr %ASTNode, ptr %t1538, i32 0, i32 11
-  %t1540 = load i32, ptr %t1539
-  %t1541 = call i32 @device_closure_scalar(i32 %t1540)
-  %t1542 = add i32 0, 0
-  %t1543 = icmp eq i32 %t1541, %t1542
-  br i1 %t1543, label %L339, label %L341
+  %t1537 = load ptr, ptr @g_args
+  %t1538 = getelementptr i32, ptr %t1537, i64 %t1536
+  %t1539 = load i32, ptr %t1538
+  store i32 %t1539, ptr %t1540
+  %t1541 = load i32, ptr %t1540
+  %t1542 = sext i32 %t1541 to i64
+  %t1543 = load ptr, ptr @g_nodes
+  %t1544 = getelementptr %ASTNode, ptr %t1543, i64 %t1542
+  %t1545 = getelementptr %ASTNode, ptr %t1544, i32 0, i32 11
+  %t1546 = load i32, ptr %t1545
+  %t1547 = call i32 @device_closure_scalar(i32 %t1546)
+  %t1548 = add i32 0, 0
+  %t1549 = icmp eq i32 %t1547, %t1548
+  br i1 %t1549, label %L339, label %L341
 L339:
-  %t1544 = add i32 0, 0
-  ret i32 %t1544
+  %t1550 = add i32 0, 0
+  ret i32 %t1550
 L341:
-  %t1545 = load i32, ptr %t1513
-  %t1546 = add i32 0, 1
-  %t1547 = add i32 %t1545, %t1546
-  store i32 %t1547, ptr %t1513
+  %t1551 = load i32, ptr %t1519
+  %t1552 = add i32 0, 1
+  %t1553 = add i32 %t1551, %t1552
+  store i32 %t1553, ptr %t1519
   br label %L336
 L338:
-  %t1548 = add i32 0, 0
-  store i32 %t1548, ptr %t1513
+  %t1554 = add i32 0, 0
+  store i32 %t1554, ptr %t1519
   br label %L342
 L342:
-  %t1549 = load i32, ptr %t1513
-  %t1550 = load i32, ptr %t43
-  %t1551 = sext i32 %t1550 to i64
-  %t1552 = load ptr, ptr %t0
-  %t1553 = getelementptr %DeviceScalarPlan, ptr %t1552, i32 0, i32 0
-  %t1554 = load ptr, ptr %t1553
-  %t1555 = getelementptr %EIRNode, ptr %t1554, i64 %t1551
-  %t1556 = getelementptr %EIRNode, ptr %t1555, i32 0, i32 6
-  %t1557 = load i32, ptr %t1556
-  %t1558 = icmp slt i32 %t1549, %t1557
-  br i1 %t1558, label %L343, label %L344
+  %t1555 = load i32, ptr %t1519
+  %t1556 = load i32, ptr %t49
+  %t1557 = sext i32 %t1556 to i64
+  %t1558 = load ptr, ptr %t0
+  %t1559 = getelementptr %DeviceScalarPlan, ptr %t1558, i32 0, i32 0
+  %t1560 = load ptr, ptr %t1559
+  %t1561 = getelementptr %EIRNode, ptr %t1560, i64 %t1557
+  %t1562 = getelementptr %EIRNode, ptr %t1561, i32 0, i32 6
+  %t1563 = load i32, ptr %t1562
+  %t1564 = icmp slt i32 %t1555, %t1563
+  br i1 %t1564, label %L343, label %L344
 L343:
-  %t1559 = load i32, ptr %t43
-  %t1560 = sext i32 %t1559 to i64
-  %t1561 = load ptr, ptr %t0
-  %t1562 = getelementptr %DeviceScalarPlan, ptr %t1561, i32 0, i32 0
-  %t1563 = load ptr, ptr %t1562
-  %t1564 = getelementptr %EIRNode, ptr %t1563, i64 %t1560
-  %t1565 = getelementptr %EIRNode, ptr %t1564, i32 0, i32 7
-  %t1566 = load i32, ptr %t1565
-  %t1567 = load i32, ptr %t1513
-  %t1568 = add i32 %t1566, %t1567
-  %t1569 = sext i32 %t1568 to i64
-  %t1570 = load ptr, ptr %t0
-  %t1571 = getelementptr %DeviceScalarPlan, ptr %t1570, i32 0, i32 23
-  %t1572 = load ptr, ptr %t1571
-  %t1573 = getelementptr i32, ptr %t1572, i64 %t1569
-  %t1574 = load i32, ptr %t1573
-  store i32 %t1574, ptr %t1575
-  %t1576 = load i32, ptr %t1575
-  %t1577 = sext i32 %t1576 to i64
-  %t1578 = load ptr, ptr %t0
-  %t1579 = getelementptr %DeviceScalarPlan, ptr %t1578, i32 0, i32 0
-  %t1580 = load ptr, ptr %t1579
-  %t1581 = getelementptr %EIRNode, ptr %t1580, i64 %t1577
-  %t1582 = getelementptr %EIRNode, ptr %t1581, i32 0, i32 8
-  %t1583 = load i32, ptr %t1582
-  %t1584 = call i32 @device_closure_scalar(i32 %t1583)
-  %t1585 = add i32 0, 0
-  %t1586 = icmp eq i32 %t1584, %t1585
-  br i1 %t1586, label %L345, label %L347
+  %t1565 = load i32, ptr %t49
+  %t1566 = sext i32 %t1565 to i64
+  %t1567 = load ptr, ptr %t0
+  %t1568 = getelementptr %DeviceScalarPlan, ptr %t1567, i32 0, i32 0
+  %t1569 = load ptr, ptr %t1568
+  %t1570 = getelementptr %EIRNode, ptr %t1569, i64 %t1566
+  %t1571 = getelementptr %EIRNode, ptr %t1570, i32 0, i32 7
+  %t1572 = load i32, ptr %t1571
+  %t1573 = load i32, ptr %t1519
+  %t1574 = add i32 %t1572, %t1573
+  %t1575 = sext i32 %t1574 to i64
+  %t1576 = load ptr, ptr %t0
+  %t1577 = getelementptr %DeviceScalarPlan, ptr %t1576, i32 0, i32 23
+  %t1578 = load ptr, ptr %t1577
+  %t1579 = getelementptr i32, ptr %t1578, i64 %t1575
+  %t1580 = load i32, ptr %t1579
+  store i32 %t1580, ptr %t1581
+  %t1582 = load i32, ptr %t1581
+  %t1583 = sext i32 %t1582 to i64
+  %t1584 = load ptr, ptr %t0
+  %t1585 = getelementptr %DeviceScalarPlan, ptr %t1584, i32 0, i32 0
+  %t1586 = load ptr, ptr %t1585
+  %t1587 = getelementptr %EIRNode, ptr %t1586, i64 %t1583
+  %t1588 = getelementptr %EIRNode, ptr %t1587, i32 0, i32 8
+  %t1589 = load i32, ptr %t1588
+  %t1590 = call i32 @device_closure_scalar(i32 %t1589)
+  %t1591 = add i32 0, 0
+  %t1592 = icmp eq i32 %t1590, %t1591
+  br i1 %t1592, label %L345, label %L347
 L345:
-  %t1587 = add i32 0, 0
-  ret i32 %t1587
+  %t1593 = add i32 0, 0
+  ret i32 %t1593
 L347:
-  %t1588 = load i32, ptr %t1513
-  %t1589 = add i32 0, 1
-  %t1590 = add i32 %t1588, %t1589
-  store i32 %t1590, ptr %t1513
+  %t1594 = load i32, ptr %t1519
+  %t1595 = add i32 0, 1
+  %t1596 = add i32 %t1594, %t1595
+  store i32 %t1596, ptr %t1519
   br label %L342
 L344:
   br label %L320
 L319:
-  %t1591 = load i32, ptr %t57
-  %t1592 = load i32, ptr @EIR_ADDR_LOCAL
-  %t1593 = icmp eq i32 %t1591, %t1592
-  br i1 %t1593, label %L348, label %L349
+  %t1597 = load i32, ptr %t63
+  %t1598 = load i32, ptr @EIR_ADDR_LOCAL
+  %t1599 = icmp eq i32 %t1597, %t1598
+  br i1 %t1599, label %L348, label %L349
 L348:
-  %t1594 = load i32, ptr %t43
-  %t1595 = sext i32 %t1594 to i64
-  %t1596 = load ptr, ptr %t0
-  %t1597 = getelementptr %DeviceScalarPlan, ptr %t1596, i32 0, i32 0
-  %t1598 = load ptr, ptr %t1597
-  %t1599 = getelementptr %EIRNode, ptr %t1598, i64 %t1595
-  %t1600 = getelementptr %EIRNode, ptr %t1599, i32 0, i32 3
-  %t1601 = load i32, ptr %t1600
-  store i32 %t1601, ptr %t1602
-  %t1606 = load i32, ptr %t1602
-  %t1607 = sext i32 %t1606 to i64
-  %t1608 = load ptr, ptr %t0
-  %t1609 = getelementptr %DeviceScalarPlan, ptr %t1608, i32 0, i32 0
-  %t1610 = load ptr, ptr %t1609
-  %t1611 = getelementptr %EIRNode, ptr %t1610, i64 %t1607
-  %t1612 = getelementptr %EIRNode, ptr %t1611, i32 0, i32 0
-  %t1613 = load i32, ptr %t1612
-  %t1614 = load i32, ptr @EIR_STRUCT_LIT
-  %t1615 = icmp ne i32 %t1613, %t1614
-  store i1 %t1615, ptr %t1605
-  br i1 %t1615, label %L352, label %L351
+  %t1600 = load i32, ptr %t49
+  %t1601 = sext i32 %t1600 to i64
+  %t1602 = load ptr, ptr %t0
+  %t1603 = getelementptr %DeviceScalarPlan, ptr %t1602, i32 0, i32 0
+  %t1604 = load ptr, ptr %t1603
+  %t1605 = getelementptr %EIRNode, ptr %t1604, i64 %t1601
+  %t1606 = getelementptr %EIRNode, ptr %t1605, i32 0, i32 3
+  %t1607 = load i32, ptr %t1606
+  store i32 %t1607, ptr %t1608
+  %t1612 = load i32, ptr %t1608
+  %t1613 = sext i32 %t1612 to i64
+  %t1614 = load ptr, ptr %t0
+  %t1615 = getelementptr %DeviceScalarPlan, ptr %t1614, i32 0, i32 0
+  %t1616 = load ptr, ptr %t1615
+  %t1617 = getelementptr %EIRNode, ptr %t1616, i64 %t1613
+  %t1618 = getelementptr %EIRNode, ptr %t1617, i32 0, i32 0
+  %t1619 = load i32, ptr %t1618
+  %t1620 = load i32, ptr @EIR_STRUCT_LIT
+  %t1621 = icmp ne i32 %t1619, %t1620
+  store i1 %t1621, ptr %t1611
+  br i1 %t1621, label %L352, label %L351
 L351:
-  %t1616 = load i32, ptr %t1602
-  %t1617 = sext i32 %t1616 to i64
-  %t1618 = load ptr, ptr %t0
-  %t1619 = getelementptr %DeviceScalarPlan, ptr %t1618, i32 0, i32 0
-  %t1620 = load ptr, ptr %t1619
-  %t1621 = getelementptr %EIRNode, ptr %t1620, i64 %t1617
-  %t1622 = getelementptr %EIRNode, ptr %t1621, i32 0, i32 2
-  %t1623 = load i32, ptr %t1622
-  %t1624 = add i32 0, 0
-  %t1625 = icmp slt i32 %t1623, %t1624
-  store i1 %t1625, ptr %t1605
+  %t1622 = load i32, ptr %t1608
+  %t1623 = sext i32 %t1622 to i64
+  %t1624 = load ptr, ptr %t0
+  %t1625 = getelementptr %DeviceScalarPlan, ptr %t1624, i32 0, i32 0
+  %t1626 = load ptr, ptr %t1625
+  %t1627 = getelementptr %EIRNode, ptr %t1626, i64 %t1623
+  %t1628 = getelementptr %EIRNode, ptr %t1627, i32 0, i32 2
+  %t1629 = load i32, ptr %t1628
+  %t1630 = add i32 0, 0
+  %t1631 = icmp slt i32 %t1629, %t1630
+  store i1 %t1631, ptr %t1611
   br label %L352
 L352:
-  %t1626 = load i1, ptr %t1605
-  store i1 %t1626, ptr %t1604
-  br i1 %t1626, label %L354, label %L353
+  %t1632 = load i1, ptr %t1611
+  store i1 %t1632, ptr %t1610
+  br i1 %t1632, label %L354, label %L353
 L353:
-  %t1627 = load i32, ptr %t43
-  %t1628 = sext i32 %t1627 to i64
-  %t1629 = load ptr, ptr %t0
-  %t1630 = getelementptr %DeviceScalarPlan, ptr %t1629, i32 0, i32 0
-  %t1631 = load ptr, ptr %t1630
-  %t1632 = getelementptr %EIRNode, ptr %t1631, i64 %t1628
-  %t1633 = getelementptr %EIRNode, ptr %t1632, i32 0, i32 8
-  %t1634 = load i32, ptr %t1633
-  %t1635 = call i32 @type_is_ptr(i32 %t1634)
-  %t1636 = add i32 0, 0
-  %t1637 = icmp eq i32 %t1635, %t1636
-  store i1 %t1637, ptr %t1604
+  %t1633 = load i32, ptr %t49
+  %t1634 = sext i32 %t1633 to i64
+  %t1635 = load ptr, ptr %t0
+  %t1636 = getelementptr %DeviceScalarPlan, ptr %t1635, i32 0, i32 0
+  %t1637 = load ptr, ptr %t1636
+  %t1638 = getelementptr %EIRNode, ptr %t1637, i64 %t1634
+  %t1639 = getelementptr %EIRNode, ptr %t1638, i32 0, i32 8
+  %t1640 = load i32, ptr %t1639
+  %t1641 = call i32 @type_is_ptr(i32 %t1640)
+  %t1642 = add i32 0, 0
+  %t1643 = icmp eq i32 %t1641, %t1642
+  store i1 %t1643, ptr %t1610
   br label %L354
 L354:
-  %t1638 = load i1, ptr %t1604
-  store i1 %t1638, ptr %t1603
-  br i1 %t1638, label %L356, label %L355
+  %t1644 = load i1, ptr %t1610
+  store i1 %t1644, ptr %t1609
+  br i1 %t1644, label %L356, label %L355
 L355:
-  %t1639 = load i32, ptr %t43
-  %t1640 = sext i32 %t1639 to i64
-  %t1641 = load ptr, ptr %t0
-  %t1642 = getelementptr %DeviceScalarPlan, ptr %t1641, i32 0, i32 0
-  %t1643 = load ptr, ptr %t1642
-  %t1644 = getelementptr %EIRNode, ptr %t1643, i64 %t1640
-  %t1645 = getelementptr %EIRNode, ptr %t1644, i32 0, i32 8
-  %t1646 = load i32, ptr %t1645
-  %t1647 = call i32 @type_pointee(i32 %t1646)
-  %t1648 = load i32, ptr %t1602
-  %t1649 = sext i32 %t1648 to i64
-  %t1650 = load ptr, ptr %t0
-  %t1651 = getelementptr %DeviceScalarPlan, ptr %t1650, i32 0, i32 0
-  %t1652 = load ptr, ptr %t1651
-  %t1653 = getelementptr %EIRNode, ptr %t1652, i64 %t1649
-  %t1654 = getelementptr %EIRNode, ptr %t1653, i32 0, i32 8
-  %t1655 = load i32, ptr %t1654
-  %t1656 = icmp ne i32 %t1647, %t1655
-  store i1 %t1656, ptr %t1603
+  %t1645 = load i32, ptr %t49
+  %t1646 = sext i32 %t1645 to i64
+  %t1647 = load ptr, ptr %t0
+  %t1648 = getelementptr %DeviceScalarPlan, ptr %t1647, i32 0, i32 0
+  %t1649 = load ptr, ptr %t1648
+  %t1650 = getelementptr %EIRNode, ptr %t1649, i64 %t1646
+  %t1651 = getelementptr %EIRNode, ptr %t1650, i32 0, i32 8
+  %t1652 = load i32, ptr %t1651
+  %t1653 = call i32 @type_pointee(i32 %t1652)
+  %t1654 = load i32, ptr %t1608
+  %t1655 = sext i32 %t1654 to i64
+  %t1656 = load ptr, ptr %t0
+  %t1657 = getelementptr %DeviceScalarPlan, ptr %t1656, i32 0, i32 0
+  %t1658 = load ptr, ptr %t1657
+  %t1659 = getelementptr %EIRNode, ptr %t1658, i64 %t1655
+  %t1660 = getelementptr %EIRNode, ptr %t1659, i32 0, i32 8
+  %t1661 = load i32, ptr %t1660
+  %t1662 = icmp ne i32 %t1653, %t1661
+  store i1 %t1662, ptr %t1609
   br label %L356
 L356:
-  %t1657 = load i1, ptr %t1603
-  br i1 %t1657, label %L357, label %L359
+  %t1663 = load i1, ptr %t1609
+  br i1 %t1663, label %L357, label %L359
 L357:
-  %t1658 = add i32 0, 0
-  ret i32 %t1658
+  %t1664 = add i32 0, 0
+  ret i32 %t1664
 L359:
   br label %L350
 L349:
-  %t1659 = load i32, ptr %t57
-  %t1660 = load i32, ptr @EIR_STRUCT_LIT
-  %t1661 = icmp eq i32 %t1659, %t1660
-  br i1 %t1661, label %L360, label %L361
+  %t1665 = load i32, ptr %t63
+  %t1666 = load i32, ptr @EIR_STRUCT_LIT
+  %t1667 = icmp eq i32 %t1665, %t1666
+  br i1 %t1667, label %L360, label %L361
 L360:
-  %t1662 = load i32, ptr %t43
-  %t1663 = sext i32 %t1662 to i64
-  %t1664 = load ptr, ptr %t0
-  %t1665 = getelementptr %DeviceScalarPlan, ptr %t1664, i32 0, i32 0
-  %t1666 = load ptr, ptr %t1665
-  %t1667 = getelementptr %EIRNode, ptr %t1666, i64 %t1663
-  %t1668 = getelementptr %EIRNode, ptr %t1667, i32 0, i32 2
-  %t1669 = load i32, ptr %t1668
-  store i32 %t1669, ptr %t1670
-  %t1671 = load i32, ptr %t1670
-  %t1672 = add i32 0, 0
-  %t1673 = icmp sge i32 %t1671, %t1672
-  br i1 %t1673, label %L363, label %L364
+  %t1668 = load i32, ptr %t49
+  %t1669 = sext i32 %t1668 to i64
+  %t1670 = load ptr, ptr %t0
+  %t1671 = getelementptr %DeviceScalarPlan, ptr %t1670, i32 0, i32 0
+  %t1672 = load ptr, ptr %t1671
+  %t1673 = getelementptr %EIRNode, ptr %t1672, i64 %t1669
+  %t1674 = getelementptr %EIRNode, ptr %t1673, i32 0, i32 2
+  %t1675 = load i32, ptr %t1674
+  store i32 %t1675, ptr %t1676
+  %t1677 = load i32, ptr %t1676
+  %t1678 = add i32 0, 0
+  %t1679 = icmp sge i32 %t1677, %t1678
+  br i1 %t1679, label %L363, label %L364
 L363:
-  %t1676 = load i32, ptr %t1670
-  %t1677 = load i32, ptr @g_nstructs
-  %t1678 = icmp sge i32 %t1676, %t1677
-  store i1 %t1678, ptr %t1675
-  br i1 %t1678, label %L367, label %L366
+  %t1682 = load i32, ptr %t1676
+  %t1683 = load i32, ptr @g_nstructs
+  %t1684 = icmp sge i32 %t1682, %t1683
+  store i1 %t1684, ptr %t1681
+  br i1 %t1684, label %L367, label %L366
 L366:
-  %t1679 = load i32, ptr %t1670
-  %t1680 = sext i32 %t1679 to i64
-  %t1681 = load ptr, ptr @g_structs
-  %t1682 = getelementptr %StructInfo, ptr %t1681, i64 %t1680
-  %t1683 = getelementptr %StructInfo, ptr %t1682, i32 0, i32 0
-  %t1684 = load i32, ptr %t1683
-  %t1685 = load i32, ptr %t43
+  %t1685 = load i32, ptr %t1676
   %t1686 = sext i32 %t1685 to i64
-  %t1687 = load ptr, ptr %t0
-  %t1688 = getelementptr %DeviceScalarPlan, ptr %t1687, i32 0, i32 0
-  %t1689 = load ptr, ptr %t1688
-  %t1690 = getelementptr %EIRNode, ptr %t1689, i64 %t1686
-  %t1691 = getelementptr %EIRNode, ptr %t1690, i32 0, i32 8
-  %t1692 = load i32, ptr %t1691
-  %t1693 = icmp ne i32 %t1684, %t1692
-  store i1 %t1693, ptr %t1675
+  %t1687 = load ptr, ptr @g_structs
+  %t1688 = getelementptr %StructInfo, ptr %t1687, i64 %t1686
+  %t1689 = getelementptr %StructInfo, ptr %t1688, i32 0, i32 0
+  %t1690 = load i32, ptr %t1689
+  %t1691 = load i32, ptr %t49
+  %t1692 = sext i32 %t1691 to i64
+  %t1693 = load ptr, ptr %t0
+  %t1694 = getelementptr %DeviceScalarPlan, ptr %t1693, i32 0, i32 0
+  %t1695 = load ptr, ptr %t1694
+  %t1696 = getelementptr %EIRNode, ptr %t1695, i64 %t1692
+  %t1697 = getelementptr %EIRNode, ptr %t1696, i32 0, i32 8
+  %t1698 = load i32, ptr %t1697
+  %t1699 = icmp ne i32 %t1690, %t1698
+  store i1 %t1699, ptr %t1681
   br label %L367
 L367:
-  %t1694 = load i1, ptr %t1675
-  store i1 %t1694, ptr %t1674
-  br i1 %t1694, label %L369, label %L368
+  %t1700 = load i1, ptr %t1681
+  store i1 %t1700, ptr %t1680
+  br i1 %t1700, label %L369, label %L368
 L368:
-  %t1695 = load i32, ptr %t1670
-  %t1696 = sext i32 %t1695 to i64
-  %t1697 = load ptr, ptr @g_structs
-  %t1698 = getelementptr %StructInfo, ptr %t1697, i64 %t1696
-  %t1699 = getelementptr %StructInfo, ptr %t1698, i32 0, i32 2
-  %t1700 = load i32, ptr %t1699
-  %t1701 = load i32, ptr %t43
+  %t1701 = load i32, ptr %t1676
   %t1702 = sext i32 %t1701 to i64
-  %t1703 = load ptr, ptr %t0
-  %t1704 = getelementptr %DeviceScalarPlan, ptr %t1703, i32 0, i32 0
-  %t1705 = load ptr, ptr %t1704
-  %t1706 = getelementptr %EIRNode, ptr %t1705, i64 %t1702
-  %t1707 = getelementptr %EIRNode, ptr %t1706, i32 0, i32 6
-  %t1708 = load i32, ptr %t1707
-  %t1709 = icmp ne i32 %t1700, %t1708
-  store i1 %t1709, ptr %t1674
+  %t1703 = load ptr, ptr @g_structs
+  %t1704 = getelementptr %StructInfo, ptr %t1703, i64 %t1702
+  %t1705 = getelementptr %StructInfo, ptr %t1704, i32 0, i32 2
+  %t1706 = load i32, ptr %t1705
+  %t1707 = load i32, ptr %t49
+  %t1708 = sext i32 %t1707 to i64
+  %t1709 = load ptr, ptr %t0
+  %t1710 = getelementptr %DeviceScalarPlan, ptr %t1709, i32 0, i32 0
+  %t1711 = load ptr, ptr %t1710
+  %t1712 = getelementptr %EIRNode, ptr %t1711, i64 %t1708
+  %t1713 = getelementptr %EIRNode, ptr %t1712, i32 0, i32 6
+  %t1714 = load i32, ptr %t1713
+  %t1715 = icmp ne i32 %t1706, %t1714
+  store i1 %t1715, ptr %t1680
   br label %L369
 L369:
-  %t1710 = load i1, ptr %t1674
-  br i1 %t1710, label %L370, label %L372
+  %t1716 = load i1, ptr %t1680
+  br i1 %t1716, label %L370, label %L372
 L370:
-  %t1711 = add i32 0, 0
-  ret i32 %t1711
+  %t1717 = add i32 0, 0
+  ret i32 %t1717
 L372:
   br label %L365
 L364:
-  %t1713 = load i32, ptr %t43
-  %t1714 = sext i32 %t1713 to i64
-  %t1715 = load ptr, ptr %t0
-  %t1716 = getelementptr %DeviceScalarPlan, ptr %t1715, i32 0, i32 0
-  %t1717 = load ptr, ptr %t1716
-  %t1718 = getelementptr %EIRNode, ptr %t1717, i64 %t1714
-  %t1719 = getelementptr %EIRNode, ptr %t1718, i32 0, i32 8
-  %t1720 = load i32, ptr %t1719
-  %t1721 = call i32 @device_array_count(i32 %t1720)
-  %t1722 = load i32, ptr %t43
-  %t1723 = sext i32 %t1722 to i64
-  %t1724 = load ptr, ptr %t0
-  %t1725 = getelementptr %DeviceScalarPlan, ptr %t1724, i32 0, i32 0
-  %t1726 = load ptr, ptr %t1725
-  %t1727 = getelementptr %EIRNode, ptr %t1726, i64 %t1723
-  %t1728 = getelementptr %EIRNode, ptr %t1727, i32 0, i32 6
-  %t1729 = load i32, ptr %t1728
-  %t1730 = icmp ne i32 %t1721, %t1729
-  store i1 %t1730, ptr %t1712
-  br i1 %t1730, label %L374, label %L373
+  %t1719 = load i32, ptr %t49
+  %t1720 = sext i32 %t1719 to i64
+  %t1721 = load ptr, ptr %t0
+  %t1722 = getelementptr %DeviceScalarPlan, ptr %t1721, i32 0, i32 0
+  %t1723 = load ptr, ptr %t1722
+  %t1724 = getelementptr %EIRNode, ptr %t1723, i64 %t1720
+  %t1725 = getelementptr %EIRNode, ptr %t1724, i32 0, i32 8
+  %t1726 = load i32, ptr %t1725
+  %t1727 = call i32 @device_array_count(i32 %t1726)
+  %t1728 = load i32, ptr %t49
+  %t1729 = sext i32 %t1728 to i64
+  %t1730 = load ptr, ptr %t0
+  %t1731 = getelementptr %DeviceScalarPlan, ptr %t1730, i32 0, i32 0
+  %t1732 = load ptr, ptr %t1731
+  %t1733 = getelementptr %EIRNode, ptr %t1732, i64 %t1729
+  %t1734 = getelementptr %EIRNode, ptr %t1733, i32 0, i32 6
+  %t1735 = load i32, ptr %t1734
+  %t1736 = icmp ne i32 %t1727, %t1735
+  store i1 %t1736, ptr %t1718
+  br i1 %t1736, label %L374, label %L373
 L373:
-  %t1731 = load i32, ptr %t43
-  %t1732 = sext i32 %t1731 to i64
-  %t1733 = load ptr, ptr %t0
-  %t1734 = getelementptr %DeviceScalarPlan, ptr %t1733, i32 0, i32 0
-  %t1735 = load ptr, ptr %t1734
-  %t1736 = getelementptr %EIRNode, ptr %t1735, i64 %t1732
-  %t1737 = getelementptr %EIRNode, ptr %t1736, i32 0, i32 8
-  %t1738 = load i32, ptr %t1737
-  %t1739 = call i32 @type_array_elem(i32 %t1738)
-  %t1740 = load i32, ptr %t43
-  %t1741 = sext i32 %t1740 to i64
-  %t1742 = load ptr, ptr %t0
-  %t1743 = getelementptr %DeviceScalarPlan, ptr %t1742, i32 0, i32 0
-  %t1744 = load ptr, ptr %t1743
-  %t1745 = getelementptr %EIRNode, ptr %t1744, i64 %t1741
-  %t1746 = getelementptr %EIRNode, ptr %t1745, i32 0, i32 9
-  %t1747 = load i32, ptr %t1746
-  %t1748 = icmp ne i32 %t1739, %t1747
-  store i1 %t1748, ptr %t1712
+  %t1737 = load i32, ptr %t49
+  %t1738 = sext i32 %t1737 to i64
+  %t1739 = load ptr, ptr %t0
+  %t1740 = getelementptr %DeviceScalarPlan, ptr %t1739, i32 0, i32 0
+  %t1741 = load ptr, ptr %t1740
+  %t1742 = getelementptr %EIRNode, ptr %t1741, i64 %t1738
+  %t1743 = getelementptr %EIRNode, ptr %t1742, i32 0, i32 8
+  %t1744 = load i32, ptr %t1743
+  %t1745 = call i32 @type_array_elem(i32 %t1744)
+  %t1746 = load i32, ptr %t49
+  %t1747 = sext i32 %t1746 to i64
+  %t1748 = load ptr, ptr %t0
+  %t1749 = getelementptr %DeviceScalarPlan, ptr %t1748, i32 0, i32 0
+  %t1750 = load ptr, ptr %t1749
+  %t1751 = getelementptr %EIRNode, ptr %t1750, i64 %t1747
+  %t1752 = getelementptr %EIRNode, ptr %t1751, i32 0, i32 9
+  %t1753 = load i32, ptr %t1752
+  %t1754 = icmp ne i32 %t1745, %t1753
+  store i1 %t1754, ptr %t1718
   br label %L374
 L374:
-  %t1749 = load i1, ptr %t1712
-  br i1 %t1749, label %L375, label %L377
+  %t1755 = load i1, ptr %t1718
+  br i1 %t1755, label %L375, label %L377
 L375:
-  %t1750 = add i32 0, 0
-  ret i32 %t1750
+  %t1756 = add i32 0, 0
+  ret i32 %t1756
 L377:
   br label %L365
 L365:
-  %t1751 = add i32 0, 0
-  store i32 %t1751, ptr %t1752
+  %t1757 = add i32 0, 0
+  store i32 %t1757, ptr %t1758
   br label %L378
 L378:
-  %t1753 = load i32, ptr %t1752
-  %t1754 = load i32, ptr %t43
-  %t1755 = sext i32 %t1754 to i64
-  %t1756 = load ptr, ptr %t0
-  %t1757 = getelementptr %DeviceScalarPlan, ptr %t1756, i32 0, i32 0
-  %t1758 = load ptr, ptr %t1757
-  %t1759 = getelementptr %EIRNode, ptr %t1758, i64 %t1755
-  %t1760 = getelementptr %EIRNode, ptr %t1759, i32 0, i32 6
-  %t1761 = load i32, ptr %t1760
-  %t1762 = icmp slt i32 %t1753, %t1761
-  br i1 %t1762, label %L379, label %L380
+  %t1759 = load i32, ptr %t1758
+  %t1760 = load i32, ptr %t49
+  %t1761 = sext i32 %t1760 to i64
+  %t1762 = load ptr, ptr %t0
+  %t1763 = getelementptr %DeviceScalarPlan, ptr %t1762, i32 0, i32 0
+  %t1764 = load ptr, ptr %t1763
+  %t1765 = getelementptr %EIRNode, ptr %t1764, i64 %t1761
+  %t1766 = getelementptr %EIRNode, ptr %t1765, i32 0, i32 6
+  %t1767 = load i32, ptr %t1766
+  %t1768 = icmp slt i32 %t1759, %t1767
+  br i1 %t1768, label %L379, label %L380
 L379:
-  %t1763 = load i32, ptr %t43
-  %t1764 = sext i32 %t1763 to i64
-  %t1765 = load ptr, ptr %t0
-  %t1766 = getelementptr %DeviceScalarPlan, ptr %t1765, i32 0, i32 0
-  %t1767 = load ptr, ptr %t1766
-  %t1768 = getelementptr %EIRNode, ptr %t1767, i64 %t1764
-  %t1769 = getelementptr %EIRNode, ptr %t1768, i32 0, i32 9
-  %t1770 = load i32, ptr %t1769
-  store i32 %t1770, ptr %t1771
-  %t1772 = load i32, ptr %t1670
-  %t1773 = add i32 0, 0
-  %t1774 = icmp sge i32 %t1772, %t1773
-  br i1 %t1774, label %L381, label %L383
+  %t1769 = load i32, ptr %t49
+  %t1770 = sext i32 %t1769 to i64
+  %t1771 = load ptr, ptr %t0
+  %t1772 = getelementptr %DeviceScalarPlan, ptr %t1771, i32 0, i32 0
+  %t1773 = load ptr, ptr %t1772
+  %t1774 = getelementptr %EIRNode, ptr %t1773, i64 %t1770
+  %t1775 = getelementptr %EIRNode, ptr %t1774, i32 0, i32 9
+  %t1776 = load i32, ptr %t1775
+  store i32 %t1776, ptr %t1777
+  %t1778 = load i32, ptr %t1676
+  %t1779 = add i32 0, 0
+  %t1780 = icmp sge i32 %t1778, %t1779
+  br i1 %t1780, label %L381, label %L383
 L381:
-  %t1775 = load i32, ptr %t1670
-  %t1776 = load i32, ptr %t1752
-  %t1777 = call i32 @struct_field_type(i32 %t1775, i32 %t1776)
-  store i32 %t1777, ptr %t1771
+  %t1781 = load i32, ptr %t1676
+  %t1782 = load i32, ptr %t1758
+  %t1783 = call i32 @struct_field_type(i32 %t1781, i32 %t1782)
+  store i32 %t1783, ptr %t1777
   br label %L383
 L383:
-  %t1778 = load i32, ptr %t43
-  %t1779 = sext i32 %t1778 to i64
-  %t1780 = load ptr, ptr %t0
-  %t1781 = getelementptr %DeviceScalarPlan, ptr %t1780, i32 0, i32 0
-  %t1782 = load ptr, ptr %t1781
-  %t1783 = getelementptr %EIRNode, ptr %t1782, i64 %t1779
-  %t1784 = getelementptr %EIRNode, ptr %t1783, i32 0, i32 7
-  %t1785 = load i32, ptr %t1784
-  %t1786 = load i32, ptr %t1752
-  %t1787 = add i32 %t1785, %t1786
-  %t1788 = sext i32 %t1787 to i64
-  %t1789 = load ptr, ptr %t0
-  %t1790 = getelementptr %DeviceScalarPlan, ptr %t1789, i32 0, i32 20
-  %t1791 = load ptr, ptr %t1790
-  %t1792 = getelementptr i32, ptr %t1791, i64 %t1788
-  %t1793 = load i32, ptr %t1792
-  store i32 %t1793, ptr %t1794
-  %t1796 = load i32, ptr %t1771
-  %t1797 = call i32 @device_scalar_type(i32 %t1796)
-  %t1798 = add i32 0, 0
-  %t1799 = icmp eq i32 %t1797, %t1798
-  store i1 %t1799, ptr %t1795
-  br i1 %t1799, label %L385, label %L384
+  %t1784 = load i32, ptr %t49
+  %t1785 = sext i32 %t1784 to i64
+  %t1786 = load ptr, ptr %t0
+  %t1787 = getelementptr %DeviceScalarPlan, ptr %t1786, i32 0, i32 0
+  %t1788 = load ptr, ptr %t1787
+  %t1789 = getelementptr %EIRNode, ptr %t1788, i64 %t1785
+  %t1790 = getelementptr %EIRNode, ptr %t1789, i32 0, i32 7
+  %t1791 = load i32, ptr %t1790
+  %t1792 = load i32, ptr %t1758
+  %t1793 = add i32 %t1791, %t1792
+  %t1794 = sext i32 %t1793 to i64
+  %t1795 = load ptr, ptr %t0
+  %t1796 = getelementptr %DeviceScalarPlan, ptr %t1795, i32 0, i32 20
+  %t1797 = load ptr, ptr %t1796
+  %t1798 = getelementptr i32, ptr %t1797, i64 %t1794
+  %t1799 = load i32, ptr %t1798
+  store i32 %t1799, ptr %t1800
+  %t1802 = load i32, ptr %t1777
+  %t1803 = call i32 @device_scalar_type(i32 %t1802)
+  %t1804 = add i32 0, 0
+  %t1805 = icmp eq i32 %t1803, %t1804
+  store i1 %t1805, ptr %t1801
+  br i1 %t1805, label %L385, label %L384
 L384:
-  %t1800 = load i32, ptr %t1794
-  %t1801 = sext i32 %t1800 to i64
-  %t1802 = load ptr, ptr %t0
-  %t1803 = getelementptr %DeviceScalarPlan, ptr %t1802, i32 0, i32 0
-  %t1804 = load ptr, ptr %t1803
-  %t1805 = getelementptr %EIRNode, ptr %t1804, i64 %t1801
-  %t1806 = getelementptr %EIRNode, ptr %t1805, i32 0, i32 8
-  %t1807 = load i32, ptr %t1806
-  %t1808 = load i32, ptr %t1771
-  %t1809 = icmp ne i32 %t1807, %t1808
-  store i1 %t1809, ptr %t1795
+  %t1806 = load i32, ptr %t1800
+  %t1807 = sext i32 %t1806 to i64
+  %t1808 = load ptr, ptr %t0
+  %t1809 = getelementptr %DeviceScalarPlan, ptr %t1808, i32 0, i32 0
+  %t1810 = load ptr, ptr %t1809
+  %t1811 = getelementptr %EIRNode, ptr %t1810, i64 %t1807
+  %t1812 = getelementptr %EIRNode, ptr %t1811, i32 0, i32 8
+  %t1813 = load i32, ptr %t1812
+  %t1814 = load i32, ptr %t1777
+  %t1815 = icmp ne i32 %t1813, %t1814
+  store i1 %t1815, ptr %t1801
   br label %L385
 L385:
-  %t1810 = load i1, ptr %t1795
-  br i1 %t1810, label %L386, label %L388
+  %t1816 = load i1, ptr %t1801
+  br i1 %t1816, label %L386, label %L388
 L386:
-  %t1811 = add i32 0, 0
-  ret i32 %t1811
+  %t1817 = add i32 0, 0
+  ret i32 %t1817
 L388:
-  %t1812 = load i32, ptr %t1752
-  %t1813 = add i32 0, 1
-  %t1814 = add i32 %t1812, %t1813
-  store i32 %t1814, ptr %t1752
+  %t1818 = load i32, ptr %t1758
+  %t1819 = add i32 0, 1
+  %t1820 = add i32 %t1818, %t1819
+  store i32 %t1820, ptr %t1758
   br label %L378
 L380:
   br label %L362
 L361:
-  %t1816 = load i32, ptr %t57
-  %t1817 = load i32, ptr @DEVICE_LOOP
-  %t1818 = icmp eq i32 %t1816, %t1817
-  store i1 %t1818, ptr %t1815
-  br i1 %t1818, label %L390, label %L389
+  %t1822 = load i32, ptr %t63
+  %t1823 = load i32, ptr @DEVICE_LOOP
+  %t1824 = icmp eq i32 %t1822, %t1823
+  store i1 %t1824, ptr %t1821
+  br i1 %t1824, label %L390, label %L389
 L389:
-  %t1819 = load i32, ptr %t57
-  %t1820 = load i32, ptr @DEVICE_LOOP_END
-  %t1821 = icmp eq i32 %t1819, %t1820
-  store i1 %t1821, ptr %t1815
+  %t1825 = load i32, ptr %t63
+  %t1826 = load i32, ptr @DEVICE_LOOP_END
+  %t1827 = icmp eq i32 %t1825, %t1826
+  store i1 %t1827, ptr %t1821
   br label %L390
 L390:
-  %t1822 = load i1, ptr %t1815
-  br i1 %t1822, label %L391, label %L392
+  %t1828 = load i1, ptr %t1821
+  br i1 %t1828, label %L391, label %L392
 L391:
-  %t1823 = load i32, ptr %t43
-  %t1824 = sext i32 %t1823 to i64
-  %t1825 = load ptr, ptr %t0
-  %t1826 = getelementptr %DeviceScalarPlan, ptr %t1825, i32 0, i32 0
-  %t1827 = load ptr, ptr %t1826
-  %t1828 = getelementptr %EIRNode, ptr %t1827, i64 %t1824
-  %t1829 = getelementptr %EIRNode, ptr %t1828, i32 0, i32 8
-  %t1830 = load i32, ptr %t1829
-  %t1831 = load i32, ptr @NULL_STR
-  %t1832 = icmp ne i32 %t1830, %t1831
-  br i1 %t1832, label %L394, label %L396
+  %t1829 = load i32, ptr %t49
+  %t1830 = sext i32 %t1829 to i64
+  %t1831 = load ptr, ptr %t0
+  %t1832 = getelementptr %DeviceScalarPlan, ptr %t1831, i32 0, i32 0
+  %t1833 = load ptr, ptr %t1832
+  %t1834 = getelementptr %EIRNode, ptr %t1833, i64 %t1830
+  %t1835 = getelementptr %EIRNode, ptr %t1834, i32 0, i32 8
+  %t1836 = load i32, ptr %t1835
+  %t1837 = load i32, ptr @NULL_STR
+  %t1838 = icmp ne i32 %t1836, %t1837
+  br i1 %t1838, label %L394, label %L396
 L394:
-  %t1833 = add i32 0, 0
-  ret i32 %t1833
+  %t1839 = add i32 0, 0
+  ret i32 %t1839
 L396:
   br label %L393
 L392:
-  %t1834 = load i32, ptr %t57
-  %t1835 = load i32, ptr @DEVICE_LOOP_TEST
-  %t1836 = icmp eq i32 %t1834, %t1835
-  br i1 %t1836, label %L397, label %L398
+  %t1840 = load i32, ptr %t63
+  %t1841 = load i32, ptr @DEVICE_LOOP_TEST
+  %t1842 = icmp eq i32 %t1840, %t1841
+  br i1 %t1842, label %L397, label %L398
 L397:
-  %t1838 = load i32, ptr %t43
-  %t1839 = sext i32 %t1838 to i64
-  %t1840 = load ptr, ptr %t0
-  %t1841 = getelementptr %DeviceScalarPlan, ptr %t1840, i32 0, i32 0
-  %t1842 = load ptr, ptr %t1841
-  %t1843 = getelementptr %EIRNode, ptr %t1842, i64 %t1839
-  %t1844 = getelementptr %EIRNode, ptr %t1843, i32 0, i32 8
-  %t1845 = load i32, ptr %t1844
-  %t1846 = load i32, ptr @NULL_STR
-  %t1847 = icmp ne i32 %t1845, %t1846
-  store i1 %t1847, ptr %t1837
-  br i1 %t1847, label %L401, label %L400
+  %t1844 = load i32, ptr %t49
+  %t1845 = sext i32 %t1844 to i64
+  %t1846 = load ptr, ptr %t0
+  %t1847 = getelementptr %DeviceScalarPlan, ptr %t1846, i32 0, i32 0
+  %t1848 = load ptr, ptr %t1847
+  %t1849 = getelementptr %EIRNode, ptr %t1848, i64 %t1845
+  %t1850 = getelementptr %EIRNode, ptr %t1849, i32 0, i32 8
+  %t1851 = load i32, ptr %t1850
+  %t1852 = load i32, ptr @NULL_STR
+  %t1853 = icmp ne i32 %t1851, %t1852
+  store i1 %t1853, ptr %t1843
+  br i1 %t1853, label %L401, label %L400
 L400:
-  %t1848 = load i32, ptr %t43
-  %t1849 = sext i32 %t1848 to i64
-  %t1850 = load ptr, ptr %t0
-  %t1851 = getelementptr %DeviceScalarPlan, ptr %t1850, i32 0, i32 0
-  %t1852 = load ptr, ptr %t1851
-  %t1853 = getelementptr %EIRNode, ptr %t1852, i64 %t1849
-  %t1854 = getelementptr %EIRNode, ptr %t1853, i32 0, i32 3
-  %t1855 = load i32, ptr %t1854
-  %t1856 = sext i32 %t1855 to i64
-  %t1857 = load ptr, ptr %t0
-  %t1858 = getelementptr %DeviceScalarPlan, ptr %t1857, i32 0, i32 0
-  %t1859 = load ptr, ptr %t1858
-  %t1860 = getelementptr %EIRNode, ptr %t1859, i64 %t1856
-  %t1861 = getelementptr %EIRNode, ptr %t1860, i32 0, i32 8
-  %t1862 = load i32, ptr %t1861
-  %t1863 = getelementptr [3 x i8], ptr @.str.6231, i32 0, i32 0
-  %t1864 = call i32 @str_intern(ptr %t1863)
-  %t1865 = icmp ne i32 %t1862, %t1864
-  store i1 %t1865, ptr %t1837
+  %t1854 = load i32, ptr %t49
+  %t1855 = sext i32 %t1854 to i64
+  %t1856 = load ptr, ptr %t0
+  %t1857 = getelementptr %DeviceScalarPlan, ptr %t1856, i32 0, i32 0
+  %t1858 = load ptr, ptr %t1857
+  %t1859 = getelementptr %EIRNode, ptr %t1858, i64 %t1855
+  %t1860 = getelementptr %EIRNode, ptr %t1859, i32 0, i32 3
+  %t1861 = load i32, ptr %t1860
+  %t1862 = sext i32 %t1861 to i64
+  %t1863 = load ptr, ptr %t0
+  %t1864 = getelementptr %DeviceScalarPlan, ptr %t1863, i32 0, i32 0
+  %t1865 = load ptr, ptr %t1864
+  %t1866 = getelementptr %EIRNode, ptr %t1865, i64 %t1862
+  %t1867 = getelementptr %EIRNode, ptr %t1866, i32 0, i32 8
+  %t1868 = load i32, ptr %t1867
+  %t1869 = getelementptr [3 x i8], ptr @.str.6231, i32 0, i32 0
+  %t1870 = call i32 @str_intern(ptr %t1869)
+  %t1871 = icmp ne i32 %t1868, %t1870
+  store i1 %t1871, ptr %t1843
   br label %L401
 L401:
-  %t1866 = load i1, ptr %t1837
-  br i1 %t1866, label %L402, label %L404
+  %t1872 = load i1, ptr %t1843
+  br i1 %t1872, label %L402, label %L404
 L402:
-  %t1867 = add i32 0, 0
-  ret i32 %t1867
+  %t1873 = add i32 0, 0
+  ret i32 %t1873
 L404:
   br label %L399
 L398:
-  %t1869 = load i32, ptr %t57
-  %t1870 = load i32, ptr @DEVICE_LOOP_NEXT
-  %t1871 = icmp eq i32 %t1869, %t1870
-  store i1 %t1871, ptr %t1868
-  br i1 %t1871, label %L406, label %L405
+  %t1875 = load i32, ptr %t63
+  %t1876 = load i32, ptr @DEVICE_LOOP_NEXT
+  %t1877 = icmp eq i32 %t1875, %t1876
+  store i1 %t1877, ptr %t1874
+  br i1 %t1877, label %L406, label %L405
 L405:
-  %t1872 = load i32, ptr %t57
-  %t1873 = load i32, ptr @DEVICE_LOOP_RESULT
-  %t1874 = icmp eq i32 %t1872, %t1873
-  store i1 %t1874, ptr %t1868
+  %t1878 = load i32, ptr %t63
+  %t1879 = load i32, ptr @DEVICE_LOOP_RESULT
+  %t1880 = icmp eq i32 %t1878, %t1879
+  store i1 %t1880, ptr %t1874
   br label %L406
 L406:
-  %t1875 = load i1, ptr %t1868
-  br i1 %t1875, label %L407, label %L408
+  %t1881 = load i1, ptr %t1874
+  br i1 %t1881, label %L407, label %L408
 L407:
-  %t1877 = load i32, ptr %t43
-  %t1878 = sext i32 %t1877 to i64
-  %t1879 = load ptr, ptr %t0
-  %t1880 = getelementptr %DeviceScalarPlan, ptr %t1879, i32 0, i32 0
-  %t1881 = load ptr, ptr %t1880
-  %t1882 = getelementptr %EIRNode, ptr %t1881, i64 %t1878
-  %t1883 = getelementptr %EIRNode, ptr %t1882, i32 0, i32 8
-  %t1884 = load i32, ptr %t1883
-  %t1885 = call i32 @device_scalar_type(i32 %t1884)
-  %t1886 = add i32 0, 0
-  %t1887 = icmp eq i32 %t1885, %t1886
-  store i1 %t1887, ptr %t1876
-  br i1 %t1887, label %L411, label %L410
+  %t1883 = load i32, ptr %t49
+  %t1884 = sext i32 %t1883 to i64
+  %t1885 = load ptr, ptr %t0
+  %t1886 = getelementptr %DeviceScalarPlan, ptr %t1885, i32 0, i32 0
+  %t1887 = load ptr, ptr %t1886
+  %t1888 = getelementptr %EIRNode, ptr %t1887, i64 %t1884
+  %t1889 = getelementptr %EIRNode, ptr %t1888, i32 0, i32 8
+  %t1890 = load i32, ptr %t1889
+  %t1891 = call i32 @device_scalar_type(i32 %t1890)
+  %t1892 = add i32 0, 0
+  %t1893 = icmp eq i32 %t1891, %t1892
+  store i1 %t1893, ptr %t1882
+  br i1 %t1893, label %L411, label %L410
 L410:
-  %t1888 = load i32, ptr %t43
-  %t1889 = sext i32 %t1888 to i64
-  %t1890 = load ptr, ptr %t0
-  %t1891 = getelementptr %DeviceScalarPlan, ptr %t1890, i32 0, i32 0
-  %t1892 = load ptr, ptr %t1891
-  %t1893 = getelementptr %EIRNode, ptr %t1892, i64 %t1889
-  %t1894 = getelementptr %EIRNode, ptr %t1893, i32 0, i32 3
-  %t1895 = load i32, ptr %t1894
-  %t1896 = sext i32 %t1895 to i64
-  %t1897 = load ptr, ptr %t0
-  %t1898 = getelementptr %DeviceScalarPlan, ptr %t1897, i32 0, i32 0
-  %t1899 = load ptr, ptr %t1898
-  %t1900 = getelementptr %EIRNode, ptr %t1899, i64 %t1896
-  %t1901 = getelementptr %EIRNode, ptr %t1900, i32 0, i32 8
-  %t1902 = load i32, ptr %t1901
-  %t1903 = load i32, ptr %t43
-  %t1904 = sext i32 %t1903 to i64
-  %t1905 = load ptr, ptr %t0
-  %t1906 = getelementptr %DeviceScalarPlan, ptr %t1905, i32 0, i32 0
-  %t1907 = load ptr, ptr %t1906
-  %t1908 = getelementptr %EIRNode, ptr %t1907, i64 %t1904
-  %t1909 = getelementptr %EIRNode, ptr %t1908, i32 0, i32 8
-  %t1910 = load i32, ptr %t1909
-  %t1911 = icmp ne i32 %t1902, %t1910
-  store i1 %t1911, ptr %t1876
+  %t1894 = load i32, ptr %t49
+  %t1895 = sext i32 %t1894 to i64
+  %t1896 = load ptr, ptr %t0
+  %t1897 = getelementptr %DeviceScalarPlan, ptr %t1896, i32 0, i32 0
+  %t1898 = load ptr, ptr %t1897
+  %t1899 = getelementptr %EIRNode, ptr %t1898, i64 %t1895
+  %t1900 = getelementptr %EIRNode, ptr %t1899, i32 0, i32 3
+  %t1901 = load i32, ptr %t1900
+  %t1902 = sext i32 %t1901 to i64
+  %t1903 = load ptr, ptr %t0
+  %t1904 = getelementptr %DeviceScalarPlan, ptr %t1903, i32 0, i32 0
+  %t1905 = load ptr, ptr %t1904
+  %t1906 = getelementptr %EIRNode, ptr %t1905, i64 %t1902
+  %t1907 = getelementptr %EIRNode, ptr %t1906, i32 0, i32 8
+  %t1908 = load i32, ptr %t1907
+  %t1909 = load i32, ptr %t49
+  %t1910 = sext i32 %t1909 to i64
+  %t1911 = load ptr, ptr %t0
+  %t1912 = getelementptr %DeviceScalarPlan, ptr %t1911, i32 0, i32 0
+  %t1913 = load ptr, ptr %t1912
+  %t1914 = getelementptr %EIRNode, ptr %t1913, i64 %t1910
+  %t1915 = getelementptr %EIRNode, ptr %t1914, i32 0, i32 8
+  %t1916 = load i32, ptr %t1915
+  %t1917 = icmp ne i32 %t1908, %t1916
+  store i1 %t1917, ptr %t1882
   br label %L411
 L411:
-  %t1912 = load i1, ptr %t1876
-  br i1 %t1912, label %L412, label %L414
+  %t1918 = load i1, ptr %t1882
+  br i1 %t1918, label %L412, label %L414
 L412:
-  %t1913 = add i32 0, 0
-  ret i32 %t1913
+  %t1919 = add i32 0, 0
+  ret i32 %t1919
 L414:
   br label %L409
 L408:
-  %t1916 = load i32, ptr %t57
-  %t1917 = load i32, ptr @EIR_RET
-  %t1918 = icmp eq i32 %t1916, %t1917
-  store i1 %t1918, ptr %t1915
-  br i1 %t1918, label %L416, label %L415
+  %t1922 = load i32, ptr %t63
+  %t1923 = load i32, ptr @EIR_RET
+  %t1924 = icmp eq i32 %t1922, %t1923
+  store i1 %t1924, ptr %t1921
+  br i1 %t1924, label %L416, label %L415
 L415:
-  %t1919 = load i32, ptr %t57
-  %t1920 = load i32, ptr @DEVICE_PHI
-  %t1921 = icmp eq i32 %t1919, %t1920
-  store i1 %t1921, ptr %t1915
+  %t1925 = load i32, ptr %t63
+  %t1926 = load i32, ptr @DEVICE_PHI
+  %t1927 = icmp eq i32 %t1925, %t1926
+  store i1 %t1927, ptr %t1921
   br label %L416
 L416:
-  %t1922 = load i1, ptr %t1915
-  store i1 %t1922, ptr %t1914
-  br i1 %t1922, label %L418, label %L417
+  %t1928 = load i1, ptr %t1921
+  store i1 %t1928, ptr %t1920
+  br i1 %t1928, label %L418, label %L417
 L417:
-  %t1923 = load i32, ptr %t57
-  %t1924 = load i32, ptr @DEVICE_LOOP_PHI
-  %t1925 = icmp eq i32 %t1923, %t1924
-  store i1 %t1925, ptr %t1914
+  %t1929 = load i32, ptr %t63
+  %t1930 = load i32, ptr @DEVICE_LOOP_PHI
+  %t1931 = icmp eq i32 %t1929, %t1930
+  store i1 %t1931, ptr %t1920
   br label %L418
 L418:
-  %t1926 = load i1, ptr %t1914
-  br i1 %t1926, label %L419, label %L420
+  %t1932 = load i1, ptr %t1920
+  br i1 %t1932, label %L419, label %L420
 L419:
-  %t1929 = load i32, ptr %t43
-  %t1930 = sext i32 %t1929 to i64
-  %t1931 = load ptr, ptr %t0
-  %t1932 = getelementptr %DeviceScalarPlan, ptr %t1931, i32 0, i32 0
-  %t1933 = load ptr, ptr %t1932
-  %t1934 = getelementptr %EIRNode, ptr %t1933, i64 %t1930
-  %t1935 = getelementptr %EIRNode, ptr %t1934, i32 0, i32 8
-  %t1936 = load i32, ptr %t1935
-  %t1937 = call i32 @device_scalar_type(i32 %t1936)
-  %t1938 = add i32 0, 0
-  %t1939 = icmp eq i32 %t1937, %t1938
-  store i1 %t1939, ptr %t1928
-  br i1 %t1939, label %L423, label %L422
+  %t1935 = load i32, ptr %t49
+  %t1936 = sext i32 %t1935 to i64
+  %t1937 = load ptr, ptr %t0
+  %t1938 = getelementptr %DeviceScalarPlan, ptr %t1937, i32 0, i32 0
+  %t1939 = load ptr, ptr %t1938
+  %t1940 = getelementptr %EIRNode, ptr %t1939, i64 %t1936
+  %t1941 = getelementptr %EIRNode, ptr %t1940, i32 0, i32 8
+  %t1942 = load i32, ptr %t1941
+  %t1943 = call i32 @device_scalar_type(i32 %t1942)
+  %t1944 = add i32 0, 0
+  %t1945 = icmp eq i32 %t1943, %t1944
+  store i1 %t1945, ptr %t1934
+  br i1 %t1945, label %L423, label %L422
 L422:
-  %t1940 = load i32, ptr %t43
-  %t1941 = sext i32 %t1940 to i64
-  %t1942 = load ptr, ptr %t0
-  %t1943 = getelementptr %DeviceScalarPlan, ptr %t1942, i32 0, i32 0
-  %t1944 = load ptr, ptr %t1943
-  %t1945 = getelementptr %EIRNode, ptr %t1944, i64 %t1941
-  %t1946 = getelementptr %EIRNode, ptr %t1945, i32 0, i32 3
-  %t1947 = load i32, ptr %t1946
-  %t1948 = sext i32 %t1947 to i64
-  %t1949 = load ptr, ptr %t0
-  %t1950 = getelementptr %DeviceScalarPlan, ptr %t1949, i32 0, i32 0
-  %t1951 = load ptr, ptr %t1950
-  %t1952 = getelementptr %EIRNode, ptr %t1951, i64 %t1948
-  %t1953 = getelementptr %EIRNode, ptr %t1952, i32 0, i32 8
-  %t1954 = load i32, ptr %t1953
-  %t1955 = load i32, ptr %t43
-  %t1956 = sext i32 %t1955 to i64
-  %t1957 = load ptr, ptr %t0
-  %t1958 = getelementptr %DeviceScalarPlan, ptr %t1957, i32 0, i32 0
-  %t1959 = load ptr, ptr %t1958
-  %t1960 = getelementptr %EIRNode, ptr %t1959, i64 %t1956
-  %t1961 = getelementptr %EIRNode, ptr %t1960, i32 0, i32 8
-  %t1962 = load i32, ptr %t1961
-  %t1963 = icmp ne i32 %t1954, %t1962
-  store i1 %t1963, ptr %t1928
+  %t1946 = load i32, ptr %t49
+  %t1947 = sext i32 %t1946 to i64
+  %t1948 = load ptr, ptr %t0
+  %t1949 = getelementptr %DeviceScalarPlan, ptr %t1948, i32 0, i32 0
+  %t1950 = load ptr, ptr %t1949
+  %t1951 = getelementptr %EIRNode, ptr %t1950, i64 %t1947
+  %t1952 = getelementptr %EIRNode, ptr %t1951, i32 0, i32 3
+  %t1953 = load i32, ptr %t1952
+  %t1954 = sext i32 %t1953 to i64
+  %t1955 = load ptr, ptr %t0
+  %t1956 = getelementptr %DeviceScalarPlan, ptr %t1955, i32 0, i32 0
+  %t1957 = load ptr, ptr %t1956
+  %t1958 = getelementptr %EIRNode, ptr %t1957, i64 %t1954
+  %t1959 = getelementptr %EIRNode, ptr %t1958, i32 0, i32 8
+  %t1960 = load i32, ptr %t1959
+  %t1961 = load i32, ptr %t49
+  %t1962 = sext i32 %t1961 to i64
+  %t1963 = load ptr, ptr %t0
+  %t1964 = getelementptr %DeviceScalarPlan, ptr %t1963, i32 0, i32 0
+  %t1965 = load ptr, ptr %t1964
+  %t1966 = getelementptr %EIRNode, ptr %t1965, i64 %t1962
+  %t1967 = getelementptr %EIRNode, ptr %t1966, i32 0, i32 8
+  %t1968 = load i32, ptr %t1967
+  %t1969 = icmp ne i32 %t1960, %t1968
+  store i1 %t1969, ptr %t1934
   br label %L423
 L423:
-  %t1964 = load i1, ptr %t1928
-  store i1 %t1964, ptr %t1927
-  br i1 %t1964, label %L425, label %L424
+  %t1970 = load i1, ptr %t1934
+  store i1 %t1970, ptr %t1933
+  br i1 %t1970, label %L425, label %L424
 L424:
-  %t1965 = load i32, ptr %t43
-  %t1966 = sext i32 %t1965 to i64
-  %t1967 = load ptr, ptr %t0
-  %t1968 = getelementptr %DeviceScalarPlan, ptr %t1967, i32 0, i32 0
-  %t1969 = load ptr, ptr %t1968
-  %t1970 = getelementptr %EIRNode, ptr %t1969, i64 %t1966
-  %t1971 = getelementptr %EIRNode, ptr %t1970, i32 0, i32 4
-  %t1972 = load i32, ptr %t1971
-  %t1973 = sext i32 %t1972 to i64
-  %t1974 = load ptr, ptr %t0
-  %t1975 = getelementptr %DeviceScalarPlan, ptr %t1974, i32 0, i32 0
-  %t1976 = load ptr, ptr %t1975
-  %t1977 = getelementptr %EIRNode, ptr %t1976, i64 %t1973
-  %t1978 = getelementptr %EIRNode, ptr %t1977, i32 0, i32 8
-  %t1979 = load i32, ptr %t1978
-  %t1980 = load i32, ptr %t43
-  %t1981 = sext i32 %t1980 to i64
-  %t1982 = load ptr, ptr %t0
-  %t1983 = getelementptr %DeviceScalarPlan, ptr %t1982, i32 0, i32 0
-  %t1984 = load ptr, ptr %t1983
-  %t1985 = getelementptr %EIRNode, ptr %t1984, i64 %t1981
-  %t1986 = getelementptr %EIRNode, ptr %t1985, i32 0, i32 8
-  %t1987 = load i32, ptr %t1986
-  %t1988 = icmp ne i32 %t1979, %t1987
-  store i1 %t1988, ptr %t1927
+  %t1971 = load i32, ptr %t49
+  %t1972 = sext i32 %t1971 to i64
+  %t1973 = load ptr, ptr %t0
+  %t1974 = getelementptr %DeviceScalarPlan, ptr %t1973, i32 0, i32 0
+  %t1975 = load ptr, ptr %t1974
+  %t1976 = getelementptr %EIRNode, ptr %t1975, i64 %t1972
+  %t1977 = getelementptr %EIRNode, ptr %t1976, i32 0, i32 4
+  %t1978 = load i32, ptr %t1977
+  %t1979 = sext i32 %t1978 to i64
+  %t1980 = load ptr, ptr %t0
+  %t1981 = getelementptr %DeviceScalarPlan, ptr %t1980, i32 0, i32 0
+  %t1982 = load ptr, ptr %t1981
+  %t1983 = getelementptr %EIRNode, ptr %t1982, i64 %t1979
+  %t1984 = getelementptr %EIRNode, ptr %t1983, i32 0, i32 8
+  %t1985 = load i32, ptr %t1984
+  %t1986 = load i32, ptr %t49
+  %t1987 = sext i32 %t1986 to i64
+  %t1988 = load ptr, ptr %t0
+  %t1989 = getelementptr %DeviceScalarPlan, ptr %t1988, i32 0, i32 0
+  %t1990 = load ptr, ptr %t1989
+  %t1991 = getelementptr %EIRNode, ptr %t1990, i64 %t1987
+  %t1992 = getelementptr %EIRNode, ptr %t1991, i32 0, i32 8
+  %t1993 = load i32, ptr %t1992
+  %t1994 = icmp ne i32 %t1985, %t1993
+  store i1 %t1994, ptr %t1933
   br label %L425
 L425:
-  %t1989 = load i1, ptr %t1927
-  br i1 %t1989, label %L426, label %L428
+  %t1995 = load i1, ptr %t1933
+  br i1 %t1995, label %L426, label %L428
 L426:
-  %t1990 = add i32 0, 0
-  ret i32 %t1990
+  %t1996 = add i32 0, 0
+  ret i32 %t1996
 L428:
   br label %L421
 L420:
-  %t1993 = load i32, ptr %t57
-  %t1994 = load i32, ptr @EIR_LOCAL
-  %t1995 = icmp ne i32 %t1993, %t1994
-  store i1 %t1995, ptr %t1992
-  br i1 %t1995, label %L429, label %L430
+  %t1999 = load i32, ptr %t63
+  %t2000 = load i32, ptr @EIR_LOCAL
+  %t2001 = icmp ne i32 %t1999, %t2000
+  store i1 %t2001, ptr %t1998
+  br i1 %t2001, label %L429, label %L430
 L429:
-  %t1996 = load i32, ptr %t57
-  %t1997 = load i32, ptr @EIR_CONST
-  %t1998 = icmp ne i32 %t1996, %t1997
-  store i1 %t1998, ptr %t1992
+  %t2002 = load i32, ptr %t63
+  %t2003 = load i32, ptr @EIR_CONST
+  %t2004 = icmp ne i32 %t2002, %t2003
+  store i1 %t2004, ptr %t1998
   br label %L430
 L430:
-  %t1999 = load i1, ptr %t1992
-  store i1 %t1999, ptr %t1991
-  br i1 %t1999, label %L431, label %L432
+  %t2005 = load i1, ptr %t1998
+  store i1 %t2005, ptr %t1997
+  br i1 %t2005, label %L431, label %L432
 L431:
-  %t2000 = load i32, ptr %t57
-  %t2001 = load i32, ptr @EIR_BLOCK
-  %t2002 = icmp ne i32 %t2000, %t2001
-  store i1 %t2002, ptr %t1991
+  %t2006 = load i32, ptr %t63
+  %t2007 = load i32, ptr @EIR_BLOCK
+  %t2008 = icmp ne i32 %t2006, %t2007
+  store i1 %t2008, ptr %t1997
   br label %L432
 L432:
-  %t2003 = load i1, ptr %t1991
-  br i1 %t2003, label %L433, label %L435
+  %t2009 = load i1, ptr %t1997
+  br i1 %t2009, label %L433, label %L435
 L433:
-  %t2004 = load i32, ptr %t43
-  %t2005 = sext i32 %t2004 to i64
-  %t2006 = load ptr, ptr %t0
-  %t2007 = getelementptr %DeviceScalarPlan, ptr %t2006, i32 0, i32 0
-  %t2008 = load ptr, ptr %t2007
-  %t2009 = getelementptr %EIRNode, ptr %t2008, i64 %t2005
-  %t2010 = getelementptr %EIRNode, ptr %t2009, i32 0, i32 3
-  %t2011 = load i32, ptr %t2010
-  store i32 %t2011, ptr %t2012
-  %t2014 = load i32, ptr %t2012
-  %t2015 = add i32 0, 0
-  %t2016 = icmp slt i32 %t2014, %t2015
-  store i1 %t2016, ptr %t2013
-  br i1 %t2016, label %L437, label %L436
+  %t2010 = load i32, ptr %t49
+  %t2011 = sext i32 %t2010 to i64
+  %t2012 = load ptr, ptr %t0
+  %t2013 = getelementptr %DeviceScalarPlan, ptr %t2012, i32 0, i32 0
+  %t2014 = load ptr, ptr %t2013
+  %t2015 = getelementptr %EIRNode, ptr %t2014, i64 %t2011
+  %t2016 = getelementptr %EIRNode, ptr %t2015, i32 0, i32 3
+  %t2017 = load i32, ptr %t2016
+  store i32 %t2017, ptr %t2018
+  %t2020 = load i32, ptr %t2018
+  %t2021 = add i32 0, 0
+  %t2022 = icmp slt i32 %t2020, %t2021
+  store i1 %t2022, ptr %t2019
+  br i1 %t2022, label %L437, label %L436
 L436:
-  %t2017 = load i32, ptr %t2012
-  %t2018 = load i32, ptr %t43
-  %t2019 = icmp sge i32 %t2017, %t2018
-  store i1 %t2019, ptr %t2013
+  %t2023 = load i32, ptr %t2018
+  %t2024 = load i32, ptr %t49
+  %t2025 = icmp sge i32 %t2023, %t2024
+  store i1 %t2025, ptr %t2019
   br label %L437
 L437:
-  %t2020 = load i1, ptr %t2013
-  br i1 %t2020, label %L438, label %L440
+  %t2026 = load i1, ptr %t2019
+  br i1 %t2026, label %L438, label %L440
 L438:
-  %t2021 = add i32 0, 0
-  ret i32 %t2021
+  %t2027 = add i32 0, 0
+  ret i32 %t2027
 L440:
-  %t2022 = load i32, ptr %t57
-  %t2023 = load i32, ptr @EIR_IF
-  %t2024 = icmp eq i32 %t2022, %t2023
-  br i1 %t2024, label %L441, label %L442
+  %t2028 = load i32, ptr %t63
+  %t2029 = load i32, ptr @EIR_IF
+  %t2030 = icmp eq i32 %t2028, %t2029
+  br i1 %t2030, label %L441, label %L442
 L441:
-  %t2025 = load i32, ptr %t2012
-  %t2026 = sext i32 %t2025 to i64
-  %t2027 = load ptr, ptr %t0
-  %t2028 = getelementptr %DeviceScalarPlan, ptr %t2027, i32 0, i32 0
-  %t2029 = load ptr, ptr %t2028
-  %t2030 = getelementptr %EIRNode, ptr %t2029, i64 %t2026
-  %t2031 = getelementptr %EIRNode, ptr %t2030, i32 0, i32 8
-  %t2032 = load i32, ptr %t2031
-  %t2033 = getelementptr [3 x i8], ptr @.str.6232, i32 0, i32 0
-  %t2034 = call i32 @str_intern(ptr %t2033)
-  %t2035 = icmp ne i32 %t2032, %t2034
-  br i1 %t2035, label %L444, label %L446
+  %t2031 = load i32, ptr %t2018
+  %t2032 = sext i32 %t2031 to i64
+  %t2033 = load ptr, ptr %t0
+  %t2034 = getelementptr %DeviceScalarPlan, ptr %t2033, i32 0, i32 0
+  %t2035 = load ptr, ptr %t2034
+  %t2036 = getelementptr %EIRNode, ptr %t2035, i64 %t2032
+  %t2037 = getelementptr %EIRNode, ptr %t2036, i32 0, i32 8
+  %t2038 = load i32, ptr %t2037
+  %t2039 = getelementptr [3 x i8], ptr @.str.6232, i32 0, i32 0
+  %t2040 = call i32 @str_intern(ptr %t2039)
+  %t2041 = icmp ne i32 %t2038, %t2040
+  br i1 %t2041, label %L444, label %L446
 L444:
-  %t2036 = add i32 0, 0
-  ret i32 %t2036
+  %t2042 = add i32 0, 0
+  ret i32 %t2042
 L446:
   br label %L443
 L442:
-  %t2037 = load i32, ptr %t57
-  %t2038 = load i32, ptr @EIR_CAST
-  %t2039 = icmp eq i32 %t2037, %t2038
-  br i1 %t2039, label %L447, label %L448
+  %t2043 = load i32, ptr %t63
+  %t2044 = load i32, ptr @EIR_CAST
+  %t2045 = icmp eq i32 %t2043, %t2044
+  br i1 %t2045, label %L447, label %L448
 L447:
-  %t2040 = load i32, ptr %t43
-  %t2041 = sext i32 %t2040 to i64
-  %t2042 = load ptr, ptr %t0
-  %t2043 = getelementptr %DeviceScalarPlan, ptr %t2042, i32 0, i32 0
-  %t2044 = load ptr, ptr %t2043
-  %t2045 = getelementptr %EIRNode, ptr %t2044, i64 %t2041
-  %t2046 = getelementptr %EIRNode, ptr %t2045, i32 0, i32 9
-  %t2047 = load i32, ptr %t2046
-  %t2048 = load i32, ptr %t2012
-  %t2049 = sext i32 %t2048 to i64
-  %t2050 = load ptr, ptr %t0
-  %t2051 = getelementptr %DeviceScalarPlan, ptr %t2050, i32 0, i32 0
-  %t2052 = load ptr, ptr %t2051
-  %t2053 = getelementptr %EIRNode, ptr %t2052, i64 %t2049
-  %t2054 = getelementptr %EIRNode, ptr %t2053, i32 0, i32 8
-  %t2055 = load i32, ptr %t2054
-  %t2056 = icmp ne i32 %t2047, %t2055
-  br i1 %t2056, label %L450, label %L452
+  %t2046 = load i32, ptr %t49
+  %t2047 = sext i32 %t2046 to i64
+  %t2048 = load ptr, ptr %t0
+  %t2049 = getelementptr %DeviceScalarPlan, ptr %t2048, i32 0, i32 0
+  %t2050 = load ptr, ptr %t2049
+  %t2051 = getelementptr %EIRNode, ptr %t2050, i64 %t2047
+  %t2052 = getelementptr %EIRNode, ptr %t2051, i32 0, i32 9
+  %t2053 = load i32, ptr %t2052
+  %t2054 = load i32, ptr %t2018
+  %t2055 = sext i32 %t2054 to i64
+  %t2056 = load ptr, ptr %t0
+  %t2057 = getelementptr %DeviceScalarPlan, ptr %t2056, i32 0, i32 0
+  %t2058 = load ptr, ptr %t2057
+  %t2059 = getelementptr %EIRNode, ptr %t2058, i64 %t2055
+  %t2060 = getelementptr %EIRNode, ptr %t2059, i32 0, i32 8
+  %t2061 = load i32, ptr %t2060
+  %t2062 = icmp ne i32 %t2053, %t2061
+  br i1 %t2062, label %L450, label %L452
 L450:
-  %t2057 = add i32 0, 0
-  ret i32 %t2057
+  %t2063 = add i32 0, 0
+  ret i32 %t2063
 L452:
   br label %L449
 L448:
-  %t2060 = load i32, ptr %t57
-  %t2061 = load i32, ptr @EIR_BIN
-  %t2062 = icmp eq i32 %t2060, %t2061
-  store i1 %t2062, ptr %t2059
-  br i1 %t2062, label %L454, label %L453
+  %t2066 = load i32, ptr %t63
+  %t2067 = load i32, ptr @EIR_BIN
+  %t2068 = icmp eq i32 %t2066, %t2067
+  store i1 %t2068, ptr %t2065
+  br i1 %t2068, label %L454, label %L453
 L453:
-  %t2063 = load i32, ptr %t57
-  %t2064 = load i32, ptr @EIR_INDEX
-  %t2065 = icmp eq i32 %t2063, %t2064
-  store i1 %t2065, ptr %t2059
+  %t2069 = load i32, ptr %t63
+  %t2070 = load i32, ptr @EIR_INDEX
+  %t2071 = icmp eq i32 %t2069, %t2070
+  store i1 %t2071, ptr %t2065
   br label %L454
 L454:
-  %t2066 = load i1, ptr %t2059
-  store i1 %t2066, ptr %t2058
-  br i1 %t2066, label %L456, label %L455
+  %t2072 = load i1, ptr %t2065
+  store i1 %t2072, ptr %t2064
+  br i1 %t2072, label %L456, label %L455
 L455:
-  %t2067 = load i32, ptr %t57
-  %t2068 = load i32, ptr @EIR_INDEX_ST
-  %t2069 = icmp eq i32 %t2067, %t2068
-  store i1 %t2069, ptr %t2058
+  %t2073 = load i32, ptr %t63
+  %t2074 = load i32, ptr @EIR_INDEX_ST
+  %t2075 = icmp eq i32 %t2073, %t2074
+  store i1 %t2075, ptr %t2064
   br label %L456
 L456:
-  %t2070 = load i1, ptr %t2058
-  br i1 %t2070, label %L457, label %L458
+  %t2076 = load i1, ptr %t2064
+  br i1 %t2076, label %L457, label %L458
 L457:
-  %t2071 = load i32, ptr %t43
-  %t2072 = sext i32 %t2071 to i64
-  %t2073 = load ptr, ptr %t0
-  %t2074 = getelementptr %DeviceScalarPlan, ptr %t2073, i32 0, i32 0
-  %t2075 = load ptr, ptr %t2074
-  %t2076 = getelementptr %EIRNode, ptr %t2075, i64 %t2072
-  %t2077 = getelementptr %EIRNode, ptr %t2076, i32 0, i32 4
-  %t2078 = load i32, ptr %t2077
-  store i32 %t2078, ptr %t2079
-  %t2081 = load i32, ptr %t2079
-  %t2082 = add i32 0, 0
-  %t2083 = icmp slt i32 %t2081, %t2082
-  store i1 %t2083, ptr %t2080
-  br i1 %t2083, label %L461, label %L460
+  %t2077 = load i32, ptr %t49
+  %t2078 = sext i32 %t2077 to i64
+  %t2079 = load ptr, ptr %t0
+  %t2080 = getelementptr %DeviceScalarPlan, ptr %t2079, i32 0, i32 0
+  %t2081 = load ptr, ptr %t2080
+  %t2082 = getelementptr %EIRNode, ptr %t2081, i64 %t2078
+  %t2083 = getelementptr %EIRNode, ptr %t2082, i32 0, i32 4
+  %t2084 = load i32, ptr %t2083
+  store i32 %t2084, ptr %t2085
+  %t2087 = load i32, ptr %t2085
+  %t2088 = add i32 0, 0
+  %t2089 = icmp slt i32 %t2087, %t2088
+  store i1 %t2089, ptr %t2086
+  br i1 %t2089, label %L461, label %L460
 L460:
-  %t2084 = load i32, ptr %t2079
-  %t2085 = load i32, ptr %t43
-  %t2086 = icmp sge i32 %t2084, %t2085
-  store i1 %t2086, ptr %t2080
+  %t2090 = load i32, ptr %t2085
+  %t2091 = load i32, ptr %t49
+  %t2092 = icmp sge i32 %t2090, %t2091
+  store i1 %t2092, ptr %t2086
   br label %L461
 L461:
-  %t2087 = load i1, ptr %t2080
-  br i1 %t2087, label %L462, label %L464
+  %t2093 = load i1, ptr %t2086
+  br i1 %t2093, label %L462, label %L464
 L462:
-  %t2088 = add i32 0, 0
-  ret i32 %t2088
+  %t2094 = add i32 0, 0
+  ret i32 %t2094
 L464:
-  %t2089 = load i32, ptr %t57
-  %t2090 = load i32, ptr @EIR_BIN
-  %t2091 = icmp eq i32 %t2089, %t2090
-  br i1 %t2091, label %L465, label %L466
+  %t2095 = load i32, ptr %t63
+  %t2096 = load i32, ptr @EIR_BIN
+  %t2097 = icmp eq i32 %t2095, %t2096
+  br i1 %t2097, label %L465, label %L466
 L465:
-  %t2093 = load i32, ptr %t2012
-  %t2094 = sext i32 %t2093 to i64
-  %t2095 = load ptr, ptr %t0
-  %t2096 = getelementptr %DeviceScalarPlan, ptr %t2095, i32 0, i32 0
-  %t2097 = load ptr, ptr %t2096
-  %t2098 = getelementptr %EIRNode, ptr %t2097, i64 %t2094
-  %t2099 = getelementptr %EIRNode, ptr %t2098, i32 0, i32 8
-  %t2100 = load i32, ptr %t2099
-  %t2101 = load i32, ptr %t43
-  %t2102 = sext i32 %t2101 to i64
-  %t2103 = load ptr, ptr %t0
-  %t2104 = getelementptr %DeviceScalarPlan, ptr %t2103, i32 0, i32 0
-  %t2105 = load ptr, ptr %t2104
-  %t2106 = getelementptr %EIRNode, ptr %t2105, i64 %t2102
-  %t2107 = getelementptr %EIRNode, ptr %t2106, i32 0, i32 9
-  %t2108 = load i32, ptr %t2107
-  %t2109 = icmp ne i32 %t2100, %t2108
-  store i1 %t2109, ptr %t2092
-  br i1 %t2109, label %L469, label %L468
+  %t2099 = load i32, ptr %t2018
+  %t2100 = sext i32 %t2099 to i64
+  %t2101 = load ptr, ptr %t0
+  %t2102 = getelementptr %DeviceScalarPlan, ptr %t2101, i32 0, i32 0
+  %t2103 = load ptr, ptr %t2102
+  %t2104 = getelementptr %EIRNode, ptr %t2103, i64 %t2100
+  %t2105 = getelementptr %EIRNode, ptr %t2104, i32 0, i32 8
+  %t2106 = load i32, ptr %t2105
+  %t2107 = load i32, ptr %t49
+  %t2108 = sext i32 %t2107 to i64
+  %t2109 = load ptr, ptr %t0
+  %t2110 = getelementptr %DeviceScalarPlan, ptr %t2109, i32 0, i32 0
+  %t2111 = load ptr, ptr %t2110
+  %t2112 = getelementptr %EIRNode, ptr %t2111, i64 %t2108
+  %t2113 = getelementptr %EIRNode, ptr %t2112, i32 0, i32 9
+  %t2114 = load i32, ptr %t2113
+  %t2115 = icmp ne i32 %t2106, %t2114
+  store i1 %t2115, ptr %t2098
+  br i1 %t2115, label %L469, label %L468
 L468:
-  %t2110 = load i32, ptr %t2079
-  %t2111 = sext i32 %t2110 to i64
-  %t2112 = load ptr, ptr %t0
-  %t2113 = getelementptr %DeviceScalarPlan, ptr %t2112, i32 0, i32 0
-  %t2114 = load ptr, ptr %t2113
-  %t2115 = getelementptr %EIRNode, ptr %t2114, i64 %t2111
-  %t2116 = getelementptr %EIRNode, ptr %t2115, i32 0, i32 8
-  %t2117 = load i32, ptr %t2116
-  %t2118 = load i32, ptr %t43
-  %t2119 = sext i32 %t2118 to i64
-  %t2120 = load ptr, ptr %t0
-  %t2121 = getelementptr %DeviceScalarPlan, ptr %t2120, i32 0, i32 0
-  %t2122 = load ptr, ptr %t2121
-  %t2123 = getelementptr %EIRNode, ptr %t2122, i64 %t2119
-  %t2124 = getelementptr %EIRNode, ptr %t2123, i32 0, i32 9
-  %t2125 = load i32, ptr %t2124
-  %t2126 = icmp ne i32 %t2117, %t2125
-  store i1 %t2126, ptr %t2092
+  %t2116 = load i32, ptr %t2085
+  %t2117 = sext i32 %t2116 to i64
+  %t2118 = load ptr, ptr %t0
+  %t2119 = getelementptr %DeviceScalarPlan, ptr %t2118, i32 0, i32 0
+  %t2120 = load ptr, ptr %t2119
+  %t2121 = getelementptr %EIRNode, ptr %t2120, i64 %t2117
+  %t2122 = getelementptr %EIRNode, ptr %t2121, i32 0, i32 8
+  %t2123 = load i32, ptr %t2122
+  %t2124 = load i32, ptr %t49
+  %t2125 = sext i32 %t2124 to i64
+  %t2126 = load ptr, ptr %t0
+  %t2127 = getelementptr %DeviceScalarPlan, ptr %t2126, i32 0, i32 0
+  %t2128 = load ptr, ptr %t2127
+  %t2129 = getelementptr %EIRNode, ptr %t2128, i64 %t2125
+  %t2130 = getelementptr %EIRNode, ptr %t2129, i32 0, i32 9
+  %t2131 = load i32, ptr %t2130
+  %t2132 = icmp ne i32 %t2123, %t2131
+  store i1 %t2132, ptr %t2098
   br label %L469
 L469:
-  %t2127 = load i1, ptr %t2092
-  br i1 %t2127, label %L470, label %L472
+  %t2133 = load i1, ptr %t2098
+  br i1 %t2133, label %L470, label %L472
 L470:
-  %t2128 = add i32 0, 0
-  ret i32 %t2128
+  %t2134 = add i32 0, 0
+  ret i32 %t2134
 L472:
   br label %L467
 L466:
-  %t2131 = load i32, ptr %t2012
-  %t2132 = sext i32 %t2131 to i64
-  %t2133 = load ptr, ptr %t0
-  %t2134 = getelementptr %DeviceScalarPlan, ptr %t2133, i32 0, i32 0
-  %t2135 = load ptr, ptr %t2134
-  %t2136 = getelementptr %EIRNode, ptr %t2135, i64 %t2132
-  %t2137 = getelementptr %EIRNode, ptr %t2136, i32 0, i32 8
-  %t2138 = load i32, ptr %t2137
-  %t2139 = call i32 @type_is_ptr(i32 %t2138)
-  %t2140 = add i32 0, 0
-  %t2141 = icmp eq i32 %t2139, %t2140
-  store i1 %t2141, ptr %t2130
-  br i1 %t2141, label %L474, label %L473
+  %t2137 = load i32, ptr %t2018
+  %t2138 = sext i32 %t2137 to i64
+  %t2139 = load ptr, ptr %t0
+  %t2140 = getelementptr %DeviceScalarPlan, ptr %t2139, i32 0, i32 0
+  %t2141 = load ptr, ptr %t2140
+  %t2142 = getelementptr %EIRNode, ptr %t2141, i64 %t2138
+  %t2143 = getelementptr %EIRNode, ptr %t2142, i32 0, i32 8
+  %t2144 = load i32, ptr %t2143
+  %t2145 = call i32 @type_is_ptr(i32 %t2144)
+  %t2146 = add i32 0, 0
+  %t2147 = icmp eq i32 %t2145, %t2146
+  store i1 %t2147, ptr %t2136
+  br i1 %t2147, label %L474, label %L473
 L473:
-  %t2142 = load i32, ptr %t2012
-  %t2143 = sext i32 %t2142 to i64
-  %t2144 = load ptr, ptr %t0
-  %t2145 = getelementptr %DeviceScalarPlan, ptr %t2144, i32 0, i32 0
-  %t2146 = load ptr, ptr %t2145
-  %t2147 = getelementptr %EIRNode, ptr %t2146, i64 %t2143
-  %t2148 = getelementptr %EIRNode, ptr %t2147, i32 0, i32 8
-  %t2149 = load i32, ptr %t2148
-  %t2150 = call i32 @type_pointee(i32 %t2149)
-  %t2151 = load i32, ptr %t43
-  %t2152 = sext i32 %t2151 to i64
-  %t2153 = load ptr, ptr %t0
-  %t2154 = getelementptr %DeviceScalarPlan, ptr %t2153, i32 0, i32 0
-  %t2155 = load ptr, ptr %t2154
-  %t2156 = getelementptr %EIRNode, ptr %t2155, i64 %t2152
-  %t2157 = getelementptr %EIRNode, ptr %t2156, i32 0, i32 8
-  %t2158 = load i32, ptr %t2157
-  %t2159 = icmp ne i32 %t2150, %t2158
-  store i1 %t2159, ptr %t2130
+  %t2148 = load i32, ptr %t2018
+  %t2149 = sext i32 %t2148 to i64
+  %t2150 = load ptr, ptr %t0
+  %t2151 = getelementptr %DeviceScalarPlan, ptr %t2150, i32 0, i32 0
+  %t2152 = load ptr, ptr %t2151
+  %t2153 = getelementptr %EIRNode, ptr %t2152, i64 %t2149
+  %t2154 = getelementptr %EIRNode, ptr %t2153, i32 0, i32 8
+  %t2155 = load i32, ptr %t2154
+  %t2156 = call i32 @type_pointee(i32 %t2155)
+  %t2157 = load i32, ptr %t49
+  %t2158 = sext i32 %t2157 to i64
+  %t2159 = load ptr, ptr %t0
+  %t2160 = getelementptr %DeviceScalarPlan, ptr %t2159, i32 0, i32 0
+  %t2161 = load ptr, ptr %t2160
+  %t2162 = getelementptr %EIRNode, ptr %t2161, i64 %t2158
+  %t2163 = getelementptr %EIRNode, ptr %t2162, i32 0, i32 8
+  %t2164 = load i32, ptr %t2163
+  %t2165 = icmp ne i32 %t2156, %t2164
+  store i1 %t2165, ptr %t2136
   br label %L474
 L474:
-  %t2160 = load i1, ptr %t2130
-  store i1 %t2160, ptr %t2129
-  br i1 %t2160, label %L476, label %L475
+  %t2166 = load i1, ptr %t2136
+  store i1 %t2166, ptr %t2135
+  br i1 %t2166, label %L476, label %L475
 L475:
-  %t2161 = load i32, ptr %t2079
-  %t2162 = sext i32 %t2161 to i64
-  %t2163 = load ptr, ptr %t0
-  %t2164 = getelementptr %DeviceScalarPlan, ptr %t2163, i32 0, i32 0
-  %t2165 = load ptr, ptr %t2164
-  %t2166 = getelementptr %EIRNode, ptr %t2165, i64 %t2162
-  %t2167 = getelementptr %EIRNode, ptr %t2166, i32 0, i32 8
-  %t2168 = load i32, ptr %t2167
-  %t2169 = getelementptr [4 x i8], ptr @.str.6233, i32 0, i32 0
-  %t2170 = call i32 @str_intern(ptr %t2169)
-  %t2171 = icmp ne i32 %t2168, %t2170
-  store i1 %t2171, ptr %t2129
+  %t2167 = load i32, ptr %t2085
+  %t2168 = sext i32 %t2167 to i64
+  %t2169 = load ptr, ptr %t0
+  %t2170 = getelementptr %DeviceScalarPlan, ptr %t2169, i32 0, i32 0
+  %t2171 = load ptr, ptr %t2170
+  %t2172 = getelementptr %EIRNode, ptr %t2171, i64 %t2168
+  %t2173 = getelementptr %EIRNode, ptr %t2172, i32 0, i32 8
+  %t2174 = load i32, ptr %t2173
+  %t2175 = getelementptr [4 x i8], ptr @.str.6233, i32 0, i32 0
+  %t2176 = call i32 @str_intern(ptr %t2175)
+  %t2177 = icmp ne i32 %t2174, %t2176
+  store i1 %t2177, ptr %t2135
   br label %L476
 L476:
-  %t2172 = load i1, ptr %t2129
-  br i1 %t2172, label %L477, label %L479
+  %t2178 = load i1, ptr %t2135
+  br i1 %t2178, label %L477, label %L479
 L477:
-  %t2173 = add i32 0, 0
-  ret i32 %t2173
+  %t2179 = add i32 0, 0
+  ret i32 %t2179
 L479:
   br label %L467
 L467:
-  %t2174 = load i32, ptr %t57
-  %t2175 = load i32, ptr @EIR_INDEX_ST
-  %t2176 = icmp eq i32 %t2174, %t2175
-  br i1 %t2176, label %L480, label %L482
+  %t2180 = load i32, ptr %t63
+  %t2181 = load i32, ptr @EIR_INDEX_ST
+  %t2182 = icmp eq i32 %t2180, %t2181
+  br i1 %t2182, label %L480, label %L482
 L480:
-  %t2177 = load i32, ptr %t43
-  %t2178 = sext i32 %t2177 to i64
-  %t2179 = load ptr, ptr %t0
-  %t2180 = getelementptr %DeviceScalarPlan, ptr %t2179, i32 0, i32 0
-  %t2181 = load ptr, ptr %t2180
-  %t2182 = getelementptr %EIRNode, ptr %t2181, i64 %t2178
-  %t2183 = getelementptr %EIRNode, ptr %t2182, i32 0, i32 5
-  %t2184 = load i32, ptr %t2183
-  store i32 %t2184, ptr %t2185
-  %t2188 = load i32, ptr %t2185
-  %t2189 = add i32 0, 0
-  %t2190 = icmp slt i32 %t2188, %t2189
-  store i1 %t2190, ptr %t2187
-  br i1 %t2190, label %L484, label %L483
+  %t2183 = load i32, ptr %t49
+  %t2184 = sext i32 %t2183 to i64
+  %t2185 = load ptr, ptr %t0
+  %t2186 = getelementptr %DeviceScalarPlan, ptr %t2185, i32 0, i32 0
+  %t2187 = load ptr, ptr %t2186
+  %t2188 = getelementptr %EIRNode, ptr %t2187, i64 %t2184
+  %t2189 = getelementptr %EIRNode, ptr %t2188, i32 0, i32 5
+  %t2190 = load i32, ptr %t2189
+  store i32 %t2190, ptr %t2191
+  %t2194 = load i32, ptr %t2191
+  %t2195 = add i32 0, 0
+  %t2196 = icmp slt i32 %t2194, %t2195
+  store i1 %t2196, ptr %t2193
+  br i1 %t2196, label %L484, label %L483
 L483:
-  %t2191 = load i32, ptr %t2185
-  %t2192 = load i32, ptr %t43
-  %t2193 = icmp sge i32 %t2191, %t2192
-  store i1 %t2193, ptr %t2187
+  %t2197 = load i32, ptr %t2191
+  %t2198 = load i32, ptr %t49
+  %t2199 = icmp sge i32 %t2197, %t2198
+  store i1 %t2199, ptr %t2193
   br label %L484
 L484:
-  %t2194 = load i1, ptr %t2187
-  store i1 %t2194, ptr %t2186
-  br i1 %t2194, label %L486, label %L485
+  %t2200 = load i1, ptr %t2193
+  store i1 %t2200, ptr %t2192
+  br i1 %t2200, label %L486, label %L485
 L485:
-  %t2195 = load i32, ptr %t2185
-  %t2196 = sext i32 %t2195 to i64
-  %t2197 = load ptr, ptr %t0
-  %t2198 = getelementptr %DeviceScalarPlan, ptr %t2197, i32 0, i32 0
-  %t2199 = load ptr, ptr %t2198
-  %t2200 = getelementptr %EIRNode, ptr %t2199, i64 %t2196
-  %t2201 = getelementptr %EIRNode, ptr %t2200, i32 0, i32 8
-  %t2202 = load i32, ptr %t2201
-  %t2203 = load i32, ptr %t43
-  %t2204 = sext i32 %t2203 to i64
-  %t2205 = load ptr, ptr %t0
-  %t2206 = getelementptr %DeviceScalarPlan, ptr %t2205, i32 0, i32 0
-  %t2207 = load ptr, ptr %t2206
-  %t2208 = getelementptr %EIRNode, ptr %t2207, i64 %t2204
-  %t2209 = getelementptr %EIRNode, ptr %t2208, i32 0, i32 8
-  %t2210 = load i32, ptr %t2209
-  %t2211 = icmp ne i32 %t2202, %t2210
-  store i1 %t2211, ptr %t2186
+  %t2201 = load i32, ptr %t2191
+  %t2202 = sext i32 %t2201 to i64
+  %t2203 = load ptr, ptr %t0
+  %t2204 = getelementptr %DeviceScalarPlan, ptr %t2203, i32 0, i32 0
+  %t2205 = load ptr, ptr %t2204
+  %t2206 = getelementptr %EIRNode, ptr %t2205, i64 %t2202
+  %t2207 = getelementptr %EIRNode, ptr %t2206, i32 0, i32 8
+  %t2208 = load i32, ptr %t2207
+  %t2209 = load i32, ptr %t49
+  %t2210 = sext i32 %t2209 to i64
+  %t2211 = load ptr, ptr %t0
+  %t2212 = getelementptr %DeviceScalarPlan, ptr %t2211, i32 0, i32 0
+  %t2213 = load ptr, ptr %t2212
+  %t2214 = getelementptr %EIRNode, ptr %t2213, i64 %t2210
+  %t2215 = getelementptr %EIRNode, ptr %t2214, i32 0, i32 8
+  %t2216 = load i32, ptr %t2215
+  %t2217 = icmp ne i32 %t2208, %t2216
+  store i1 %t2217, ptr %t2192
   br label %L486
 L486:
-  %t2212 = load i1, ptr %t2186
-  br i1 %t2212, label %L487, label %L489
+  %t2218 = load i1, ptr %t2192
+  br i1 %t2218, label %L487, label %L489
 L487:
-  %t2213 = add i32 0, 0
-  ret i32 %t2213
+  %t2219 = add i32 0, 0
+  ret i32 %t2219
 L489:
   br label %L482
 L482:
   br label %L459
 L458:
-  %t2214 = load i32, ptr %t57
-  %t2215 = load i32, ptr @EIR_UN
-  %t2216 = icmp ne i32 %t2214, %t2215
-  br i1 %t2216, label %L490, label %L492
+  %t2220 = load i32, ptr %t63
+  %t2221 = load i32, ptr @EIR_UN
+  %t2222 = icmp ne i32 %t2220, %t2221
+  br i1 %t2222, label %L490, label %L492
 L490:
-  %t2217 = add i32 0, 0
-  ret i32 %t2217
+  %t2223 = add i32 0, 0
+  ret i32 %t2223
 L492:
   br label %L459
 L459:
@@ -168320,22 +168317,22 @@ L83:
 L63:
   br label %L24
 L24:
-  %t2218 = load i32, ptr %t43
-  %t2219 = add i32 0, 1
-  %t2220 = add i32 %t2218, %t2219
-  store i32 %t2220, ptr %t43
+  %t2224 = load i32, ptr %t49
+  %t2225 = add i32 0, 1
+  %t2226 = add i32 %t2224, %t2225
+  store i32 %t2226, ptr %t49
   br label %L8
 L10:
-  %t2221 = load i32, ptr %t41
-  %t2222 = add i32 0, 0
-  %t2223 = icmp ne i32 %t2221, %t2222
-  br i1 %t2223, label %L493, label %L495
+  %t2227 = load i32, ptr %t47
+  %t2228 = add i32 0, 0
+  %t2229 = icmp ne i32 %t2227, %t2228
+  br i1 %t2229, label %L493, label %L495
 L493:
-  %t2224 = add i32 0, 0
-  ret i32 %t2224
+  %t2230 = add i32 0, 0
+  ret i32 %t2230
 L495:
-  %t2225 = add i32 0, 1
-  ret i32 %t2225
+  %t2231 = add i32 0, 1
+  ret i32 %t2231
 }
 
 define internal i32 @device_scalar_prepare(ptr %p0, i32 %p1, i32 %p2, i32 %p3, i32 %p4, i32 %p5) {
@@ -168352,616 +168349,620 @@ entry:
   store i32 %p4, ptr %t4
   %t5 = alloca i32
   store i32 %p5, ptr %t5
-  %t192 = alloca i1
-  %t210 = alloca i32
-  %t242 = alloca i32
-  %t257 = alloca i32
-  %t260 = alloca i32
-  %t281 = alloca i32
-  %t314 = alloca i32
-  %t362 = alloca i1
-  %t384 = alloca i32
-  %t385 = alloca i1
-  %t412 = alloca i32
-  %t436 = alloca i1
+  %t196 = alloca i1
+  %t214 = alloca i32
+  %t246 = alloca i32
+  %t261 = alloca i32
+  %t264 = alloca i32
+  %t285 = alloca i32
+  %t318 = alloca i32
+  %t366 = alloca i1
+  %t388 = alloca i32
+  %t389 = alloca i1
+  %t416 = alloca i32
+  %t440 = alloca i1
   %t6 = load ptr, ptr %t0
-  %t7 = add i64 0, 4096
-  %t8 = mul i64 %t7, 56
-  %t9 = call ptr @malloc(i64 %t8)
-  call void @llvm.memset.p0.i64(ptr %t9, i8 0, i64 %t8, i1 false)
-  %t10 = load ptr, ptr %t0
-  %t11 = getelementptr %DeviceScalarPlan, ptr %t10, i32 0, i32 0
-  store ptr %t9, ptr %t11
-  %t12 = load ptr, ptr %t0
-  %t13 = add i64 0, 256
-  %t14 = mul i64 %t13, 4
-  %t15 = call ptr @malloc(i64 %t14)
-  call void @llvm.memset.p0.i64(ptr %t15, i8 0, i64 %t14, i1 false)
-  %t16 = load ptr, ptr %t0
-  %t17 = getelementptr %DeviceScalarPlan, ptr %t16, i32 0, i32 8
-  store ptr %t15, ptr %t17
-  %t18 = load ptr, ptr %t0
-  %t19 = add i64 0, 256
-  %t20 = mul i64 %t19, 4
-  %t21 = call ptr @malloc(i64 %t20)
-  call void @llvm.memset.p0.i64(ptr %t21, i8 0, i64 %t20, i1 false)
-  %t22 = load ptr, ptr %t0
-  %t23 = getelementptr %DeviceScalarPlan, ptr %t22, i32 0, i32 9
-  store ptr %t21, ptr %t23
-  %t24 = load ptr, ptr %t0
-  %t25 = add i64 0, 16
-  %t26 = mul i64 %t25, 4
-  %t27 = call ptr @malloc(i64 %t26)
-  call void @llvm.memset.p0.i64(ptr %t27, i8 0, i64 %t26, i1 false)
-  %t28 = load ptr, ptr %t0
-  %t29 = getelementptr %DeviceScalarPlan, ptr %t28, i32 0, i32 12
-  store ptr %t27, ptr %t29
-  %t30 = load ptr, ptr %t0
-  %t31 = add i64 0, 4096
-  %t32 = mul i64 %t31, 4
-  %t33 = call ptr @malloc(i64 %t32)
-  call void @llvm.memset.p0.i64(ptr %t33, i8 0, i64 %t32, i1 false)
-  %t34 = load ptr, ptr %t0
-  %t35 = getelementptr %DeviceScalarPlan, ptr %t34, i32 0, i32 1
-  store ptr %t33, ptr %t35
+  %t7 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t8 = sext i32 %t7 to i64
+  %t9 = mul i64 %t8, 56
+  %t10 = call ptr @malloc(i64 %t9)
+  call void @llvm.memset.p0.i64(ptr %t10, i8 0, i64 %t9, i1 false)
+  %t11 = load ptr, ptr %t0
+  %t12 = getelementptr %DeviceScalarPlan, ptr %t11, i32 0, i32 0
+  store ptr %t10, ptr %t12
+  %t13 = load ptr, ptr %t0
+  %t14 = add i64 0, 256
+  %t15 = mul i64 %t14, 4
+  %t16 = call ptr @malloc(i64 %t15)
+  call void @llvm.memset.p0.i64(ptr %t16, i8 0, i64 %t15, i1 false)
+  %t17 = load ptr, ptr %t0
+  %t18 = getelementptr %DeviceScalarPlan, ptr %t17, i32 0, i32 8
+  store ptr %t16, ptr %t18
+  %t19 = load ptr, ptr %t0
+  %t20 = add i64 0, 256
+  %t21 = mul i64 %t20, 4
+  %t22 = call ptr @malloc(i64 %t21)
+  call void @llvm.memset.p0.i64(ptr %t22, i8 0, i64 %t21, i1 false)
+  %t23 = load ptr, ptr %t0
+  %t24 = getelementptr %DeviceScalarPlan, ptr %t23, i32 0, i32 9
+  store ptr %t22, ptr %t24
+  %t25 = load ptr, ptr %t0
+  %t26 = add i64 0, 16
+  %t27 = mul i64 %t26, 4
+  %t28 = call ptr @malloc(i64 %t27)
+  call void @llvm.memset.p0.i64(ptr %t28, i8 0, i64 %t27, i1 false)
+  %t29 = load ptr, ptr %t0
+  %t30 = getelementptr %DeviceScalarPlan, ptr %t29, i32 0, i32 12
+  store ptr %t28, ptr %t30
+  %t31 = load ptr, ptr %t0
+  %t32 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t33 = sext i32 %t32 to i64
+  %t34 = mul i64 %t33, 4
+  %t35 = call ptr @malloc(i64 %t34)
+  call void @llvm.memset.p0.i64(ptr %t35, i8 0, i64 %t34, i1 false)
   %t36 = load ptr, ptr %t0
-  %t37 = add i64 0, 4096
-  %t38 = mul i64 %t37, 4
-  %t39 = call ptr @malloc(i64 %t38)
-  call void @llvm.memset.p0.i64(ptr %t39, i8 0, i64 %t38, i1 false)
-  %t40 = load ptr, ptr %t0
-  %t41 = getelementptr %DeviceScalarPlan, ptr %t40, i32 0, i32 2
-  store ptr %t39, ptr %t41
-  %t42 = load ptr, ptr %t0
-  %t43 = add i64 0, 16
-  %t44 = mul i64 %t43, 4
-  %t45 = call ptr @malloc(i64 %t44)
-  call void @llvm.memset.p0.i64(ptr %t45, i8 0, i64 %t44, i1 false)
-  %t46 = load ptr, ptr %t0
-  %t47 = getelementptr %DeviceScalarPlan, ptr %t46, i32 0, i32 3
-  store ptr %t45, ptr %t47
-  %t48 = load ptr, ptr %t0
-  %t49 = add i32 0, 0
-  %t50 = load ptr, ptr %t0
-  %t51 = getelementptr %DeviceScalarPlan, ptr %t50, i32 0, i32 4
-  store i32 %t49, ptr %t51
-  %t52 = load ptr, ptr %t0
-  %t53 = add i32 0, 0
-  %t54 = load ptr, ptr %t0
-  %t55 = getelementptr %DeviceScalarPlan, ptr %t54, i32 0, i32 5
-  store i32 %t53, ptr %t55
-  %t56 = load ptr, ptr %t0
-  %t57 = add i64 0, 256
-  %t58 = mul i64 %t57, 4
-  %t59 = call ptr @malloc(i64 %t58)
-  call void @llvm.memset.p0.i64(ptr %t59, i8 0, i64 %t58, i1 false)
-  %t60 = load ptr, ptr %t0
-  %t61 = getelementptr %DeviceScalarPlan, ptr %t60, i32 0, i32 16
-  store ptr %t59, ptr %t61
-  %t62 = load ptr, ptr %t0
-  %t63 = add i64 0, 16
-  %t64 = mul i64 %t63, 4
-  %t65 = call ptr @malloc(i64 %t64)
-  call void @llvm.memset.p0.i64(ptr %t65, i8 0, i64 %t64, i1 false)
-  %t66 = load ptr, ptr %t0
-  %t67 = getelementptr %DeviceScalarPlan, ptr %t66, i32 0, i32 17
-  store ptr %t65, ptr %t67
-  %t68 = load ptr, ptr %t0
-  %t69 = add i64 0, 16
-  %t70 = mul i64 %t69, 4
-  %t71 = call ptr @malloc(i64 %t70)
-  call void @llvm.memset.p0.i64(ptr %t71, i8 0, i64 %t70, i1 false)
-  %t72 = load ptr, ptr %t0
-  %t73 = getelementptr %DeviceScalarPlan, ptr %t72, i32 0, i32 18
-  store ptr %t71, ptr %t73
-  %t74 = load ptr, ptr %t0
-  %t75 = add i32 0, 0
-  %t76 = load ptr, ptr %t0
-  %t77 = getelementptr %DeviceScalarPlan, ptr %t76, i32 0, i32 19
-  store i32 %t75, ptr %t77
-  %t78 = load ptr, ptr %t0
-  %t79 = add i64 0, 4096
-  %t80 = mul i64 %t79, 4
-  %t81 = call ptr @malloc(i64 %t80)
-  call void @llvm.memset.p0.i64(ptr %t81, i8 0, i64 %t80, i1 false)
-  %t82 = load ptr, ptr %t0
-  %t83 = getelementptr %DeviceScalarPlan, ptr %t82, i32 0, i32 20
-  store ptr %t81, ptr %t83
-  %t84 = load ptr, ptr %t0
-  %t85 = add i32 0, 0
+  %t37 = getelementptr %DeviceScalarPlan, ptr %t36, i32 0, i32 1
+  store ptr %t35, ptr %t37
+  %t38 = load ptr, ptr %t0
+  %t39 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t40 = sext i32 %t39 to i64
+  %t41 = mul i64 %t40, 4
+  %t42 = call ptr @malloc(i64 %t41)
+  call void @llvm.memset.p0.i64(ptr %t42, i8 0, i64 %t41, i1 false)
+  %t43 = load ptr, ptr %t0
+  %t44 = getelementptr %DeviceScalarPlan, ptr %t43, i32 0, i32 2
+  store ptr %t42, ptr %t44
+  %t45 = load ptr, ptr %t0
+  %t46 = add i64 0, 16
+  %t47 = mul i64 %t46, 4
+  %t48 = call ptr @malloc(i64 %t47)
+  call void @llvm.memset.p0.i64(ptr %t48, i8 0, i64 %t47, i1 false)
+  %t49 = load ptr, ptr %t0
+  %t50 = getelementptr %DeviceScalarPlan, ptr %t49, i32 0, i32 3
+  store ptr %t48, ptr %t50
+  %t51 = load ptr, ptr %t0
+  %t52 = add i32 0, 0
+  %t53 = load ptr, ptr %t0
+  %t54 = getelementptr %DeviceScalarPlan, ptr %t53, i32 0, i32 4
+  store i32 %t52, ptr %t54
+  %t55 = load ptr, ptr %t0
+  %t56 = add i32 0, 0
+  %t57 = load ptr, ptr %t0
+  %t58 = getelementptr %DeviceScalarPlan, ptr %t57, i32 0, i32 5
+  store i32 %t56, ptr %t58
+  %t59 = load ptr, ptr %t0
+  %t60 = add i64 0, 256
+  %t61 = mul i64 %t60, 4
+  %t62 = call ptr @malloc(i64 %t61)
+  call void @llvm.memset.p0.i64(ptr %t62, i8 0, i64 %t61, i1 false)
+  %t63 = load ptr, ptr %t0
+  %t64 = getelementptr %DeviceScalarPlan, ptr %t63, i32 0, i32 16
+  store ptr %t62, ptr %t64
+  %t65 = load ptr, ptr %t0
+  %t66 = add i64 0, 16
+  %t67 = mul i64 %t66, 4
+  %t68 = call ptr @malloc(i64 %t67)
+  call void @llvm.memset.p0.i64(ptr %t68, i8 0, i64 %t67, i1 false)
+  %t69 = load ptr, ptr %t0
+  %t70 = getelementptr %DeviceScalarPlan, ptr %t69, i32 0, i32 17
+  store ptr %t68, ptr %t70
+  %t71 = load ptr, ptr %t0
+  %t72 = add i64 0, 16
+  %t73 = mul i64 %t72, 4
+  %t74 = call ptr @malloc(i64 %t73)
+  call void @llvm.memset.p0.i64(ptr %t74, i8 0, i64 %t73, i1 false)
+  %t75 = load ptr, ptr %t0
+  %t76 = getelementptr %DeviceScalarPlan, ptr %t75, i32 0, i32 18
+  store ptr %t74, ptr %t76
+  %t77 = load ptr, ptr %t0
+  %t78 = add i32 0, 0
+  %t79 = load ptr, ptr %t0
+  %t80 = getelementptr %DeviceScalarPlan, ptr %t79, i32 0, i32 19
+  store i32 %t78, ptr %t80
+  %t81 = load ptr, ptr %t0
+  %t82 = load i32, ptr @DEVICE_SCALAR_CAPACITY
+  %t83 = sext i32 %t82 to i64
+  %t84 = mul i64 %t83, 4
+  %t85 = call ptr @malloc(i64 %t84)
+  call void @llvm.memset.p0.i64(ptr %t85, i8 0, i64 %t84, i1 false)
   %t86 = load ptr, ptr %t0
-  %t87 = getelementptr %DeviceScalarPlan, ptr %t86, i32 0, i32 21
-  store i32 %t85, ptr %t87
+  %t87 = getelementptr %DeviceScalarPlan, ptr %t86, i32 0, i32 20
+  store ptr %t85, ptr %t87
   %t88 = load ptr, ptr %t0
-  %t89 = add i64 0, 256
-  %t90 = mul i64 %t89, 4
-  %t91 = call ptr @malloc(i64 %t90)
-  call void @llvm.memset.p0.i64(ptr %t91, i8 0, i64 %t90, i1 false)
+  %t89 = add i32 0, 0
+  %t90 = load ptr, ptr %t0
+  %t91 = getelementptr %DeviceScalarPlan, ptr %t90, i32 0, i32 21
+  store i32 %t89, ptr %t91
   %t92 = load ptr, ptr %t0
-  %t93 = getelementptr %DeviceScalarPlan, ptr %t92, i32 0, i32 22
-  store ptr %t91, ptr %t93
-  %t94 = load ptr, ptr %t0
-  %t95 = add i64 0, 256
-  %t96 = mul i64 %t95, 4
-  %t97 = call ptr @malloc(i64 %t96)
-  call void @llvm.memset.p0.i64(ptr %t97, i8 0, i64 %t96, i1 false)
+  %t93 = add i64 0, 256
+  %t94 = mul i64 %t93, 4
+  %t95 = call ptr @malloc(i64 %t94)
+  call void @llvm.memset.p0.i64(ptr %t95, i8 0, i64 %t94, i1 false)
+  %t96 = load ptr, ptr %t0
+  %t97 = getelementptr %DeviceScalarPlan, ptr %t96, i32 0, i32 22
+  store ptr %t95, ptr %t97
   %t98 = load ptr, ptr %t0
-  %t99 = getelementptr %DeviceScalarPlan, ptr %t98, i32 0, i32 23
-  store ptr %t97, ptr %t99
-  %t100 = load ptr, ptr %t0
-  %t101 = add i32 0, 0
+  %t99 = add i64 0, 256
+  %t100 = mul i64 %t99, 4
+  %t101 = call ptr @malloc(i64 %t100)
+  call void @llvm.memset.p0.i64(ptr %t101, i8 0, i64 %t100, i1 false)
   %t102 = load ptr, ptr %t0
-  %t103 = getelementptr %DeviceScalarPlan, ptr %t102, i32 0, i32 24
-  store i32 %t101, ptr %t103
+  %t103 = getelementptr %DeviceScalarPlan, ptr %t102, i32 0, i32 23
+  store ptr %t101, ptr %t103
   %t104 = load ptr, ptr %t0
   %t105 = add i32 0, 0
   %t106 = load ptr, ptr %t0
-  %t107 = getelementptr %DeviceScalarPlan, ptr %t106, i32 0, i32 25
+  %t107 = getelementptr %DeviceScalarPlan, ptr %t106, i32 0, i32 24
   store i32 %t105, ptr %t107
   %t108 = load ptr, ptr %t0
   %t109 = add i32 0, 0
   %t110 = load ptr, ptr %t0
-  %t111 = getelementptr %DeviceScalarPlan, ptr %t110, i32 0, i32 26
+  %t111 = getelementptr %DeviceScalarPlan, ptr %t110, i32 0, i32 25
   store i32 %t109, ptr %t111
   %t112 = load ptr, ptr %t0
   %t113 = add i32 0, 0
   %t114 = load ptr, ptr %t0
-  %t115 = getelementptr %DeviceScalarPlan, ptr %t114, i32 0, i32 6
+  %t115 = getelementptr %DeviceScalarPlan, ptr %t114, i32 0, i32 26
   store i32 %t113, ptr %t115
   %t116 = load ptr, ptr %t0
   %t117 = add i32 0, 0
   %t118 = load ptr, ptr %t0
-  %t119 = getelementptr %DeviceScalarPlan, ptr %t118, i32 0, i32 7
+  %t119 = getelementptr %DeviceScalarPlan, ptr %t118, i32 0, i32 6
   store i32 %t117, ptr %t119
   %t120 = load ptr, ptr %t0
   %t121 = add i32 0, 0
   %t122 = load ptr, ptr %t0
-  %t123 = getelementptr %DeviceScalarPlan, ptr %t122, i32 0, i32 10
+  %t123 = getelementptr %DeviceScalarPlan, ptr %t122, i32 0, i32 7
   store i32 %t121, ptr %t123
   %t124 = load ptr, ptr %t0
   %t125 = add i32 0, 0
   %t126 = load ptr, ptr %t0
-  %t127 = getelementptr %DeviceScalarPlan, ptr %t126, i32 0, i32 11
+  %t127 = getelementptr %DeviceScalarPlan, ptr %t126, i32 0, i32 10
   store i32 %t125, ptr %t127
   %t128 = load ptr, ptr %t0
   %t129 = add i32 0, 0
   %t130 = load ptr, ptr %t0
-  %t131 = getelementptr %DeviceScalarPlan, ptr %t130, i32 0, i32 13
+  %t131 = getelementptr %DeviceScalarPlan, ptr %t130, i32 0, i32 11
   store i32 %t129, ptr %t131
   %t132 = load ptr, ptr %t0
   %t133 = add i32 0, 0
   %t134 = load ptr, ptr %t0
-  %t135 = getelementptr %DeviceScalarPlan, ptr %t134, i32 0, i32 14
+  %t135 = getelementptr %DeviceScalarPlan, ptr %t134, i32 0, i32 13
   store i32 %t133, ptr %t135
   %t136 = load ptr, ptr %t0
-  %t137 = load i32, ptr %t1
+  %t137 = add i32 0, 0
   %t138 = load ptr, ptr %t0
-  %t139 = getelementptr %DeviceScalarPlan, ptr %t138, i32 0, i32 15
+  %t139 = getelementptr %DeviceScalarPlan, ptr %t138, i32 0, i32 14
   store i32 %t137, ptr %t139
   %t140 = load ptr, ptr %t0
-  %t141 = load i32, ptr %t5
+  %t141 = load i32, ptr %t1
   %t142 = load ptr, ptr %t0
-  %t143 = getelementptr %DeviceScalarPlan, ptr %t142, i32 0, i32 27
+  %t143 = getelementptr %DeviceScalarPlan, ptr %t142, i32 0, i32 15
   store i32 %t141, ptr %t143
   %t144 = load ptr, ptr %t0
-  %t145 = add i32 0, 0
-  %t146 = add i32 0, 1
-  %t147 = sub i32 %t145, %t146
+  %t145 = load i32, ptr %t5
+  %t146 = load ptr, ptr %t0
+  %t147 = getelementptr %DeviceScalarPlan, ptr %t146, i32 0, i32 27
+  store i32 %t145, ptr %t147
   %t148 = load ptr, ptr %t0
-  %t149 = getelementptr %DeviceScalarPlan, ptr %t148, i32 0, i32 28
-  store i32 %t147, ptr %t149
-  %t150 = load ptr, ptr %t0
-  %t151 = add i32 0, 0
-  %t152 = add i32 0, 1
-  %t153 = sub i32 %t151, %t152
+  %t149 = add i32 0, 0
+  %t150 = add i32 0, 1
+  %t151 = sub i32 %t149, %t150
+  %t152 = load ptr, ptr %t0
+  %t153 = getelementptr %DeviceScalarPlan, ptr %t152, i32 0, i32 28
+  store i32 %t151, ptr %t153
   %t154 = load ptr, ptr %t0
-  %t155 = getelementptr %DeviceScalarPlan, ptr %t154, i32 0, i32 29
-  store i32 %t153, ptr %t155
-  %t156 = load ptr, ptr %t0
-  %t157 = add i32 0, 0
-  %t158 = add i32 0, 1
-  %t159 = sub i32 %t157, %t158
+  %t155 = add i32 0, 0
+  %t156 = add i32 0, 1
+  %t157 = sub i32 %t155, %t156
+  %t158 = load ptr, ptr %t0
+  %t159 = getelementptr %DeviceScalarPlan, ptr %t158, i32 0, i32 29
+  store i32 %t157, ptr %t159
   %t160 = load ptr, ptr %t0
-  %t161 = getelementptr %DeviceScalarPlan, ptr %t160, i32 0, i32 30
-  store i32 %t159, ptr %t161
-  %t162 = load ptr, ptr %t0
-  %t163 = add i32 0, 0
+  %t161 = add i32 0, 0
+  %t162 = add i32 0, 1
+  %t163 = sub i32 %t161, %t162
   %t164 = load ptr, ptr %t0
-  %t165 = getelementptr %DeviceScalarPlan, ptr %t164, i32 0, i32 31
+  %t165 = getelementptr %DeviceScalarPlan, ptr %t164, i32 0, i32 30
   store i32 %t163, ptr %t165
   %t166 = load ptr, ptr %t0
   %t167 = add i32 0, 0
   %t168 = load ptr, ptr %t0
-  %t169 = getelementptr %DeviceScalarPlan, ptr %t168, i32 0, i32 32
+  %t169 = getelementptr %DeviceScalarPlan, ptr %t168, i32 0, i32 31
   store i32 %t167, ptr %t169
   %t170 = load ptr, ptr %t0
   %t171 = add i32 0, 0
   %t172 = load ptr, ptr %t0
-  %t173 = getelementptr %DeviceScalarPlan, ptr %t172, i32 0, i32 33
+  %t173 = getelementptr %DeviceScalarPlan, ptr %t172, i32 0, i32 32
   store i32 %t171, ptr %t173
   %t174 = load ptr, ptr %t0
   %t175 = add i32 0, 0
   %t176 = load ptr, ptr %t0
-  %t177 = getelementptr %DeviceScalarPlan, ptr %t176, i32 0, i32 34
+  %t177 = getelementptr %DeviceScalarPlan, ptr %t176, i32 0, i32 33
   store i32 %t175, ptr %t177
   %t178 = load ptr, ptr %t0
   %t179 = add i32 0, 0
   %t180 = load ptr, ptr %t0
-  %t181 = getelementptr %DeviceScalarPlan, ptr %t180, i32 0, i32 35
+  %t181 = getelementptr %DeviceScalarPlan, ptr %t180, i32 0, i32 34
   store i32 %t179, ptr %t181
   %t182 = load ptr, ptr %t0
   %t183 = add i32 0, 0
-  %t184 = add i32 0, 1
-  %t185 = sub i32 %t183, %t184
+  %t184 = load ptr, ptr %t0
+  %t185 = getelementptr %DeviceScalarPlan, ptr %t184, i32 0, i32 35
+  store i32 %t183, ptr %t185
   %t186 = load ptr, ptr %t0
-  %t187 = getelementptr %DeviceScalarPlan, ptr %t186, i32 0, i32 36
-  store i32 %t185, ptr %t187
-  %t188 = load ptr, ptr %t0
-  %t189 = add i32 0, 0
+  %t187 = add i32 0, 0
+  %t188 = add i32 0, 1
+  %t189 = sub i32 %t187, %t188
   %t190 = load ptr, ptr %t0
-  %t191 = getelementptr %DeviceScalarPlan, ptr %t190, i32 0, i32 37
+  %t191 = getelementptr %DeviceScalarPlan, ptr %t190, i32 0, i32 36
   store i32 %t189, ptr %t191
-  %t193 = load i32, ptr @g_gen_nsub
-  %t194 = add i32 0, 16
-  %t195 = icmp sgt i32 %t193, %t194
-  store i1 %t195, ptr %t192
-  br i1 %t195, label %L1, label %L0
+  %t192 = load ptr, ptr %t0
+  %t193 = add i32 0, 0
+  %t194 = load ptr, ptr %t0
+  %t195 = getelementptr %DeviceScalarPlan, ptr %t194, i32 0, i32 37
+  store i32 %t193, ptr %t195
+  %t197 = load i32, ptr @g_gen_nsub
+  %t198 = add i32 0, 16
+  %t199 = icmp sgt i32 %t197, %t198
+  store i1 %t199, ptr %t196
+  br i1 %t199, label %L1, label %L0
 L0:
-  %t196 = load i32, ptr %t3
-  %t197 = add i32 0, 255
-  %t198 = icmp sge i32 %t196, %t197
-  store i1 %t198, ptr %t192
+  %t200 = load i32, ptr %t3
+  %t201 = add i32 0, 255
+  %t202 = icmp sge i32 %t200, %t201
+  store i1 %t202, ptr %t196
   br label %L1
 L1:
-  %t199 = load i1, ptr %t192
-  br i1 %t199, label %L2, label %L4
+  %t203 = load i1, ptr %t196
+  br i1 %t203, label %L2, label %L4
 L2:
-  %t200 = load ptr, ptr %t0
-  %t201 = add i32 0, 2
-  %t202 = load i32, ptr %t1
-  %t203 = call i32 @device_scalar_fail(ptr %t200, i32 %t201, i32 %t202)
-  %t204 = add i32 0, 0
-  ret i32 %t204
+  %t204 = load ptr, ptr %t0
+  %t205 = add i32 0, 2
+  %t206 = load i32, ptr %t1
+  %t207 = call i32 @device_scalar_fail(ptr %t204, i32 %t205, i32 %t206)
+  %t208 = add i32 0, 0
+  ret i32 %t208
 L4:
-  %t205 = load ptr, ptr %t0
-  %t206 = load i32, ptr @g_gen_nsub
-  %t207 = load ptr, ptr %t0
-  %t208 = getelementptr %DeviceScalarPlan, ptr %t207, i32 0, i32 19
-  store i32 %t206, ptr %t208
-  %t209 = add i32 0, 0
-  store i32 %t209, ptr %t210
+  %t209 = load ptr, ptr %t0
+  %t210 = load i32, ptr @g_gen_nsub
+  %t211 = load ptr, ptr %t0
+  %t212 = getelementptr %DeviceScalarPlan, ptr %t211, i32 0, i32 19
+  store i32 %t210, ptr %t212
+  %t213 = add i32 0, 0
+  store i32 %t213, ptr %t214
   br label %L5
 L5:
-  %t211 = load i32, ptr %t210
-  %t212 = load ptr, ptr %t0
-  %t213 = getelementptr %DeviceScalarPlan, ptr %t212, i32 0, i32 19
-  %t214 = load i32, ptr %t213
-  %t215 = icmp slt i32 %t211, %t214
-  br i1 %t215, label %L6, label %L7
+  %t215 = load i32, ptr %t214
+  %t216 = load ptr, ptr %t0
+  %t217 = getelementptr %DeviceScalarPlan, ptr %t216, i32 0, i32 19
+  %t218 = load i32, ptr %t217
+  %t219 = icmp slt i32 %t215, %t218
+  br i1 %t219, label %L6, label %L7
 L6:
-  %t216 = load i32, ptr %t210
-  %t217 = sext i32 %t216 to i64
-  %t218 = load ptr, ptr %t0
-  %t219 = getelementptr %DeviceScalarPlan, ptr %t218, i32 0, i32 17
-  %t220 = load ptr, ptr %t219
-  %t221 = getelementptr i32, ptr %t220, i64 %t217
-  %t222 = load i32, ptr %t210
-  %t223 = sext i32 %t222 to i64
-  %t224 = load ptr, ptr @g_gen_sub_names
-  %t225 = getelementptr i32, ptr %t224, i64 %t223
-  %t226 = load i32, ptr %t225
-  store i32 %t226, ptr %t221
-  %t227 = load i32, ptr %t210
-  %t228 = sext i32 %t227 to i64
-  %t229 = load ptr, ptr %t0
-  %t230 = getelementptr %DeviceScalarPlan, ptr %t229, i32 0, i32 18
-  %t231 = load ptr, ptr %t230
-  %t232 = getelementptr i32, ptr %t231, i64 %t228
-  %t233 = load i32, ptr %t210
-  %t234 = sext i32 %t233 to i64
-  %t235 = load ptr, ptr @g_gen_sub_types
-  %t236 = getelementptr i32, ptr %t235, i64 %t234
-  %t237 = load i32, ptr %t236
-  store i32 %t237, ptr %t232
-  %t238 = load i32, ptr %t210
-  %t239 = add i32 0, 1
-  %t240 = add i32 %t238, %t239
-  store i32 %t240, ptr %t210
+  %t220 = load i32, ptr %t214
+  %t221 = sext i32 %t220 to i64
+  %t222 = load ptr, ptr %t0
+  %t223 = getelementptr %DeviceScalarPlan, ptr %t222, i32 0, i32 17
+  %t224 = load ptr, ptr %t223
+  %t225 = getelementptr i32, ptr %t224, i64 %t221
+  %t226 = load i32, ptr %t214
+  %t227 = sext i32 %t226 to i64
+  %t228 = load ptr, ptr @g_gen_sub_names
+  %t229 = getelementptr i32, ptr %t228, i64 %t227
+  %t230 = load i32, ptr %t229
+  store i32 %t230, ptr %t225
+  %t231 = load i32, ptr %t214
+  %t232 = sext i32 %t231 to i64
+  %t233 = load ptr, ptr %t0
+  %t234 = getelementptr %DeviceScalarPlan, ptr %t233, i32 0, i32 18
+  %t235 = load ptr, ptr %t234
+  %t236 = getelementptr i32, ptr %t235, i64 %t232
+  %t237 = load i32, ptr %t214
+  %t238 = sext i32 %t237 to i64
+  %t239 = load ptr, ptr @g_gen_sub_types
+  %t240 = getelementptr i32, ptr %t239, i64 %t238
+  %t241 = load i32, ptr %t240
+  store i32 %t241, ptr %t236
+  %t242 = load i32, ptr %t214
+  %t243 = add i32 0, 1
+  %t244 = add i32 %t242, %t243
+  store i32 %t244, ptr %t214
   br label %L5
 L7:
-  %t241 = add i32 0, 0
-  store i32 %t241, ptr %t242
+  %t245 = add i32 0, 0
+  store i32 %t245, ptr %t246
   br label %L8
 L8:
-  %t243 = load i32, ptr %t242
-  %t244 = load i32, ptr %t3
-  %t245 = icmp slt i32 %t243, %t244
-  br i1 %t245, label %L9, label %L10
+  %t247 = load i32, ptr %t246
+  %t248 = load i32, ptr %t3
+  %t249 = icmp slt i32 %t247, %t248
+  br i1 %t249, label %L9, label %L10
 L9:
-  %t246 = load i32, ptr %t4
-  %t247 = load i32, ptr %t242
-  %t248 = add i32 0, 4
-  %t249 = mul i32 %t247, %t248
-  %t250 = add i32 %t246, %t249
-  %t251 = add i32 0, 1
-  %t252 = add i32 %t250, %t251
-  %t253 = sext i32 %t252 to i64
-  %t254 = load ptr, ptr @g_pfor_workers
-  %t255 = getelementptr i32, ptr %t254, i64 %t253
-  %t256 = load i32, ptr %t255
-  store i32 %t256, ptr %t257
-  %t258 = load i32, ptr %t257
-  %t259 = call i32 @device_scalar_type(i32 %t258)
-  store i32 %t259, ptr %t260
-  %t261 = load i32, ptr %t257
-  %t262 = call i32 @type_is_ptr(i32 %t261)
-  %t263 = add i32 0, 1
-  %t264 = icmp eq i32 %t262, %t263
-  br i1 %t264, label %L11, label %L13
+  %t250 = load i32, ptr %t4
+  %t251 = load i32, ptr %t246
+  %t252 = add i32 0, 4
+  %t253 = mul i32 %t251, %t252
+  %t254 = add i32 %t250, %t253
+  %t255 = add i32 0, 1
+  %t256 = add i32 %t254, %t255
+  %t257 = sext i32 %t256 to i64
+  %t258 = load ptr, ptr @g_pfor_workers
+  %t259 = getelementptr i32, ptr %t258, i64 %t257
+  %t260 = load i32, ptr %t259
+  store i32 %t260, ptr %t261
+  %t262 = load i32, ptr %t261
+  %t263 = call i32 @device_scalar_type(i32 %t262)
+  store i32 %t263, ptr %t264
+  %t265 = load i32, ptr %t261
+  %t266 = call i32 @type_is_ptr(i32 %t265)
+  %t267 = add i32 0, 1
+  %t268 = icmp eq i32 %t266, %t267
+  br i1 %t268, label %L11, label %L13
 L11:
-  %t265 = load i32, ptr %t257
-  %t266 = call i32 @type_pointee(i32 %t265)
-  %t267 = call i32 @device_scalar_type(i32 %t266)
-  store i32 %t267, ptr %t260
+  %t269 = load i32, ptr %t261
+  %t270 = call i32 @type_pointee(i32 %t269)
+  %t271 = call i32 @device_scalar_type(i32 %t270)
+  store i32 %t271, ptr %t264
   br label %L13
 L13:
-  %t268 = load i32, ptr %t260
-  %t269 = add i32 0, 0
-  %t270 = icmp eq i32 %t268, %t269
-  br i1 %t270, label %L14, label %L16
+  %t272 = load i32, ptr %t264
+  %t273 = add i32 0, 0
+  %t274 = icmp eq i32 %t272, %t273
+  br i1 %t274, label %L14, label %L16
 L14:
-  %t271 = load ptr, ptr %t0
-  %t272 = add i32 0, 2
-  %t273 = load i32, ptr %t1
-  %t274 = call i32 @device_scalar_fail(ptr %t271, i32 %t272, i32 %t273)
-  %t275 = add i32 0, 0
-  ret i32 %t275
+  %t275 = load ptr, ptr %t0
+  %t276 = add i32 0, 2
+  %t277 = load i32, ptr %t1
+  %t278 = call i32 @device_scalar_fail(ptr %t275, i32 %t276, i32 %t277)
+  %t279 = add i32 0, 0
+  ret i32 %t279
 L16:
-  %t276 = load ptr, ptr %t0
-  %t277 = load i32, ptr @EIR_LOCAL
-  %t278 = load i32, ptr %t257
-  %t279 = load i32, ptr %t1
-  %t280 = call i32 @device_scalar_node(ptr %t276, i32 %t277, i32 %t278, i32 %t279)
-  store i32 %t280, ptr %t281
-  %t282 = load i32, ptr %t281
-  %t283 = sext i32 %t282 to i64
-  %t284 = load ptr, ptr %t0
-  %t285 = getelementptr %DeviceScalarPlan, ptr %t284, i32 0, i32 0
-  %t286 = load ptr, ptr %t285
-  %t287 = getelementptr %EIRNode, ptr %t286, i64 %t283
-  %t288 = load i32, ptr %t242
-  %t289 = load i32, ptr %t281
-  %t290 = sext i32 %t289 to i64
-  %t291 = load ptr, ptr %t0
-  %t292 = getelementptr %DeviceScalarPlan, ptr %t291, i32 0, i32 0
-  %t293 = load ptr, ptr %t292
-  %t294 = getelementptr %EIRNode, ptr %t293, i64 %t290
-  %t295 = getelementptr %EIRNode, ptr %t294, i32 0, i32 3
-  store i32 %t288, ptr %t295
-  %t296 = load ptr, ptr %t0
-  %t297 = load i32, ptr %t4
-  %t298 = load i32, ptr %t242
-  %t299 = add i32 0, 4
-  %t300 = mul i32 %t298, %t299
-  %t301 = add i32 %t297, %t300
-  %t302 = sext i32 %t301 to i64
-  %t303 = load ptr, ptr @g_pfor_workers
-  %t304 = getelementptr i32, ptr %t303, i64 %t302
-  %t305 = load i32, ptr %t304
-  %t306 = load i32, ptr %t281
-  %t307 = call i32 @device_scalar_bind(ptr %t296, i32 %t305, i32 %t306)
-  %t308 = load i32, ptr %t242
-  %t309 = add i32 0, 1
-  %t310 = add i32 %t308, %t309
-  store i32 %t310, ptr %t242
+  %t280 = load ptr, ptr %t0
+  %t281 = load i32, ptr @EIR_LOCAL
+  %t282 = load i32, ptr %t261
+  %t283 = load i32, ptr %t1
+  %t284 = call i32 @device_scalar_node(ptr %t280, i32 %t281, i32 %t282, i32 %t283)
+  store i32 %t284, ptr %t285
+  %t286 = load i32, ptr %t285
+  %t287 = sext i32 %t286 to i64
+  %t288 = load ptr, ptr %t0
+  %t289 = getelementptr %DeviceScalarPlan, ptr %t288, i32 0, i32 0
+  %t290 = load ptr, ptr %t289
+  %t291 = getelementptr %EIRNode, ptr %t290, i64 %t287
+  %t292 = load i32, ptr %t246
+  %t293 = load i32, ptr %t285
+  %t294 = sext i32 %t293 to i64
+  %t295 = load ptr, ptr %t0
+  %t296 = getelementptr %DeviceScalarPlan, ptr %t295, i32 0, i32 0
+  %t297 = load ptr, ptr %t296
+  %t298 = getelementptr %EIRNode, ptr %t297, i64 %t294
+  %t299 = getelementptr %EIRNode, ptr %t298, i32 0, i32 3
+  store i32 %t292, ptr %t299
+  %t300 = load ptr, ptr %t0
+  %t301 = load i32, ptr %t4
+  %t302 = load i32, ptr %t246
+  %t303 = add i32 0, 4
+  %t304 = mul i32 %t302, %t303
+  %t305 = add i32 %t301, %t304
+  %t306 = sext i32 %t305 to i64
+  %t307 = load ptr, ptr @g_pfor_workers
+  %t308 = getelementptr i32, ptr %t307, i64 %t306
+  %t309 = load i32, ptr %t308
+  %t310 = load i32, ptr %t285
+  %t311 = call i32 @device_scalar_bind(ptr %t300, i32 %t309, i32 %t310)
+  %t312 = load i32, ptr %t246
+  %t313 = add i32 0, 1
+  %t314 = add i32 %t312, %t313
+  store i32 %t314, ptr %t246
   br label %L8
 L10:
-  %t311 = add i32 0, 0
-  %t312 = add i32 0, 1
-  %t313 = sub i32 %t311, %t312
-  store i32 %t313, ptr %t314
-  %t315 = load i32, ptr %t5
+  %t315 = add i32 0, 0
   %t316 = add i32 0, 1
-  %t317 = icmp eq i32 %t315, %t316
-  br i1 %t317, label %L17, label %L18
+  %t317 = sub i32 %t315, %t316
+  store i32 %t317, ptr %t318
+  %t319 = load i32, ptr %t5
+  %t320 = add i32 0, 1
+  %t321 = icmp eq i32 %t319, %t320
+  br i1 %t321, label %L17, label %L18
 L17:
-  %t318 = load ptr, ptr %t0
-  %t319 = load i32, ptr %t1
-  %t320 = call i32 @device_thread_context(ptr %t318, i32 %t319)
-  store i32 %t320, ptr %t314
+  %t322 = load ptr, ptr %t0
+  %t323 = load i32, ptr %t1
+  %t324 = call i32 @device_thread_context(ptr %t322, i32 %t323)
+  store i32 %t324, ptr %t318
   br label %L19
 L18:
-  %t321 = load ptr, ptr %t0
-  %t322 = load i32, ptr @EIR_LOCAL
-  %t323 = getelementptr [4 x i8], ptr @.str.6234, i32 0, i32 0
-  %t324 = call i32 @str_intern(ptr %t323)
-  %t325 = load i32, ptr %t1
-  %t326 = call i32 @device_scalar_node(ptr %t321, i32 %t322, i32 %t324, i32 %t325)
-  store i32 %t326, ptr %t314
-  %t327 = load i32, ptr %t314
-  %t328 = add i32 0, 0
-  %t329 = icmp sge i32 %t327, %t328
-  br i1 %t329, label %L20, label %L22
+  %t325 = load ptr, ptr %t0
+  %t326 = load i32, ptr @EIR_LOCAL
+  %t327 = getelementptr [4 x i8], ptr @.str.6234, i32 0, i32 0
+  %t328 = call i32 @str_intern(ptr %t327)
+  %t329 = load i32, ptr %t1
+  %t330 = call i32 @device_scalar_node(ptr %t325, i32 %t326, i32 %t328, i32 %t329)
+  store i32 %t330, ptr %t318
+  %t331 = load i32, ptr %t318
+  %t332 = add i32 0, 0
+  %t333 = icmp sge i32 %t331, %t332
+  br i1 %t333, label %L20, label %L22
 L20:
-  %t330 = load i32, ptr %t314
-  %t331 = sext i32 %t330 to i64
-  %t332 = load ptr, ptr %t0
-  %t333 = getelementptr %DeviceScalarPlan, ptr %t332, i32 0, i32 0
-  %t334 = load ptr, ptr %t333
-  %t335 = getelementptr %EIRNode, ptr %t334, i64 %t331
-  %t336 = load i32, ptr %t3
-  %t337 = load i32, ptr %t314
-  %t338 = sext i32 %t337 to i64
-  %t339 = load ptr, ptr %t0
-  %t340 = getelementptr %DeviceScalarPlan, ptr %t339, i32 0, i32 0
-  %t341 = load ptr, ptr %t340
-  %t342 = getelementptr %EIRNode, ptr %t341, i64 %t338
-  %t343 = getelementptr %EIRNode, ptr %t342, i32 0, i32 3
-  store i32 %t336, ptr %t343
+  %t334 = load i32, ptr %t318
+  %t335 = sext i32 %t334 to i64
+  %t336 = load ptr, ptr %t0
+  %t337 = getelementptr %DeviceScalarPlan, ptr %t336, i32 0, i32 0
+  %t338 = load ptr, ptr %t337
+  %t339 = getelementptr %EIRNode, ptr %t338, i64 %t335
+  %t340 = load i32, ptr %t3
+  %t341 = load i32, ptr %t318
+  %t342 = sext i32 %t341 to i64
+  %t343 = load ptr, ptr %t0
+  %t344 = getelementptr %DeviceScalarPlan, ptr %t343, i32 0, i32 0
+  %t345 = load ptr, ptr %t344
+  %t346 = getelementptr %EIRNode, ptr %t345, i64 %t342
+  %t347 = getelementptr %EIRNode, ptr %t346, i32 0, i32 3
+  store i32 %t340, ptr %t347
   br label %L22
 L22:
   br label %L19
 L19:
-  %t344 = load i32, ptr %t314
-  %t345 = add i32 0, 0
-  %t346 = icmp slt i32 %t344, %t345
-  br i1 %t346, label %L23, label %L25
+  %t348 = load i32, ptr %t318
+  %t349 = add i32 0, 0
+  %t350 = icmp slt i32 %t348, %t349
+  br i1 %t350, label %L23, label %L25
 L23:
-  %t347 = add i32 0, 0
-  ret i32 %t347
+  %t351 = add i32 0, 0
+  ret i32 %t351
 L25:
-  %t348 = load ptr, ptr %t0
-  %t349 = load i32, ptr %t2
-  %t350 = load i32, ptr %t314
-  %t351 = call i32 @device_scalar_bind(ptr %t348, i32 %t349, i32 %t350)
-  %t352 = load i32, ptr %t5
-  %t353 = add i32 0, 1
-  %t354 = icmp eq i32 %t352, %t353
-  br i1 %t354, label %L26, label %L28
+  %t352 = load ptr, ptr %t0
+  %t353 = load i32, ptr %t2
+  %t354 = load i32, ptr %t318
+  %t355 = call i32 @device_scalar_bind(ptr %t352, i32 %t353, i32 %t354)
+  %t356 = load i32, ptr %t5
+  %t357 = add i32 0, 1
+  %t358 = icmp eq i32 %t356, %t357
+  br i1 %t358, label %L26, label %L28
 L26:
-  %t355 = load ptr, ptr %t0
-  %t356 = load i32, ptr %t1
-  %t357 = add i32 0, 0
-  %t358 = load i32, ptr @NULL_STR
-  %t359 = add i32 0, 0
-  %t360 = inttoptr i64 0 to ptr
-  %t361 = call i32 @device_scalar_sequence(ptr %t355, i32 %t356, i32 %t357, i32 %t358, i32 %t359, ptr %t360)
-  %t363 = load ptr, ptr %t0
-  %t364 = getelementptr %DeviceScalarPlan, ptr %t363, i32 0, i32 14
-  %t365 = load i32, ptr %t364
-  %t366 = add i32 0, 0
-  %t367 = icmp eq i32 %t365, %t366
-  store i1 %t367, ptr %t362
-  br i1 %t367, label %L29, label %L30
-L29:
-  %t368 = load ptr, ptr %t0
-  %t369 = call i32 @device_scalar_verify(ptr %t368)
+  %t359 = load ptr, ptr %t0
+  %t360 = load i32, ptr %t1
+  %t361 = add i32 0, 0
+  %t362 = load i32, ptr @NULL_STR
+  %t363 = add i32 0, 0
+  %t364 = inttoptr i64 0 to ptr
+  %t365 = call i32 @device_scalar_sequence(ptr %t359, i32 %t360, i32 %t361, i32 %t362, i32 %t363, ptr %t364)
+  %t367 = load ptr, ptr %t0
+  %t368 = getelementptr %DeviceScalarPlan, ptr %t367, i32 0, i32 14
+  %t369 = load i32, ptr %t368
   %t370 = add i32 0, 0
   %t371 = icmp eq i32 %t369, %t370
-  store i1 %t371, ptr %t362
+  store i1 %t371, ptr %t366
+  br i1 %t371, label %L29, label %L30
+L29:
+  %t372 = load ptr, ptr %t0
+  %t373 = call i32 @device_scalar_verify(ptr %t372)
+  %t374 = add i32 0, 0
+  %t375 = icmp eq i32 %t373, %t374
+  store i1 %t375, ptr %t366
   br label %L30
 L30:
-  %t372 = load i1, ptr %t362
-  br i1 %t372, label %L31, label %L33
+  %t376 = load i1, ptr %t366
+  br i1 %t376, label %L31, label %L33
 L31:
-  %t373 = load ptr, ptr %t0
-  %t374 = add i32 0, 3
-  %t375 = load i32, ptr %t1
-  %t376 = call i32 @device_scalar_fail(ptr %t373, i32 %t374, i32 %t375)
+  %t377 = load ptr, ptr %t0
+  %t378 = add i32 0, 3
+  %t379 = load i32, ptr %t1
+  %t380 = call i32 @device_scalar_fail(ptr %t377, i32 %t378, i32 %t379)
   br label %L33
 L33:
-  %t377 = load ptr, ptr %t0
-  %t378 = getelementptr %DeviceScalarPlan, ptr %t377, i32 0, i32 14
-  %t379 = load i32, ptr %t378
-  %t380 = add i32 0, 0
-  %t381 = icmp eq i32 %t379, %t380
-  %t382 = zext i1 %t381 to i32
-  ret i32 %t382
+  %t381 = load ptr, ptr %t0
+  %t382 = getelementptr %DeviceScalarPlan, ptr %t381, i32 0, i32 14
+  %t383 = load i32, ptr %t382
+  %t384 = add i32 0, 0
+  %t385 = icmp eq i32 %t383, %t384
+  %t386 = zext i1 %t385 to i32
+  ret i32 %t386
 L28:
-  %t383 = add i32 0, 0
-  store i32 %t383, ptr %t384
+  %t387 = add i32 0, 0
+  store i32 %t387, ptr %t388
   br label %L34
 L34:
-  %t386 = load i32, ptr %t384
-  %t387 = load i32, ptr %t1
-  %t388 = sext i32 %t387 to i64
-  %t389 = load ptr, ptr @g_nodes
-  %t390 = getelementptr %ASTNode, ptr %t389, i64 %t388
-  %t391 = getelementptr %ASTNode, ptr %t390, i32 0, i32 6
-  %t392 = load i32, ptr %t391
-  %t393 = icmp slt i32 %t386, %t392
-  store i1 %t393, ptr %t385
-  br i1 %t393, label %L37, label %L38
-L37:
-  %t394 = load ptr, ptr %t0
-  %t395 = getelementptr %DeviceScalarPlan, ptr %t394, i32 0, i32 14
+  %t390 = load i32, ptr %t388
+  %t391 = load i32, ptr %t1
+  %t392 = sext i32 %t391 to i64
+  %t393 = load ptr, ptr @g_nodes
+  %t394 = getelementptr %ASTNode, ptr %t393, i64 %t392
+  %t395 = getelementptr %ASTNode, ptr %t394, i32 0, i32 6
   %t396 = load i32, ptr %t395
-  %t397 = add i32 0, 0
-  %t398 = icmp eq i32 %t396, %t397
-  store i1 %t398, ptr %t385
+  %t397 = icmp slt i32 %t390, %t396
+  store i1 %t397, ptr %t389
+  br i1 %t397, label %L37, label %L38
+L37:
+  %t398 = load ptr, ptr %t0
+  %t399 = getelementptr %DeviceScalarPlan, ptr %t398, i32 0, i32 14
+  %t400 = load i32, ptr %t399
+  %t401 = add i32 0, 0
+  %t402 = icmp eq i32 %t400, %t401
+  store i1 %t402, ptr %t389
   br label %L38
 L38:
-  %t399 = load i1, ptr %t385
-  br i1 %t399, label %L35, label %L36
+  %t403 = load i1, ptr %t389
+  br i1 %t403, label %L35, label %L36
 L35:
-  %t400 = load i32, ptr %t1
-  %t401 = sext i32 %t400 to i64
-  %t402 = load ptr, ptr @g_nodes
-  %t403 = getelementptr %ASTNode, ptr %t402, i64 %t401
-  %t404 = getelementptr %ASTNode, ptr %t403, i32 0, i32 13
-  %t405 = load i32, ptr %t404
-  %t406 = load i32, ptr %t384
-  %t407 = add i32 %t405, %t406
-  %t408 = sext i32 %t407 to i64
-  %t409 = load ptr, ptr @g_args
-  %t410 = getelementptr i32, ptr %t409, i64 %t408
-  %t411 = load i32, ptr %t410
-  store i32 %t411, ptr %t412
-  %t413 = load i32, ptr %t412
-  %t414 = sext i32 %t413 to i64
-  %t415 = load ptr, ptr @g_nodes
-  %t416 = getelementptr %ASTNode, ptr %t415, i64 %t414
-  %t417 = getelementptr %ASTNode, ptr %t416, i32 0, i32 0
-  %t418 = load i32, ptr %t417
-  %t419 = load i32, ptr @AST_INDEX_ASSIGN
-  %t420 = icmp ne i32 %t418, %t419
-  br i1 %t420, label %L39, label %L41
+  %t404 = load i32, ptr %t1
+  %t405 = sext i32 %t404 to i64
+  %t406 = load ptr, ptr @g_nodes
+  %t407 = getelementptr %ASTNode, ptr %t406, i64 %t405
+  %t408 = getelementptr %ASTNode, ptr %t407, i32 0, i32 13
+  %t409 = load i32, ptr %t408
+  %t410 = load i32, ptr %t388
+  %t411 = add i32 %t409, %t410
+  %t412 = sext i32 %t411 to i64
+  %t413 = load ptr, ptr @g_args
+  %t414 = getelementptr i32, ptr %t413, i64 %t412
+  %t415 = load i32, ptr %t414
+  store i32 %t415, ptr %t416
+  %t417 = load i32, ptr %t416
+  %t418 = sext i32 %t417 to i64
+  %t419 = load ptr, ptr @g_nodes
+  %t420 = getelementptr %ASTNode, ptr %t419, i64 %t418
+  %t421 = getelementptr %ASTNode, ptr %t420, i32 0, i32 0
+  %t422 = load i32, ptr %t421
+  %t423 = load i32, ptr @AST_INDEX_ASSIGN
+  %t424 = icmp ne i32 %t422, %t423
+  br i1 %t424, label %L39, label %L41
 L39:
-  %t421 = load ptr, ptr %t0
-  %t422 = add i32 0, 3
-  %t423 = load i32, ptr %t412
-  %t424 = call i32 @device_scalar_fail(ptr %t421, i32 %t422, i32 %t423)
-  %t425 = add i32 0, 0
-  ret i32 %t425
+  %t425 = load ptr, ptr %t0
+  %t426 = add i32 0, 3
+  %t427 = load i32, ptr %t416
+  %t428 = call i32 @device_scalar_fail(ptr %t425, i32 %t426, i32 %t427)
+  %t429 = add i32 0, 0
+  ret i32 %t429
 L41:
-  %t426 = load ptr, ptr %t0
-  %t427 = load i32, ptr %t412
-  %t428 = add i32 0, 0
-  %t429 = call i32 @device_scalar_store(ptr %t426, i32 %t427, i32 %t428)
-  %t430 = add i32 0, 0
-  %t431 = icmp slt i32 %t429, %t430
-  br i1 %t431, label %L42, label %L44
-L42:
+  %t430 = load ptr, ptr %t0
+  %t431 = load i32, ptr %t416
   %t432 = add i32 0, 0
-  ret i32 %t432
+  %t433 = call i32 @device_scalar_store(ptr %t430, i32 %t431, i32 %t432)
+  %t434 = add i32 0, 0
+  %t435 = icmp slt i32 %t433, %t434
+  br i1 %t435, label %L42, label %L44
+L42:
+  %t436 = add i32 0, 0
+  ret i32 %t436
 L44:
-  %t433 = load i32, ptr %t384
-  %t434 = add i32 0, 1
-  %t435 = add i32 %t433, %t434
-  store i32 %t435, ptr %t384
+  %t437 = load i32, ptr %t388
+  %t438 = add i32 0, 1
+  %t439 = add i32 %t437, %t438
+  store i32 %t439, ptr %t388
   br label %L34
 L36:
-  %t437 = load ptr, ptr %t0
-  %t438 = getelementptr %DeviceScalarPlan, ptr %t437, i32 0, i32 14
-  %t439 = load i32, ptr %t438
-  %t440 = add i32 0, 0
-  %t441 = icmp eq i32 %t439, %t440
-  store i1 %t441, ptr %t436
-  br i1 %t441, label %L45, label %L46
-L45:
-  %t442 = load ptr, ptr %t0
-  %t443 = call i32 @device_scalar_verify(ptr %t442)
+  %t441 = load ptr, ptr %t0
+  %t442 = getelementptr %DeviceScalarPlan, ptr %t441, i32 0, i32 14
+  %t443 = load i32, ptr %t442
   %t444 = add i32 0, 0
   %t445 = icmp eq i32 %t443, %t444
-  store i1 %t445, ptr %t436
+  store i1 %t445, ptr %t440
+  br i1 %t445, label %L45, label %L46
+L45:
+  %t446 = load ptr, ptr %t0
+  %t447 = call i32 @device_scalar_verify(ptr %t446)
+  %t448 = add i32 0, 0
+  %t449 = icmp eq i32 %t447, %t448
+  store i1 %t449, ptr %t440
   br label %L46
 L46:
-  %t446 = load i1, ptr %t436
-  br i1 %t446, label %L47, label %L49
+  %t450 = load i1, ptr %t440
+  br i1 %t450, label %L47, label %L49
 L47:
-  %t447 = load ptr, ptr %t0
-  %t448 = add i32 0, 3
-  %t449 = load i32, ptr %t1
-  %t450 = call i32 @device_scalar_fail(ptr %t447, i32 %t448, i32 %t449)
+  %t451 = load ptr, ptr %t0
+  %t452 = add i32 0, 3
+  %t453 = load i32, ptr %t1
+  %t454 = call i32 @device_scalar_fail(ptr %t451, i32 %t452, i32 %t453)
   br label %L49
 L49:
-  %t451 = load ptr, ptr %t0
-  %t452 = getelementptr %DeviceScalarPlan, ptr %t451, i32 0, i32 14
-  %t453 = load i32, ptr %t452
-  %t454 = add i32 0, 0
-  %t455 = icmp eq i32 %t453, %t454
-  %t456 = zext i1 %t455 to i32
-  ret i32 %t456
+  %t455 = load ptr, ptr %t0
+  %t456 = getelementptr %DeviceScalarPlan, ptr %t455, i32 0, i32 14
+  %t457 = load i32, ptr %t456
+  %t458 = add i32 0, 0
+  %t459 = icmp eq i32 %t457, %t458
+  %t460 = zext i1 %t459 to i32
+  ret i32 %t460
 }
 
 define internal void @device_scalar_label(i32 %p0) {
@@ -288205,10 +288206,10 @@ L493:
 @.str.6153 = private unnamed_addr constant [19 x i8] c"\63\6F\6E\64\69\74\69\6F\6E\61\6C\2D\65\66\66\65\63\74\00"
 @.str.6154 = private unnamed_addr constant [9 x i8] c"\66\6F\72\2D\6C\6F\6F\70\00"
 @.str.6155 = private unnamed_addr constant [15 x i8] c"\76\61\72\2D\61\73\73\69\67\6E\6D\65\6E\74\00"
-@.str.6156 = private unnamed_addr constant [37 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\64\65\76\69\63\65\20\6E\6F\64\65\73\20\28\34\30\39\36\29\00"
+@.str.6156 = private unnamed_addr constant [38 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\64\65\76\69\63\65\20\6E\6F\64\65\73\20\28\31\36\33\38\34\29\00"
 @.str.6157 = private unnamed_addr constant [37 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\6C\69\76\65\20\62\69\6E\64\69\6E\67\73\20\28\32\35\36\29\00"
-@.str.6158 = private unnamed_addr constant [39 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\74\72\61\76\65\72\73\61\6C\20\77\6F\72\6B\20\28\34\30\39\36\29\00"
-@.str.6159 = private unnamed_addr constant [45 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\61\67\67\72\65\67\61\74\65\20\63\6F\6D\70\6F\6E\65\6E\74\73\20\28\34\30\39\36\29\00"
+@.str.6158 = private unnamed_addr constant [40 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\74\72\61\76\65\72\73\61\6C\20\77\6F\72\6B\20\28\31\36\33\38\34\29\00"
+@.str.6159 = private unnamed_addr constant [46 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\61\67\67\72\65\67\61\74\65\20\63\6F\6D\70\6F\6E\65\6E\74\73\20\28\31\36\33\38\34\29\00"
 @.str.6160 = private unnamed_addr constant [40 x i8] c"\65\78\70\61\6E\73\69\6F\6E\2D\6C\69\6D\69\74\3A\20\63\6C\6F\73\75\72\65\20\63\61\70\74\75\72\65\73\20\28\32\35\36\29\00"
 @.str.6161 = private unnamed_addr constant [17 x i8] c"\65\78\70\72\65\73\73\69\6F\6E\2D\73\68\61\70\65\00"
 @.str.6162 = private unnamed_addr constant [3 x i8] c"\69\31\00"

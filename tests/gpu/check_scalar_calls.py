@@ -121,7 +121,7 @@ def refused(source, temp, detail=None, candidate=True):
         result = run(TVC, mode, str(source), "-o", str(out), code=1)
         assert out.read_text() == "previous artifact\n"
         if candidate:
-            reason = 'expansion-limit: traversal work (4096)' if detail == 'expansion-limit' else 'uncarried-call'
+            reason = 'expansion-limit: traversal work (16384)' if detail == 'expansion-limit' else 'uncarried-call'
             assert f'"reason":"{reason}"' in result.stderr, (source.name, result.stderr)
         else:
             assert '"reason":"no-usable-workers"' in result.stderr

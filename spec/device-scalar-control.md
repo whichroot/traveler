@@ -91,7 +91,7 @@ branches can reconverge before a collective; a collective inside such a branch
 still refuses with `conditional-effect`.
 
 Shared-memory operations, block barriers, native tensor operations, asynchronous
-shared copies, and atomics must remain in the root control-flow region. Warp
+shared copies, and shared atomics must remain in the root control-flow region. Warp
 uniformity does not establish block-wide participation or shared-memory phase
 safety.
 
@@ -144,8 +144,8 @@ Refusals identify the offending source location. Device decision records use
 The supplementary `device-call-refused` line uses the same detail. Existing
 callee/type/expression refusals retain their established categories.
 
-The existing 16-active-call, depth-64, 4096-node/work, and 256-binding limits
-remain enforced. Early-return continuation expansion counts toward those
+The 16-active-call, depth-64, 16384-node/work/component, and 256-binding limits
+are enforced. Early-return continuation expansion counts toward those
 limits. Unsupported explicit entries prevent publication of a partial module.
 Capacity diagnostics distinguish live bindings, device nodes, traversal work,
 aggregate components, and closure captures. Helper scopes release binding slots;

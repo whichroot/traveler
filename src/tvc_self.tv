@@ -27660,6 +27660,8 @@ fn device_scalar_fail(P: *DeviceScalarPlan, reason: i32, source: i32) -> i32 {
     return 0 - 1;
 }
 
+let DEVICE_SCALAR_CAPACITY: i32 = 16384;
+
 fn device_scalar_reason(reason: i32) -> *u8 {
     if reason == 1 { return "callee"; }
     if reason == 2 { return "type"; }
@@ -27670,17 +27672,17 @@ fn device_scalar_reason(reason: i32) -> *u8 {
     if reason == 8 { return "conditional-effect"; }
     if reason == 9 { return "for-loop"; }
     if reason == 10 { return "var-assignment"; }
-    if reason == 11 { return "expansion-limit: device nodes (4096)"; }
+    if reason == 11 { return "expansion-limit: device nodes (16384)"; }
     if reason == 12 { return "expansion-limit: live bindings (256)"; }
-    if reason == 13 { return "expansion-limit: traversal work (4096)"; }
-    if reason == 14 { return "expansion-limit: aggregate components (4096)"; }
+    if reason == 13 { return "expansion-limit: traversal work (16384)"; }
+    if reason == 14 { return "expansion-limit: aggregate components (16384)"; }
     if reason == 15 { return "expansion-limit: closure captures (256)"; }
     return "expression-shape";
 }
 
 fn device_scalar_node(P: *DeviceScalarPlan, kind: i32, t: i32, source: i32) -> i32 {
     if P.reason != 0 { return 0 - 1; }
-    if P.count >= 4096 { return device_scalar_fail(P, 11, source); }
+    if P.count >= DEVICE_SCALAR_CAPACITY { return device_scalar_fail(P, 11, source); }
     let e: i32 = P.count;
     P.count = e + 1;
     P.origins[e] = source;
@@ -27864,7 +27866,7 @@ fn device_closure_call(P: *DeviceScalarPlan, call: i32, closure: i32, depth: i32
 // Aggregate versions contain scalar node IDs, never addresses or aliases.
 fn device_aggregate_node(P: *DeviceScalarPlan, t: i32, si: i32, elem: i32,
                          values: *i32, count: i32, source: i32) -> i32 {
-    if count < 1 || count > 16 || P.ncomponents > 4096 - count {
+    if count < 1 || count > 16 || P.ncomponents > DEVICE_SCALAR_CAPACITY - count {
         return device_scalar_fail(P, 14, source);
     }
     let e: i32 = device_scalar_node(P, EIR_STRUCT_LIT, t, source);
@@ -28025,7 +28027,7 @@ fn device_scalar_sequence(P: *DeviceScalarPlan, body: i32, start: i32, rt: i32,
     while i < g_nodes[body].nargs && P.reason == 0 {
         let stmt: i32 = g_args[g_nodes[body].args_start + i];
         P.work = P.work + 1;
-        if P.work > 4096 { return device_scalar_fail(P, 13, stmt); }
+        if P.work > DEVICE_SCALAR_CAPACITY { return device_scalar_fail(P, 13, stmt); }
         let kind: i32 = g_nodes[stmt].kind;
         if kind == AST_RETURN {
             if rt == NULL_STR && P.calls > 0 && g_nodes[stmt].child0 <= 0 { return 0 - 2; }
@@ -28347,7 +28349,7 @@ fn device_scalar_expr(P: *DeviceScalarPlan, node: i32, ctx: i32, depth: i32) -> 
     if P.reason != 0 { return 0 - 1; }
     P.work = P.work + 1;
     if depth > 64 { return device_scalar_fail(P, 4, node); }
-    if P.work > 4096 { return device_scalar_fail(P, 13, node); }
+    if P.work > DEVICE_SCALAR_CAPACITY { return device_scalar_fail(P, 13, node); }
     if node <= 0 { return device_scalar_fail(P, 3, 0); }
     let kind: i32 = g_nodes[node].kind;
     if kind == AST_CLOSURE { return device_closure_value(P, node); }
@@ -28817,7 +28819,7 @@ fn device_scalar_verify_scopes(P: *DeviceScalarPlan, scopes: *i32, parents: *i32
             else if k == EIR_INDEX_ST { n = 3; }
             else if k != EIR_LOCAL && k != EIR_CONST && k != DEVICE_THREAD_ID { return 0; }
             if region != 0 && ((k >= DEVICE_SHARED_INIT && k <= DEVICE_BLOCK_BARRIER)
-                || k == DEVICE_ATOMIC_ADD || k == DEVICE_SHARED_ATOMIC) {
+                || k == DEVICE_SHARED_ATOMIC) {
                 device_scalar_fail(P, 8, P.origins[i]);
                 return 0;
             }
@@ -28888,7 +28890,7 @@ fn device_scalar_warp_uniform(P: *DeviceScalarPlan, uniform: *i32) {
 }
 
 fn device_scalar_verify_warps(P: *DeviceScalarPlan, scopes: *i32, parents: *i32) -> i32 {
-    let uniform: *i32 = alloc(4096);
+    let uniform: *i32 = alloc(DEVICE_SCALAR_CAPACITY);
     device_scalar_warp_uniform(P, uniform);
     var i: i32 = 0;
     while i < P.count {
@@ -28915,8 +28917,8 @@ fn device_scalar_verify_warps(P: *DeviceScalarPlan, scopes: *i32, parents: *i32)
 }
 
 fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
-    let scopes: *i32 = alloc(4096);
-    let parents: *i32 = alloc(8193);
+    let scopes: *i32 = alloc(DEVICE_SCALAR_CAPACITY);
+    let parents: *i32 = alloc(2 * DEVICE_SCALAR_CAPACITY + 1);
     var scoped: i32 = device_scalar_verify_scopes(P, scopes, parents);
     if scoped == 1 && P.warp_used == 1 { scoped = device_scalar_verify_warps(P, scopes, parents); }
     free(scopes); free(parents);
@@ -29100,11 +29102,11 @@ fn device_scalar_verify(P: *DeviceScalarPlan) -> i32 {
 
 fn device_scalar_prepare(P: *DeviceScalarPlan, body: i32, loop_name: i32,
                          ncaps: i32, caps_base: i32, cooperative: i32) -> i32 {
-    P.nodes = alloc(4096); P.names = alloc(256); P.values = alloc(256); P.stack = alloc(16);
-    P.origins = alloc(4096);
-    P.call_origins = alloc(4096); P.call_sites = alloc(16); P.failed_call = 0; P.uniform_source = 0;
+    P.nodes = alloc(DEVICE_SCALAR_CAPACITY); P.names = alloc(256); P.values = alloc(256); P.stack = alloc(16);
+    P.origins = alloc(DEVICE_SCALAR_CAPACITY);
+    P.call_origins = alloc(DEVICE_SCALAR_CAPACITY); P.call_sites = alloc(16); P.failed_call = 0; P.uniform_source = 0;
     P.mutable = alloc(256); P.gen_names = alloc(16); P.gen_types = alloc(16); P.ngen = 0;
-    P.components = alloc(4096); P.ncomponents = 0;
+    P.components = alloc(DEVICE_SCALAR_CAPACITY); P.ncomponents = 0;
     P.closure_names = alloc(256); P.closure_values = alloc(256);
     P.closure_caps = 0; P.closures = 0; P.closure_depth = 0;
     P.count = 0; P.work = 0; P.bindings = 0; P.floor = 0; P.calls = 0; P.reason = 0; P.source = body;

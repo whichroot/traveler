@@ -241,8 +241,6 @@ with tempfile.TemporaryDirectory(prefix='traveler-device-control-') as directory
         ('aggregate-merge', 'var s:Pair=Pair{value:x}; if x>0 { s.value=1; } x=s.value;'),
         ('aggregate-merge', 'var s:Pair=Pair{value:x}; while x>0 { s.value=x; x=x-1; }'),
         ('non-canonical-store', 'output[gpu_global_index(t)>>5]=x;'),
-        ('conditional-effect', 'if x>0 { gpu_atomic_exchange_u64(output,count,0,x,0,1); }'),
-        ('conditional-effect', 'while x>0 { gpu_atomic_exchange_u64(output,count,0,x,0,1); x=x-1; }'),
         ('conditional-effect', 'if x>0 { let w:u32=gpu_warp_shuffle_xor_u32(4294967295,x as u32,1); }'),
         ('conditional-effect', 'while x>0 { let w:u32=gpu_warp_shuffle_xor_u32(4294967295,x as u32,1); x=x-1; }'),
         ('conditional-effect', 'if x>0 { gpu_block_barrier(); }'),

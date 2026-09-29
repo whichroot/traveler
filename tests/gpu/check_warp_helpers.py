@@ -139,11 +139,24 @@ with tempfile.TemporaryDirectory() as directory:
         p = run(TVC, '--emit-gpu-nvptx', src, '-o', ir, code=code)
         if code: assert 'live bindings (256)' in p.stderr, p.stderr
     body = 'let index=gpu_global_index(t);' + ''.join(f'var v{i}:u64={i};' for i in range(200))
-    for loops, code in ((9, 0), (10, 1)):
-        src.write_text(HEADER + f'#[kernel] fn capacity{small_sig} {{ {body} ' + 'while false {}'*loops + 'output[index]=input[index]+v0; }')
+    for loops, code in ((10, 0), (39, 0), (40, 1)):
+        src.write_text(HEADER + f'#[kernel] fn capacity{small_sig} {{ {body} ' + 'while false {}'*loops + 'gpu_warp_sync(4294967295); output[index]=input[index]+v0; }')
+        if code: ir.write_text('previous artifact')
         p = run(TVC, '--emit-gpu-nvptx', src, '-o', ir, code=code)
-        if code: assert 'device nodes (4096)' in p.stderr, p.stderr
-    body = 'let index=gpu_global_index(t); var v:u64=0;' + 'v=v+1;'*1400
-    src.write_text(HEADER + f'#[kernel] fn capacity{small_sig} {{ {body} output[index]=input[index]+v; }}')
-    assert 'traversal work (4096)' in run(TVC, '--emit-gpu-nvptx', src, '-o', ir, code=1).stderr
+        if code: assert 'device nodes (16384)' in p.stderr and ir.read_text() == 'previous artifact', p.stderr
+        else:
+            run(OPT, '-passes=verify', '-disable-output', ir)
+            run(LLC, '-mcpu=sm_90', ir, '-o', d / 'capacity.ptx')
+    for count, code in ((1400, 0), (5500, 1)):
+        body = 'let index=gpu_global_index(t); var v:u64=0;' + 'v=v+1;'*count
+        src.write_text(HEADER + f'#[kernel] fn capacity{small_sig} {{ {body} output[index]=input[index]+v; }}')
+        p = run(TVC, '--emit-gpu-nvptx', src, '-o', ir, code=code)
+        if code: assert 'traversal work (16384)' in p.stderr, p.stderr
+        else: run(OPT, '-passes=verify', '-disable-output', ir)
+    for count, code in ((256, 0), (1023, 0), (1024, 1)):
+        body = 'let index=gpu_global_index(t); var v:u64=0;' + 'if true { let a:[u64;16]=0; v=v+a[0]; }\n'*count
+        src.write_text(HEADER + f'#[kernel] fn capacity{small_sig} {{ {body} output[index]=input[index]+v; }}')
+        p = run(TVC, '--emit-gpu-nvptx', src, '-o', ir, code=code)
+        if code: assert 'aggregate components (16384)' in p.stderr, p.stderr
+        else: run(OPT, '-passes=verify', '-disable-output', ir)
     print(f'warp helpers PASS: {"/".join(modes)}, six collectives, nested/generic/void helpers, uniformity refusals, and capacity boundaries')
