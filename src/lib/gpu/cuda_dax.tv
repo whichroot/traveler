@@ -73,6 +73,7 @@ fn cuda_dax_staging_check(stream_id: u64, destination: CudaArgument, source: *Da
     cuda_res_lock();
     let stream: *CudaResource = cuda_res_find(stream_id, 5);
     if stream != null { if cuda_res_stream_available(stream) == 0 { return cuda_res_fail(15, 0-5, stream_id); } }
+    if stream != null { if stream.capture != 0 { return cuda_res_fail(15, 0-5, stream_id); } }
     let output: *CudaResource = cuda_res_find(destination.buffer, 2);
     let p0: *CudaResource = cuda_res_find(staging.slot0, 7);
     let p1: *CudaResource = cuda_res_find(staging.slot1, 7);

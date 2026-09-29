@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_staging_checks.tv";
+import "../../src/lib/gpu/cuda_graph.tv";
+import "../../src/lib/gpu/cuda_dax_registered.tv";
+extern "C" fn posix_memalign(out: **u8, alignment: usize, bytes: usize) -> i32;
+
+fn capture_other_thread(argument: *u8) -> *u8 {
+    let ids: *u64 = argument as *u64;
+    resident_refused(cuda_stream_end_capture(ids[0])); resident_refused(cuda_graph_close(ids[1]));
+    let dv: CudaArgument = resident_typed_view(ids[2], 0, 4096, 0-8);
+    let hv: CudaArgument = pinned_need(cuda_dax_registered_view(ids[3], 0, 4096));
+    resident_refused(cuda_upload_async(ids[0], dv, hv, 4096)); return null;
+}
+
+fn graph_read(stream: u64, graph: u64, view: CudaArgument, host: *u8, expected: u8) {
+    resident_need(cuda_graph_launch(graph, stream)); resident_refused(cuda_graph_close(graph));
+    resident_need(cuda_stream_sync(stream)); resident_need(cuda_download(host, view, 4096));
+    for i in 0..4096 { if host[i] != expected { exit(91); } }
+}
+
+fn main() -> i32 {
+    let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+    let event: u64 = resident_need(cuda_event_create(d));
+    let b: u64 = resident_need(cuda_buffer_alloc(d, 4096));
+    let dv: CudaArgument = resident_typed_view(b, 0, 4096, 0-8);
+    var memory: *u8 = null;
+    if posix_memalign(&memory, 4096, 12288) != 0 { return 1; }
+    for i in 0..4096 { memory[i] = 17; memory[4096+i] = 29; memory[8192+i] = 43; }
+    let source: DaxView = DaxView { ptr: memory, offset: 0, length: 12288 };
+    let registrations: *u64 = alloc(3); let views: *CudaArgument = alloc(3);
+    for i in 0..3 {
+        registrations[i] = resident_need(cuda_dax_register(d, &source, (i as u64)*4096, 4096));
+        views[i] = pinned_need(cuda_dax_registered_view(registrations[i], 0, 4096));
+    }
+    let host: *u8 = alloc(4096);
+    let g: u64 = resident_need(cuda_graph_create(d));
+    resident_need(cuda_graph_copy(g, dv, views[0], 4096, 0));
+    resident_refused(cuda_dax_unregister(registrations[0])); resident_need(cuda_graph_instantiate(g));
+    graph_read(s, g, dv, host, 17);
+    let next: u64 = resident_need(cuda_stream_begin_capture(s));
+    var ids: [u64;4] = 0; ids[0] = s; ids[1] = next; ids[2] = b; ids[3] = registrations[1];
+    var thread: *u8 = null;
+    if pthread_create(&thread as *u8, null, &capture_other_thread, &ids[0] as *u8) != 0 { return 6; }
+    if pthread_join(thread, null) != 0 { return 7; }
+    resident_refused(cuda_stream_begin_capture(s)); resident_refused(cuda_stream_sync(s));
+    resident_refused(cuda_stream_query(s)); resident_refused(cuda_stream_close(s));
+    resident_refused(cuda_event_record(event, s)); resident_refused(cuda_graph_launch(g, s));
+    resident_refused(cuda_graph_instantiate(next));
+    resident_need(cuda_upload_async(s, dv, views[1], 4096));
+    resident_refused(cuda_dax_unregister(registrations[1]));
+    if resident_need(cuda_stream_end_capture(s)) != next { return 2; }
+    resident_refused(cuda_stream_end_capture(s));
+    resident_need(cuda_upload_async(s, dv, views[2], 4096));
+    resident_refused(cuda_stream_begin_capture(s)); resident_need(cuda_stream_sync(s));
+    resident_need(cuda_graph_launch(g, s)); resident_refused(cuda_graph_exec_update(g, next));
+    resident_need(cuda_stream_sync(s));
+    let other: u64 = resident_need(cuda_device_open(0)); let foreign: u64 = resident_need(cuda_graph_create(other));
+    resident_refused(cuda_graph_exec_update(g, foreign)); resident_need(cuda_graph_close(foreign)); resident_need(cuda_device_close(other));
+    if resident_need(cuda_graph_exec_update(g, next)) != 0 { return 3; }
+    resident_need(cuda_graph_close(next)); resident_refused(cuda_dax_unregister(registrations[1]));
+    resident_refused(cuda_graph_exec_update(g, next));
+    graph_read(s, g, dv, host, 29);
+    let bad: u64 = resident_need(cuda_stream_begin_capture(s));
+    resident_need(cuda_upload_async(s, dv, views[2], 4096));
+    resident_need(cuda_upload_async(s, dv, views[2], 4096)); resident_need(cuda_stream_end_capture(s));
+    if resident_need(cuda_graph_exec_update(g, bad)) == 0 { return 4; }
+    resident_need(cuda_graph_close(bad)); graph_read(s, g, dv, host, 29);
+    let last: u64 = resident_need(cuda_stream_begin_capture(s));
+    resident_need(cuda_upload_async(s, dv, views[2], 4096)); resident_need(cuda_stream_end_capture(s));
+    resident_need(cuda_graph_instantiate(last));
+    if resident_need(cuda_graph_exec_update(g, last)) != 0 { return 5; }
+    resident_need(cuda_graph_close(last)); resident_need(cuda_dax_unregister(registrations[1]));
+    graph_read(s, g, dv, host, 43);
+    let aborted: u64 = resident_need(cuda_stream_begin_capture(s));
+    resident_need(cuda_upload_async(s, dv, views[2], 4096)); resident_need(cuda_graph_close(aborted));
+    resident_need(cuda_stream_sync(s)); resident_refused(cuda_dax_unregister(registrations[2]));
+    resident_need(cuda_graph_close(g)); resident_need(cuda_dax_unregister(registrations[0]));
+    resident_need(cuda_dax_unregister(registrations[2])); resident_need(cuda_buffer_close(b));
+    resident_need(cuda_event_close(event)); resident_need(cuda_stream_close(s)); resident_need(cuda_device_close(d));
+    free(host); free(views); free(registrations); free(memory);
+    puts("graph update PASS: capture, DAX bytes, replacement, rejection, retention, and abort"); return 0;
+}

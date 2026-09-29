@@ -1081,8 +1081,8 @@ the captured commands. Once instantiation starts, the builder is sealed even if 
 fails; close releases partial native state, with retry on cleanup failure.
 
 Each graph is an ordered chain. Branches and joins use events between graph launches
-on different streams; internal arbitrary-DAG editing and executable parameter
-updates are outside this profile. Completion retires replay resources at whole-graph
+on different streams; internal arbitrary-DAG editing is outside this profile.
+Completion retires replay resources at whole-graph
 granularity. Cross-stream read/write ordering remains the caller's obligation.
 Graph boundaries are 16 (construction), 17 (capture/instantiation), and 18 (replay);
 close retains boundary 9. Failed replay retains resources until successful drain.

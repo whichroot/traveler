@@ -69,6 +69,7 @@ fn cuda_res_event_command(stream_id: u64, event_id: u64, record: i32) -> Result<
     let stream: *CudaResource = cuda_res_find(stream_id, 5); let event: *CudaResource = cuda_res_find(event_id, 6);
     if stream == null || event == null || stream.owner != event.owner { return cuda_res_fail(11, 0-1, event_id); }
     if cuda_res_stream_available(stream) == 0 { return cuda_res_fail(11, 0-5, stream_id); }
+    if stream.capture != 0 { return cuda_res_fail(11, 0-5, stream_id); }
     let d: *CudaResource = cuda_res_find(stream.owner, 1);
     if d.poisoned != 0 { return cuda_res_fail(11, 0-4, stream_id); }
     if record == 1 && event.users != 0 { return cuda_res_fail(11, 0-5, event_id); }
@@ -96,6 +97,7 @@ fn cuda_res_async_complete(id: u64, kind: i32, query: i32) -> Result<u64, CudaEr
     let r: *CudaResource = cuda_res_find(id, kind);
     if r == null { return cuda_res_fail(12, 0-1, id); }
     if kind == 5 { if cuda_res_stream_available(r) == 0 { return cuda_res_fail(12, 0-5, id); } }
+    if kind == 5 && r.capture != 0 { return cuda_res_fail(12, 0-5, id); }
     if kind == 6 && r.recorded == 0 { return cuda_res_fail(12, 0-1, id); }
     let d: *CudaResource = cuda_res_find(r.owner, 1);
     var previous: *u8 = null; var status: i32 = cuda_res_enter(d, &previous);

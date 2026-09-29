@@ -51,6 +51,7 @@ struct CudaResource {
     timing: i32,
     reservation: u64,
     executor: u64,
+    capture: u64,
 }
 
 var g_cuda_res_lock: i32 = 0;
@@ -109,6 +110,7 @@ fn cuda_res_slot() -> *CudaResource {
             r.cpu_copy = 0;
             r.timing = 0;
             r.reservation = 0; r.executor = 0;
+            r.capture = 0;
             return r;
         }
         i = i + 1;
@@ -119,6 +121,10 @@ fn cuda_res_slot() -> *CudaResource {
 // Retention tracks the last queued use, so a completed prefix cannot free a later use.
 fn cuda_res_stream_hold(stream: *CudaResource, resource: *CudaResource) {
     let slot: i32 = (resource.id & 1023) as i32;
+    if stream.capture != 0 {
+        let graph: *CudaResource = cuda_res_find(stream.capture, 8);
+        if graph.uses[slot] == 0 { graph.uses[slot] = resource.id; resource.graph_users = resource.graph_users+1; }
+    }
     if stream.uses[slot] == 0 { stream.uses[slot] = resource.id; resource.users = resource.users + 1; }
     stream.uses_at[slot] = stream.sequence;
 }

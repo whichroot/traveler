@@ -155,7 +155,8 @@ int cuMemcpyDtoHAsync_v2(void *dest, const void *src, size_t bytes, AsyncStream 
 typedef struct { unsigned count; AsyncCommand *commands; } AsyncGraph;
 int cuStreamBeginCapture_v2(AsyncStream *s, int mode) {
     int status = fail(26); if (status) return status;
-    assert(mode == 2 && !s->count && !s->capturing); s->capturing = 1; return 0;
+    assert(mode == 2 && s->count == s->done && !s->capturing);
+    s->count = s->done = 0; s->capturing = 1; return 0;
 }
 int cuStreamEndCapture(AsyncStream *s, AsyncGraph **out) {
     int status = fail(27); if (status) return status;
@@ -179,4 +180,13 @@ int cuGraphExecDestroy(AsyncGraph *g) {
 int cuGraphLaunch(AsyncGraph *g, AsyncStream *s) {
     int status = fail(31); if (status) return status; assert(s->count + g->count <= 4096);
     memcpy(s->commands+s->count, g->commands, g->count * sizeof(*g->commands)); s->count += g->count; return 0;
+}
+int cuGraphExecUpdate(AsyncGraph *exec, AsyncGraph *graph, void **node, int *result) {
+    int status = fail(34); if (status) return status;
+    *node = NULL; *result = 0;
+    if (exec->count != graph->count) { *result = 2; return 910; }
+    for (unsigned i = 0; i < exec->count; ++i) {
+        if (exec->commands[i].operation != graph->commands[i].operation) { *result = 3; return 910; }
+    }
+    memcpy(exec->commands, graph->commands, graph->count * sizeof(*graph->commands)); return 0;
 }

@@ -41,9 +41,18 @@ fn main(argc: i32, argv: **u8) -> i32 {
         for i in 0..288 { if host[i] != ((i+round*7)*4+8) as u64 { return 3; } }
         for i in 0..3 { resident_need(cuda_stream_sync(streams[i])); }
     }
+    let replacement: u64 = resident_need(cuda_stream_begin_capture(streams[0]));
+    args[0] = views[4]; args[1] = views[3];
+    resident_need(cuda_launch_grid_async(kernels[0], streams[0], geometry, args, 2));
+    args[0] = views[0]; args[1] = views[1];
+    resident_need(cuda_stream_end_capture(streams[0]));
+    if resident_need(cuda_graph_exec_update(graphs[0], replacement)) != 0 { return 4; }
+    resident_need(cuda_graph_close(replacement)); resident_need(cuda_graph_launch(graphs[0], streams[0]));
+    resident_need(cuda_stream_sync(streams[0])); resident_need(cuda_download(host as *u8, views[3], 2304));
+    for i in 0..288 { if host[i] != (((i+49)*4+8)*2) as u64 { return 5; } }
     for i in 0..4 { resident_need(cuda_graph_close(graphs[i])); resident_need(cuda_stream_close(streams[i])); resident_need(cuda_event_close(events[i])); }
     for i in 0..5 { resident_need(cuda_buffer_close(buffers[i])); }
     resident_need(cuda_module_close(m)); resident_need(cuda_device_close(d));
     free(kernels); free(graphs); free(streams); free(events); free(buffers); free(views); free(args); free(host);
-    puts("graph fork/join PASS: eight event-linked replay rounds"); return 0;
+    puts("graph fork/join PASS: eight event-linked replay rounds and captured kernel update"); return 0;
 }

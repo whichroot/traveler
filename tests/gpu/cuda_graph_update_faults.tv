@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+import "cuda_staging_checks.tv";
+import "../../src/lib/gpu/cuda_graph.tv";
+extern "C" fn mock_fail(operation: i32, after: i32);
+extern "C" fn mock_clean() -> i32;
+
+fn failed_graph(result: Result<u64,CudaError>) -> u64 {
+    match result {
+        Result::Ok(value) => { exit(80); },
+        Result::Err(error) => { var e: CudaError = error; let id: u64 = e.resource; cuda_error_close(&e); return id; },
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    for test in 0..8 {
+        let d: u64 = resident_need(cuda_device_open(0)); let s: u64 = resident_need(cuda_stream_create(d));
+        let p: u64 = resident_need(cuda_pinned_alloc(d, 8)); let b: u64 = resident_need(cuda_buffer_alloc(d, 8));
+        let hv: CudaArgument = pinned_need(cuda_pinned_view(p, 0, 8));
+        let dv: CudaArgument = resident_typed_view(b, 0, 8, 0-8);
+        var value: u64 = 123; resident_need(cuda_pinned_write(hv, &value as *u8, 8));
+        if test == 0 || test == 1 {
+            if test == 0 { mock_fail(26, 0); } else { mock_fail(2, 1); }
+            let partial: u64 = failed_graph(cuda_stream_begin_capture(s));
+            resident_need(cuda_graph_close(partial));
+        } else {
+            let g: u64 = resident_need(cuda_stream_begin_capture(s));
+            if test == 2 {
+                mock_fail(24, 0); resident_refused(cuda_upload_async(s, dv, hv, 8));
+                resident_refused(cuda_stream_end_capture(s)); resident_need(cuda_graph_close(g));
+            } else {
+                resident_need(cuda_upload_async(s, dv, hv, 8));
+                if test == 3 { mock_fail(27, 0); resident_refused(cuda_stream_end_capture(s)); resident_refused(cuda_stream_close(s)); }
+                resident_need(cuda_stream_end_capture(s));
+                if test == 4 { mock_fail(28, 0); resident_refused(cuda_graph_instantiate(g)); }
+                resident_need(cuda_graph_instantiate(g));
+                let next: u64 = resident_need(cuda_stream_begin_capture(s));
+                resident_need(cuda_upload_async(s, dv, hv, 8)); resident_need(cuda_stream_end_capture(s));
+                if test == 5 { mock_fail(34, 0); resident_refused(cuda_graph_exec_update(g, next)); }
+                if test == 6 {
+                    mock_fail(2, 1); resident_refused(cuda_graph_exec_update(g, next));
+                    resident_refused(cuda_graph_launch(g, s));
+                } else {
+                    if resident_need(cuda_graph_exec_update(g, next)) != 0 { return 1; }
+                    resident_need(cuda_graph_launch(g, s)); resident_need(cuda_stream_sync(s));
+                    resident_need(cuda_download(&value as *u8, dv, 8)); if value != 123 { return 2; }
+                }
+                resident_need(cuda_graph_close(next));
+                if test == 7 { mock_fail(30, 0); resident_refused(cuda_graph_close(g)); }
+                resident_need(cuda_graph_close(g));
+            }
+        }
+        resident_need(cuda_stream_sync(s)); resident_need(cuda_stream_close(s));
+        resident_need(cuda_pinned_close(p)); resident_need(cuda_buffer_close(b)); resident_need(cuda_device_close(d));
+        if mock_clean() == 0 { return 3; }
+    }
+    puts("graph update faults PASS: begin, invalidation, end, instantiate, update, restore, and close"); return 0;
+}

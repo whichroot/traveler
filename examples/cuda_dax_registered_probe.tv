@@ -2,6 +2,7 @@
 // Linux native probe: device, mode (0 check / 1 direct / 2 NT), seconds, window MiB, workers.
 import "../src/lib/gpu/cuda_dax_registered.tv";
 import "../src/lib/gpu/cuda_dax_pipeline.tv";
+import "../src/lib/gpu/cuda_graph.tv";
 import "../src/lib/time/time.tv";
 extern "C" fn atoll(s: *u8) -> i64;
 extern "C" fn puts(s: *u8) -> i32;
@@ -80,6 +81,30 @@ fn main(argc: i32, argv: **u8) -> i32 {
         if memcmp(back,&source.ptr[offsets[i]],bytes as usize) != 0 { puts("byte_mismatch"); return 15; }
     }
     puts("verified_records"); print(7); puts("readonly_after_registration"); print(1);
+    if mode == 0 {
+        let graph: u64 = probe_need(cuda_graph_create(d));
+        for i in 0..7 {
+            probe_need(cuda_graph_copy(graph,probe_destination(b,(i as u64)*bytes,bytes),probe_registered(r,offsets[i],bytes),bytes,0));
+        }
+        probe_need(cuda_graph_instantiate(graph));
+        for round in 0..2 {
+            let replacement: u64 = probe_need(cuda_stream_begin_capture(s2));
+            for i in 0..7 {
+                offsets[i] = (((i as u64)*19+(round as u64)*7+5)%choices)*stride;
+                probe_need(cuda_upload_async(s2,probe_destination(b,(i as u64)*bytes,bytes),probe_registered(r,offsets[i],bytes),bytes));
+            }
+            probe_need(cuda_stream_end_capture(s2));
+            if probe_need(cuda_graph_exec_update(graph,replacement)) != 0 { return 20; }
+            probe_need(cuda_graph_close(replacement)); probe_busy(cuda_dax_unregister(r));
+            probe_need(cuda_graph_launch(graph,s)); probe_busy(cuda_dax_unregister(r));
+            probe_need(cuda_stream_sync(s));
+            for i in 0..7 {
+                probe_need(cuda_download(back,probe_destination(b,(i as u64)*bytes,bytes),bytes));
+                if memcmp(back,&source.ptr[offsets[i]],bytes as usize) != 0 { puts("graph_byte_mismatch"); return 21; }
+            }
+        }
+        probe_need(cuda_graph_close(graph)); puts("native_DAX_graph_update_PASS");
+    }
     var pool: u64 = 0; var pipeline: u64 = 0;
     if mode != 1 { probe_need(cuda_dax_unregister(r)); }
     if mode == 2 {
