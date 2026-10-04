@@ -23027,12 +23027,12 @@ fn emit_pfor_runtime() {
     ir_wr("@__pfor_cv_go = internal global [8 x i64] zeroinitializer\n");
     ir_wr("@__pfor_cv_done = internal global [8 x i64] zeroinitializer\n");
     ir_wr("@__pfor_once = internal global [4 x i64] zeroinitializer\n");
-    ir_wr("@__pfor_job_fn = internal global ptr null\n");
-    ir_wr("@__pfor_job_ctx = internal global ptr null\n");
-    ir_wr("@__pfor_job_lo = internal global i64 0\n");
-    ir_wr("@__pfor_job_hi = internal global i64 0\n");
-    ir_wr("@__pfor_job_nthr = internal global i32 0\n");
-    ir_wr("@__pfor_job_wide = internal global i32 0\n");
+    ir_wr("@__pfor_job_fn = internal global ptr null, align 8\n");
+    ir_wr("@__pfor_job_ctx = internal global ptr null, align 8\n");
+    ir_wr("@__pfor_job_lo = internal global i64 0, align 8\n");
+    ir_wr("@__pfor_job_hi = internal global i64 0, align 8\n");
+    ir_wr("@__pfor_job_nthr = internal global i32 0, align 4\n");
+    ir_wr("@__pfor_job_wide = internal global i32 0, align 4\n");
     // gen/ack get their own cache lines: gen is all-core read + ack is
     // all-core RMW; sharing a line would serialize every dispatch.
     ir_wr("@__pfor_gen = internal global [32 x i64] zeroinitializer\n");
@@ -23150,7 +23150,10 @@ fn emit_pfor_runtime() {
     ir_wr("  %sp = phi i32 [0, %loop], [%spn, %spin_chk]\n");
     ir_wr("  %g = load atomic i64, ptr @__pfor_gen acquire, align 8\n");
     ir_wr("  %new = icmp ne i64 %g, %last\n");
-    ir_wr("  br i1 %new, label %got, label %spin_more\n");
+    ir_wr("  %odd = and i64 %g, 1\n");
+    ir_wr("  %even = icmp eq i64 %odd, 0\n");
+    ir_wr("  %ready = and i1 %new, %even\n");
+    ir_wr("  br i1 %ready, label %got, label %spin_more\n");
     ir_wr("spin_more:\n");
     ir_wr("  %spn = add i32 %sp, 1\n");
     // Yield periodically: at full-core counts an OS stranger preempts a
@@ -23174,7 +23177,10 @@ fn emit_pfor_runtime() {
     // the branch on %new2 after a weaker load (stale job snapshot risk).
     ir_wr("  %g2 = load atomic i64, ptr @__pfor_gen acquire, align 8\n");
     ir_wr("  %new2 = icmp ne i64 %g2, %last\n");
-    ir_wr("  br i1 %new2, label %unpark, label %park_wait\n");
+    ir_wr("  %odd2 = and i64 %g2, 1\n");
+    ir_wr("  %even2 = icmp eq i64 %odd2, 0\n");
+    ir_wr("  %ready2 = and i1 %new2, %even2\n");
+    ir_wr("  br i1 %ready2, label %unpark, label %park_wait\n");
     ir_wr("park_wait:\n");
     ir_wr("  %wrc = call i32 @pthread_cond_wait(ptr @__pfor_cv_go, ptr @__pfor_mu)\n");
     ir_wr("  br label %park_chk\n");
@@ -23186,18 +23192,16 @@ fn emit_pfor_runtime() {
     ir_wr("  br label %got2\n");
     ir_wr("got2:\n");
     ir_wr("  %gw = phi i64 [%g, %got], [%g2, %unpark]\n");
-    // Job fields publish before the release store of gen; the acquire load
-    // above orders these plain reads after them.
-    ir_wr("  %fn = load ptr, ptr @__pfor_job_fn\n");
-    ir_wr("  %ctx = load ptr, ptr @__pfor_job_ctx\n");
-    ir_wr("  %lo = load i64, ptr @__pfor_job_lo\n");
-    ir_wr("  %hi = load i64, ptr @__pfor_job_hi\n");
-    ir_wr("  %nthr = load i32, ptr @__pfor_job_nthr\n");
-    ir_wr("  %wide = load i32, ptr @__pfor_job_wide\n");
-    // Seqlock: re-read gen after the snapshot. An unstable read means the
-    // dispatcher advanced past us, which it can only do when we are NOT a
-    // participant (participants are waited on) — discard and retry.
-    ir_wr("  %gv = load atomic i64, ptr @__pfor_gen acquire, align 8\n");
+    // Atomic fields permit overlap; observing a later store links the fences
+    // and forces validation to observe that writer's odd mark or a later value.
+    ir_wr("  %fn = load atomic ptr, ptr @__pfor_job_fn monotonic, align 8\n");
+    ir_wr("  %ctx = load atomic ptr, ptr @__pfor_job_ctx monotonic, align 8\n");
+    ir_wr("  %lo = load atomic i64, ptr @__pfor_job_lo monotonic, align 8\n");
+    ir_wr("  %hi = load atomic i64, ptr @__pfor_job_hi monotonic, align 8\n");
+    ir_wr("  %nthr = load atomic i32, ptr @__pfor_job_nthr monotonic, align 4\n");
+    ir_wr("  %wide = load atomic i32, ptr @__pfor_job_wide monotonic, align 4\n");
+    ir_wr("  fence acquire\n");
+    ir_wr("  %gv = load atomic i64, ptr @__pfor_gen monotonic, align 8\n");
     ir_wr("  %stable = icmp eq i64 %gv, %gw\n");
     ir_wr("  br i1 %stable, label %steady, label %retry\n");
     ir_wr("retry:\n");
@@ -23253,8 +23257,8 @@ fn emit_pfor_runtime() {
     ir_wr("  br label %loop\n");
     ir_wr("}\n\n");
 
-    // __pfor_dispatch: publish the job, bump the generation, wait for acks.
-    // Bounded spin first; park on cv_done only for long-running bodies.
+    // Odd marks a changing record; the next even generation publishes it.
+    // (design-notes/pfor-generation-publication-race.md "Fix protocol")
     ir_wr("define internal void @__pfor_dispatch(ptr %fn, ptr %ctx, i64 %lo, i64 %hi, i32 %nthr, i32 %wide) {\n");
     ir_wr("entry:\n");
     ir_wr("  %lrc = call i32 @pthread_mutex_lock(ptr @__pfor_mu)\n");
@@ -23277,16 +23281,19 @@ fn emit_pfor_runtime() {
     ir_wr("  ret void\n");
     ir_wr("take:\n");
     ir_wr("  store atomic i32 1, ptr @__pfor_busy monotonic, align 4\n");
-    ir_wr("  store ptr %fn, ptr @__pfor_job_fn\n");
-    ir_wr("  store ptr %ctx, ptr @__pfor_job_ctx\n");
-    ir_wr("  store i64 %lo, ptr @__pfor_job_lo\n");
-    ir_wr("  store i64 %hi, ptr @__pfor_job_hi\n");
-    ir_wr("  store i32 %nthr, ptr @__pfor_job_nthr\n");
-    ir_wr("  store i32 %wide, ptr @__pfor_job_wide\n");
-    ir_wr("  store atomic i32 0, ptr @__pfor_ack monotonic, align 4\n");
     ir_wr("  %g = load atomic i64, ptr @__pfor_gen monotonic, align 8\n");
-    ir_wr("  %g1 = add i64 %g, 1\n");
-    // Release store publishes the job fields above to spinning workers.
+    ir_wr("  %writing = add i64 %g, 1\n");
+    ir_wr("  store atomic i64 %writing, ptr @__pfor_gen monotonic, align 8\n");
+    ir_wr("  fence release\n");
+    ir_wr("  store atomic ptr %fn, ptr @__pfor_job_fn monotonic, align 8\n");
+    ir_wr("  store atomic ptr %ctx, ptr @__pfor_job_ctx monotonic, align 8\n");
+    ir_wr("  store atomic i64 %lo, ptr @__pfor_job_lo monotonic, align 8\n");
+    ir_wr("  store atomic i64 %hi, ptr @__pfor_job_hi monotonic, align 8\n");
+    ir_wr("  store atomic i32 %nthr, ptr @__pfor_job_nthr monotonic, align 4\n");
+    ir_wr("  store atomic i32 %wide, ptr @__pfor_job_wide monotonic, align 4\n");
+    ir_wr("  store atomic i32 0, ptr @__pfor_ack monotonic, align 4\n");
+    ir_wr("  %g1 = add i64 %g, 2\n");
+    // The final release publishes both the record and its reset ack counter.
     ir_wr("  store atomic i64 %g1, ptr @__pfor_gen release, align 8\n");
     // Wake only when a NEEDED worker (idx 1..nthr-1) is parked.
     ir_wr("  br label %scan\n");

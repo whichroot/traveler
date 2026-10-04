@@ -834,6 +834,12 @@ if [ -x "$STAGE1" ]; then
     else
         FAIL=$((FAIL + 1)); FAILURES="$FAILURES alias_dispatch"
     fi
+    TOTAL=$((TOTAL + 1))
+    if [ -n "$OPT" ] && python3 "$SCRIPT_DIR/check_pfor_publication.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1)); FAILURES="$FAILURES pfor_publication"
+    fi
 else
     echo "  U1 (Stage D) tests SKIPPED (stage1 not built)"
 fi
