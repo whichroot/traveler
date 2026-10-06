@@ -29931,7 +29931,7 @@ L9:
   ret i32 %t20
 L11:
   %t21 = load i64, ptr %t0
-  %t22 = add i64 0, 49
+  %t22 = add i64 0, 25
   %t23 = icmp ult i64 %t21, %t22
   br i1 %t23, label %L12, label %L14
 L12:

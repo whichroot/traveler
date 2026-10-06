@@ -6594,7 +6594,7 @@ fn is_prime_u64(n: u64) -> i32 {
     if n < 4 { return 1; }
     if n % 2 == 0 { return 0; }
     if n % 3 == 0 { return 0; }
-    if n < 49 { return 1; }
+    if n < 25 { return 1; }
 
     // Write n-1 = d * 2^r
     var d: u64 = n - 1;
