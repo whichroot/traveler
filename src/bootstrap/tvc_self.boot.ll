@@ -210583,32 +210583,35 @@ entry:
   %t1480 = alloca i32
   %t1497 = alloca %LowVal
   %t1498 = alloca %LowVal
-  %t1528 = alloca %LowVal
-  %t1529 = alloca %LowVal
-  %t1535 = alloca i32
-  %t1600 = alloca %LowVal
-  %t1601 = alloca %LowVal
-  %t1613 = alloca i32
-  %t1621 = alloca i32
-  %t1653 = alloca i32
-  %t1661 = alloca i32
-  %t1669 = alloca i32
-  %t1676 = alloca i32
-  %t1690 = alloca %LowVal
-  %t1691 = alloca %LowVal
-  %t1701 = alloca %LowVal
-  %t1702 = alloca %LowVal
-  %t1704 = alloca i1
-  %t1722 = alloca i32
-  %t1726 = alloca i32
-  %t1737 = alloca i32
+  %t1504 = alloca %LowVal
+  %t1506 = alloca i1
+  %t1526 = alloca %LowVal
+  %t1552 = alloca %LowVal
+  %t1553 = alloca %LowVal
+  %t1559 = alloca i32
+  %t1624 = alloca %LowVal
+  %t1625 = alloca %LowVal
+  %t1637 = alloca i32
+  %t1645 = alloca i32
+  %t1677 = alloca i32
+  %t1685 = alloca i32
+  %t1693 = alloca i32
+  %t1700 = alloca i32
+  %t1714 = alloca %LowVal
+  %t1715 = alloca %LowVal
+  %t1725 = alloca %LowVal
+  %t1726 = alloca %LowVal
+  %t1728 = alloca i1
   %t1746 = alloca i32
-  %t1757 = alloca i32
-  %t1765 = alloca i32
-  %t1809 = alloca i32
-  %t1839 = alloca i32
-  %t1870 = alloca i32
-  %t1885 = alloca i32
+  %t1750 = alloca i32
+  %t1761 = alloca i32
+  %t1770 = alloca i32
+  %t1781 = alloca i32
+  %t1789 = alloca i32
+  %t1833 = alloca i32
+  %t1863 = alloca i32
+  %t1894 = alloca i32
+  %t1909 = alloca i32
   %t1 = load i32, ptr %t0
   %t2 = sext i32 %t1 to i64
   %t3 = load ptr, ptr @g_nodes
@@ -212540,85 +212543,96 @@ L192:
   %t1502 = load i32, ptr %t14
   %t1503 = load i32, ptr %t21
   call void @lw_check_scalar_type(i32 %t1501, i32 %t1502, i32 %t1503)
-  %t1504 = load i32, ptr %t1480
-  %t1505 = sext i32 %t1504 to i64
-  %t1506 = load ptr, ptr @g_eir
-  %t1507 = getelementptr %EIRNode, ptr %t1506, i64 %t1505
-  %t1508 = getelementptr %LowVal, ptr %t1498, i32 0, i32 0
-  %t1509 = load i32, ptr %t1508
-  %t1510 = load i32, ptr %t1480
-  %t1511 = sext i32 %t1510 to i64
-  %t1512 = load ptr, ptr @g_eir
-  %t1513 = getelementptr %EIRNode, ptr %t1512, i64 %t1511
-  %t1514 = getelementptr %EIRNode, ptr %t1513, i32 0, i32 3
-  store i32 %t1509, ptr %t1514
+  %t1505 = load %LowVal, ptr %t1498
+  store %LowVal %t1505, ptr %t1504
+  %t1507 = getelementptr %LowVal, ptr %t1498, i32 0, i32 1
+  %t1508 = load i32, ptr %t1507
+  %t1509 = load i32, ptr @NULL_STR
+  %t1510 = icmp ne i32 %t1508, %t1509
+  store i1 %t1510, ptr %t1506
+  br i1 %t1510, label %L195, label %L196
+L195:
+  %t1511 = load i32, ptr @g_lw_ret_type
+  %t1512 = load i32, ptr @NULL_STR
+  %t1513 = icmp ne i32 %t1511, %t1512
+  store i1 %t1513, ptr %t1506
+  br label %L196
+L196:
+  %t1514 = load i1, ptr %t1506
+  br i1 %t1514, label %L197, label %L199
+L197:
+  %t1515 = getelementptr %LowVal, ptr %t1498, i32 0, i32 1
+  %t1516 = load i32, ptr %t1515
+  %t1517 = call i32 @type_to_ir(i32 %t1516)
+  %t1518 = load i32, ptr @g_lw_ret_type
+  %t1519 = call i32 @type_to_ir(i32 %t1518)
+  %t1520 = icmp ne i32 %t1517, %t1519
+  br i1 %t1520, label %L200, label %L202
+L200:
+  %t1521 = load i32, ptr @g_lw_ret_type
+  %t1522 = load i32, ptr %t14
+  %t1523 = load i32, ptr %t21
+  %t1524 = load %LowVal, ptr %t1498
+  %t1525 = call %LowVal @lw_conv(%LowVal %t1524, i32 %t1521, i32 %t1522, i32 %t1523)
+  store %LowVal %t1525, ptr %t1526
+  %t1527 = load %LowVal, ptr %t1526
+  store %LowVal %t1527, ptr %t1504
+  br label %L202
+L202:
+  br label %L199
+L199:
+  %t1528 = load i32, ptr %t1480
+  %t1529 = sext i32 %t1528 to i64
+  %t1530 = load ptr, ptr @g_eir
+  %t1531 = getelementptr %EIRNode, ptr %t1530, i64 %t1529
+  %t1532 = getelementptr %LowVal, ptr %t1504, i32 0, i32 0
+  %t1533 = load i32, ptr %t1532
+  %t1534 = load i32, ptr %t1480
+  %t1535 = sext i32 %t1534 to i64
+  %t1536 = load ptr, ptr @g_eir
+  %t1537 = getelementptr %EIRNode, ptr %t1536, i64 %t1535
+  %t1538 = getelementptr %EIRNode, ptr %t1537, i32 0, i32 3
+  store i32 %t1533, ptr %t1538
   br label %L194
 L194:
-  %t1515 = load i32, ptr %t1480
-  ret i32 %t1515
+  %t1539 = load i32, ptr %t1480
+  ret i32 %t1539
 L191:
-  %t1516 = load i32, ptr %t7
-  %t1517 = load i32, ptr @AST_IF
-  %t1518 = icmp eq i32 %t1516, %t1517
-  br i1 %t1518, label %L195, label %L197
-L195:
-  %t1519 = load i32, ptr %t0
-  %t1520 = sext i32 %t1519 to i64
-  %t1521 = load ptr, ptr @g_nodes
-  %t1522 = getelementptr %ASTNode, ptr %t1521, i64 %t1520
-  %t1523 = getelementptr %ASTNode, ptr %t1522, i32 0, i32 7
-  %t1524 = load i32, ptr %t1523
-  %t1525 = getelementptr [3 x i8], ptr @.str.8155, i32 0, i32 0
-  %t1526 = call i32 @str_intern(ptr %t1525)
-  %t1527 = call %LowVal @lower_expr(i32 %t1524, i32 %t1526)
-  store %LowVal %t1527, ptr %t1528
-  %t1530 = load %LowVal, ptr %t1528
-  store %LowVal %t1530, ptr %t1529
-  %t1531 = load i32, ptr @EIR_IF
-  %t1532 = load i32, ptr %t14
-  %t1533 = load i32, ptr %t21
-  %t1534 = call i32 @eir_new(i32 %t1531, i32 %t1532, i32 %t1533)
-  store i32 %t1534, ptr %t1535
-  %t1536 = load i32, ptr %t1535
-  %t1537 = sext i32 %t1536 to i64
-  %t1538 = load ptr, ptr @g_eir
-  %t1539 = getelementptr %EIRNode, ptr %t1538, i64 %t1537
-  %t1540 = getelementptr %LowVal, ptr %t1529, i32 0, i32 0
-  %t1541 = load i32, ptr %t1540
-  %t1542 = load i32, ptr %t1535
-  %t1543 = sext i32 %t1542 to i64
-  %t1544 = load ptr, ptr @g_eir
-  %t1545 = getelementptr %EIRNode, ptr %t1544, i64 %t1543
-  %t1546 = getelementptr %EIRNode, ptr %t1545, i32 0, i32 3
-  store i32 %t1541, ptr %t1546
-  %t1547 = load i32, ptr %t1535
-  %t1548 = sext i32 %t1547 to i64
-  %t1549 = load ptr, ptr @g_eir
-  %t1550 = getelementptr %EIRNode, ptr %t1549, i64 %t1548
-  %t1551 = load i32, ptr %t0
-  %t1552 = sext i32 %t1551 to i64
-  %t1553 = load ptr, ptr @g_nodes
-  %t1554 = getelementptr %ASTNode, ptr %t1553, i64 %t1552
-  %t1555 = getelementptr %ASTNode, ptr %t1554, i32 0, i32 8
-  %t1556 = load i32, ptr %t1555
-  %t1557 = call i32 @lower_stmt(i32 %t1556)
-  %t1558 = load i32, ptr %t1535
-  %t1559 = sext i32 %t1558 to i64
-  %t1560 = load ptr, ptr @g_eir
-  %t1561 = getelementptr %EIRNode, ptr %t1560, i64 %t1559
-  %t1562 = getelementptr %EIRNode, ptr %t1561, i32 0, i32 4
-  store i32 %t1557, ptr %t1562
-  %t1563 = load i32, ptr %t0
-  %t1564 = sext i32 %t1563 to i64
-  %t1565 = load ptr, ptr @g_nodes
-  %t1566 = getelementptr %ASTNode, ptr %t1565, i64 %t1564
-  %t1567 = getelementptr %ASTNode, ptr %t1566, i32 0, i32 9
-  %t1568 = load i32, ptr %t1567
-  %t1569 = load i32, ptr @NULL_NODE
-  %t1570 = icmp ne i32 %t1568, %t1569
-  br i1 %t1570, label %L198, label %L200
-L198:
-  %t1571 = load i32, ptr %t1535
+  %t1540 = load i32, ptr %t7
+  %t1541 = load i32, ptr @AST_IF
+  %t1542 = icmp eq i32 %t1540, %t1541
+  br i1 %t1542, label %L203, label %L205
+L203:
+  %t1543 = load i32, ptr %t0
+  %t1544 = sext i32 %t1543 to i64
+  %t1545 = load ptr, ptr @g_nodes
+  %t1546 = getelementptr %ASTNode, ptr %t1545, i64 %t1544
+  %t1547 = getelementptr %ASTNode, ptr %t1546, i32 0, i32 7
+  %t1548 = load i32, ptr %t1547
+  %t1549 = getelementptr [3 x i8], ptr @.str.8155, i32 0, i32 0
+  %t1550 = call i32 @str_intern(ptr %t1549)
+  %t1551 = call %LowVal @lower_expr(i32 %t1548, i32 %t1550)
+  store %LowVal %t1551, ptr %t1552
+  %t1554 = load %LowVal, ptr %t1552
+  store %LowVal %t1554, ptr %t1553
+  %t1555 = load i32, ptr @EIR_IF
+  %t1556 = load i32, ptr %t14
+  %t1557 = load i32, ptr %t21
+  %t1558 = call i32 @eir_new(i32 %t1555, i32 %t1556, i32 %t1557)
+  store i32 %t1558, ptr %t1559
+  %t1560 = load i32, ptr %t1559
+  %t1561 = sext i32 %t1560 to i64
+  %t1562 = load ptr, ptr @g_eir
+  %t1563 = getelementptr %EIRNode, ptr %t1562, i64 %t1561
+  %t1564 = getelementptr %LowVal, ptr %t1553, i32 0, i32 0
+  %t1565 = load i32, ptr %t1564
+  %t1566 = load i32, ptr %t1559
+  %t1567 = sext i32 %t1566 to i64
+  %t1568 = load ptr, ptr @g_eir
+  %t1569 = getelementptr %EIRNode, ptr %t1568, i64 %t1567
+  %t1570 = getelementptr %EIRNode, ptr %t1569, i32 0, i32 3
+  store i32 %t1565, ptr %t1570
+  %t1571 = load i32, ptr %t1559
   %t1572 = sext i32 %t1571 to i64
   %t1573 = load ptr, ptr @g_eir
   %t1574 = getelementptr %EIRNode, ptr %t1573, i64 %t1572
@@ -212626,406 +212640,433 @@ L198:
   %t1576 = sext i32 %t1575 to i64
   %t1577 = load ptr, ptr @g_nodes
   %t1578 = getelementptr %ASTNode, ptr %t1577, i64 %t1576
-  %t1579 = getelementptr %ASTNode, ptr %t1578, i32 0, i32 9
+  %t1579 = getelementptr %ASTNode, ptr %t1578, i32 0, i32 8
   %t1580 = load i32, ptr %t1579
   %t1581 = call i32 @lower_stmt(i32 %t1580)
-  %t1582 = load i32, ptr %t1535
+  %t1582 = load i32, ptr %t1559
   %t1583 = sext i32 %t1582 to i64
   %t1584 = load ptr, ptr @g_eir
   %t1585 = getelementptr %EIRNode, ptr %t1584, i64 %t1583
-  %t1586 = getelementptr %EIRNode, ptr %t1585, i32 0, i32 5
+  %t1586 = getelementptr %EIRNode, ptr %t1585, i32 0, i32 4
   store i32 %t1581, ptr %t1586
-  br label %L200
-L200:
-  %t1587 = load i32, ptr %t1535
-  ret i32 %t1587
-L197:
-  %t1588 = load i32, ptr %t7
-  %t1589 = load i32, ptr @AST_WHILE
-  %t1590 = icmp eq i32 %t1588, %t1589
-  br i1 %t1590, label %L201, label %L203
-L201:
-  %t1591 = load i32, ptr %t0
-  %t1592 = sext i32 %t1591 to i64
-  %t1593 = load ptr, ptr @g_nodes
-  %t1594 = getelementptr %ASTNode, ptr %t1593, i64 %t1592
-  %t1595 = getelementptr %ASTNode, ptr %t1594, i32 0, i32 7
-  %t1596 = load i32, ptr %t1595
-  %t1597 = getelementptr [3 x i8], ptr @.str.8156, i32 0, i32 0
-  %t1598 = call i32 @str_intern(ptr %t1597)
-  %t1599 = call %LowVal @lower_expr(i32 %t1596, i32 %t1598)
-  store %LowVal %t1599, ptr %t1600
-  %t1602 = load %LowVal, ptr %t1600
-  store %LowVal %t1602, ptr %t1601
-  %t1603 = load i32, ptr @g_lw_loop_depth
-  %t1604 = add i32 0, 1
-  %t1605 = add i32 %t1603, %t1604
-  store i32 %t1605, ptr @g_lw_loop_depth
-  %t1606 = load i32, ptr %t0
+  %t1587 = load i32, ptr %t0
+  %t1588 = sext i32 %t1587 to i64
+  %t1589 = load ptr, ptr @g_nodes
+  %t1590 = getelementptr %ASTNode, ptr %t1589, i64 %t1588
+  %t1591 = getelementptr %ASTNode, ptr %t1590, i32 0, i32 9
+  %t1592 = load i32, ptr %t1591
+  %t1593 = load i32, ptr @NULL_NODE
+  %t1594 = icmp ne i32 %t1592, %t1593
+  br i1 %t1594, label %L206, label %L208
+L206:
+  %t1595 = load i32, ptr %t1559
+  %t1596 = sext i32 %t1595 to i64
+  %t1597 = load ptr, ptr @g_eir
+  %t1598 = getelementptr %EIRNode, ptr %t1597, i64 %t1596
+  %t1599 = load i32, ptr %t0
+  %t1600 = sext i32 %t1599 to i64
+  %t1601 = load ptr, ptr @g_nodes
+  %t1602 = getelementptr %ASTNode, ptr %t1601, i64 %t1600
+  %t1603 = getelementptr %ASTNode, ptr %t1602, i32 0, i32 9
+  %t1604 = load i32, ptr %t1603
+  %t1605 = call i32 @lower_stmt(i32 %t1604)
+  %t1606 = load i32, ptr %t1559
   %t1607 = sext i32 %t1606 to i64
-  %t1608 = load ptr, ptr @g_nodes
-  %t1609 = getelementptr %ASTNode, ptr %t1608, i64 %t1607
-  %t1610 = getelementptr %ASTNode, ptr %t1609, i32 0, i32 8
-  %t1611 = load i32, ptr %t1610
-  %t1612 = call i32 @lower_stmt(i32 %t1611)
-  store i32 %t1612, ptr %t1613
-  %t1614 = load i32, ptr @g_lw_loop_depth
-  %t1615 = add i32 0, 1
-  %t1616 = sub i32 %t1614, %t1615
-  store i32 %t1616, ptr @g_lw_loop_depth
-  %t1617 = load i32, ptr @EIR_WHILE
-  %t1618 = load i32, ptr %t14
-  %t1619 = load i32, ptr %t21
-  %t1620 = call i32 @eir_new(i32 %t1617, i32 %t1618, i32 %t1619)
-  store i32 %t1620, ptr %t1621
-  %t1622 = load i32, ptr %t1621
-  %t1623 = sext i32 %t1622 to i64
-  %t1624 = load ptr, ptr @g_eir
-  %t1625 = getelementptr %EIRNode, ptr %t1624, i64 %t1623
-  %t1626 = getelementptr %LowVal, ptr %t1601, i32 0, i32 0
-  %t1627 = load i32, ptr %t1626
-  %t1628 = load i32, ptr %t1621
-  %t1629 = sext i32 %t1628 to i64
-  %t1630 = load ptr, ptr @g_eir
-  %t1631 = getelementptr %EIRNode, ptr %t1630, i64 %t1629
-  %t1632 = getelementptr %EIRNode, ptr %t1631, i32 0, i32 3
-  store i32 %t1627, ptr %t1632
-  %t1633 = load i32, ptr %t1621
-  %t1634 = sext i32 %t1633 to i64
-  %t1635 = load ptr, ptr @g_eir
-  %t1636 = getelementptr %EIRNode, ptr %t1635, i64 %t1634
-  %t1637 = load i32, ptr %t1613
-  %t1638 = load i32, ptr %t1621
-  %t1639 = sext i32 %t1638 to i64
-  %t1640 = load ptr, ptr @g_eir
-  %t1641 = getelementptr %EIRNode, ptr %t1640, i64 %t1639
-  %t1642 = getelementptr %EIRNode, ptr %t1641, i32 0, i32 4
-  store i32 %t1637, ptr %t1642
-  %t1643 = load i32, ptr %t1621
-  ret i32 %t1643
-L203:
-  %t1644 = load i32, ptr %t7
-  %t1645 = load i32, ptr @AST_FOR
-  %t1646 = icmp eq i32 %t1644, %t1645
-  br i1 %t1646, label %L204, label %L206
-L204:
-  %t1647 = load i32, ptr %t0
-  %t1648 = sext i32 %t1647 to i64
-  %t1649 = load ptr, ptr @g_nodes
-  %t1650 = getelementptr %ASTNode, ptr %t1649, i64 %t1648
-  %t1651 = getelementptr %ASTNode, ptr %t1650, i32 0, i32 10
-  %t1652 = load i32, ptr %t1651
-  store i32 %t1652, ptr %t1653
-  %t1654 = load i32, ptr %t0
-  %t1655 = sext i32 %t1654 to i64
-  %t1656 = load ptr, ptr @g_nodes
-  %t1657 = getelementptr %ASTNode, ptr %t1656, i64 %t1655
-  %t1658 = getelementptr %ASTNode, ptr %t1657, i32 0, i32 7
-  %t1659 = load i32, ptr %t1658
-  %t1660 = call i32 @for_bound_prepeek(i32 %t1659)
-  store i32 %t1660, ptr %t1661
-  %t1662 = load i32, ptr %t0
-  %t1663 = sext i32 %t1662 to i64
-  %t1664 = load ptr, ptr @g_nodes
-  %t1665 = getelementptr %ASTNode, ptr %t1664, i64 %t1663
-  %t1666 = getelementptr %ASTNode, ptr %t1665, i32 0, i32 8
-  %t1667 = load i32, ptr %t1666
-  %t1668 = call i32 @for_bound_prepeek(i32 %t1667)
-  store i32 %t1668, ptr %t1669
-  %t1670 = load i32, ptr %t1669
-  %t1671 = load i32, ptr %t1661
-  %t1672 = icmp sgt i32 %t1670, %t1671
-  br i1 %t1672, label %L207, label %L209
-L207:
-  %t1673 = load i32, ptr %t1669
-  store i32 %t1673, ptr %t1661
-  br label %L209
+  %t1608 = load ptr, ptr @g_eir
+  %t1609 = getelementptr %EIRNode, ptr %t1608, i64 %t1607
+  %t1610 = getelementptr %EIRNode, ptr %t1609, i32 0, i32 5
+  store i32 %t1605, ptr %t1610
+  br label %L208
+L208:
+  %t1611 = load i32, ptr %t1559
+  ret i32 %t1611
+L205:
+  %t1612 = load i32, ptr %t7
+  %t1613 = load i32, ptr @AST_WHILE
+  %t1614 = icmp eq i32 %t1612, %t1613
+  br i1 %t1614, label %L209, label %L211
 L209:
-  %t1674 = getelementptr [4 x i8], ptr @.str.8157, i32 0, i32 0
-  %t1675 = call i32 @str_intern(ptr %t1674)
-  store i32 %t1675, ptr %t1676
-  %t1677 = load i32, ptr %t1661
-  %t1678 = add i32 0, 64
-  %t1679 = icmp eq i32 %t1677, %t1678
-  br i1 %t1679, label %L210, label %L212
-L210:
-  %t1680 = getelementptr [4 x i8], ptr @.str.8158, i32 0, i32 0
-  %t1681 = call i32 @str_intern(ptr %t1680)
-  store i32 %t1681, ptr %t1676
-  br label %L212
+  %t1615 = load i32, ptr %t0
+  %t1616 = sext i32 %t1615 to i64
+  %t1617 = load ptr, ptr @g_nodes
+  %t1618 = getelementptr %ASTNode, ptr %t1617, i64 %t1616
+  %t1619 = getelementptr %ASTNode, ptr %t1618, i32 0, i32 7
+  %t1620 = load i32, ptr %t1619
+  %t1621 = getelementptr [3 x i8], ptr @.str.8156, i32 0, i32 0
+  %t1622 = call i32 @str_intern(ptr %t1621)
+  %t1623 = call %LowVal @lower_expr(i32 %t1620, i32 %t1622)
+  store %LowVal %t1623, ptr %t1624
+  %t1626 = load %LowVal, ptr %t1624
+  store %LowVal %t1626, ptr %t1625
+  %t1627 = load i32, ptr @g_lw_loop_depth
+  %t1628 = add i32 0, 1
+  %t1629 = add i32 %t1627, %t1628
+  store i32 %t1629, ptr @g_lw_loop_depth
+  %t1630 = load i32, ptr %t0
+  %t1631 = sext i32 %t1630 to i64
+  %t1632 = load ptr, ptr @g_nodes
+  %t1633 = getelementptr %ASTNode, ptr %t1632, i64 %t1631
+  %t1634 = getelementptr %ASTNode, ptr %t1633, i32 0, i32 8
+  %t1635 = load i32, ptr %t1634
+  %t1636 = call i32 @lower_stmt(i32 %t1635)
+  store i32 %t1636, ptr %t1637
+  %t1638 = load i32, ptr @g_lw_loop_depth
+  %t1639 = add i32 0, 1
+  %t1640 = sub i32 %t1638, %t1639
+  store i32 %t1640, ptr @g_lw_loop_depth
+  %t1641 = load i32, ptr @EIR_WHILE
+  %t1642 = load i32, ptr %t14
+  %t1643 = load i32, ptr %t21
+  %t1644 = call i32 @eir_new(i32 %t1641, i32 %t1642, i32 %t1643)
+  store i32 %t1644, ptr %t1645
+  %t1646 = load i32, ptr %t1645
+  %t1647 = sext i32 %t1646 to i64
+  %t1648 = load ptr, ptr @g_eir
+  %t1649 = getelementptr %EIRNode, ptr %t1648, i64 %t1647
+  %t1650 = getelementptr %LowVal, ptr %t1625, i32 0, i32 0
+  %t1651 = load i32, ptr %t1650
+  %t1652 = load i32, ptr %t1645
+  %t1653 = sext i32 %t1652 to i64
+  %t1654 = load ptr, ptr @g_eir
+  %t1655 = getelementptr %EIRNode, ptr %t1654, i64 %t1653
+  %t1656 = getelementptr %EIRNode, ptr %t1655, i32 0, i32 3
+  store i32 %t1651, ptr %t1656
+  %t1657 = load i32, ptr %t1645
+  %t1658 = sext i32 %t1657 to i64
+  %t1659 = load ptr, ptr @g_eir
+  %t1660 = getelementptr %EIRNode, ptr %t1659, i64 %t1658
+  %t1661 = load i32, ptr %t1637
+  %t1662 = load i32, ptr %t1645
+  %t1663 = sext i32 %t1662 to i64
+  %t1664 = load ptr, ptr @g_eir
+  %t1665 = getelementptr %EIRNode, ptr %t1664, i64 %t1663
+  %t1666 = getelementptr %EIRNode, ptr %t1665, i32 0, i32 4
+  store i32 %t1661, ptr %t1666
+  %t1667 = load i32, ptr %t1645
+  ret i32 %t1667
+L211:
+  %t1668 = load i32, ptr %t7
+  %t1669 = load i32, ptr @AST_FOR
+  %t1670 = icmp eq i32 %t1668, %t1669
+  br i1 %t1670, label %L212, label %L214
 L212:
-  %t1682 = load i32, ptr %t0
-  %t1683 = sext i32 %t1682 to i64
-  %t1684 = load ptr, ptr @g_nodes
-  %t1685 = getelementptr %ASTNode, ptr %t1684, i64 %t1683
-  %t1686 = getelementptr %ASTNode, ptr %t1685, i32 0, i32 7
-  %t1687 = load i32, ptr %t1686
-  %t1688 = load i32, ptr %t1676
-  %t1689 = call %LowVal @lower_expr(i32 %t1687, i32 %t1688)
-  store %LowVal %t1689, ptr %t1690
-  %t1692 = load %LowVal, ptr %t1690
-  store %LowVal %t1692, ptr %t1691
-  %t1693 = load i32, ptr %t0
-  %t1694 = sext i32 %t1693 to i64
-  %t1695 = load ptr, ptr @g_nodes
-  %t1696 = getelementptr %ASTNode, ptr %t1695, i64 %t1694
-  %t1697 = getelementptr %ASTNode, ptr %t1696, i32 0, i32 8
-  %t1698 = load i32, ptr %t1697
-  %t1699 = load i32, ptr %t1676
-  %t1700 = call %LowVal @lower_expr(i32 %t1698, i32 %t1699)
-  store %LowVal %t1700, ptr %t1701
-  %t1703 = load %LowVal, ptr %t1701
-  store %LowVal %t1703, ptr %t1702
-  %t1705 = getelementptr %LowVal, ptr %t1691, i32 0, i32 1
-  %t1706 = load i32, ptr %t1705
-  %t1707 = call i32 @type_is_family(i32 %t1706)
-  %t1708 = add i32 0, 1
-  %t1709 = icmp eq i32 %t1707, %t1708
-  store i1 %t1709, ptr %t1704
-  br i1 %t1709, label %L214, label %L213
-L213:
-  %t1710 = getelementptr %LowVal, ptr %t1702, i32 0, i32 1
-  %t1711 = load i32, ptr %t1710
-  %t1712 = call i32 @type_is_family(i32 %t1711)
-  %t1713 = add i32 0, 1
-  %t1714 = icmp eq i32 %t1712, %t1713
-  store i1 %t1714, ptr %t1704
-  br label %L214
-L214:
-  %t1715 = load i1, ptr %t1704
-  br i1 %t1715, label %L215, label %L217
+  %t1671 = load i32, ptr %t0
+  %t1672 = sext i32 %t1671 to i64
+  %t1673 = load ptr, ptr @g_nodes
+  %t1674 = getelementptr %ASTNode, ptr %t1673, i64 %t1672
+  %t1675 = getelementptr %ASTNode, ptr %t1674, i32 0, i32 10
+  %t1676 = load i32, ptr %t1675
+  store i32 %t1676, ptr %t1677
+  %t1678 = load i32, ptr %t0
+  %t1679 = sext i32 %t1678 to i64
+  %t1680 = load ptr, ptr @g_nodes
+  %t1681 = getelementptr %ASTNode, ptr %t1680, i64 %t1679
+  %t1682 = getelementptr %ASTNode, ptr %t1681, i32 0, i32 7
+  %t1683 = load i32, ptr %t1682
+  %t1684 = call i32 @for_bound_prepeek(i32 %t1683)
+  store i32 %t1684, ptr %t1685
+  %t1686 = load i32, ptr %t0
+  %t1687 = sext i32 %t1686 to i64
+  %t1688 = load ptr, ptr @g_nodes
+  %t1689 = getelementptr %ASTNode, ptr %t1688, i64 %t1687
+  %t1690 = getelementptr %ASTNode, ptr %t1689, i32 0, i32 8
+  %t1691 = load i32, ptr %t1690
+  %t1692 = call i32 @for_bound_prepeek(i32 %t1691)
+  store i32 %t1692, ptr %t1693
+  %t1694 = load i32, ptr %t1693
+  %t1695 = load i32, ptr %t1685
+  %t1696 = icmp sgt i32 %t1694, %t1695
+  br i1 %t1696, label %L215, label %L217
 L215:
-  %t1716 = getelementptr [18 x i8], ptr @.str.8159, i32 0, i32 0
-  %t1717 = load i32, ptr %t14
-  %t1718 = load i32, ptr %t21
-  call void @ev_refuse(ptr %t1716, i32 %t1717, i32 %t1718)
+  %t1697 = load i32, ptr %t1693
+  store i32 %t1697, ptr %t1685
   br label %L217
 L217:
-  %t1719 = getelementptr %LowVal, ptr %t1691, i32 0, i32 1
-  %t1720 = load i32, ptr %t1719
-  %t1721 = call i32 @for_bound_type_width(i32 %t1720)
-  store i32 %t1721, ptr %t1722
-  %t1723 = getelementptr %LowVal, ptr %t1702, i32 0, i32 1
-  %t1724 = load i32, ptr %t1723
-  %t1725 = call i32 @for_bound_type_width(i32 %t1724)
-  store i32 %t1725, ptr %t1726
-  %t1727 = load i32, ptr %t1722
-  %t1728 = load i32, ptr %t1661
-  %t1729 = icmp sgt i32 %t1727, %t1728
-  br i1 %t1729, label %L218, label %L220
+  %t1698 = getelementptr [4 x i8], ptr @.str.8157, i32 0, i32 0
+  %t1699 = call i32 @str_intern(ptr %t1698)
+  store i32 %t1699, ptr %t1700
+  %t1701 = load i32, ptr %t1685
+  %t1702 = add i32 0, 64
+  %t1703 = icmp eq i32 %t1701, %t1702
+  br i1 %t1703, label %L218, label %L220
 L218:
-  %t1730 = load i32, ptr %t1722
-  store i32 %t1730, ptr %t1661
+  %t1704 = getelementptr [4 x i8], ptr @.str.8158, i32 0, i32 0
+  %t1705 = call i32 @str_intern(ptr %t1704)
+  store i32 %t1705, ptr %t1700
   br label %L220
 L220:
-  %t1731 = load i32, ptr %t1726
-  %t1732 = load i32, ptr %t1661
-  %t1733 = icmp sgt i32 %t1731, %t1732
-  br i1 %t1733, label %L221, label %L223
+  %t1706 = load i32, ptr %t0
+  %t1707 = sext i32 %t1706 to i64
+  %t1708 = load ptr, ptr @g_nodes
+  %t1709 = getelementptr %ASTNode, ptr %t1708, i64 %t1707
+  %t1710 = getelementptr %ASTNode, ptr %t1709, i32 0, i32 7
+  %t1711 = load i32, ptr %t1710
+  %t1712 = load i32, ptr %t1700
+  %t1713 = call %LowVal @lower_expr(i32 %t1711, i32 %t1712)
+  store %LowVal %t1713, ptr %t1714
+  %t1716 = load %LowVal, ptr %t1714
+  store %LowVal %t1716, ptr %t1715
+  %t1717 = load i32, ptr %t0
+  %t1718 = sext i32 %t1717 to i64
+  %t1719 = load ptr, ptr @g_nodes
+  %t1720 = getelementptr %ASTNode, ptr %t1719, i64 %t1718
+  %t1721 = getelementptr %ASTNode, ptr %t1720, i32 0, i32 8
+  %t1722 = load i32, ptr %t1721
+  %t1723 = load i32, ptr %t1700
+  %t1724 = call %LowVal @lower_expr(i32 %t1722, i32 %t1723)
+  store %LowVal %t1724, ptr %t1725
+  %t1727 = load %LowVal, ptr %t1725
+  store %LowVal %t1727, ptr %t1726
+  %t1729 = getelementptr %LowVal, ptr %t1715, i32 0, i32 1
+  %t1730 = load i32, ptr %t1729
+  %t1731 = call i32 @type_is_family(i32 %t1730)
+  %t1732 = add i32 0, 1
+  %t1733 = icmp eq i32 %t1731, %t1732
+  store i1 %t1733, ptr %t1728
+  br i1 %t1733, label %L222, label %L221
 L221:
-  %t1734 = load i32, ptr %t1726
-  store i32 %t1734, ptr %t1661
-  br label %L223
+  %t1734 = getelementptr %LowVal, ptr %t1726, i32 0, i32 1
+  %t1735 = load i32, ptr %t1734
+  %t1736 = call i32 @type_is_family(i32 %t1735)
+  %t1737 = add i32 0, 1
+  %t1738 = icmp eq i32 %t1736, %t1737
+  store i1 %t1738, ptr %t1728
+  br label %L222
+L222:
+  %t1739 = load i1, ptr %t1728
+  br i1 %t1739, label %L223, label %L225
 L223:
-  %t1735 = getelementptr [4 x i8], ptr @.str.8160, i32 0, i32 0
-  %t1736 = call i32 @str_intern(ptr %t1735)
-  store i32 %t1736, ptr %t1737
-  %t1738 = load i32, ptr %t1661
-  %t1739 = add i32 0, 64
-  %t1740 = icmp eq i32 %t1738, %t1739
-  br i1 %t1740, label %L224, label %L226
-L224:
-  %t1741 = getelementptr [4 x i8], ptr @.str.8161, i32 0, i32 0
-  %t1742 = call i32 @str_intern(ptr %t1741)
-  store i32 %t1742, ptr %t1737
-  br label %L226
-L226:
-  call void @lw_push_scope()
-  %t1743 = load i32, ptr %t1653
-  %t1744 = load i32, ptr %t1737
-  %t1745 = call i32 @lw_add(i32 %t1743, i32 %t1744)
+  %t1740 = getelementptr [18 x i8], ptr @.str.8159, i32 0, i32 0
+  %t1741 = load i32, ptr %t14
+  %t1742 = load i32, ptr %t21
+  call void @ev_refuse(ptr %t1740, i32 %t1741, i32 %t1742)
+  br label %L225
+L225:
+  %t1743 = getelementptr %LowVal, ptr %t1715, i32 0, i32 1
+  %t1744 = load i32, ptr %t1743
+  %t1745 = call i32 @for_bound_type_width(i32 %t1744)
   store i32 %t1745, ptr %t1746
-  %t1747 = load i32, ptr @g_lw_loop_depth
-  %t1748 = add i32 0, 1
-  %t1749 = add i32 %t1747, %t1748
-  store i32 %t1749, ptr @g_lw_loop_depth
-  %t1750 = load i32, ptr %t0
-  %t1751 = sext i32 %t1750 to i64
-  %t1752 = load ptr, ptr @g_nodes
-  %t1753 = getelementptr %ASTNode, ptr %t1752, i64 %t1751
-  %t1754 = getelementptr %ASTNode, ptr %t1753, i32 0, i32 9
-  %t1755 = load i32, ptr %t1754
-  %t1756 = call i32 @lower_stmt(i32 %t1755)
-  store i32 %t1756, ptr %t1757
-  %t1758 = load i32, ptr @g_lw_loop_depth
-  %t1759 = add i32 0, 1
-  %t1760 = sub i32 %t1758, %t1759
-  store i32 %t1760, ptr @g_lw_loop_depth
+  %t1747 = getelementptr %LowVal, ptr %t1726, i32 0, i32 1
+  %t1748 = load i32, ptr %t1747
+  %t1749 = call i32 @for_bound_type_width(i32 %t1748)
+  store i32 %t1749, ptr %t1750
+  %t1751 = load i32, ptr %t1746
+  %t1752 = load i32, ptr %t1685
+  %t1753 = icmp sgt i32 %t1751, %t1752
+  br i1 %t1753, label %L226, label %L228
+L226:
+  %t1754 = load i32, ptr %t1746
+  store i32 %t1754, ptr %t1685
+  br label %L228
+L228:
+  %t1755 = load i32, ptr %t1750
+  %t1756 = load i32, ptr %t1685
+  %t1757 = icmp sgt i32 %t1755, %t1756
+  br i1 %t1757, label %L229, label %L231
+L229:
+  %t1758 = load i32, ptr %t1750
+  store i32 %t1758, ptr %t1685
+  br label %L231
+L231:
+  %t1759 = getelementptr [4 x i8], ptr @.str.8160, i32 0, i32 0
+  %t1760 = call i32 @str_intern(ptr %t1759)
+  store i32 %t1760, ptr %t1761
+  %t1762 = load i32, ptr %t1685
+  %t1763 = add i32 0, 64
+  %t1764 = icmp eq i32 %t1762, %t1763
+  br i1 %t1764, label %L232, label %L234
+L232:
+  %t1765 = getelementptr [4 x i8], ptr @.str.8161, i32 0, i32 0
+  %t1766 = call i32 @str_intern(ptr %t1765)
+  store i32 %t1766, ptr %t1761
+  br label %L234
+L234:
+  call void @lw_push_scope()
+  %t1767 = load i32, ptr %t1677
+  %t1768 = load i32, ptr %t1761
+  %t1769 = call i32 @lw_add(i32 %t1767, i32 %t1768)
+  store i32 %t1769, ptr %t1770
+  %t1771 = load i32, ptr @g_lw_loop_depth
+  %t1772 = add i32 0, 1
+  %t1773 = add i32 %t1771, %t1772
+  store i32 %t1773, ptr @g_lw_loop_depth
+  %t1774 = load i32, ptr %t0
+  %t1775 = sext i32 %t1774 to i64
+  %t1776 = load ptr, ptr @g_nodes
+  %t1777 = getelementptr %ASTNode, ptr %t1776, i64 %t1775
+  %t1778 = getelementptr %ASTNode, ptr %t1777, i32 0, i32 9
+  %t1779 = load i32, ptr %t1778
+  %t1780 = call i32 @lower_stmt(i32 %t1779)
+  store i32 %t1780, ptr %t1781
+  %t1782 = load i32, ptr @g_lw_loop_depth
+  %t1783 = add i32 0, 1
+  %t1784 = sub i32 %t1782, %t1783
+  store i32 %t1784, ptr @g_lw_loop_depth
   call void @lw_pop_scope()
-  %t1761 = load i32, ptr @EIR_FOR
-  %t1762 = load i32, ptr %t14
-  %t1763 = load i32, ptr %t21
-  %t1764 = call i32 @eir_new(i32 %t1761, i32 %t1762, i32 %t1763)
-  store i32 %t1764, ptr %t1765
-  %t1766 = load i32, ptr %t1765
-  %t1767 = sext i32 %t1766 to i64
-  %t1768 = load ptr, ptr @g_eir
-  %t1769 = getelementptr %EIRNode, ptr %t1768, i64 %t1767
-  %t1770 = load i32, ptr %t1746
-  %t1771 = load i32, ptr %t1765
-  %t1772 = sext i32 %t1771 to i64
-  %t1773 = load ptr, ptr @g_eir
-  %t1774 = getelementptr %EIRNode, ptr %t1773, i64 %t1772
-  %t1775 = getelementptr %EIRNode, ptr %t1774, i32 0, i32 3
-  store i32 %t1770, ptr %t1775
-  %t1776 = load i32, ptr %t1765
-  %t1777 = sext i32 %t1776 to i64
-  %t1778 = load ptr, ptr @g_eir
-  %t1779 = getelementptr %EIRNode, ptr %t1778, i64 %t1777
-  %t1780 = getelementptr %LowVal, ptr %t1691, i32 0, i32 0
-  %t1781 = load i32, ptr %t1780
-  %t1782 = load i32, ptr %t1765
-  %t1783 = sext i32 %t1782 to i64
-  %t1784 = load ptr, ptr @g_eir
-  %t1785 = getelementptr %EIRNode, ptr %t1784, i64 %t1783
-  %t1786 = getelementptr %EIRNode, ptr %t1785, i32 0, i32 4
-  store i32 %t1781, ptr %t1786
-  %t1787 = load i32, ptr %t1765
-  %t1788 = sext i32 %t1787 to i64
-  %t1789 = load ptr, ptr @g_eir
-  %t1790 = getelementptr %EIRNode, ptr %t1789, i64 %t1788
-  %t1791 = getelementptr %LowVal, ptr %t1702, i32 0, i32 0
-  %t1792 = load i32, ptr %t1791
-  %t1793 = load i32, ptr %t1765
-  %t1794 = sext i32 %t1793 to i64
-  %t1795 = load ptr, ptr @g_eir
-  %t1796 = getelementptr %EIRNode, ptr %t1795, i64 %t1794
-  %t1797 = getelementptr %EIRNode, ptr %t1796, i32 0, i32 5
-  store i32 %t1792, ptr %t1797
-  %t1798 = load i32, ptr %t1765
-  %t1799 = sext i32 %t1798 to i64
-  %t1800 = load ptr, ptr @g_eir
-  %t1801 = getelementptr %EIRNode, ptr %t1800, i64 %t1799
-  %t1802 = load i32, ptr %t1737
-  %t1803 = load i32, ptr %t1765
-  %t1804 = sext i32 %t1803 to i64
-  %t1805 = load ptr, ptr @g_eir
-  %t1806 = getelementptr %EIRNode, ptr %t1805, i64 %t1804
-  %t1807 = getelementptr %EIRNode, ptr %t1806, i32 0, i32 8
-  store i32 %t1802, ptr %t1807
-  %t1808 = load i32, ptr @g_nevargs
-  store i32 %t1808, ptr %t1809
-  %t1810 = load i32, ptr %t1757
-  call void @evargs_push(i32 %t1810)
-  %t1811 = load i32, ptr %t1765
+  %t1785 = load i32, ptr @EIR_FOR
+  %t1786 = load i32, ptr %t14
+  %t1787 = load i32, ptr %t21
+  %t1788 = call i32 @eir_new(i32 %t1785, i32 %t1786, i32 %t1787)
+  store i32 %t1788, ptr %t1789
+  %t1790 = load i32, ptr %t1789
+  %t1791 = sext i32 %t1790 to i64
+  %t1792 = load ptr, ptr @g_eir
+  %t1793 = getelementptr %EIRNode, ptr %t1792, i64 %t1791
+  %t1794 = load i32, ptr %t1770
+  %t1795 = load i32, ptr %t1789
+  %t1796 = sext i32 %t1795 to i64
+  %t1797 = load ptr, ptr @g_eir
+  %t1798 = getelementptr %EIRNode, ptr %t1797, i64 %t1796
+  %t1799 = getelementptr %EIRNode, ptr %t1798, i32 0, i32 3
+  store i32 %t1794, ptr %t1799
+  %t1800 = load i32, ptr %t1789
+  %t1801 = sext i32 %t1800 to i64
+  %t1802 = load ptr, ptr @g_eir
+  %t1803 = getelementptr %EIRNode, ptr %t1802, i64 %t1801
+  %t1804 = getelementptr %LowVal, ptr %t1715, i32 0, i32 0
+  %t1805 = load i32, ptr %t1804
+  %t1806 = load i32, ptr %t1789
+  %t1807 = sext i32 %t1806 to i64
+  %t1808 = load ptr, ptr @g_eir
+  %t1809 = getelementptr %EIRNode, ptr %t1808, i64 %t1807
+  %t1810 = getelementptr %EIRNode, ptr %t1809, i32 0, i32 4
+  store i32 %t1805, ptr %t1810
+  %t1811 = load i32, ptr %t1789
   %t1812 = sext i32 %t1811 to i64
   %t1813 = load ptr, ptr @g_eir
   %t1814 = getelementptr %EIRNode, ptr %t1813, i64 %t1812
-  %t1815 = load i32, ptr %t1809
-  %t1816 = load i32, ptr %t1765
-  %t1817 = sext i32 %t1816 to i64
-  %t1818 = load ptr, ptr @g_eir
-  %t1819 = getelementptr %EIRNode, ptr %t1818, i64 %t1817
-  %t1820 = getelementptr %EIRNode, ptr %t1819, i32 0, i32 7
-  store i32 %t1815, ptr %t1820
-  %t1821 = load i32, ptr %t1765
-  %t1822 = sext i32 %t1821 to i64
-  %t1823 = load ptr, ptr @g_eir
-  %t1824 = getelementptr %EIRNode, ptr %t1823, i64 %t1822
-  %t1825 = add i32 0, 1
-  %t1826 = load i32, ptr %t1765
-  %t1827 = sext i32 %t1826 to i64
-  %t1828 = load ptr, ptr @g_eir
-  %t1829 = getelementptr %EIRNode, ptr %t1828, i64 %t1827
-  %t1830 = getelementptr %EIRNode, ptr %t1829, i32 0, i32 6
-  store i32 %t1825, ptr %t1830
-  %t1831 = load i32, ptr %t1765
-  ret i32 %t1831
-L206:
-  %t1832 = load i32, ptr %t7
-  %t1833 = load i32, ptr @AST_DEFER
-  %t1834 = icmp eq i32 %t1832, %t1833
-  br i1 %t1834, label %L227, label %L229
-L227:
-  %t1835 = load i32, ptr @EIR_DEFER
-  %t1836 = load i32, ptr %t14
-  %t1837 = load i32, ptr %t21
-  %t1838 = call i32 @eir_new(i32 %t1835, i32 %t1836, i32 %t1837)
-  store i32 %t1838, ptr %t1839
-  %t1840 = load i32, ptr %t1839
+  %t1815 = getelementptr %LowVal, ptr %t1726, i32 0, i32 0
+  %t1816 = load i32, ptr %t1815
+  %t1817 = load i32, ptr %t1789
+  %t1818 = sext i32 %t1817 to i64
+  %t1819 = load ptr, ptr @g_eir
+  %t1820 = getelementptr %EIRNode, ptr %t1819, i64 %t1818
+  %t1821 = getelementptr %EIRNode, ptr %t1820, i32 0, i32 5
+  store i32 %t1816, ptr %t1821
+  %t1822 = load i32, ptr %t1789
+  %t1823 = sext i32 %t1822 to i64
+  %t1824 = load ptr, ptr @g_eir
+  %t1825 = getelementptr %EIRNode, ptr %t1824, i64 %t1823
+  %t1826 = load i32, ptr %t1761
+  %t1827 = load i32, ptr %t1789
+  %t1828 = sext i32 %t1827 to i64
+  %t1829 = load ptr, ptr @g_eir
+  %t1830 = getelementptr %EIRNode, ptr %t1829, i64 %t1828
+  %t1831 = getelementptr %EIRNode, ptr %t1830, i32 0, i32 8
+  store i32 %t1826, ptr %t1831
+  %t1832 = load i32, ptr @g_nevargs
+  store i32 %t1832, ptr %t1833
+  %t1834 = load i32, ptr %t1781
+  call void @evargs_push(i32 %t1834)
+  %t1835 = load i32, ptr %t1789
+  %t1836 = sext i32 %t1835 to i64
+  %t1837 = load ptr, ptr @g_eir
+  %t1838 = getelementptr %EIRNode, ptr %t1837, i64 %t1836
+  %t1839 = load i32, ptr %t1833
+  %t1840 = load i32, ptr %t1789
   %t1841 = sext i32 %t1840 to i64
   %t1842 = load ptr, ptr @g_eir
   %t1843 = getelementptr %EIRNode, ptr %t1842, i64 %t1841
-  %t1844 = load i32, ptr %t0
-  %t1845 = sext i32 %t1844 to i64
-  %t1846 = load ptr, ptr @g_nodes
-  %t1847 = getelementptr %ASTNode, ptr %t1846, i64 %t1845
-  %t1848 = getelementptr %ASTNode, ptr %t1847, i32 0, i32 7
-  %t1849 = load i32, ptr %t1848
-  %t1850 = call i32 @lower_stmt(i32 %t1849)
-  %t1851 = load i32, ptr %t1839
-  %t1852 = sext i32 %t1851 to i64
-  %t1853 = load ptr, ptr @g_eir
-  %t1854 = getelementptr %EIRNode, ptr %t1853, i64 %t1852
-  %t1855 = getelementptr %EIRNode, ptr %t1854, i32 0, i32 3
-  store i32 %t1850, ptr %t1855
-  %t1856 = load i32, ptr %t1839
-  ret i32 %t1856
-L229:
-  %t1857 = load i32, ptr %t7
-  %t1858 = load i32, ptr @AST_BREAK
-  %t1859 = icmp eq i32 %t1857, %t1858
-  br i1 %t1859, label %L230, label %L232
-L230:
-  %t1860 = load i32, ptr @g_lw_loop_depth
-  %t1861 = add i32 0, 0
-  %t1862 = icmp eq i32 %t1860, %t1861
-  br i1 %t1862, label %L233, label %L235
-L233:
-  %t1863 = getelementptr [19 x i8], ptr @.str.8162, i32 0, i32 0
-  %t1864 = load i32, ptr %t14
-  %t1865 = load i32, ptr %t21
-  call void @ev_refuse(ptr %t1863, i32 %t1864, i32 %t1865)
-  br label %L235
+  %t1844 = getelementptr %EIRNode, ptr %t1843, i32 0, i32 7
+  store i32 %t1839, ptr %t1844
+  %t1845 = load i32, ptr %t1789
+  %t1846 = sext i32 %t1845 to i64
+  %t1847 = load ptr, ptr @g_eir
+  %t1848 = getelementptr %EIRNode, ptr %t1847, i64 %t1846
+  %t1849 = add i32 0, 1
+  %t1850 = load i32, ptr %t1789
+  %t1851 = sext i32 %t1850 to i64
+  %t1852 = load ptr, ptr @g_eir
+  %t1853 = getelementptr %EIRNode, ptr %t1852, i64 %t1851
+  %t1854 = getelementptr %EIRNode, ptr %t1853, i32 0, i32 6
+  store i32 %t1849, ptr %t1854
+  %t1855 = load i32, ptr %t1789
+  ret i32 %t1855
+L214:
+  %t1856 = load i32, ptr %t7
+  %t1857 = load i32, ptr @AST_DEFER
+  %t1858 = icmp eq i32 %t1856, %t1857
+  br i1 %t1858, label %L235, label %L237
 L235:
-  %t1866 = load i32, ptr @EIR_BRK
-  %t1867 = load i32, ptr %t14
-  %t1868 = load i32, ptr %t21
-  %t1869 = call i32 @eir_new(i32 %t1866, i32 %t1867, i32 %t1868)
-  store i32 %t1869, ptr %t1870
-  %t1871 = load i32, ptr %t1870
-  ret i32 %t1871
-L232:
-  %t1872 = load i32, ptr %t7
-  %t1873 = load i32, ptr @AST_CONTINUE
-  %t1874 = icmp eq i32 %t1872, %t1873
-  br i1 %t1874, label %L236, label %L238
-L236:
-  %t1875 = load i32, ptr @g_lw_loop_depth
-  %t1876 = add i32 0, 0
-  %t1877 = icmp eq i32 %t1875, %t1876
-  br i1 %t1877, label %L239, label %L241
-L239:
-  %t1878 = getelementptr [22 x i8], ptr @.str.8163, i32 0, i32 0
-  %t1879 = load i32, ptr %t14
-  %t1880 = load i32, ptr %t21
-  call void @ev_refuse(ptr %t1878, i32 %t1879, i32 %t1880)
-  br label %L241
-L241:
-  %t1881 = load i32, ptr @EIR_CONT
-  %t1882 = load i32, ptr %t14
-  %t1883 = load i32, ptr %t21
-  %t1884 = call i32 @eir_new(i32 %t1881, i32 %t1882, i32 %t1883)
-  store i32 %t1884, ptr %t1885
-  %t1886 = load i32, ptr %t1885
-  ret i32 %t1886
+  %t1859 = load i32, ptr @EIR_DEFER
+  %t1860 = load i32, ptr %t14
+  %t1861 = load i32, ptr %t21
+  %t1862 = call i32 @eir_new(i32 %t1859, i32 %t1860, i32 %t1861)
+  store i32 %t1862, ptr %t1863
+  %t1864 = load i32, ptr %t1863
+  %t1865 = sext i32 %t1864 to i64
+  %t1866 = load ptr, ptr @g_eir
+  %t1867 = getelementptr %EIRNode, ptr %t1866, i64 %t1865
+  %t1868 = load i32, ptr %t0
+  %t1869 = sext i32 %t1868 to i64
+  %t1870 = load ptr, ptr @g_nodes
+  %t1871 = getelementptr %ASTNode, ptr %t1870, i64 %t1869
+  %t1872 = getelementptr %ASTNode, ptr %t1871, i32 0, i32 7
+  %t1873 = load i32, ptr %t1872
+  %t1874 = call i32 @lower_stmt(i32 %t1873)
+  %t1875 = load i32, ptr %t1863
+  %t1876 = sext i32 %t1875 to i64
+  %t1877 = load ptr, ptr @g_eir
+  %t1878 = getelementptr %EIRNode, ptr %t1877, i64 %t1876
+  %t1879 = getelementptr %EIRNode, ptr %t1878, i32 0, i32 3
+  store i32 %t1874, ptr %t1879
+  %t1880 = load i32, ptr %t1863
+  ret i32 %t1880
+L237:
+  %t1881 = load i32, ptr %t7
+  %t1882 = load i32, ptr @AST_BREAK
+  %t1883 = icmp eq i32 %t1881, %t1882
+  br i1 %t1883, label %L238, label %L240
 L238:
-  %t1887 = getelementptr [31 x i8], ptr @.str.8164, i32 0, i32 0
-  call void @ev_internal(ptr %t1887)
-  %t1888 = add i32 0, 0
-  %t1889 = add i32 0, 1
-  %t1890 = sub i32 %t1888, %t1889
-  ret i32 %t1890
+  %t1884 = load i32, ptr @g_lw_loop_depth
+  %t1885 = add i32 0, 0
+  %t1886 = icmp eq i32 %t1884, %t1885
+  br i1 %t1886, label %L241, label %L243
+L241:
+  %t1887 = getelementptr [19 x i8], ptr @.str.8162, i32 0, i32 0
+  %t1888 = load i32, ptr %t14
+  %t1889 = load i32, ptr %t21
+  call void @ev_refuse(ptr %t1887, i32 %t1888, i32 %t1889)
+  br label %L243
+L243:
+  %t1890 = load i32, ptr @EIR_BRK
+  %t1891 = load i32, ptr %t14
+  %t1892 = load i32, ptr %t21
+  %t1893 = call i32 @eir_new(i32 %t1890, i32 %t1891, i32 %t1892)
+  store i32 %t1893, ptr %t1894
+  %t1895 = load i32, ptr %t1894
+  ret i32 %t1895
+L240:
+  %t1896 = load i32, ptr %t7
+  %t1897 = load i32, ptr @AST_CONTINUE
+  %t1898 = icmp eq i32 %t1896, %t1897
+  br i1 %t1898, label %L244, label %L246
+L244:
+  %t1899 = load i32, ptr @g_lw_loop_depth
+  %t1900 = add i32 0, 0
+  %t1901 = icmp eq i32 %t1899, %t1900
+  br i1 %t1901, label %L247, label %L249
+L247:
+  %t1902 = getelementptr [22 x i8], ptr @.str.8163, i32 0, i32 0
+  %t1903 = load i32, ptr %t14
+  %t1904 = load i32, ptr %t21
+  call void @ev_refuse(ptr %t1902, i32 %t1903, i32 %t1904)
+  br label %L249
+L249:
+  %t1905 = load i32, ptr @EIR_CONT
+  %t1906 = load i32, ptr %t14
+  %t1907 = load i32, ptr %t21
+  %t1908 = call i32 @eir_new(i32 %t1905, i32 %t1906, i32 %t1907)
+  store i32 %t1908, ptr %t1909
+  %t1910 = load i32, ptr %t1909
+  ret i32 %t1910
+L246:
+  %t1911 = getelementptr [31 x i8], ptr @.str.8164, i32 0, i32 0
+  call void @ev_internal(ptr %t1911)
+  %t1912 = add i32 0, 0
+  %t1913 = add i32 0, 1
+  %t1914 = sub i32 %t1912, %t1913
+  ret i32 %t1914
 }
 
 define internal void @agx_l1_reset() {

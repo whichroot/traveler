@@ -36401,7 +36401,13 @@ fn lower_stmt(stmt: i32) -> i32 {
         if g_nodes[stmt].child0 != NULL_NODE {
             let rv: LowVal = lower_expr(g_nodes[stmt].child0, g_lw_ret_type);
             lw_check_scalar_type(rv.type_off, ln, cl);
-            g_eir[e].a = rv.e;
+            var ret: LowVal = rv;
+            if rv.type_off != NULL_STR && g_lw_ret_type != NULL_STR {
+                if type_to_ir(rv.type_off) != type_to_ir(g_lw_ret_type) {
+                    ret = lw_conv(rv, g_lw_ret_type, ln, cl);
+                }
+            }
+            g_eir[e].a = ret.e;
         }
         return e;
     }
