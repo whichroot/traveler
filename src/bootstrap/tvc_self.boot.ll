@@ -49262,10 +49262,11 @@ entry:
   %t0 = alloca i32
   store i32 %p0, ptr %t0
   %t3 = alloca i32
-  %t17 = alloca i32
-  %t25 = alloca i32
-  %t26 = alloca i1
-  %t27 = alloca i1
+  %t10 = alloca i1
+  %t23 = alloca i32
+  %t31 = alloca i32
+  %t32 = alloca i1
+  %t33 = alloca i1
   %t1 = load i32, ptr %t0
   %t2 = call i32 @type_bits(i32 %t1)
   store i32 %t2, ptr %t3
@@ -49279,75 +49280,86 @@ L0:
   %t9 = call i32 @__tv_checked_0_32(i32 %t7, i32 %t8)
   ret i32 %t9
 L2:
-  %t10 = load i32, ptr %t0
-  %t11 = call i32 @type_is_ptr(i32 %t10)
-  %t12 = add i32 0, 1
-  %t13 = icmp eq i32 %t11, %t12
-  br i1 %t13, label %L3, label %L5
+  %t11 = load i32, ptr %t0
+  %t12 = call i32 @type_is_ptr(i32 %t11)
+  %t13 = add i32 0, 1
+  %t14 = icmp eq i32 %t12, %t13
+  store i1 %t14, ptr %t10
+  br i1 %t14, label %L4, label %L3
 L3:
-  %t14 = add i32 0, 8
-  ret i32 %t14
-L5:
   %t15 = load i32, ptr %t0
-  %t16 = call i32 @resolve_struct_type(i32 %t15)
-  store i32 %t16, ptr %t17
-  %t18 = load i32, ptr %t17
-  %t19 = add i32 0, 0
-  %t20 = icmp sge i32 %t18, %t19
-  br i1 %t20, label %L6, label %L8
-L6:
-  %t21 = load i32, ptr %t17
-  %t22 = call i32 @struct_bytes(i32 %t21)
-  ret i32 %t22
+  %t16 = call i32 @lw_is_fnptr(i32 %t15)
+  %t17 = add i32 0, 1
+  %t18 = icmp eq i32 %t16, %t17
+  store i1 %t18, ptr %t10
+  br label %L4
+L4:
+  %t19 = load i1, ptr %t10
+  br i1 %t19, label %L5, label %L7
+L5:
+  %t20 = add i32 0, 8
+  ret i32 %t20
+L7:
+  %t21 = load i32, ptr %t0
+  %t22 = call i32 @resolve_struct_type(i32 %t21)
+  store i32 %t22, ptr %t23
+  %t24 = load i32, ptr %t23
+  %t25 = add i32 0, 0
+  %t26 = icmp sge i32 %t24, %t25
+  br i1 %t26, label %L8, label %L10
 L8:
-  %t23 = load i32, ptr %t0
-  %t24 = call i32 @find_enum(i32 %t23)
-  store i32 %t24, ptr %t25
-  %t28 = load i32, ptr %t25
-  %t29 = add i32 0, 0
-  %t30 = icmp sge i32 %t28, %t29
-  store i1 %t30, ptr %t27
-  br i1 %t30, label %L9, label %L10
-L9:
-  %t31 = load i32, ptr %t25
-  %t32 = sext i32 %t31 to i64
-  %t33 = load ptr, ptr @g_enums
-  %t34 = getelementptr %EnumInfo, ptr %t33, i64 %t32
-  %t35 = getelementptr %EnumInfo, ptr %t34, i32 0, i32 4
-  %t36 = load i32, ptr %t35
-  %t37 = add i32 0, 0
-  %t38 = icmp eq i32 %t36, %t37
-  store i1 %t38, ptr %t27
-  br label %L10
+  %t27 = load i32, ptr %t23
+  %t28 = call i32 @struct_bytes(i32 %t27)
+  ret i32 %t28
 L10:
-  %t39 = load i1, ptr %t27
-  store i1 %t39, ptr %t26
-  br i1 %t39, label %L11, label %L12
+  %t29 = load i32, ptr %t0
+  %t30 = call i32 @find_enum(i32 %t29)
+  store i32 %t30, ptr %t31
+  %t34 = load i32, ptr %t31
+  %t35 = add i32 0, 0
+  %t36 = icmp sge i32 %t34, %t35
+  store i1 %t36, ptr %t33
+  br i1 %t36, label %L11, label %L12
 L11:
-  %t40 = load i32, ptr %t25
-  %t41 = sext i32 %t40 to i64
-  %t42 = load ptr, ptr @g_enums
-  %t43 = getelementptr %EnumInfo, ptr %t42, i64 %t41
-  %t44 = getelementptr %EnumInfo, ptr %t43, i32 0, i32 3
-  %t45 = load i32, ptr %t44
-  %t46 = add i32 0, 0
-  %t47 = icmp sgt i32 %t45, %t46
-  store i1 %t47, ptr %t26
+  %t37 = load i32, ptr %t31
+  %t38 = sext i32 %t37 to i64
+  %t39 = load ptr, ptr @g_enums
+  %t40 = getelementptr %EnumInfo, ptr %t39, i64 %t38
+  %t41 = getelementptr %EnumInfo, ptr %t40, i32 0, i32 4
+  %t42 = load i32, ptr %t41
+  %t43 = add i32 0, 0
+  %t44 = icmp eq i32 %t42, %t43
+  store i1 %t44, ptr %t33
   br label %L12
 L12:
-  %t48 = load i1, ptr %t26
-  br i1 %t48, label %L13, label %L15
+  %t45 = load i1, ptr %t33
+  store i1 %t45, ptr %t32
+  br i1 %t45, label %L13, label %L14
 L13:
-  %t49 = load i32, ptr %t25
-  %t50 = sext i32 %t49 to i64
-  %t51 = load ptr, ptr @g_enums
-  %t52 = getelementptr %EnumInfo, ptr %t51, i64 %t50
-  %t53 = getelementptr %EnumInfo, ptr %t52, i32 0, i32 3
-  %t54 = load i32, ptr %t53
-  ret i32 %t54
+  %t46 = load i32, ptr %t31
+  %t47 = sext i32 %t46 to i64
+  %t48 = load ptr, ptr @g_enums
+  %t49 = getelementptr %EnumInfo, ptr %t48, i64 %t47
+  %t50 = getelementptr %EnumInfo, ptr %t49, i32 0, i32 3
+  %t51 = load i32, ptr %t50
+  %t52 = add i32 0, 0
+  %t53 = icmp sgt i32 %t51, %t52
+  store i1 %t53, ptr %t32
+  br label %L14
+L14:
+  %t54 = load i1, ptr %t32
+  br i1 %t54, label %L15, label %L17
 L15:
-  %t55 = add i32 0, 4
-  ret i32 %t55
+  %t55 = load i32, ptr %t31
+  %t56 = sext i32 %t55 to i64
+  %t57 = load ptr, ptr @g_enums
+  %t58 = getelementptr %EnumInfo, ptr %t57, i64 %t56
+  %t59 = getelementptr %EnumInfo, ptr %t58, i32 0, i32 3
+  %t60 = load i32, ptr %t59
+  ret i32 %t60
+L17:
+  %t61 = add i32 0, 4
+  ret i32 %t61
 }
 
 define internal i32 @struct_field_index(i32 %p0, i32 %p1) {

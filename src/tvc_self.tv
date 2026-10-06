@@ -10356,7 +10356,7 @@ fn struct_bytes(stsi: i32) -> i32 {
 fn payload_field_size(ft: i32) -> i32 {
     let fb: i32 = type_bits(ft);
     if fb > 0 { return fb / 8; }
-    if type_is_ptr(ft) == 1 { return 8; }
+    if type_is_ptr(ft) == 1 || lw_is_fnptr(ft) == 1 { return 8; }
     let stsi: i32 = resolve_struct_type(ft);
     if stsi >= 0 { return struct_bytes(stsi); }
     // Enum payload: DIRECT lookup only — resolve_enum_type instantiates on
