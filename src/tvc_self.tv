@@ -9217,6 +9217,10 @@ fn bint_check_operands(lt: i32, rt: i32, ln: i32, cl: i32) {
 // Validate an Exp binop operand pair after codegen. dimless_ok=1 for mul/div
 // (a plain integer is a dimensionless scalar); add/sub/compare pass 0.
 fn exp_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
+    if type_is_exp(lt) == 0 && type_is_exp(rt) == 0 {
+        diag_error_at(ln, cl, "Exp arithmetic requires an Exp operand; cast explicitly with `as`");
+        return;
+    }
     if type_is_bounded_int(lt) == 1 || type_is_bounded_int(rt) == 1
     || type_is_fix(lt) == 1 || type_is_fix(rt) == 1 {
         diag_error_at(ln, cl,
@@ -9238,6 +9242,10 @@ fn exp_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
 // the caller further requires it to be a literal (unknown magnitudes break
 // the bound).
 fn fix_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
+    if type_is_fix(lt) == 0 && type_is_fix(rt) == 0 {
+        diag_error_at(ln, cl, "Fix arithmetic requires a Fix operand; cast explicitly with `as`");
+        return;
+    }
     if type_is_bounded_int(lt) == 1 || type_is_bounded_int(rt) == 1
     || type_is_exp(lt) == 1 || type_is_exp(rt) == 1 {
         let lf: i32 = type_is_fix(lt);
@@ -12658,6 +12666,8 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                 }
                 let el: IRValue = codegen_family_operand(g_nodes[node].child0, exp_ctx, operands, 0);
                 let shift_k: i64 = g_nodes[rhs_node].int_val as i64;
+                exp_check_operands(el.type_off, el.type_off,
+                    g_nodes[node].line, g_nodes[node].col, 0);
                 if shift_k < 0 || shift_k > 62 {
                     diag_error_at(g_nodes[node].line, g_nodes[node].col,
                         "shift amount on an Exp value must be in 0..62");
