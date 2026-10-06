@@ -15376,6 +15376,10 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             return IRValue { reg: r, type_off: str_intern("i1") };
         }
         if uop == OP_BITNOT {
+            if type_is_family(operand.type_off) == 1 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "bitwise complement is not defined for family types; cast to an integer with `as`");
+            }
             let r: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(r); ir_wr(" = xor ");
             ir_wr_type(operand.type_off);
