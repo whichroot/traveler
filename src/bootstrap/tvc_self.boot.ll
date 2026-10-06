@@ -111377,13 +111377,13 @@ entry:
   store i32 %p1, ptr %t1
   %t5 = alloca %PForAliasChecked
   %t15 = alloca i64
-  %t19 = alloca i64
-  %t27 = alloca i64
-  %t29 = alloca i32
-  %t38 = alloca i32
-  %t49 = alloca i32
-  %t51 = alloca i32
-  %t59 = alloca %PForAliasChecked
+  %t17 = alloca i64
+  %t23 = alloca i64
+  %t56 = alloca i32
+  %t65 = alloca i32
+  %t76 = alloca i32
+  %t78 = alloca i32
+  %t86 = alloca %PForAliasChecked
   %t2 = load i32, ptr %t1
   %t3 = add i32 0, 1
   %t4 = icmp eq i32 %t2, %t3
@@ -111404,77 +111404,122 @@ L2:
   %t14 = sext i32 %t13 to i64
   store i64 %t14, ptr %t15
   %t16 = add i64 0, 9223372036854775807
-  %t17 = load i64, ptr %t15
-  %t18 = call i64 @__tv_checked_0_64(i64 %t16, i64 %t17)
-  store i64 %t18, ptr %t19
-  %t20 = add i64 0, 0
-  %t21 = add i64 0, 9223372036854775807
+  store i64 %t16, ptr %t17
+  %t18 = add i64 0, 0
+  %t19 = add i64 0, 9223372036854775807
+  %t20 = sub i64 %t18, %t19
+  %t21 = add i64 0, 1
   %t22 = sub i64 %t20, %t21
-  %t23 = add i64 0, 1
-  %t24 = sub i64 %t22, %t23
-  %t25 = load i64, ptr %t15
-  %t26 = call i64 @__tv_checked_0_64(i64 %t24, i64 %t25)
-  store i64 %t26, ptr %t27
-  %t28 = call i32 @ir_tmp()
-  store i32 %t28, ptr %t29
-  %t30 = getelementptr [3 x i8], ptr @.str.4177, i32 0, i32 0
-  call void @ir_wr(ptr %t30)
-  %t31 = load i32, ptr %t29
-  call void @ir_wr_reg(i32 %t31)
-  %t32 = getelementptr [17 x i8], ptr @.str.4178, i32 0, i32 0
-  call void @ir_wr(ptr %t32)
-  %t33 = load i32, ptr %t0
-  call void @ir_wr_reg(i32 %t33)
-  %t34 = getelementptr [3 x i8], ptr @.str.4179, i32 0, i32 0
-  call void @ir_wr(ptr %t34)
-  %t35 = load i64, ptr %t19
-  call void @ir_wr_int(i64 %t35)
-  %t36 = getelementptr [2 x i8], ptr @.str.4180, i32 0, i32 0
-  call void @ir_wr(ptr %t36)
-  %t37 = call i32 @ir_tmp()
-  store i32 %t37, ptr %t38
-  %t39 = getelementptr [3 x i8], ptr @.str.4181, i32 0, i32 0
-  call void @ir_wr(ptr %t39)
-  %t40 = load i32, ptr %t38
-  call void @ir_wr_reg(i32 %t40)
-  %t41 = getelementptr [17 x i8], ptr @.str.4182, i32 0, i32 0
-  call void @ir_wr(ptr %t41)
-  %t42 = load i32, ptr %t0
-  call void @ir_wr_reg(i32 %t42)
-  %t43 = getelementptr [3 x i8], ptr @.str.4183, i32 0, i32 0
-  call void @ir_wr(ptr %t43)
-  %t44 = load i64, ptr %t27
-  call void @ir_wr_int(i64 %t44)
-  %t45 = getelementptr [2 x i8], ptr @.str.4184, i32 0, i32 0
-  call void @ir_wr(ptr %t45)
-  %t46 = load i32, ptr %t29
-  %t47 = load i32, ptr %t38
-  %t48 = call i32 @pfor_alias_or(i32 %t46, i32 %t47)
-  store i32 %t48, ptr %t49
-  %t50 = call i32 @ir_tmp()
-  store i32 %t50, ptr %t51
-  %t52 = getelementptr [3 x i8], ptr @.str.4185, i32 0, i32 0
-  call void @ir_wr(ptr %t52)
-  %t53 = load i32, ptr %t51
-  call void @ir_wr_reg(i32 %t53)
-  %t54 = getelementptr [12 x i8], ptr @.str.4186, i32 0, i32 0
-  call void @ir_wr(ptr %t54)
-  %t55 = load i32, ptr %t0
-  call void @ir_wr_reg(i32 %t55)
-  %t56 = getelementptr [3 x i8], ptr @.str.4187, i32 0, i32 0
-  call void @ir_wr(ptr %t56)
-  %t57 = load i64, ptr %t15
-  call void @ir_wr_int(i64 %t57)
-  %t58 = getelementptr [2 x i8], ptr @.str.4188, i32 0, i32 0
-  call void @ir_wr(ptr %t58)
-  %t60 = load i32, ptr %t51
-  %t61 = getelementptr %PForAliasChecked, ptr %t59, i32 0, i32 0
-  store i32 %t60, ptr %t61
-  %t62 = load i32, ptr %t49
-  %t63 = getelementptr %PForAliasChecked, ptr %t59, i32 0, i32 1
-  store i32 %t62, ptr %t63
-  %t64 = load %PForAliasChecked, ptr %t59
-  ret %PForAliasChecked %t64
+  store i64 %t22, ptr %t23
+  %t24 = load i64, ptr %t15
+  %t25 = add i64 0, 0
+  %t26 = icmp sgt i64 %t24, %t25
+  br i1 %t26, label %L3, label %L4
+L3:
+  %t27 = add i64 0, 9223372036854775807
+  %t28 = load i64, ptr %t15
+  %t29 = call i64 @__tv_checked_0_64(i64 %t27, i64 %t28)
+  store i64 %t29, ptr %t17
+  %t30 = add i64 0, 0
+  %t31 = add i64 0, 9223372036854775807
+  %t32 = sub i64 %t30, %t31
+  %t33 = add i64 0, 1
+  %t34 = sub i64 %t32, %t33
+  %t35 = load i64, ptr %t15
+  %t36 = call i64 @__tv_checked_0_64(i64 %t34, i64 %t35)
+  store i64 %t36, ptr %t23
+  br label %L5
+L4:
+  %t37 = load i64, ptr %t15
+  %t38 = add i64 0, 0
+  %t39 = icmp slt i64 %t37, %t38
+  br i1 %t39, label %L6, label %L8
+L6:
+  %t40 = add i64 0, 9223372036854775807
+  %t41 = load i64, ptr %t15
+  %t42 = call i64 @__tv_checked_0_64(i64 %t40, i64 %t41)
+  store i64 %t42, ptr %t23
+  %t43 = load i64, ptr %t15
+  %t44 = add i64 0, 0
+  %t45 = add i64 0, 1
+  %t46 = sub i64 %t44, %t45
+  %t47 = icmp slt i64 %t43, %t46
+  br i1 %t47, label %L9, label %L11
+L9:
+  %t48 = add i64 0, 0
+  %t49 = add i64 0, 9223372036854775807
+  %t50 = sub i64 %t48, %t49
+  %t51 = add i64 0, 1
+  %t52 = sub i64 %t50, %t51
+  %t53 = load i64, ptr %t15
+  %t54 = call i64 @__tv_checked_0_64(i64 %t52, i64 %t53)
+  store i64 %t54, ptr %t17
+  br label %L11
+L11:
+  br label %L8
+L8:
+  br label %L5
+L5:
+  %t55 = call i32 @ir_tmp()
+  store i32 %t55, ptr %t56
+  %t57 = getelementptr [3 x i8], ptr @.str.4177, i32 0, i32 0
+  call void @ir_wr(ptr %t57)
+  %t58 = load i32, ptr %t56
+  call void @ir_wr_reg(i32 %t58)
+  %t59 = getelementptr [17 x i8], ptr @.str.4178, i32 0, i32 0
+  call void @ir_wr(ptr %t59)
+  %t60 = load i32, ptr %t0
+  call void @ir_wr_reg(i32 %t60)
+  %t61 = getelementptr [3 x i8], ptr @.str.4179, i32 0, i32 0
+  call void @ir_wr(ptr %t61)
+  %t62 = load i64, ptr %t17
+  call void @ir_wr_int(i64 %t62)
+  %t63 = getelementptr [2 x i8], ptr @.str.4180, i32 0, i32 0
+  call void @ir_wr(ptr %t63)
+  %t64 = call i32 @ir_tmp()
+  store i32 %t64, ptr %t65
+  %t66 = getelementptr [3 x i8], ptr @.str.4181, i32 0, i32 0
+  call void @ir_wr(ptr %t66)
+  %t67 = load i32, ptr %t65
+  call void @ir_wr_reg(i32 %t67)
+  %t68 = getelementptr [17 x i8], ptr @.str.4182, i32 0, i32 0
+  call void @ir_wr(ptr %t68)
+  %t69 = load i32, ptr %t0
+  call void @ir_wr_reg(i32 %t69)
+  %t70 = getelementptr [3 x i8], ptr @.str.4183, i32 0, i32 0
+  call void @ir_wr(ptr %t70)
+  %t71 = load i64, ptr %t23
+  call void @ir_wr_int(i64 %t71)
+  %t72 = getelementptr [2 x i8], ptr @.str.4184, i32 0, i32 0
+  call void @ir_wr(ptr %t72)
+  %t73 = load i32, ptr %t56
+  %t74 = load i32, ptr %t65
+  %t75 = call i32 @pfor_alias_or(i32 %t73, i32 %t74)
+  store i32 %t75, ptr %t76
+  %t77 = call i32 @ir_tmp()
+  store i32 %t77, ptr %t78
+  %t79 = getelementptr [3 x i8], ptr @.str.4185, i32 0, i32 0
+  call void @ir_wr(ptr %t79)
+  %t80 = load i32, ptr %t78
+  call void @ir_wr_reg(i32 %t80)
+  %t81 = getelementptr [12 x i8], ptr @.str.4186, i32 0, i32 0
+  call void @ir_wr(ptr %t81)
+  %t82 = load i32, ptr %t0
+  call void @ir_wr_reg(i32 %t82)
+  %t83 = getelementptr [3 x i8], ptr @.str.4187, i32 0, i32 0
+  call void @ir_wr(ptr %t83)
+  %t84 = load i64, ptr %t15
+  call void @ir_wr_int(i64 %t84)
+  %t85 = getelementptr [2 x i8], ptr @.str.4188, i32 0, i32 0
+  call void @ir_wr(ptr %t85)
+  %t87 = load i32, ptr %t78
+  %t88 = getelementptr %PForAliasChecked, ptr %t86, i32 0, i32 0
+  store i32 %t87, ptr %t88
+  %t89 = load i32, ptr %t76
+  %t90 = getelementptr %PForAliasChecked, ptr %t86, i32 0, i32 1
+  store i32 %t89, ptr %t90
+  %t91 = load %PForAliasChecked, ptr %t86
+  ret %PForAliasChecked %t91
 }
 
 define internal %PForAliasChecked @pfor_alias_checked_address(i32 %p0, i32 %p1) {

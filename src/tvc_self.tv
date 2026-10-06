@@ -20305,8 +20305,16 @@ fn pfor_alias_checked_mul(index: i32, elem_bytes: i32) -> PForAliasChecked {
         return PForAliasChecked { value: index, bad: 0 - 1 };
     }
     let eb: i64 = elem_bytes as i64;
-    let upper: i64 = 9223372036854775807 / eb;
-    let lower: i64 = (0 - 9223372036854775807 - 1) / eb;
+    var upper: i64 = 9223372036854775807;
+    var lower: i64 = 0 - 9223372036854775807 - 1;
+    if eb > 0 {
+        upper = 9223372036854775807 / eb;
+        lower = (0 - 9223372036854775807 - 1) / eb;
+    } else if eb < 0 {
+        lower = 9223372036854775807 / eb;
+        // Multiplication by -1 excludes INT64_MIN but permits INT64_MAX.
+        if eb < 0 - 1 { upper = (0 - 9223372036854775807 - 1) / eb; }
+    }
     let too_hi: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(too_hi); ir_wr(" = icmp sgt i64 ");
     ir_wr_reg(index); ir_wr(", "); ir_wr_int(upper); ir_wr("\n");
