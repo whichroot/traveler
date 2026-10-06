@@ -36129,26 +36129,12 @@ fn lower_stmt(stmt: i32) -> i32 {
             // E2e: closure elements would stride wrong (type_bits is
             // ptr-opaque for "closure#N") — refuse.
             if type_is_closure(elem_src) == 1 { ev_refuse("closure-array", ln, cl); }
-            // Parse N from "[T; N]" (the codegen parse, mirrored).
-            let ats: *u8 = &g_strings[var_type];
-            var asi: i32 = 0;
-            while ats[asi] != 59 && ats[asi] != 0 { asi = asi + 1; }
-            asi = asi + 1;
-            while ats[asi] == 32 { asi = asi + 1; }
-            var arr_n: i32 = 0;
-            while ats[asi] >= 48 && ats[asi] <= 57 {
-                arr_n = arr_n * 10 + (ats[asi] as i32 - 48);
-                asi = asi + 1;
-            }
-            let elem_bits: i32 = type_bits(elem_src);
-            var elem_bytes: i32 = 1;
-            if type_is_ptr(elem_src) == 1 { elem_bytes = 8; }
-            if elem_bits > 8 { elem_bytes = elem_bits / 8; }
+            let total_bytes: i32 = lw_type_size(var_type, ln, cl);
             let slot: i32 = lw_add(var_name, var_type);
             g_lw_narrs = g_lw_narrs + 1;
             let e: i32 = eir_new(EIR_LET_ARR, ln, cl);
             g_eir[e].a = slot;
-            g_eir[e].ival = (arr_n * elem_bytes) as u64;
+            g_eir[e].ival = total_bytes as u64;
             g_eir[e].type_off = var_type;
             return e;
         }
