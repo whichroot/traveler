@@ -10332,47 +10332,101 @@ fn emit_type_bytes(type_off: i32, count: i32) -> i32 {
     return bytes;
 }
 
-// Static struct-size estimate used by enum payloads.
-// Native allocations use LLVM layout through emit_alloc_bytes.
+var g_payload_layout_depth: i32 = 0;
+
+fn payload_bytes_checked(bytes: i64) -> i32 {
+    if bytes < 0 || bytes > 2147483632 {
+        diag_error_at(0, 0, "enum payload storage exceeds layout capacity");
+        exit(1);
+    }
+    return bytes as i32;
+}
+
+// Reserve an upper bound for native struct storage, including nested padding.
+// Wide scalars use their byte width as an alignment bound, not an ABI stride.
 fn struct_bytes(stsi: i32) -> i32 {
-    var total: i32 = 0;
+    if g_payload_layout_depth >= MAX_STRUCTS {
+        diag_error_at(0, 0, "recursive by-value struct payload is not supported");
+        exit(1);
+    }
+    g_payload_layout_depth = g_payload_layout_depth + 1;
+    var total: i64 = 0;
+    var max_align: i64 = 1;
     let stnf: i32 = g_structs[stsi].nfields;
     var sfi: i32 = 0;
     while sfi < stnf {
         let sft: i32 = struct_field_type(stsi, sfi);
-        let sfb: i32 = type_bits(sft);
-        if sfb > 0 {
-            let fsz: i32 = sfb / 8;
-            let align: i32 = fsz;
-            total = ((total + align - 1) & (~(align - 1))) + fsz;
-        } else if type_is_ptr(sft) == 1 {
-            total = ((total + 7) & (~7)) + 8;
-        } else if type_is_array(sft) == 1 {
-            let ats2: *u8 = &g_strings[sft];
-            var asi2: i32 = type_array_semi(sft);
-            asi2 = asi2 + 1;
-            while ats2[asi2] == 32 { asi2 = asi2 + 1; }
-            var asz: i32 = 0;
-            while ats2[asi2] >= 48 && ats2[asi2] <= 57 { asz = asz * 10 + (ats2[asi2] as i32 - 48); asi2 = asi2 + 1; }
-            let ae: i32 = type_array_elem(sft);
-            let aeb: i32 = type_bits(ae);
-            var aesz: i32 = 1;
-            if aeb > 0 { aesz = aeb / 8; }
-            total = total + asz * aesz;
-        } else {
-            total = total + 8; // unknown, assume 8
-        }
+        let fsz: i64 = payload_field_size(sft) as i64;
+        let align: i64 = payload_field_align(sft) as i64;
+        total = ((total + align - 1) & (~(align - 1))) + fsz;
+        if align > max_align { max_align = align; }
+        total = payload_bytes_checked(total) as i64;
         sfi = sfi + 1;
     }
-    return (total + 7) & (~7);
+    g_payload_layout_depth = g_payload_layout_depth - 1;
+    return payload_bytes_checked((total + max_align - 1) & (~(max_align - 1)));
+}
+
+fn payload_field_align(ft: i32) -> i32 {
+    let fb: i32 = type_bits(ft);
+    if fb > 8 { return fb / 8; }
+    if fb > 0 { return 1; }
+    if type_is_ptr(ft) == 1 || lw_is_fnptr(ft) == 1
+        || type_is_field_value(ft) == 1 || type_is_closure(ft) == 1
+        || str_eq(&g_strings[ft], "FieldWide") == 1 || str_eq(&g_strings[ft], "ptr") == 1 { return 8; }
+    if type_is_array(ft) == 1 { return payload_field_align(type_array_elem(ft)); }
+    let si: i32 = resolve_struct_type(ft);
+    if si >= 0 {
+        var align: i32 = 1;
+        var i: i32 = 0;
+        while i < g_structs[si].nfields {
+            let a: i32 = payload_field_align(struct_field_type(si, i));
+            if a > align { align = a; }
+            i = i + 1;
+        }
+        return align;
+    }
+    var fi: i32 = find_field_by_alias(ft);
+    if type_is_poly(ft) == 1 { fi = poly_field_index(ft); }
+    if type_is_register(ft) == 1 {
+        if register_is_dyn(ft) == 1 { return 8; }
+        fi = register_field_index(ft);
+    }
+    if fi >= 0 { return g_fields[fi].elem_bits / 8; }
+    return 1;
 }
 
 // Byte size of ONE enum-variant payload field (scalars/pointers/aggregates).
 // Shared by register_enum + enum_instantiate + enum_payload_offset (#31).
 fn payload_field_size(ft: i32) -> i32 {
     let fb: i32 = type_bits(ft);
+    if fb == 1 { return 1; }
     if fb > 0 { return fb / 8; }
-    if type_is_ptr(ft) == 1 || lw_is_fnptr(ft) == 1 { return 8; }
+    if type_is_ptr(ft) == 1 || lw_is_fnptr(ft) == 1
+        || type_is_field_value(ft) == 1 || type_is_closure(ft) == 1
+        || str_eq(&g_strings[ft], "FieldWide") == 1 || str_eq(&g_strings[ft], "ptr") == 1 { return 8; }
+    if type_is_array(ft) == 1 {
+        var pos: i32 = type_array_semi(ft) + 1;
+        var count: i64 = 0;
+        if ceval_atom(&g_strings[ft], &pos, &count) == 0 {
+            diag_error_at(0, 0, "enum payload array length must be concrete");
+            exit(1);
+        }
+        let n: i64 = payload_bytes_checked(count) as i64;
+        return payload_bytes_checked(n * (payload_field_size(type_array_elem(ft)) as i64));
+    }
+    let fi: i32 = find_field_by_alias(ft);
+    if fi >= 0 && g_fields[fi].field_kind == FIELD_KIND_EXTENSION {
+        return 2 * (g_fields[fi].elem_bits / 8);
+    }
+    if type_is_poly(ft) == 1 {
+        return payload_bytes_checked(((poly_degree(ft) as i64) + 1) * (payload_field_align(ft) as i64));
+    }
+    if type_is_register(ft) == 1 {
+        var count: i64 = (register_degree(ft) as i64) + 1;
+        if register_is_dyn(ft) == 1 { count = count + 1; }
+        return payload_bytes_checked(count * (payload_field_align(ft) as i64));
+    }
     let stsi: i32 = resolve_struct_type(ft);
     if stsi >= 0 { return struct_bytes(stsi); }
     let eni: i32 = resolve_enum_type(ft);
@@ -10385,7 +10439,9 @@ fn payload_field_size(ft: i32) -> i32 {
         }
         return g_enums[eni].total_size;
     }
-    return 4;
+    diag_error_at(0, 0, "unsupported enum payload layout");
+    exit(1);
+    return 0;
 }
 
 // Find field index within a struct. Returns -1 if not found.
@@ -10591,22 +10647,21 @@ fn enum_variant_index(ei: i32, vname: i32) -> i32 {
 }
 
 // Byte offset of field_idx within a variant's payload (starts at 8, past the
-// tag). Generic instances substitute types so offsets match true layout.
+// tag). Generic instances use substituted types and the same storage reservations.
 fn enum_payload_offset(ei: i32, vi_local: i32, field_idx: i32) -> i32 {
     var off: i32 = 8;
     var fi: i32 = 0;
     while fi < field_idx {
         let ft: i32 = enum_variant_field_type(ei, vi_local, fi);
         let fsz: i32 = payload_field_size(ft);
-        var align: i32 = fsz;
+        var align: i32 = payload_field_align(ft);
         if align > 8 { align = 8; }
         off = ((off + align - 1) & (~(align - 1))) + fsz;
         fi = fi + 1;
     }
     // Align for the target field
     let tft: i32 = enum_variant_field_type(ei, vi_local, field_idx);
-    let tfsz: i32 = payload_field_size(tft);
-    var talign: i32 = tfsz;
+    var talign: i32 = payload_field_align(tft);
     if talign > 8 { talign = 8; }
     off = (off + talign - 1) & (~(talign - 1));
     return off;
@@ -10654,9 +10709,9 @@ fn register_enum(decl: i32) {
             while fi < g_nodes[vnode].nargs {
                 let ft: i32 = g_args[g_nodes[vnode].args_start + fi];
                 let fsz: i32 = payload_field_size(ft);
-                var align: i32 = fsz;
+                var align: i32 = payload_field_align(ft);
                 if align > 8 { align = 8; }
-                psz = ((psz + align - 1) & (~(align - 1))) + fsz;
+                psz = payload_bytes_checked((((psz as i64) + align - 1) & (~((align as i64) - 1))) + fsz);
                 fi = fi + 1;
             }
         }
@@ -10765,9 +10820,9 @@ fn enum_instantiate(base_ei: i32, conc_types: *i32, nconc: i32) -> i32 {
             // Substitute through THIS instance (ei), using base variant index.
             let ft: i32 = enum_subst_field_type(ei, g_args[bv.fields_start + fi]);
             let fsz: i32 = payload_field_size(ft);
-            var align: i32 = fsz;
+            var align: i32 = payload_field_align(ft);
             if align > 8 { align = 8; }
-            psz = ((psz + align - 1) & (~(align - 1))) + fsz;
+            psz = payload_bytes_checked((((psz as i64) + align - 1) & (~((align as i64) - 1))) + fsz);
             fi = fi + 1;
         }
         g_enum_variants[vidx].payload_size = psz;
@@ -13331,7 +13386,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
         ir_wr_reg(qv.reg); ir_wr(", i64 "); ir_wr_int(q_epoff as i64); ir_wr("\n");
         let q_eval: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(q_eval); ir_wr(" = load ");
-        ir_wr_type(q_et); ir_wr(", ptr "); ir_wr_reg(q_egep); ir_wr("\n");
+        ir_wr_type(q_et); ir_wr(", ptr "); ir_wr_reg(q_egep); ir_wr(", align 1\n");
         let r_alloca: i32 = ir_tmp();
         g_use_prelude = 1;
         ir_wr("  "); ir_wr_reg(r_alloca); ir_wr(" = alloca ");
@@ -13346,7 +13401,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
         ir_wr("  "); ir_wr_reg(r_egep); ir_wr(" = getelementptr i8, ptr ");
         ir_wr_reg(r_alloca); ir_wr(", i64 "); ir_wr_int(r_epoff as i64); ir_wr("\n");
         ir_wr("  store "); ir_wr_type(q_et); ir_wr(" ");
-        ir_wr_reg(q_eval); ir_wr(", ptr "); ir_wr_reg(r_egep); ir_wr("\n");
+        ir_wr_reg(q_eval); ir_wr(", ptr "); ir_wr_reg(r_egep); ir_wr(", align 1\n");
         let r_loaded: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(r_loaded); ir_wr(" = load ");
         ir_wr_type(g_enums[r_ei].name); ir_wr(", ptr "); ir_wr_reg(r_alloca); ir_wr("\n");
@@ -13363,14 +13418,23 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
         let q_tgep: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(q_tgep); ir_wr(" = getelementptr i8, ptr ");
         ir_wr_reg(qv.reg); ir_wr(", i64 "); ir_wr_int(q_tpoff as i64); ir_wr("\n");
-        // Aggregate T stays by-pointer (into the operand's alloca, stack-safe);
-        // scalar T loads the value.
-        if resolve_struct_type(q_tt) >= 0 || resolve_enum_type(q_tt) >= 0 {
-            return IRValue { reg: q_tgep, type_off: q_tt };
+        // Copy aggregate payloads into ABI-aligned storage before further access.
+        // Enum byte storage itself only guarantees alignment one.
+        if resolve_struct_type(q_tt) >= 0 || resolve_enum_type(q_tt) >= 0
+            || type_is_array(q_tt) == 1 || type_is_poly(q_tt) == 1 || type_is_register(q_tt) == 1 {
+            let storage: i32 = ir_tmp();
+            g_use_prelude = 1;
+            ir_wr("  "); ir_wr_reg(storage); ir_wr(" = alloca "); ir_wr_type(q_tt); ir_wr("\n");
+            g_use_prelude = 0;
+            let copied: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(copied); ir_wr(" = load "); ir_wr_type(q_tt);
+            ir_wr(", ptr "); ir_wr_reg(q_tgep); ir_wr(", align 1\n  store "); ir_wr_type(q_tt);
+            ir_wr(" "); ir_wr_reg(copied); ir_wr(", ptr "); ir_wr_reg(storage); ir_wr("\n");
+            return IRValue { reg: storage, type_off: q_tt };
         }
         let q_tval: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(q_tval); ir_wr(" = load ");
-        ir_wr_type(q_tt); ir_wr(", ptr "); ir_wr_reg(q_tgep); ir_wr("\n");
+        ir_wr_type(q_tt); ir_wr(", ptr "); ir_wr_reg(q_tgep); ir_wr(", align 1\n");
         return IRValue { reg: q_tval, type_off: q_tt };
     }
 
@@ -13465,14 +13529,15 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                 // Struct/enum payload comes back BY ADDRESS: load the aggregate
                 // before storing into the payload slot.
                 var fstore: i32 = fval.reg;
-                if resolve_struct_type(ft) >= 0 || resolve_enum_type(ft) >= 0 {
+                if resolve_struct_type(ft) >= 0 || resolve_enum_type(ft) >= 0
+                    || type_is_array(ft) == 1 || type_is_poly(ft) == 1 || type_is_register(ft) == 1 {
                     let floaded: i32 = ir_tmp();
                     ir_wr("  "); ir_wr_reg(floaded); ir_wr(" = load ");
                     ir_wr_type(ft); ir_wr(", ptr "); ir_wr_reg(fval.reg); ir_wr("\n");
                     fstore = floaded;
                 }
                 ir_wr("  store "); ir_wr_type(ft); ir_wr(" ");
-                ir_wr_reg(fstore); ir_wr(", ptr "); ir_wr_reg(gep); ir_wr("\n");
+                ir_wr_reg(fstore); ir_wr(", ptr "); ir_wr_reg(gep); ir_wr(", align 1\n");
                 efi = efi + 1;
             }
             return IRValue { reg: ea, type_off: ec_inst_name };
@@ -22326,7 +22391,7 @@ fn codegen_stmt(stmt: i32) {
                         ir_wr(", i64 "); ir_wr_int(boff as i64); ir_wr("\n");
                         let bval: i32 = ir_tmp();
                         ir_wr("  "); ir_wr_reg(bval); ir_wr(" = load ");
-                        ir_wr_type(btype); ir_wr(", ptr "); ir_wr_reg(bgep); ir_wr("\n");
+                        ir_wr_type(btype); ir_wr(", ptr "); ir_wr_reg(bgep); ir_wr(", align 1\n");
                         // Alloca + store so binding is addressable
                         let ba: i32 = ir_tmp();
                         g_use_prelude = 1;
@@ -34216,8 +34281,8 @@ fn lw_is_fnptr(t: i32) -> i32 {
 }
 
 // ===== LLVM-datalayout emulation for aggregate ACCESS =====
-// Offsets/strides match compiled GEPs (natural alignment, recursive). NB this
-// is NOT struct_bytes — that is the ALLOC-SIZING law; access follows datalayout.
+// Evaluator offsets and strides use recursive access layout.
+// Enum struct payload reservations are separate conservative storage bounds.
 
 // Element count N of an "[T; N]" array type (the codegen parse, mirrored).
 fn lw_array_n(t: i32) -> i32 {
@@ -45941,7 +46006,14 @@ fn tp_b_line(line: *u8) {
     if tp_starts(body, "store ") == 1 {
         let ap: i32 = tp_rfind(body, ", ptr ");
         if ap < 0 { tp_die(line); }
-        let addr: *u8 = tp_slice(body, ap + 6, str_len(body));
+        let after: *u8 = tp_slice(body, ap + 6, str_len(body));
+        let comma: i32 = tp_find(after, ",", 0);
+        var addr: *u8 = after;
+        var suffix: *u8 = "";
+        if comma >= 0 {
+            addr = tp_slice(after, 0, comma);
+            suffix = tp_slice(after, comma, str_len(after));
+        }
         let hv: *u8 = tp_slice(body, 6, ap);  // "T V"
         let vs: i32 = tp_rfind(hv, " ");
         let ty: *u8 = tp_slice(hv, 0, vs);
@@ -45961,6 +46033,7 @@ fn tp_b_line(line: *u8) {
             tp_out(vx);
             tp_out(", i8** ");
             tp_out(ax);
+            tp_out(suffix);
             tp_out("\n");
             return;
         }
@@ -45979,6 +46052,7 @@ fn tp_b_line(line: *u8) {
         tp_out(d);
         tp_out(" ");
         tp_out(ax);
+        tp_out(suffix);
         tp_out("\n");
         return;
     }
@@ -46091,7 +46165,14 @@ fn tp_b_line(line: *u8) {
         let ap: i32 = tp_rfind(rest, ", ptr ");
         if ap < 0 { tp_die(line); }
         let ty: *u8 = tp_slice(rest, 5, ap);
-        let addr: *u8 = tp_slice(rest, ap + 6, str_len(rest));
+        let after: *u8 = tp_slice(rest, ap + 6, str_len(rest));
+        let comma: i32 = tp_find(after, ",", 0);
+        var addr: *u8 = after;
+        var suffix: *u8 = "";
+        if comma >= 0 {
+            addr = tp_slice(after, 0, comma);
+            suffix = tp_slice(after, comma, str_len(after));
+        }
         let tyr: *u8 = tp_tya(ty);
         let d: *u8 = tp_cat(tyr, "*");
         var ax: *u8 = null;
@@ -46107,6 +46188,7 @@ fn tp_b_line(line: *u8) {
         tp_out(d);
         tp_out(" ");
         tp_out(ax);
+        tp_out(suffix);
         tp_out("\n");
         return;
     }
