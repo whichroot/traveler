@@ -12726,6 +12726,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     }
                     new_e = cur_e - shift_k;
                     new_b = fb >> shift_k;
+                    // Negative ashr rounds down; round the magnitude bound up.
+                    if (fb & ((1 << shift_k) - 1)) != 0 { new_b = new_b + 1; }
                 }
                 let res_type: i32 = make_fix_type(new_b, new_e);
                 let kr: i32 = ir_tmp();
