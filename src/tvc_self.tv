@@ -12062,11 +12062,47 @@ fn family_operand_type(node: i32, operands: *IRValue, side: i32) -> i32 {
 }
 
 fn codegen_family_operand(node: i32, ctx: i32, operands: *IRValue, side: i32) -> IRValue {
+    if family_literal_node(node) >= 0 {
+        var literal_ctx: i32 = ctx;
+        if type_is_bounded_int(ctx) == 1 {
+            literal_ctx = make_bounded_int_type(9223372036854775807);
+        }
+        if type_is_fix(ctx) == 1 {
+            literal_ctx = make_fix_type(9223372036854775807, fix_scale(ctx));
+        }
+        if type_is_family(ctx) == 1 {
+            let literal: IRValue = codegen_expr(node, literal_ctx);
+            return literal;
+        }
+    }
     if operands != null {
         let value: IRValue = operands[side];
         return value;
     }
     let value: IRValue = codegen_expr(node, ctx);
+    return value;
+}
+
+fn family_literal_node(node: i32) -> i32 {
+    if g_nodes[node].kind == AST_LIT_INT { return node; }
+    if g_nodes[node].kind == AST_UNARY && g_nodes[node].op == OP_NEG {
+        return family_literal_node(g_nodes[node].child0);
+    }
+    return 0 - 1;
+}
+
+fn codegen_family_factor(node: i32, ctx: i32, operands: *IRValue, side: i32) -> IRValue {
+    let literal: i32 = family_literal_node(node);
+    if literal >= 0 && (type_is_exp(ctx) == 1 || type_is_fix(ctx) == 1) {
+        if g_nodes[literal].int_val > 9223372036854775807 {
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "literal magnitude exceeds family bound capacity (i64 maximum)");
+            exit(1);
+        }
+        let value: IRValue = codegen_expr(node, str_intern("i64"));
+        return value;
+    }
+    let value: IRValue = codegen_family_operand(node, ctx, operands, side);
     return value;
 }
 
@@ -12530,8 +12566,8 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
             let i64_type: i32 = str_intern("i64");
             // Multiplication: both Exp -> add scales; Exp * dimless -> keep.
             if op == OP_MUL {
-                let el: IRValue = codegen_family_operand(g_nodes[node].child0, exp_ctx, operands, 0);
-                let er: IRValue = codegen_family_operand(g_nodes[node].child1, exp_ctx, operands, 1);
+                let el: IRValue = codegen_family_factor(g_nodes[node].child0, exp_ctx, operands, 0);
+                let er: IRValue = codegen_family_factor(g_nodes[node].child1, exp_ctx, operands, 1);
                 exp_check_operands(el.type_off, er.type_off,
                     g_nodes[node].line, g_nodes[node].col, 1);
                 let l_is_exp: i32 = type_is_exp(el.type_off);
@@ -12717,8 +12753,8 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
             }
             // Mul: Fix x Fix -> bounds and scales both multiply/add.
             if op == OP_MUL {
-                let fl: IRValue = codegen_family_operand(g_nodes[node].child0, fix_ctx, operands, 0);
-                let fr: IRValue = codegen_family_operand(g_nodes[node].child1, fix_ctx, operands, 1);
+                let fl: IRValue = codegen_family_factor(g_nodes[node].child0, fix_ctx, operands, 0);
+                let fr: IRValue = codegen_family_factor(g_nodes[node].child1, fix_ctx, operands, 1);
                 fix_check_operands(fl.type_off, fr.type_off,
                     g_nodes[node].line, g_nodes[node].col, 1);
                 let fl_is_fix: i32 = type_is_fix(fl.type_off);
@@ -12748,9 +12784,9 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                     }
                     var dim_node: i32 = g_nodes[node].child1;
                     if dim_on_rhs == 0 { dim_node = g_nodes[node].child0; }
-                    if g_nodes[dim_node].kind == AST_LIT_INT {
-                        dim_mag = g_nodes[dim_node].int_val as i64;
-                        if dim_mag < 0 { dim_mag = 0 - dim_mag; }
+                    let dim_literal: i32 = family_literal_node(dim_node);
+                    if dim_literal >= 0 {
+                        dim_mag = g_nodes[dim_literal].int_val as i64;
                     } else {
                         diag_error_at(g_nodes[node].line, g_nodes[node].col,
                             "Fix scaled by a plain integer must be a literal; cast the integer with `as Fix<B,E>`");
@@ -12866,10 +12902,14 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                 lhs_ctx = rs;
             }
         }
-        let lhs: IRValue = codegen_expr(g_nodes[node].child0, lhs_ctx);
+        var lhs: IRValue = IRValue { reg: 0, type_off: NULL_STR };
+        if op == OP_MUL { lhs = codegen_family_factor(g_nodes[node].child0, lhs_ctx, null, 0); }
+        else { lhs = codegen_family_operand(g_nodes[node].child0, lhs_ctx, null, 0); }
         // For non-pow ops, propagate LHS type to RHS
         if op != OP_POW { rhs_ctx = lhs.type_off; }
-        let rhs: IRValue = codegen_expr(g_nodes[node].child1, rhs_ctx);
+        var rhs: IRValue = IRValue { reg: 0, type_off: NULL_STR };
+        if op == OP_MUL { rhs = codegen_family_factor(g_nodes[node].child1, rhs_ctx, null, 1); }
+        else { rhs = codegen_family_operand(g_nodes[node].child1, rhs_ctx, null, 1); }
         let bfi: i32 = find_field_by_alias(lhs.type_off);
         let rfi_chk: i32 = find_field_by_alias(rhs.type_off);
         // Operand symmetry Part 2: ExtField vs a raw non-literal scalar REFUSES
