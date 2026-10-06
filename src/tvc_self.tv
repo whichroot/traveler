@@ -10315,46 +10315,6 @@ fn ptr_fresh_origin() -> i32 {
     return origin;
 }
 
-// Static element size used by alias-range emission.
-// Native allocation byte counts are computed by LLVM in emit_alloc_bytes.
-fn ctx_elem_size(ctx_type: i32) -> i32 {
-    var elem_sz: i32 = 1;
-    if type_is_ptr(ctx_type) == 1 {
-        let ptee: i32 = type_pointee(ctx_type);
-        let pbits: i32 = type_bits(ptee);
-        if pbits > 0 {
-            elem_sz = pbits / 8;
-        } else if type_is_ptr(ptee) == 1 {
-            // Pointer pointee (**i64): 8 bytes — without this case a **T alloc
-            // fell to the elem_sz=1 floor and under-allocated by 8x (#19).
-            elem_sz = 8;
-        } else if type_is_array(ptee) == 1 {
-            // Array pointee (*[T; N]): N * sizeof(T) — parse N from the type
-            // string like the struct-field array branch.
-            let ats: *u8 = &g_strings[ptee];
-            var ai: i32 = type_array_semi(ptee);
-            ai = ai + 1;
-            while ats[ai] == 32 { ai = ai + 1; }
-            var an: i32 = 0;
-            while ats[ai] >= 48 && ats[ai] <= 57 { an = an * 10 + (ats[ai] as i32 - 48); ai = ai + 1; }
-            let ael: i32 = type_array_elem(ptee);
-            let aeb: i32 = type_bits(ael);
-            var aesz: i32 = 8;
-            if aeb > 0 { aesz = aeb / 8; }
-            elem_sz = an * aesz;
-        } else {
-            // Struct type: size from field layout (resolve_struct_type handles
-            // generic instances; struct_field_type substitutes template params).
-            let stsi: i32 = resolve_struct_type(ptee);
-            if stsi >= 0 {
-                elem_sz = struct_bytes(stsi);
-            }
-        }
-        if elem_sz == 0 { elem_sz = 1; }
-    }
-    return elem_sz;
-}
-
 // LLVM scales allocation counts using the same layout as indexed accesses.
 fn emit_alloc_bytes(ctx_type: i32, count: i32) -> i32 {
     if type_is_ptr(ctx_type) == 0 { return count; }
@@ -10372,7 +10332,7 @@ fn emit_type_bytes(type_off: i32, count: i32) -> i32 {
     return bytes;
 }
 
-// Static struct-size estimate used by enum payloads and ctx_elem_size.
+// Static struct-size estimate used by enum payloads.
 // Native allocations use LLVM layout through emit_alloc_bytes.
 fn struct_bytes(stsi: i32) -> i32 {
     var total: i32 = 0;
@@ -20206,15 +20166,17 @@ fn pfor_footprint(body: i32, target: i32, iter: i32,
     return result;
 }
 
-fn pfor_footprint_emit(ptr_reg: i32, bounds: PForBounds, elem: i32) -> PForAliasRange {
+fn pfor_footprint_emit(ptr_reg: i32, bounds: PForBounds, ptr_type: i32) -> PForAliasRange {
+    let lo_off: PForAliasChecked = pfor_alias_scale(pfor_alias_const_i64(bounds.lo), ptr_type);
+    let hi_index: PForAliasChecked = pfor_alias_checked_add(pfor_alias_const_i64(bounds.hi), 1);
+    let hi_off: PForAliasChecked = pfor_alias_scale(hi_index.value, ptr_type);
     let base: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(base); ir_wr(" = ptrtoint ptr ");
     ir_wr_reg(ptr_reg); ir_wr(" to i64\n");
-    let lo: PForAliasChecked = pfor_alias_checked_address(base,
-        pfor_alias_const_i64(bounds.lo * (elem as i64)));
-    let hi: PForAliasChecked = pfor_alias_checked_address(base,
-        pfor_alias_const_i64((bounds.hi + 1) * (elem as i64)));
-    return PForAliasRange { lo: lo.value, hi: hi.value, bad: pfor_alias_or(lo.bad, hi.bad) };
+    let lo: PForAliasChecked = pfor_alias_checked_address(base, lo_off.value);
+    let hi: PForAliasChecked = pfor_alias_checked_address(base, hi_off.value);
+    let bad: i32 = pfor_alias_or(hi_index.bad, pfor_alias_or(lo_off.bad, hi_off.bad));
+    return PForAliasRange { lo: lo.value, hi: hi.value, bad: pfor_alias_or(bad, pfor_alias_or(lo.bad, hi.bad)) };
 }
 
 fn pfor_alias_report(stmt: i32, iter: i32, admitted: i32, forced: i32, checked: i32) {
@@ -20386,7 +20348,7 @@ fn pfor_dot_footprint(body: i32, target: i32, iter: i32, pf: *PForState) -> PFor
 // The caller supplies i32 bounds and dimensions; invalid spans select serial.
 // A positive substitute divisor keeps the guard itself defined when N <= 0.
 fn pfor_dot_emit(ptr_reg: i32, kreg: i32, nreg: i32, start: i32, end: i32,
-                  role: i32, elem: i32) -> PForAliasRange {
+                  role: i32, ptr_type: i32) -> PForAliasRange {
     let k: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(k); ir_wr(" = sext i32 "); ir_wr_reg(kreg); ir_wr(" to i64\n");
     let n: i32 = ir_tmp();
@@ -20428,7 +20390,7 @@ fn pfor_dot_emit(ptr_reg: i32, kreg: i32, nreg: i32, start: i32, end: i32,
     let zero: i32 = pfor_alias_const_i64(0);
     bad = pfor_alias_or(bad, pfor_alias_i32_range_bad(zero, xe));
     bad = pfor_alias_or(bad, pfor_alias_i32_range_bad(zero, we));
-    let bytes: PForAliasChecked = pfor_alias_checked_mul(limit, elem);
+    let bytes: PForAliasChecked = pfor_alias_scale(limit, ptr_type);
     let base: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(base); ir_wr(" = ptrtoint ptr "); ir_wr_reg(ptr_reg); ir_wr(" to i64\n");
     let hi: PForAliasChecked = pfor_alias_checked_address(base, bytes.value);
@@ -20486,6 +20448,30 @@ fn pfor_alias_checked_mul(index: i32, elem_bytes: i32) -> PForAliasChecked {
     return PForAliasChecked { value: value, bad: bad };
 }
 
+// Scale by LLVM's element stride; reject a product that cannot fit signed i64.
+fn pfor_alias_scale(index: i32, ptr_type: i32) -> PForAliasChecked {
+    let size: i32 = emit_alloc_bytes(ptr_type, pfor_alias_const_i64(1));
+    let wide_index: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(wide_index); ir_wr(" = sext i64 ");
+    ir_wr_reg(index); ir_wr(" to i128\n");
+    let wide_size: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(wide_size); ir_wr(" = zext i64 ");
+    ir_wr_reg(size); ir_wr(" to i128\n");
+    let product: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(product); ir_wr(" = mul i128 ");
+    ir_wr_reg(wide_index); ir_wr(", "); ir_wr_reg(wide_size); ir_wr("\n");
+    let value: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(value); ir_wr(" = trunc i128 ");
+    ir_wr_reg(product); ir_wr(" to i64\n");
+    let restored: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(restored); ir_wr(" = sext i64 ");
+    ir_wr_reg(value); ir_wr(" to i128\n");
+    let bad: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(bad); ir_wr(" = icmp ne i128 ");
+    ir_wr_reg(product); ir_wr(", "); ir_wr_reg(restored); ir_wr("\n");
+    return PForAliasChecked { value: value, bad: bad };
+}
+
 fn pfor_alias_checked_address(base: i32, offset: i32) -> PForAliasChecked {
     let value: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(value); ir_wr(" = add i64 ");
@@ -20534,7 +20520,7 @@ fn pfor_alias_i32_range_bad(lo: i32, hi: i32) -> i32 {
 
 fn pfor_alias_emit_range(ptr_reg: i32, rec: *i64,
                           start64: i32, end64: i32,
-                          elem_bytes: i32, iter_bits: i32) -> PForAliasRange {
+                          ptr_type: i32, iter_bits: i32) -> PForAliasRange {
     let lit: i64 = rec[4];
     let stride: i64 = rec[13];
     var lo_idx: PForAliasChecked = PForAliasChecked {
@@ -20594,10 +20580,10 @@ fn pfor_alias_emit_range(ptr_reg: i32, rec: *i64,
     ir_wr("  "); ir_wr_reg(reversed); ir_wr(" = icmp sgt i64 ");
     ir_wr_reg(lo_idx.value); ir_wr(", "); ir_wr_reg(hi_idx.value); ir_wr("\n");
     bad = pfor_alias_or(bad, reversed);
-    let lo_off: PForAliasChecked = pfor_alias_checked_mul(
-        lo_idx.value, elem_bytes);
-    let hi_off: PForAliasChecked = pfor_alias_checked_mul(
-        hi_idx.value, elem_bytes);
+    let lo_off: PForAliasChecked = pfor_alias_scale(
+        lo_idx.value, ptr_type);
+    let hi_off: PForAliasChecked = pfor_alias_scale(
+        hi_idx.value, ptr_type);
     bad = pfor_alias_or(bad, lo_off.bad);
     bad = pfor_alias_or(bad, hi_off.bad);
     let base: i32 = ir_tmp();
@@ -21918,10 +21904,10 @@ fn codegen_stmt(stmt: i32) {
                                     }
                                     let wr: PForAliasRange = pfor_alias_emit_range(cap_loaded[wcap],
                                         &pwrites[wi * 16], alias_start64, alias_end64,
-                                        ctx_elem_size(caps[wcap * 4 + 1]), bw);
+                                        caps[wcap * 4 + 1], bw);
                                     let cr: PForAliasRange = pfor_dot_emit(cap_loaded[c2],
                                         cap_loaded[dot.kcap], cap_loaded[dot.ncap], alias_start64, alias_end64,
-                                        dot.role, ctx_elem_size(caps[c2 * 4 + 1]));
+                                        dot.role, caps[c2 * 4 + 1]);
                                     alias_acc = pfor_alias_or(alias_acc, pfor_alias_emit_overlap(wr, cr));
                                     c_accesses = 1;
                                     check = 0;
@@ -21947,9 +21933,9 @@ fn codegen_stmt(stmt: i32) {
                                         iter_name, start_node, end_node);
                                     if wb.ok == 1 && cb.ok == 1 {
                                         let wr: PForAliasRange = pfor_footprint_emit(cap_loaded[wcap],
-                                            wb, ctx_elem_size(caps[wcap * 4 + 1]));
+                                            wb, caps[wcap * 4 + 1]);
                                         let cr: PForAliasRange = pfor_footprint_emit(cap_loaded[c2],
-                                            cb, ctx_elem_size(caps[c2 * 4 + 1]));
+                                            cb, caps[c2 * 4 + 1]);
                                         alias_acc = pfor_alias_or(alias_acc, pfor_alias_emit_overlap(wr, cr));
                                         c_accesses = 1;
                                         check = 0;
@@ -22003,11 +21989,11 @@ fn codegen_stmt(stmt: i32) {
                                          let wrange: PForAliasRange = pfor_alias_emit_range(
                                              cap_loaded[wcap], &pwrites[wi * 16],
                                              alias_start64, alias_end64,
-                                             ctx_elem_size(caps[wcap * 4 + 1]), bw);
+                                              caps[wcap * 4 + 1], bw);
                                          let crange: PForAliasRange = pfor_alias_emit_range(
                                              cap_loaded[c2], &preads[ri * 16],
                                              alias_start64, alias_end64,
-                                             ctx_elem_size(caps[c2 * 4 + 1]), bw);
+                                              caps[c2 * 4 + 1], bw);
                                         alias_acc = pfor_alias_or(alias_acc,
                                             pfor_alias_emit_overlap(wrange, crange));
                                     }
@@ -22040,11 +22026,11 @@ fn codegen_stmt(stmt: i32) {
                                          let wrange2: PForAliasRange = pfor_alias_emit_range(
                                              cap_loaded[wcap], &pwrites[wi * 16],
                                              alias_start64, alias_end64,
-                                             ctx_elem_size(caps[wcap * 4 + 1]), bw);
+                                              caps[wcap * 4 + 1], bw);
                                          let crange2: PForAliasRange = pfor_alias_emit_range(
                                              cap_loaded[c2], &pwrites[wj * 16],
                                              alias_start64, alias_end64,
-                                             ctx_elem_size(caps[c2 * 4 + 1]), bw);
+                                              caps[c2 * 4 + 1], bw);
                                         alias_acc = pfor_alias_or(alias_acc,
                                             pfor_alias_emit_overlap(wrange2, crange2));
                                     }
