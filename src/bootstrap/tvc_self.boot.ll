@@ -89035,21 +89035,22 @@ entry:
   %t307 = alloca i32
   %t325 = alloca i32
   %t356 = alloca i1
-  %t380 = alloca i32
-  %t428 = alloca i32
-  %t429 = alloca i1
-  %t445 = alloca i32
-  %t452 = alloca i32
-  %t474 = alloca i32
-  %t481 = alloca i32
-  %t483 = alloca i32
-  %t519 = alloca i1
-  %t533 = alloca i32
-  %t534 = alloca i1
-  %t559 = alloca i1
-  %t600 = alloca i32
-  %t607 = alloca i32
-  %t609 = alloca i32
+  %t357 = alloca i1
+  %t386 = alloca i32
+  %t434 = alloca i32
+  %t435 = alloca i1
+  %t451 = alloca i32
+  %t458 = alloca i32
+  %t480 = alloca i32
+  %t487 = alloca i32
+  %t489 = alloca i32
+  %t525 = alloca i1
+  %t539 = alloca i32
+  %t540 = alloca i1
+  %t565 = alloca i1
+  %t606 = alloca i32
+  %t613 = alloca i32
+  %t615 = alloca i32
   %t4 = load i32, ptr %t1
   %t5 = add i32 0, 0
   %t6 = icmp slt i32 %t4, %t5
@@ -89544,408 +89545,419 @@ L88:
   %t355 = add i32 0, 1
   ret i32 %t355
 L82:
-  %t357 = load i32, ptr %t307
-  %t358 = sext i32 %t357 to i64
-  %t359 = load ptr, ptr @g_strings
-  %t360 = getelementptr i8, ptr %t359, i64 %t358
-  %t361 = getelementptr [6 x i8], ptr @.str.4021, i32 0, i32 0
-  %t362 = call i32 @str_eq(ptr %t360, ptr %t361)
-  %t363 = add i32 0, 1
-  %t364 = icmp eq i32 %t362, %t363
-  store i1 %t364, ptr %t356
-  br i1 %t364, label %L92, label %L93
+  %t358 = load i32, ptr %t307
+  %t359 = sext i32 %t358 to i64
+  %t360 = load ptr, ptr @g_strings
+  %t361 = getelementptr i8, ptr %t360, i64 %t359
+  %t362 = getelementptr [6 x i8], ptr @.str.4021, i32 0, i32 0
+  %t363 = call i32 @str_eq(ptr %t361, ptr %t362)
+  %t364 = add i32 0, 1
+  %t365 = icmp eq i32 %t363, %t364
+  store i1 %t365, ptr %t357
+  br i1 %t365, label %L92, label %L93
 L92:
-  %t365 = load i32, ptr %t1
-  %t366 = sext i32 %t365 to i64
-  %t367 = load ptr, ptr @g_nodes
-  %t368 = getelementptr %ASTNode, ptr %t367, i64 %t366
-  %t369 = getelementptr %ASTNode, ptr %t368, i32 0, i32 6
-  %t370 = load i32, ptr %t369
-  %t371 = add i32 0, 3
-  %t372 = icmp eq i32 %t370, %t371
-  store i1 %t372, ptr %t356
+  %t366 = load i32, ptr %t307
+  %t367 = call i32 @find_func(i32 %t366)
+  %t368 = add i32 0, 0
+  %t369 = icmp slt i32 %t367, %t368
+  store i1 %t369, ptr %t357
   br label %L93
 L93:
-  %t373 = load i1, ptr %t356
-  br i1 %t373, label %L94, label %L96
+  %t370 = load i1, ptr %t357
+  store i1 %t370, ptr %t356
+  br i1 %t370, label %L94, label %L95
 L94:
-  %t374 = load i32, ptr %t1
-  %t375 = sext i32 %t374 to i64
-  %t376 = load ptr, ptr @g_nodes
-  %t377 = getelementptr %ASTNode, ptr %t376, i64 %t375
-  %t378 = getelementptr %ASTNode, ptr %t377, i32 0, i32 13
-  %t379 = load i32, ptr %t378
-  store i32 %t379, ptr %t380
-  %t381 = load ptr, ptr %t0
-  %t382 = load i32, ptr %t380
-  %t383 = sext i32 %t382 to i64
-  %t384 = load ptr, ptr @g_args
-  %t385 = getelementptr i32, ptr %t384, i64 %t383
-  %t386 = load i32, ptr %t385
-  %t387 = load i32, ptr %t2
-  %t388 = call i32 @pfor_walk_expr(ptr %t381, i32 %t386, i32 %t387)
-  %t389 = add i32 0, 0
-  %t390 = icmp eq i32 %t388, %t389
-  br i1 %t390, label %L97, label %L99
-L97:
-  %t391 = add i32 0, 0
-  ret i32 %t391
-L99:
-  %t392 = load ptr, ptr %t0
-  %t393 = load i32, ptr %t380
-  %t394 = add i32 0, 1
-  %t395 = add i32 %t393, %t394
-  %t396 = sext i32 %t395 to i64
-  %t397 = load ptr, ptr @g_args
-  %t398 = getelementptr i32, ptr %t397, i64 %t396
-  %t399 = load i32, ptr %t398
-  %t400 = load i32, ptr %t2
-  %t401 = call i32 @pfor_walk_expr(ptr %t392, i32 %t399, i32 %t400)
-  %t402 = add i32 0, 0
-  %t403 = icmp eq i32 %t401, %t402
-  br i1 %t403, label %L100, label %L102
-L100:
-  %t404 = add i32 0, 0
-  ret i32 %t404
-L102:
-  %t405 = load ptr, ptr %t0
-  %t406 = load i32, ptr %t380
-  %t407 = add i32 0, 2
-  %t408 = add i32 %t406, %t407
-  %t409 = sext i32 %t408 to i64
-  %t410 = load ptr, ptr @g_args
-  %t411 = getelementptr i32, ptr %t410, i64 %t409
-  %t412 = load i32, ptr %t411
-  %t413 = load i32, ptr %t2
-  %t414 = call i32 @pfor_walk_expr(ptr %t405, i32 %t412, i32 %t413)
-  ret i32 %t414
+  %t371 = load i32, ptr %t1
+  %t372 = sext i32 %t371 to i64
+  %t373 = load ptr, ptr @g_nodes
+  %t374 = getelementptr %ASTNode, ptr %t373, i64 %t372
+  %t375 = getelementptr %ASTNode, ptr %t374, i32 0, i32 6
+  %t376 = load i32, ptr %t375
+  %t377 = add i32 0, 3
+  %t378 = icmp eq i32 %t376, %t377
+  store i1 %t378, ptr %t356
+  br label %L95
+L95:
+  %t379 = load i1, ptr %t356
+  br i1 %t379, label %L96, label %L98
 L96:
-  %t415 = load i32, ptr %t1
-  %t416 = call i32 @call_may_use_builtin_precedence(i32 %t415)
-  %t417 = add i32 0, 1
-  %t418 = icmp eq i32 %t416, %t417
-  br i1 %t418, label %L103, label %L105
-L103:
-  %t419 = load i32, ptr %t307
-  %t420 = call i32 @is_impure_builtin(i32 %t419)
-  %t421 = add i32 0, 1
-  %t422 = icmp eq i32 %t420, %t421
-  br i1 %t422, label %L106, label %L107
-L106:
-  %t423 = load i32, ptr @PFR_MUTATING_CALL
-  call void @pfor_refuse(i32 %t423)
-  br label %L108
-L107:
-  %t424 = load i32, ptr @PFR_EXTERN_CALL
-  call void @pfor_refuse(i32 %t424)
-  br label %L108
-L108:
-  %t425 = add i32 0, 0
-  ret i32 %t425
+  %t380 = load i32, ptr %t1
+  %t381 = sext i32 %t380 to i64
+  %t382 = load ptr, ptr @g_nodes
+  %t383 = getelementptr %ASTNode, ptr %t382, i64 %t381
+  %t384 = getelementptr %ASTNode, ptr %t383, i32 0, i32 13
+  %t385 = load i32, ptr %t384
+  store i32 %t385, ptr %t386
+  %t387 = load ptr, ptr %t0
+  %t388 = load i32, ptr %t386
+  %t389 = sext i32 %t388 to i64
+  %t390 = load ptr, ptr @g_args
+  %t391 = getelementptr i32, ptr %t390, i64 %t389
+  %t392 = load i32, ptr %t391
+  %t393 = load i32, ptr %t2
+  %t394 = call i32 @pfor_walk_expr(ptr %t387, i32 %t392, i32 %t393)
+  %t395 = add i32 0, 0
+  %t396 = icmp eq i32 %t394, %t395
+  br i1 %t396, label %L99, label %L101
+L99:
+  %t397 = add i32 0, 0
+  ret i32 %t397
+L101:
+  %t398 = load ptr, ptr %t0
+  %t399 = load i32, ptr %t386
+  %t400 = add i32 0, 1
+  %t401 = add i32 %t399, %t400
+  %t402 = sext i32 %t401 to i64
+  %t403 = load ptr, ptr @g_args
+  %t404 = getelementptr i32, ptr %t403, i64 %t402
+  %t405 = load i32, ptr %t404
+  %t406 = load i32, ptr %t2
+  %t407 = call i32 @pfor_walk_expr(ptr %t398, i32 %t405, i32 %t406)
+  %t408 = add i32 0, 0
+  %t409 = icmp eq i32 %t407, %t408
+  br i1 %t409, label %L102, label %L104
+L102:
+  %t410 = add i32 0, 0
+  ret i32 %t410
+L104:
+  %t411 = load ptr, ptr %t0
+  %t412 = load i32, ptr %t386
+  %t413 = add i32 0, 2
+  %t414 = add i32 %t412, %t413
+  %t415 = sext i32 %t414 to i64
+  %t416 = load ptr, ptr @g_args
+  %t417 = getelementptr i32, ptr %t416, i64 %t415
+  %t418 = load i32, ptr %t417
+  %t419 = load i32, ptr %t2
+  %t420 = call i32 @pfor_walk_expr(ptr %t411, i32 %t418, i32 %t419)
+  ret i32 %t420
+L98:
+  %t421 = load i32, ptr %t1
+  %t422 = call i32 @call_may_use_builtin_precedence(i32 %t421)
+  %t423 = add i32 0, 1
+  %t424 = icmp eq i32 %t422, %t423
+  br i1 %t424, label %L105, label %L107
 L105:
-  %t426 = load i32, ptr %t307
-  %t427 = call i32 @sym_find(i32 %t426)
-  store i32 %t427, ptr %t428
-  %t430 = load i32, ptr %t428
-  %t431 = add i32 0, 0
-  %t432 = icmp sge i32 %t430, %t431
-  store i1 %t432, ptr %t429
-  br i1 %t432, label %L109, label %L110
+  %t425 = load i32, ptr %t307
+  %t426 = call i32 @is_impure_builtin(i32 %t425)
+  %t427 = add i32 0, 1
+  %t428 = icmp eq i32 %t426, %t427
+  br i1 %t428, label %L108, label %L109
+L108:
+  %t429 = load i32, ptr @PFR_MUTATING_CALL
+  call void @pfor_refuse(i32 %t429)
+  br label %L110
 L109:
-  %t433 = load i32, ptr %t307
-  %t434 = call i32 @find_func(i32 %t433)
-  %t435 = add i32 0, 0
-  %t436 = icmp slt i32 %t434, %t435
-  store i1 %t436, ptr %t429
+  %t430 = load i32, ptr @PFR_EXTERN_CALL
+  call void @pfor_refuse(i32 %t430)
   br label %L110
 L110:
-  %t437 = load i1, ptr %t429
-  br i1 %t437, label %L111, label %L113
+  %t431 = add i32 0, 0
+  ret i32 %t431
+L107:
+  %t432 = load i32, ptr %t307
+  %t433 = call i32 @sym_find(i32 %t432)
+  store i32 %t433, ptr %t434
+  %t436 = load i32, ptr %t434
+  %t437 = add i32 0, 0
+  %t438 = icmp sge i32 %t436, %t437
+  store i1 %t438, ptr %t435
+  br i1 %t438, label %L111, label %L112
 L111:
-  %t438 = load i32, ptr %t428
-  %t439 = sext i32 %t438 to i64
-  %t440 = load ptr, ptr @g_syms
-  %t441 = getelementptr %SymEntry, ptr %t440, i64 %t439
-  %t442 = getelementptr %SymEntry, ptr %t441, i32 0, i32 1
-  %t443 = load i32, ptr %t442
-  %t444 = call i32 @resolve_type_sub(i32 %t443)
-  store i32 %t444, ptr %t445
-  %t446 = load i32, ptr %t445
-  %t447 = call i32 @type_is_closure(i32 %t446)
-  %t448 = add i32 0, 1
-  %t449 = icmp eq i32 %t447, %t448
-  br i1 %t449, label %L114, label %L116
-L114:
-  %t450 = load i32, ptr %t445
-  %t451 = call i32 @pfor_closure_effect(i32 %t450)
-  store i32 %t451, ptr %t452
-  %t453 = load i32, ptr %t452
-  %t454 = load i32, ptr @PFOR_CLO_UNKNOWN
+  %t439 = load i32, ptr %t307
+  %t440 = call i32 @find_func(i32 %t439)
+  %t441 = add i32 0, 0
+  %t442 = icmp slt i32 %t440, %t441
+  store i1 %t442, ptr %t435
+  br label %L112
+L112:
+  %t443 = load i1, ptr %t435
+  br i1 %t443, label %L113, label %L115
+L113:
+  %t444 = load i32, ptr %t434
+  %t445 = sext i32 %t444 to i64
+  %t446 = load ptr, ptr @g_syms
+  %t447 = getelementptr %SymEntry, ptr %t446, i64 %t445
+  %t448 = getelementptr %SymEntry, ptr %t447, i32 0, i32 1
+  %t449 = load i32, ptr %t448
+  %t450 = call i32 @resolve_type_sub(i32 %t449)
+  store i32 %t450, ptr %t451
+  %t452 = load i32, ptr %t451
+  %t453 = call i32 @type_is_closure(i32 %t452)
+  %t454 = add i32 0, 1
   %t455 = icmp eq i32 %t453, %t454
-  br i1 %t455, label %L117, label %L119
-L117:
-  %t456 = load i32, ptr @PFR_INDIRECT_CALL
-  call void @pfor_refuse(i32 %t456)
-  %t457 = add i32 0, 0
-  ret i32 %t457
+  br i1 %t455, label %L116, label %L118
+L116:
+  %t456 = load i32, ptr %t451
+  %t457 = call i32 @pfor_closure_effect(i32 %t456)
+  store i32 %t457, ptr %t458
+  %t459 = load i32, ptr %t458
+  %t460 = load i32, ptr @PFOR_CLO_UNKNOWN
+  %t461 = icmp eq i32 %t459, %t460
+  br i1 %t461, label %L119, label %L121
 L119:
-  %t458 = load i32, ptr %t452
-  %t459 = load i32, ptr @PFOR_CLO_MUTATING
-  %t460 = icmp eq i32 %t458, %t459
-  br i1 %t460, label %L120, label %L122
-L120:
-  %t461 = load i32, ptr @PFR_MUTATING_CALL
-  call void @pfor_refuse(i32 %t461)
-  %t462 = add i32 0, 0
-  ret i32 %t462
+  %t462 = load i32, ptr @PFR_INDIRECT_CALL
+  call void @pfor_refuse(i32 %t462)
+  %t463 = add i32 0, 0
+  ret i32 %t463
+L121:
+  %t464 = load i32, ptr %t458
+  %t465 = load i32, ptr @PFOR_CLO_MUTATING
+  %t466 = icmp eq i32 %t464, %t465
+  br i1 %t466, label %L122, label %L124
 L122:
-  %t463 = load i32, ptr %t452
-  %t464 = load i32, ptr @PFOR_CLO_READ
-  %t465 = icmp eq i32 %t463, %t464
-  br i1 %t465, label %L123, label %L125
-L123:
-  %t466 = load i32, ptr @PFR_CALL_READ
-  call void @pfor_refuse(i32 %t466)
-  %t467 = add i32 0, 0
-  ret i32 %t467
+  %t467 = load i32, ptr @PFR_MUTATING_CALL
+  call void @pfor_refuse(i32 %t467)
+  %t468 = add i32 0, 0
+  ret i32 %t468
+L124:
+  %t469 = load i32, ptr %t458
+  %t470 = load i32, ptr @PFOR_CLO_READ
+  %t471 = icmp eq i32 %t469, %t470
+  br i1 %t471, label %L125, label %L127
 L125:
-  %t468 = load i32, ptr %t1
-  %t469 = sext i32 %t468 to i64
-  %t470 = load ptr, ptr @g_nodes
-  %t471 = getelementptr %ASTNode, ptr %t470, i64 %t469
-  %t472 = getelementptr %ASTNode, ptr %t471, i32 0, i32 6
-  %t473 = load i32, ptr %t472
-  store i32 %t473, ptr %t474
-  %t475 = load i32, ptr %t1
-  %t476 = sext i32 %t475 to i64
-  %t477 = load ptr, ptr @g_nodes
-  %t478 = getelementptr %ASTNode, ptr %t477, i64 %t476
-  %t479 = getelementptr %ASTNode, ptr %t478, i32 0, i32 13
-  %t480 = load i32, ptr %t479
-  store i32 %t480, ptr %t481
-  %t482 = add i32 0, 0
-  store i32 %t482, ptr %t483
-  br label %L126
-L126:
-  %t484 = load i32, ptr %t483
-  %t485 = load i32, ptr %t474
-  %t486 = icmp slt i32 %t484, %t485
-  br i1 %t486, label %L127, label %L128
+  %t472 = load i32, ptr @PFR_CALL_READ
+  call void @pfor_refuse(i32 %t472)
+  %t473 = add i32 0, 0
+  ret i32 %t473
 L127:
-  %t487 = load ptr, ptr %t0
-  %t488 = load i32, ptr %t481
-  %t489 = load i32, ptr %t483
-  %t490 = add i32 %t488, %t489
-  %t491 = sext i32 %t490 to i64
-  %t492 = load ptr, ptr @g_args
-  %t493 = getelementptr i32, ptr %t492, i64 %t491
-  %t494 = load i32, ptr %t493
-  %t495 = load i32, ptr %t2
-  %t496 = call i32 @pfor_walk_expr(ptr %t487, i32 %t494, i32 %t495)
-  %t497 = add i32 0, 0
-  %t498 = icmp eq i32 %t496, %t497
-  br i1 %t498, label %L129, label %L131
-L129:
-  %t499 = add i32 0, 0
-  ret i32 %t499
-L131:
-  %t500 = load i32, ptr %t483
-  %t501 = add i32 0, 1
-  %t502 = add i32 %t500, %t501
-  store i32 %t502, ptr %t483
-  br label %L126
+  %t474 = load i32, ptr %t1
+  %t475 = sext i32 %t474 to i64
+  %t476 = load ptr, ptr @g_nodes
+  %t477 = getelementptr %ASTNode, ptr %t476, i64 %t475
+  %t478 = getelementptr %ASTNode, ptr %t477, i32 0, i32 6
+  %t479 = load i32, ptr %t478
+  store i32 %t479, ptr %t480
+  %t481 = load i32, ptr %t1
+  %t482 = sext i32 %t481 to i64
+  %t483 = load ptr, ptr @g_nodes
+  %t484 = getelementptr %ASTNode, ptr %t483, i64 %t482
+  %t485 = getelementptr %ASTNode, ptr %t484, i32 0, i32 13
+  %t486 = load i32, ptr %t485
+  store i32 %t486, ptr %t487
+  %t488 = add i32 0, 0
+  store i32 %t488, ptr %t489
+  br label %L128
 L128:
-  %t503 = load ptr, ptr %t0
-  %t504 = load i32, ptr %t307
-  %t505 = load i32, ptr %t445
-  %t506 = load i32, ptr %t428
-  %t507 = sext i32 %t506 to i64
-  %t508 = load ptr, ptr @g_syms
-  %t509 = getelementptr %SymEntry, ptr %t508, i64 %t507
-  %t510 = getelementptr %SymEntry, ptr %t509, i32 0, i32 2
-  %t511 = load i32, ptr %t510
-  %t512 = load i32, ptr %t428
+  %t490 = load i32, ptr %t489
+  %t491 = load i32, ptr %t480
+  %t492 = icmp slt i32 %t490, %t491
+  br i1 %t492, label %L129, label %L130
+L129:
+  %t493 = load ptr, ptr %t0
+  %t494 = load i32, ptr %t487
+  %t495 = load i32, ptr %t489
+  %t496 = add i32 %t494, %t495
+  %t497 = sext i32 %t496 to i64
+  %t498 = load ptr, ptr @g_args
+  %t499 = getelementptr i32, ptr %t498, i64 %t497
+  %t500 = load i32, ptr %t499
+  %t501 = load i32, ptr %t2
+  %t502 = call i32 @pfor_walk_expr(ptr %t493, i32 %t500, i32 %t501)
+  %t503 = add i32 0, 0
+  %t504 = icmp eq i32 %t502, %t503
+  br i1 %t504, label %L131, label %L133
+L131:
+  %t505 = add i32 0, 0
+  ret i32 %t505
+L133:
+  %t506 = load i32, ptr %t489
+  %t507 = add i32 0, 1
+  %t508 = add i32 %t506, %t507
+  store i32 %t508, ptr %t489
+  br label %L128
+L130:
+  %t509 = load ptr, ptr %t0
+  %t510 = load i32, ptr %t307
+  %t511 = load i32, ptr %t451
+  %t512 = load i32, ptr %t434
   %t513 = sext i32 %t512 to i64
   %t514 = load ptr, ptr @g_syms
   %t515 = getelementptr %SymEntry, ptr %t514, i64 %t513
-  %t516 = getelementptr %SymEntry, ptr %t515, i32 0, i32 3
+  %t516 = getelementptr %SymEntry, ptr %t515, i32 0, i32 2
   %t517 = load i32, ptr %t516
-  %t518 = call i32 @pfor_add_capture(ptr %t503, i32 %t504, i32 %t505, i32 %t511, i32 %t517)
-  ret i32 %t518
-L116:
-  br label %L113
-L113:
-  %t520 = load i32, ptr %t307
-  %t521 = call i32 @sym_find(i32 %t520)
-  %t522 = add i32 0, 0
-  %t523 = icmp sge i32 %t521, %t522
-  store i1 %t523, ptr %t519
-  br i1 %t523, label %L132, label %L133
-L132:
-  %t524 = load i32, ptr %t307
-  %t525 = call i32 @find_func(i32 %t524)
-  %t526 = add i32 0, 0
-  %t527 = icmp slt i32 %t525, %t526
-  store i1 %t527, ptr %t519
-  br label %L133
-L133:
-  %t528 = load i1, ptr %t519
-  br i1 %t528, label %L134, label %L136
+  %t518 = load i32, ptr %t434
+  %t519 = sext i32 %t518 to i64
+  %t520 = load ptr, ptr @g_syms
+  %t521 = getelementptr %SymEntry, ptr %t520, i64 %t519
+  %t522 = getelementptr %SymEntry, ptr %t521, i32 0, i32 3
+  %t523 = load i32, ptr %t522
+  %t524 = call i32 @pfor_add_capture(ptr %t509, i32 %t510, i32 %t511, i32 %t517, i32 %t523)
+  ret i32 %t524
+L118:
+  br label %L115
+L115:
+  %t526 = load i32, ptr %t307
+  %t527 = call i32 @sym_find(i32 %t526)
+  %t528 = add i32 0, 0
+  %t529 = icmp sge i32 %t527, %t528
+  store i1 %t529, ptr %t525
+  br i1 %t529, label %L134, label %L135
 L134:
-  %t529 = load i32, ptr @PFR_INDIRECT_CALL
-  call void @pfor_refuse(i32 %t529)
-  %t530 = add i32 0, 0
-  ret i32 %t530
+  %t530 = load i32, ptr %t307
+  %t531 = call i32 @find_func(i32 %t530)
+  %t532 = add i32 0, 0
+  %t533 = icmp slt i32 %t531, %t532
+  store i1 %t533, ptr %t525
+  br label %L135
+L135:
+  %t534 = load i1, ptr %t525
+  br i1 %t534, label %L136, label %L138
 L136:
-  %t531 = load i32, ptr %t307
-  %t532 = call i32 @find_func_idx(i32 %t531)
-  store i32 %t532, ptr %t533
-  %t535 = load i32, ptr %t533
+  %t535 = load i32, ptr @PFR_INDIRECT_CALL
+  call void @pfor_refuse(i32 %t535)
   %t536 = add i32 0, 0
-  %t537 = icmp slt i32 %t535, %t536
-  store i1 %t537, ptr %t534
-  br i1 %t537, label %L138, label %L137
-L137:
-  %t538 = load i32, ptr %t533
-  %t539 = sext i32 %t538 to i64
-  %t540 = load ptr, ptr @g_funcs
-  %t541 = getelementptr %FuncEntry, ptr %t540, i64 %t539
-  %t542 = getelementptr %FuncEntry, ptr %t541, i32 0, i32 3
-  %t543 = load i32, ptr %t542
-  %t544 = add i32 0, 1
-  %t545 = icmp eq i32 %t543, %t544
-  store i1 %t545, ptr %t534
-  br label %L138
+  ret i32 %t536
 L138:
-  %t546 = load i1, ptr %t534
-  br i1 %t546, label %L139, label %L141
+  %t537 = load i32, ptr %t307
+  %t538 = call i32 @find_func_idx(i32 %t537)
+  store i32 %t538, ptr %t539
+  %t541 = load i32, ptr %t539
+  %t542 = add i32 0, 0
+  %t543 = icmp slt i32 %t541, %t542
+  store i1 %t543, ptr %t540
+  br i1 %t543, label %L140, label %L139
 L139:
-  %t547 = load i32, ptr @PFR_EXTERN_CALL
-  call void @pfor_refuse(i32 %t547)
-  %t548 = add i32 0, 0
-  ret i32 %t548
+  %t544 = load i32, ptr %t539
+  %t545 = sext i32 %t544 to i64
+  %t546 = load ptr, ptr @g_funcs
+  %t547 = getelementptr %FuncEntry, ptr %t546, i64 %t545
+  %t548 = getelementptr %FuncEntry, ptr %t547, i32 0, i32 3
+  %t549 = load i32, ptr %t548
+  %t550 = add i32 0, 1
+  %t551 = icmp eq i32 %t549, %t550
+  store i1 %t551, ptr %t540
+  br label %L140
+L140:
+  %t552 = load i1, ptr %t540
+  br i1 %t552, label %L141, label %L143
 L141:
-  %t549 = load i32, ptr %t533
-  %t550 = sext i32 %t549 to i64
-  %t551 = load ptr, ptr @g_funcs
-  %t552 = getelementptr %FuncEntry, ptr %t551, i64 %t550
-  %t553 = getelementptr %FuncEntry, ptr %t552, i32 0, i32 8
-  %t554 = load i32, ptr %t553
-  %t555 = add i32 0, 0
-  %t556 = icmp eq i32 %t554, %t555
-  br i1 %t556, label %L142, label %L144
-L142:
-  %t557 = load i32, ptr @PFR_MUTATING_CALL
-  call void @pfor_refuse(i32 %t557)
-  %t558 = add i32 0, 0
-  ret i32 %t558
+  %t553 = load i32, ptr @PFR_EXTERN_CALL
+  call void @pfor_refuse(i32 %t553)
+  %t554 = add i32 0, 0
+  ret i32 %t554
+L143:
+  %t555 = load i32, ptr %t539
+  %t556 = sext i32 %t555 to i64
+  %t557 = load ptr, ptr @g_funcs
+  %t558 = getelementptr %FuncEntry, ptr %t557, i64 %t556
+  %t559 = getelementptr %FuncEntry, ptr %t558, i32 0, i32 8
+  %t560 = load i32, ptr %t559
+  %t561 = add i32 0, 0
+  %t562 = icmp eq i32 %t560, %t561
+  br i1 %t562, label %L144, label %L146
 L144:
-  %t560 = load i32, ptr %t533
-  %t561 = sext i32 %t560 to i64
-  %t562 = load ptr, ptr @g_funcs
-  %t563 = getelementptr %FuncEntry, ptr %t562, i64 %t561
-  %t564 = getelementptr %FuncEntry, ptr %t563, i32 0, i32 7
-  %t565 = load i32, ptr %t564
-  %t566 = add i32 0, 0
-  %t567 = icmp eq i32 %t565, %t566
-  store i1 %t567, ptr %t559
-  br i1 %t567, label %L146, label %L145
-L145:
-  %t568 = load i32, ptr %t533
-  %t569 = sext i32 %t568 to i64
-  %t570 = load ptr, ptr @g_funcs
-  %t571 = getelementptr %FuncEntry, ptr %t570, i64 %t569
-  %t572 = getelementptr %FuncEntry, ptr %t571, i32 0, i32 9
-  %t573 = load i32, ptr %t572
-  %t574 = add i32 0, 1
-  %t575 = icmp eq i32 %t573, %t574
-  store i1 %t575, ptr %t559
-  br label %L146
+  %t563 = load i32, ptr @PFR_MUTATING_CALL
+  call void @pfor_refuse(i32 %t563)
+  %t564 = add i32 0, 0
+  ret i32 %t564
 L146:
-  %t576 = load i1, ptr %t559
-  br i1 %t576, label %L147, label %L149
+  %t566 = load i32, ptr %t539
+  %t567 = sext i32 %t566 to i64
+  %t568 = load ptr, ptr @g_funcs
+  %t569 = getelementptr %FuncEntry, ptr %t568, i64 %t567
+  %t570 = getelementptr %FuncEntry, ptr %t569, i32 0, i32 7
+  %t571 = load i32, ptr %t570
+  %t572 = add i32 0, 0
+  %t573 = icmp eq i32 %t571, %t572
+  store i1 %t573, ptr %t565
+  br i1 %t573, label %L148, label %L147
 L147:
-  %t577 = load i32, ptr @PFR_MUTATING_CALL
-  call void @pfor_refuse(i32 %t577)
-  %t578 = add i32 0, 0
-  ret i32 %t578
+  %t574 = load i32, ptr %t539
+  %t575 = sext i32 %t574 to i64
+  %t576 = load ptr, ptr @g_funcs
+  %t577 = getelementptr %FuncEntry, ptr %t576, i64 %t575
+  %t578 = getelementptr %FuncEntry, ptr %t577, i32 0, i32 9
+  %t579 = load i32, ptr %t578
+  %t580 = add i32 0, 1
+  %t581 = icmp eq i32 %t579, %t580
+  store i1 %t581, ptr %t565
+  br label %L148
+L148:
+  %t582 = load i1, ptr %t565
+  br i1 %t582, label %L149, label %L151
 L149:
-  %t579 = load i32, ptr %t533
-  %t580 = sext i32 %t579 to i64
-  %t581 = load ptr, ptr @g_funcs
-  %t582 = getelementptr %FuncEntry, ptr %t581, i64 %t580
-  %t583 = getelementptr %FuncEntry, ptr %t582, i32 0, i32 10
-  %t584 = load i32, ptr %t583
-  %t585 = add i32 0, 1
-  %t586 = icmp eq i32 %t584, %t585
-  br i1 %t586, label %L150, label %L152
-L150:
-  %t587 = load ptr, ptr %t0
-  %t588 = load i32, ptr %t1
-  %t589 = load i32, ptr %t533
-  %t590 = call i32 @pfor_map_call_reads(ptr %t587, i32 %t588, i32 %t589)
-  %t591 = add i32 0, 0
+  %t583 = load i32, ptr @PFR_MUTATING_CALL
+  call void @pfor_refuse(i32 %t583)
+  %t584 = add i32 0, 0
+  ret i32 %t584
+L151:
+  %t585 = load i32, ptr %t539
+  %t586 = sext i32 %t585 to i64
+  %t587 = load ptr, ptr @g_funcs
+  %t588 = getelementptr %FuncEntry, ptr %t587, i64 %t586
+  %t589 = getelementptr %FuncEntry, ptr %t588, i32 0, i32 10
+  %t590 = load i32, ptr %t589
+  %t591 = add i32 0, 1
   %t592 = icmp eq i32 %t590, %t591
-  br i1 %t592, label %L153, label %L155
-L153:
-  %t593 = add i32 0, 0
-  ret i32 %t593
-L155:
-  br label %L152
+  br i1 %t592, label %L152, label %L154
 L152:
+  %t593 = load ptr, ptr %t0
   %t594 = load i32, ptr %t1
-  %t595 = sext i32 %t594 to i64
-  %t596 = load ptr, ptr @g_nodes
-  %t597 = getelementptr %ASTNode, ptr %t596, i64 %t595
-  %t598 = getelementptr %ASTNode, ptr %t597, i32 0, i32 6
-  %t599 = load i32, ptr %t598
-  store i32 %t599, ptr %t600
-  %t601 = load i32, ptr %t1
-  %t602 = sext i32 %t601 to i64
-  %t603 = load ptr, ptr @g_nodes
-  %t604 = getelementptr %ASTNode, ptr %t603, i64 %t602
-  %t605 = getelementptr %ASTNode, ptr %t604, i32 0, i32 13
-  %t606 = load i32, ptr %t605
-  store i32 %t606, ptr %t607
-  %t608 = add i32 0, 0
-  store i32 %t608, ptr %t609
-  br label %L156
-L156:
-  %t610 = load i32, ptr %t609
-  %t611 = load i32, ptr %t600
-  %t612 = icmp slt i32 %t610, %t611
-  br i1 %t612, label %L157, label %L158
+  %t595 = load i32, ptr %t539
+  %t596 = call i32 @pfor_map_call_reads(ptr %t593, i32 %t594, i32 %t595)
+  %t597 = add i32 0, 0
+  %t598 = icmp eq i32 %t596, %t597
+  br i1 %t598, label %L155, label %L157
+L155:
+  %t599 = add i32 0, 0
+  ret i32 %t599
 L157:
-  %t613 = load ptr, ptr %t0
-  %t614 = load i32, ptr %t607
-  %t615 = load i32, ptr %t609
-  %t616 = add i32 %t614, %t615
-  %t617 = sext i32 %t616 to i64
-  %t618 = load ptr, ptr @g_args
-  %t619 = getelementptr i32, ptr %t618, i64 %t617
-  %t620 = load i32, ptr %t619
-  %t621 = load i32, ptr %t2
-  %t622 = call i32 @pfor_walk_expr(ptr %t613, i32 %t620, i32 %t621)
-  %t623 = add i32 0, 0
-  %t624 = icmp eq i32 %t622, %t623
-  br i1 %t624, label %L159, label %L161
-L159:
-  %t625 = add i32 0, 0
-  ret i32 %t625
-L161:
-  %t626 = load i32, ptr %t609
-  %t627 = add i32 0, 1
-  %t628 = add i32 %t626, %t627
-  store i32 %t628, ptr %t609
-  br label %L156
+  br label %L154
+L154:
+  %t600 = load i32, ptr %t1
+  %t601 = sext i32 %t600 to i64
+  %t602 = load ptr, ptr @g_nodes
+  %t603 = getelementptr %ASTNode, ptr %t602, i64 %t601
+  %t604 = getelementptr %ASTNode, ptr %t603, i32 0, i32 6
+  %t605 = load i32, ptr %t604
+  store i32 %t605, ptr %t606
+  %t607 = load i32, ptr %t1
+  %t608 = sext i32 %t607 to i64
+  %t609 = load ptr, ptr @g_nodes
+  %t610 = getelementptr %ASTNode, ptr %t609, i64 %t608
+  %t611 = getelementptr %ASTNode, ptr %t610, i32 0, i32 13
+  %t612 = load i32, ptr %t611
+  store i32 %t612, ptr %t613
+  %t614 = add i32 0, 0
+  store i32 %t614, ptr %t615
+  br label %L158
 L158:
-  %t629 = add i32 0, 1
-  ret i32 %t629
-L79:
-  %t630 = load i32, ptr @PFR_UNSUPPORTED_EXPR
-  call void @pfor_refuse(i32 %t630)
+  %t616 = load i32, ptr %t615
+  %t617 = load i32, ptr %t606
+  %t618 = icmp slt i32 %t616, %t617
+  br i1 %t618, label %L159, label %L160
+L159:
+  %t619 = load ptr, ptr %t0
+  %t620 = load i32, ptr %t613
+  %t621 = load i32, ptr %t615
+  %t622 = add i32 %t620, %t621
+  %t623 = sext i32 %t622 to i64
+  %t624 = load ptr, ptr @g_args
+  %t625 = getelementptr i32, ptr %t624, i64 %t623
+  %t626 = load i32, ptr %t625
+  %t627 = load i32, ptr %t2
+  %t628 = call i32 @pfor_walk_expr(ptr %t619, i32 %t626, i32 %t627)
+  %t629 = add i32 0, 0
+  %t630 = icmp eq i32 %t628, %t629
+  br i1 %t630, label %L161, label %L163
+L161:
   %t631 = add i32 0, 0
   ret i32 %t631
+L163:
+  %t632 = load i32, ptr %t615
+  %t633 = add i32 0, 1
+  %t634 = add i32 %t632, %t633
+  store i32 %t634, ptr %t615
+  br label %L158
+L160:
+  %t635 = add i32 0, 1
+  ret i32 %t635
+L79:
+  %t636 = load i32, ptr @PFR_UNSUPPORTED_EXPR
+  call void @pfor_refuse(i32 %t636)
+  %t637 = add i32 0, 0
+  ret i32 %t637
 }
 
 define internal ptr @pfor_reason_str(i32 %p0) {
@@ -101564,69 +101576,70 @@ entry:
   %t714 = alloca i32
   %t716 = alloca i32
   %t717 = alloca i1
-  %t742 = alloca i32
-  %t806 = alloca i1
-  %t818 = alloca i32
-  %t820 = alloca i32
-  %t834 = alloca i32
-  %t838 = alloca i32
-  %t839 = alloca i1
-  %t840 = alloca i1
-  %t863 = alloca i32
-  %t864 = alloca i1
-  %t865 = alloca i1
-  %t883 = alloca i1
-  %t899 = alloca i32
-  %t900 = alloca i1
-  %t946 = alloca i32
-  %t948 = alloca i32
-  %t969 = alloca i32
-  %t1031 = alloca i1
-  %t1070 = alloca i32
-  %t1072 = alloca i32
-  %t1093 = alloca i32
-  %t1126 = alloca i32
-  %t1150 = alloca i1
-  %t1162 = alloca i32
-  %t1216 = alloca i32
-  %t1218 = alloca i32
-  %t1219 = alloca i1
-  %t1220 = alloca i1
-  %t1221 = alloca i1
-  %t1222 = alloca i1
-  %t1261 = alloca i32
-  %t1262 = alloca i1
-  %t1263 = alloca i1
-  %t1264 = alloca i1
-  %t1265 = alloca i1
-  %t1306 = alloca i32
-  %t1307 = alloca i1
-  %t1308 = alloca i1
-  %t1339 = alloca i32
-  %t1346 = alloca i32
-  %t1353 = alloca i32
-  %t1354 = alloca i1
-  %t1355 = alloca i1
-  %t1382 = alloca i32
-  %t1383 = alloca i1
-  %t1384 = alloca i1
-  %t1385 = alloca i1
-  %t1417 = alloca i32
-  %t1418 = alloca i1
-  %t1419 = alloca i1
-  %t1444 = alloca i1
-  %t1458 = alloca i32
-  %t1459 = alloca i1
-  %t1460 = alloca i1
-  %t1487 = alloca i32
-  %t1488 = alloca i1
-  %t1489 = alloca i1
-  %t1490 = alloca i1
-  %t1531 = alloca i1
-  %t1569 = alloca i32
-  %t1590 = alloca i32
-  %t1643 = alloca i32
-  %t1698 = alloca i32
+  %t718 = alloca i1
+  %t748 = alloca i32
+  %t812 = alloca i1
+  %t824 = alloca i32
+  %t826 = alloca i32
+  %t840 = alloca i32
+  %t844 = alloca i32
+  %t845 = alloca i1
+  %t846 = alloca i1
+  %t869 = alloca i32
+  %t870 = alloca i1
+  %t871 = alloca i1
+  %t889 = alloca i1
+  %t905 = alloca i32
+  %t906 = alloca i1
+  %t952 = alloca i32
+  %t954 = alloca i32
+  %t975 = alloca i32
+  %t1037 = alloca i1
+  %t1076 = alloca i32
+  %t1078 = alloca i32
+  %t1099 = alloca i32
+  %t1132 = alloca i32
+  %t1156 = alloca i1
+  %t1168 = alloca i32
+  %t1222 = alloca i32
+  %t1224 = alloca i32
+  %t1225 = alloca i1
+  %t1226 = alloca i1
+  %t1227 = alloca i1
+  %t1228 = alloca i1
+  %t1267 = alloca i32
+  %t1268 = alloca i1
+  %t1269 = alloca i1
+  %t1270 = alloca i1
+  %t1271 = alloca i1
+  %t1312 = alloca i32
+  %t1313 = alloca i1
+  %t1314 = alloca i1
+  %t1345 = alloca i32
+  %t1352 = alloca i32
+  %t1359 = alloca i32
+  %t1360 = alloca i1
+  %t1361 = alloca i1
+  %t1388 = alloca i32
+  %t1389 = alloca i1
+  %t1390 = alloca i1
+  %t1391 = alloca i1
+  %t1423 = alloca i32
+  %t1424 = alloca i1
+  %t1425 = alloca i1
+  %t1450 = alloca i1
+  %t1464 = alloca i32
+  %t1465 = alloca i1
+  %t1466 = alloca i1
+  %t1493 = alloca i32
+  %t1494 = alloca i1
+  %t1495 = alloca i1
+  %t1496 = alloca i1
+  %t1537 = alloca i1
+  %t1575 = alloca i32
+  %t1596 = alloca i32
+  %t1649 = alloca i32
+  %t1704 = alloca i32
   %t5 = load i32, ptr %t1
   %t6 = add i32 0, 0
   %t7 = icmp slt i32 %t5, %t6
@@ -102652,1467 +102665,1478 @@ L155:
   store i32 %t713, ptr %t714
   %t715 = load i32, ptr @NULL_STR
   store i32 %t715, ptr %t716
-  %t718 = load i32, ptr %t708
-  %t719 = sext i32 %t718 to i64
-  %t720 = load ptr, ptr @g_strings
-  %t721 = getelementptr i8, ptr %t720, i64 %t719
-  %t722 = getelementptr [6 x i8], ptr @.str.4066, i32 0, i32 0
-  %t723 = call i32 @str_eq(ptr %t721, ptr %t722)
-  %t724 = add i32 0, 1
-  %t725 = icmp eq i32 %t723, %t724
-  store i1 %t725, ptr %t717
-  br i1 %t725, label %L156, label %L157
+  %t719 = load i32, ptr %t708
+  %t720 = sext i32 %t719 to i64
+  %t721 = load ptr, ptr @g_strings
+  %t722 = getelementptr i8, ptr %t721, i64 %t720
+  %t723 = getelementptr [6 x i8], ptr @.str.4066, i32 0, i32 0
+  %t724 = call i32 @str_eq(ptr %t722, ptr %t723)
+  %t725 = add i32 0, 1
+  %t726 = icmp eq i32 %t724, %t725
+  store i1 %t726, ptr %t718
+  br i1 %t726, label %L156, label %L157
 L156:
-  %t726 = load i32, ptr %t1
-  %t727 = sext i32 %t726 to i64
-  %t728 = load ptr, ptr @g_nodes
-  %t729 = getelementptr %ASTNode, ptr %t728, i64 %t727
-  %t730 = getelementptr %ASTNode, ptr %t729, i32 0, i32 6
-  %t731 = load i32, ptr %t730
-  %t732 = add i32 0, 3
-  %t733 = icmp eq i32 %t731, %t732
-  store i1 %t733, ptr %t717
+  %t727 = load i32, ptr %t708
+  %t728 = call i32 @find_func(i32 %t727)
+  %t729 = add i32 0, 0
+  %t730 = icmp slt i32 %t728, %t729
+  store i1 %t730, ptr %t718
   br label %L157
 L157:
-  %t734 = load i1, ptr %t717
-  br i1 %t734, label %L158, label %L160
+  %t731 = load i1, ptr %t718
+  store i1 %t731, ptr %t717
+  br i1 %t731, label %L158, label %L159
 L158:
-  %t735 = add i32 0, 1
-  store i32 %t735, ptr %t710
-  %t736 = load i32, ptr %t1
-  %t737 = sext i32 %t736 to i64
-  %t738 = load ptr, ptr @g_nodes
-  %t739 = getelementptr %ASTNode, ptr %t738, i64 %t737
-  %t740 = getelementptr %ASTNode, ptr %t739, i32 0, i32 13
-  %t741 = load i32, ptr %t740
-  store i32 %t741, ptr %t742
-  %t743 = load ptr, ptr %t0
-  %t744 = load i32, ptr %t742
-  %t745 = sext i32 %t744 to i64
-  %t746 = load ptr, ptr @g_args
-  %t747 = getelementptr i32, ptr %t746, i64 %t745
-  %t748 = load i32, ptr %t747
-  %t749 = load i32, ptr %t2
-  %t750 = add i32 0, 1
-  %t751 = add i32 %t749, %t750
-  %t752 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t743, i32 %t748, i32 %t751, i32 %t752)
-  %t753 = load ptr, ptr %t0
-  %t754 = load i32, ptr %t742
-  %t755 = add i32 0, 1
-  %t756 = add i32 %t754, %t755
-  %t757 = sext i32 %t756 to i64
-  %t758 = load ptr, ptr @g_args
-  %t759 = getelementptr i32, ptr %t758, i64 %t757
-  %t760 = load i32, ptr %t759
-  %t761 = load i32, ptr %t2
-  %t762 = add i32 0, 1
-  %t763 = add i32 %t761, %t762
-  %t764 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t753, i32 %t760, i32 %t763, i32 %t764)
-  %t765 = load ptr, ptr %t0
-  %t766 = load i32, ptr %t742
-  %t767 = add i32 0, 2
-  %t768 = add i32 %t766, %t767
-  %t769 = sext i32 %t768 to i64
-  %t770 = load ptr, ptr @g_args
-  %t771 = getelementptr i32, ptr %t770, i64 %t769
-  %t772 = load i32, ptr %t771
-  %t773 = load i32, ptr %t2
-  %t774 = add i32 0, 1
-  %t775 = add i32 %t773, %t774
-  %t776 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t765, i32 %t772, i32 %t775, i32 %t776)
-  ret void
+  %t732 = load i32, ptr %t1
+  %t733 = sext i32 %t732 to i64
+  %t734 = load ptr, ptr @g_nodes
+  %t735 = getelementptr %ASTNode, ptr %t734, i64 %t733
+  %t736 = getelementptr %ASTNode, ptr %t735, i32 0, i32 6
+  %t737 = load i32, ptr %t736
+  %t738 = add i32 0, 3
+  %t739 = icmp eq i32 %t737, %t738
+  store i1 %t739, ptr %t717
+  br label %L159
+L159:
+  %t740 = load i1, ptr %t717
+  br i1 %t740, label %L160, label %L162
 L160:
-  %t777 = load i32, ptr %t1
-  %t778 = call i32 @call_may_use_builtin_precedence(i32 %t777)
-  %t779 = add i32 0, 1
-  %t780 = icmp eq i32 %t778, %t779
-  br i1 %t780, label %L161, label %L163
-L161:
-  %t781 = add i32 0, 1
-  store i32 %t781, ptr %t710
-  %t782 = load i32, ptr %t708
-  %t783 = call i32 @is_impure_builtin(i32 %t782)
-  %t784 = add i32 0, 1
-  %t785 = icmp eq i32 %t783, %t784
-  br i1 %t785, label %L164, label %L165
-L164:
-  %t786 = load ptr, ptr %t0
-  %t787 = load ptr, ptr %t0
-  %t788 = getelementptr %PForProof0, ptr %t787, i32 0, i32 38
-  %t789 = load i32, ptr %t788
-  %t790 = add i32 0, 1
-  %t791 = add i32 %t789, %t790
-  %t792 = load ptr, ptr %t0
-  %t793 = getelementptr %PForProof0, ptr %t792, i32 0, i32 38
-  store i32 %t791, ptr %t793
-  %t794 = load ptr, ptr %t0
-  %t795 = load i32, ptr @PFR_MUTATING_CALL
-  call void @proof0_cpu_refuse(ptr %t794, i32 %t795)
-  br label %L166
-L165:
-  %t796 = load ptr, ptr %t0
-  %t797 = load ptr, ptr %t0
-  %t798 = getelementptr %PForProof0, ptr %t797, i32 0, i32 37
-  %t799 = load i32, ptr %t798
-  %t800 = add i32 0, 1
-  %t801 = add i32 %t799, %t800
-  %t802 = load ptr, ptr %t0
-  %t803 = getelementptr %PForProof0, ptr %t802, i32 0, i32 37
-  store i32 %t801, ptr %t803
-  %t804 = load ptr, ptr %t0
-  %t805 = load i32, ptr @PFR_EXTERN_CALL
-  call void @proof0_cpu_refuse(ptr %t804, i32 %t805)
-  br label %L166
-L166:
-  br label %L163
+  %t741 = add i32 0, 1
+  store i32 %t741, ptr %t710
+  %t742 = load i32, ptr %t1
+  %t743 = sext i32 %t742 to i64
+  %t744 = load ptr, ptr @g_nodes
+  %t745 = getelementptr %ASTNode, ptr %t744, i64 %t743
+  %t746 = getelementptr %ASTNode, ptr %t745, i32 0, i32 13
+  %t747 = load i32, ptr %t746
+  store i32 %t747, ptr %t748
+  %t749 = load ptr, ptr %t0
+  %t750 = load i32, ptr %t748
+  %t751 = sext i32 %t750 to i64
+  %t752 = load ptr, ptr @g_args
+  %t753 = getelementptr i32, ptr %t752, i64 %t751
+  %t754 = load i32, ptr %t753
+  %t755 = load i32, ptr %t2
+  %t756 = add i32 0, 1
+  %t757 = add i32 %t755, %t756
+  %t758 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t749, i32 %t754, i32 %t757, i32 %t758)
+  %t759 = load ptr, ptr %t0
+  %t760 = load i32, ptr %t748
+  %t761 = add i32 0, 1
+  %t762 = add i32 %t760, %t761
+  %t763 = sext i32 %t762 to i64
+  %t764 = load ptr, ptr @g_args
+  %t765 = getelementptr i32, ptr %t764, i64 %t763
+  %t766 = load i32, ptr %t765
+  %t767 = load i32, ptr %t2
+  %t768 = add i32 0, 1
+  %t769 = add i32 %t767, %t768
+  %t770 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t759, i32 %t766, i32 %t769, i32 %t770)
+  %t771 = load ptr, ptr %t0
+  %t772 = load i32, ptr %t748
+  %t773 = add i32 0, 2
+  %t774 = add i32 %t772, %t773
+  %t775 = sext i32 %t774 to i64
+  %t776 = load ptr, ptr @g_args
+  %t777 = getelementptr i32, ptr %t776, i64 %t775
+  %t778 = load i32, ptr %t777
+  %t779 = load i32, ptr %t2
+  %t780 = add i32 0, 1
+  %t781 = add i32 %t779, %t780
+  %t782 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t771, i32 %t778, i32 %t781, i32 %t782)
+  ret void
+L162:
+  %t783 = load i32, ptr %t1
+  %t784 = call i32 @call_may_use_builtin_precedence(i32 %t783)
+  %t785 = add i32 0, 1
+  %t786 = icmp eq i32 %t784, %t785
+  br i1 %t786, label %L163, label %L165
 L163:
-  %t807 = load i32, ptr %t710
-  %t808 = add i32 0, 0
-  %t809 = icmp eq i32 %t807, %t808
-  store i1 %t809, ptr %t806
-  br i1 %t809, label %L167, label %L168
+  %t787 = add i32 0, 1
+  store i32 %t787, ptr %t710
+  %t788 = load i32, ptr %t708
+  %t789 = call i32 @is_impure_builtin(i32 %t788)
+  %t790 = add i32 0, 1
+  %t791 = icmp eq i32 %t789, %t790
+  br i1 %t791, label %L166, label %L167
+L166:
+  %t792 = load ptr, ptr %t0
+  %t793 = load ptr, ptr %t0
+  %t794 = getelementptr %PForProof0, ptr %t793, i32 0, i32 38
+  %t795 = load i32, ptr %t794
+  %t796 = add i32 0, 1
+  %t797 = add i32 %t795, %t796
+  %t798 = load ptr, ptr %t0
+  %t799 = getelementptr %PForProof0, ptr %t798, i32 0, i32 38
+  store i32 %t797, ptr %t799
+  %t800 = load ptr, ptr %t0
+  %t801 = load i32, ptr @PFR_MUTATING_CALL
+  call void @proof0_cpu_refuse(ptr %t800, i32 %t801)
+  br label %L168
 L167:
-  %t810 = load i32, ptr %t708
-  %t811 = call i32 @find_func(i32 %t810)
-  %t812 = add i32 0, 0
-  %t813 = icmp slt i32 %t811, %t812
-  store i1 %t813, ptr %t806
+  %t802 = load ptr, ptr %t0
+  %t803 = load ptr, ptr %t0
+  %t804 = getelementptr %PForProof0, ptr %t803, i32 0, i32 37
+  %t805 = load i32, ptr %t804
+  %t806 = add i32 0, 1
+  %t807 = add i32 %t805, %t806
+  %t808 = load ptr, ptr %t0
+  %t809 = getelementptr %PForProof0, ptr %t808, i32 0, i32 37
+  store i32 %t807, ptr %t809
+  %t810 = load ptr, ptr %t0
+  %t811 = load i32, ptr @PFR_EXTERN_CALL
+  call void @proof0_cpu_refuse(ptr %t810, i32 %t811)
   br label %L168
 L168:
-  %t814 = load i1, ptr %t806
-  br i1 %t814, label %L169, label %L171
+  br label %L165
+L165:
+  %t813 = load i32, ptr %t710
+  %t814 = add i32 0, 0
+  %t815 = icmp eq i32 %t813, %t814
+  store i1 %t815, ptr %t812
+  br i1 %t815, label %L169, label %L170
 L169:
-  %t815 = load ptr, ptr %t0
   %t816 = load i32, ptr %t708
-  %t817 = call i32 @proof0_resolve(ptr %t815, i32 %t816)
-  store i32 %t817, ptr %t818
-  %t819 = load i32, ptr @NULL_STR
-  store i32 %t819, ptr %t820
-  %t821 = load i32, ptr %t818
-  %t822 = add i32 0, 0
-  %t823 = icmp sge i32 %t821, %t822
-  br i1 %t823, label %L172, label %L173
-L172:
-  %t824 = load ptr, ptr %t0
-  %t825 = load i32, ptr %t708
-  %t826 = call i32 @proof0_name_type(ptr %t824, i32 %t825)
-  store i32 %t826, ptr %t820
-  %t827 = load i32, ptr %t818
-  %t828 = sext i32 %t827 to i64
-  %t829 = load ptr, ptr %t0
-  %t830 = getelementptr %PForProof0, ptr %t829, i32 0, i32 6
-  %t831 = load ptr, ptr %t830
-  %t832 = getelementptr i32, ptr %t831, i64 %t828
-  %t833 = load i32, ptr %t832
-  store i32 %t833, ptr %t834
-  %t835 = add i32 0, 0
-  %t836 = add i32 0, 1
-  %t837 = sub i32 %t835, %t836
-  store i32 %t837, ptr %t838
-  %t841 = load i32, ptr %t834
-  %t842 = add i32 0, 0
-  %t843 = icmp sgt i32 %t841, %t842
-  store i1 %t843, ptr %t840
-  br i1 %t843, label %L175, label %L176
-L175:
-  %t844 = load i32, ptr %t834
-  %t845 = load i32, ptr @g_nnodes
-  %t846 = icmp slt i32 %t844, %t845
-  store i1 %t846, ptr %t840
-  br label %L176
-L176:
-  %t847 = load i1, ptr %t840
-  store i1 %t847, ptr %t839
-  br i1 %t847, label %L177, label %L178
+  %t817 = call i32 @find_func(i32 %t816)
+  %t818 = add i32 0, 0
+  %t819 = icmp slt i32 %t817, %t818
+  store i1 %t819, ptr %t812
+  br label %L170
+L170:
+  %t820 = load i1, ptr %t812
+  br i1 %t820, label %L171, label %L173
+L171:
+  %t821 = load ptr, ptr %t0
+  %t822 = load i32, ptr %t708
+  %t823 = call i32 @proof0_resolve(ptr %t821, i32 %t822)
+  store i32 %t823, ptr %t824
+  %t825 = load i32, ptr @NULL_STR
+  store i32 %t825, ptr %t826
+  %t827 = load i32, ptr %t824
+  %t828 = add i32 0, 0
+  %t829 = icmp sge i32 %t827, %t828
+  br i1 %t829, label %L174, label %L175
+L174:
+  %t830 = load ptr, ptr %t0
+  %t831 = load i32, ptr %t708
+  %t832 = call i32 @proof0_name_type(ptr %t830, i32 %t831)
+  store i32 %t832, ptr %t826
+  %t833 = load i32, ptr %t824
+  %t834 = sext i32 %t833 to i64
+  %t835 = load ptr, ptr %t0
+  %t836 = getelementptr %PForProof0, ptr %t835, i32 0, i32 6
+  %t837 = load ptr, ptr %t836
+  %t838 = getelementptr i32, ptr %t837, i64 %t834
+  %t839 = load i32, ptr %t838
+  store i32 %t839, ptr %t840
+  %t841 = add i32 0, 0
+  %t842 = add i32 0, 1
+  %t843 = sub i32 %t841, %t842
+  store i32 %t843, ptr %t844
+  %t847 = load i32, ptr %t840
+  %t848 = add i32 0, 0
+  %t849 = icmp sgt i32 %t847, %t848
+  store i1 %t849, ptr %t846
+  br i1 %t849, label %L177, label %L178
 L177:
-  %t848 = load i32, ptr %t834
-  %t849 = sext i32 %t848 to i64
-  %t850 = load ptr, ptr @g_nodes
-  %t851 = getelementptr %ASTNode, ptr %t850, i64 %t849
-  %t852 = getelementptr %ASTNode, ptr %t851, i32 0, i32 0
-  %t853 = load i32, ptr %t852
-  %t854 = load i32, ptr @AST_LET
-  %t855 = icmp eq i32 %t853, %t854
-  store i1 %t855, ptr %t839
+  %t850 = load i32, ptr %t840
+  %t851 = load i32, ptr @g_nnodes
+  %t852 = icmp slt i32 %t850, %t851
+  store i1 %t852, ptr %t846
   br label %L178
 L178:
-  %t856 = load i1, ptr %t839
-  br i1 %t856, label %L179, label %L181
+  %t853 = load i1, ptr %t846
+  store i1 %t853, ptr %t845
+  br i1 %t853, label %L179, label %L180
 L179:
-  %t857 = load i32, ptr %t834
-  %t858 = sext i32 %t857 to i64
-  %t859 = load ptr, ptr @g_nodes
-  %t860 = getelementptr %ASTNode, ptr %t859, i64 %t858
-  %t861 = getelementptr %ASTNode, ptr %t860, i32 0, i32 7
-  %t862 = load i32, ptr %t861
-  store i32 %t862, ptr %t863
-  %t866 = load i32, ptr %t863
-  %t867 = add i32 0, 0
-  %t868 = icmp sgt i32 %t866, %t867
-  store i1 %t868, ptr %t865
-  br i1 %t868, label %L182, label %L183
-L182:
-  %t869 = load i32, ptr %t863
-  %t870 = load i32, ptr @g_nnodes
-  %t871 = icmp slt i32 %t869, %t870
-  store i1 %t871, ptr %t865
-  br label %L183
-L183:
-  %t872 = load i1, ptr %t865
-  store i1 %t872, ptr %t864
-  br i1 %t872, label %L184, label %L185
+  %t854 = load i32, ptr %t840
+  %t855 = sext i32 %t854 to i64
+  %t856 = load ptr, ptr @g_nodes
+  %t857 = getelementptr %ASTNode, ptr %t856, i64 %t855
+  %t858 = getelementptr %ASTNode, ptr %t857, i32 0, i32 0
+  %t859 = load i32, ptr %t858
+  %t860 = load i32, ptr @AST_LET
+  %t861 = icmp eq i32 %t859, %t860
+  store i1 %t861, ptr %t845
+  br label %L180
+L180:
+  %t862 = load i1, ptr %t845
+  br i1 %t862, label %L181, label %L183
+L181:
+  %t863 = load i32, ptr %t840
+  %t864 = sext i32 %t863 to i64
+  %t865 = load ptr, ptr @g_nodes
+  %t866 = getelementptr %ASTNode, ptr %t865, i64 %t864
+  %t867 = getelementptr %ASTNode, ptr %t866, i32 0, i32 7
+  %t868 = load i32, ptr %t867
+  store i32 %t868, ptr %t869
+  %t872 = load i32, ptr %t869
+  %t873 = add i32 0, 0
+  %t874 = icmp sgt i32 %t872, %t873
+  store i1 %t874, ptr %t871
+  br i1 %t874, label %L184, label %L185
 L184:
-  %t873 = load i32, ptr %t863
-  %t874 = sext i32 %t873 to i64
-  %t875 = load ptr, ptr @g_nodes
-  %t876 = getelementptr %ASTNode, ptr %t875, i64 %t874
-  %t877 = getelementptr %ASTNode, ptr %t876, i32 0, i32 0
-  %t878 = load i32, ptr %t877
-  %t879 = load i32, ptr @AST_CLOSURE
-  %t880 = icmp eq i32 %t878, %t879
-  store i1 %t880, ptr %t864
+  %t875 = load i32, ptr %t869
+  %t876 = load i32, ptr @g_nnodes
+  %t877 = icmp slt i32 %t875, %t876
+  store i1 %t877, ptr %t871
   br label %L185
 L185:
-  %t881 = load i1, ptr %t864
-  br i1 %t881, label %L186, label %L188
+  %t878 = load i1, ptr %t871
+  store i1 %t878, ptr %t870
+  br i1 %t878, label %L186, label %L187
 L186:
-  %t882 = load i32, ptr %t863
-  store i32 %t882, ptr %t838
-  br label %L188
+  %t879 = load i32, ptr %t869
+  %t880 = sext i32 %t879 to i64
+  %t881 = load ptr, ptr @g_nodes
+  %t882 = getelementptr %ASTNode, ptr %t881, i64 %t880
+  %t883 = getelementptr %ASTNode, ptr %t882, i32 0, i32 0
+  %t884 = load i32, ptr %t883
+  %t885 = load i32, ptr @AST_CLOSURE
+  %t886 = icmp eq i32 %t884, %t885
+  store i1 %t886, ptr %t870
+  br label %L187
+L187:
+  %t887 = load i1, ptr %t870
+  br i1 %t887, label %L188, label %L190
 L188:
-  br label %L181
-L181:
-  %t884 = load i32, ptr %t820
-  %t885 = call i32 @type_is_closure(i32 %t884)
-  %t886 = add i32 0, 1
-  %t887 = icmp eq i32 %t885, %t886
-  store i1 %t887, ptr %t883
-  br i1 %t887, label %L189, label %L190
-L189:
-  %t888 = load i32, ptr %t838
-  %t889 = add i32 0, 0
-  %t890 = icmp sge i32 %t888, %t889
-  store i1 %t890, ptr %t883
+  %t888 = load i32, ptr %t869
+  store i32 %t888, ptr %t844
   br label %L190
 L190:
-  %t891 = load i1, ptr %t883
-  br i1 %t891, label %L191, label %L193
-L191:
+  br label %L183
+L183:
+  %t890 = load i32, ptr %t826
+  %t891 = call i32 @type_is_closure(i32 %t890)
   %t892 = add i32 0, 1
-  store i32 %t892, ptr %t710
-  %t893 = load i32, ptr %t838
-  %t894 = sext i32 %t893 to i64
-  %t895 = load ptr, ptr @g_nodes
-  %t896 = getelementptr %ASTNode, ptr %t895, i64 %t894
-  %t897 = getelementptr %ASTNode, ptr %t896, i32 0, i32 7
-  %t898 = load i32, ptr %t897
-  store i32 %t898, ptr %t899
-  %t901 = load i32, ptr %t899
-  %t902 = add i32 0, 0
-  %t903 = icmp sle i32 %t901, %t902
-  store i1 %t903, ptr %t900
-  br i1 %t903, label %L195, label %L194
-L194:
-  %t904 = load i32, ptr %t899
-  %t905 = load i32, ptr @g_nnodes
-  %t906 = icmp sge i32 %t904, %t905
-  store i1 %t906, ptr %t900
-  br label %L195
-L195:
-  %t907 = load i1, ptr %t900
-  br i1 %t907, label %L196, label %L197
+  %t893 = icmp eq i32 %t891, %t892
+  store i1 %t893, ptr %t889
+  br i1 %t893, label %L191, label %L192
+L191:
+  %t894 = load i32, ptr %t844
+  %t895 = add i32 0, 0
+  %t896 = icmp sge i32 %t894, %t895
+  store i1 %t896, ptr %t889
+  br label %L192
+L192:
+  %t897 = load i1, ptr %t889
+  br i1 %t897, label %L193, label %L195
+L193:
+  %t898 = add i32 0, 1
+  store i32 %t898, ptr %t710
+  %t899 = load i32, ptr %t844
+  %t900 = sext i32 %t899 to i64
+  %t901 = load ptr, ptr @g_nodes
+  %t902 = getelementptr %ASTNode, ptr %t901, i64 %t900
+  %t903 = getelementptr %ASTNode, ptr %t902, i32 0, i32 7
+  %t904 = load i32, ptr %t903
+  store i32 %t904, ptr %t905
+  %t907 = load i32, ptr %t905
+  %t908 = add i32 0, 0
+  %t909 = icmp sle i32 %t907, %t908
+  store i1 %t909, ptr %t906
+  br i1 %t909, label %L197, label %L196
 L196:
-  %t908 = load ptr, ptr %t0
-  %t909 = load ptr, ptr %t0
-  %t910 = getelementptr %PForProof0, ptr %t909, i32 0, i32 37
-  %t911 = load i32, ptr %t910
-  %t912 = add i32 0, 1
-  %t913 = add i32 %t911, %t912
-  %t914 = load ptr, ptr %t0
-  %t915 = getelementptr %PForProof0, ptr %t914, i32 0, i32 37
-  store i32 %t913, ptr %t915
-  %t916 = load ptr, ptr %t0
-  %t917 = load i32, ptr @PFR_UNSUPPORTED_STMT
-  call void @proof0_cpu_refuse(ptr %t916, i32 %t917)
-  br label %L198
+  %t910 = load i32, ptr %t905
+  %t911 = load i32, ptr @g_nnodes
+  %t912 = icmp sge i32 %t910, %t911
+  store i1 %t912, ptr %t906
+  br label %L197
 L197:
-  %t918 = load i32, ptr %t899
-  %t919 = sext i32 %t918 to i64
-  %t920 = load ptr, ptr @g_nodes
-  %t921 = getelementptr %ASTNode, ptr %t920, i64 %t919
-  %t922 = getelementptr %ASTNode, ptr %t921, i32 0, i32 0
-  %t923 = load i32, ptr %t922
-  %t924 = load i32, ptr @AST_BLOCK
-  %t925 = icmp eq i32 %t923, %t924
-  br i1 %t925, label %L199, label %L200
+  %t913 = load i1, ptr %t906
+  br i1 %t913, label %L198, label %L199
+L198:
+  %t914 = load ptr, ptr %t0
+  %t915 = load ptr, ptr %t0
+  %t916 = getelementptr %PForProof0, ptr %t915, i32 0, i32 37
+  %t917 = load i32, ptr %t916
+  %t918 = add i32 0, 1
+  %t919 = add i32 %t917, %t918
+  %t920 = load ptr, ptr %t0
+  %t921 = getelementptr %PForProof0, ptr %t920, i32 0, i32 37
+  store i32 %t919, ptr %t921
+  %t922 = load ptr, ptr %t0
+  %t923 = load i32, ptr @PFR_UNSUPPORTED_STMT
+  call void @proof0_cpu_refuse(ptr %t922, i32 %t923)
+  br label %L200
 L199:
-  %t926 = load i32, ptr %t899
-  %t927 = add i32 0, 0
-  %t928 = call i32 @proof0_c1_closure_shape(i32 %t926, i32 %t927)
-  %t929 = add i32 0, 0
-  %t930 = icmp eq i32 %t928, %t929
-  br i1 %t930, label %L202, label %L203
-L202:
-  %t931 = load ptr, ptr %t0
-  %t932 = add i32 0, 2
-  call void @proof0_c1_refuse(ptr %t931, i32 %t932)
-  %t933 = load ptr, ptr %t0
-  %t934 = load ptr, ptr %t0
-  %t935 = getelementptr %PForProof0, ptr %t934, i32 0, i32 37
-  %t936 = load i32, ptr %t935
-  %t937 = add i32 0, 1
-  %t938 = add i32 %t936, %t937
-  %t939 = load ptr, ptr %t0
-  %t940 = getelementptr %PForProof0, ptr %t939, i32 0, i32 37
-  store i32 %t938, ptr %t940
-  %t941 = load ptr, ptr %t0
-  %t942 = load i32, ptr @PFR_UNSUPPORTED_STMT
-  call void @proof0_cpu_refuse(ptr %t941, i32 %t942)
-  br label %L204
-L203:
-  %t943 = load ptr, ptr %t0
-  %t944 = getelementptr %PForProof0, ptr %t943, i32 0, i32 2
-  %t945 = load i32, ptr %t944
-  store i32 %t945, ptr %t946
-  %t947 = add i32 0, 0
-  store i32 %t947, ptr %t948
-  br label %L205
-L205:
-  %t949 = load i32, ptr %t948
-  %t950 = load i32, ptr %t838
-  %t951 = sext i32 %t950 to i64
-  %t952 = load ptr, ptr @g_nodes
-  %t953 = getelementptr %ASTNode, ptr %t952, i64 %t951
-  %t954 = getelementptr %ASTNode, ptr %t953, i32 0, i32 6
-  %t955 = load i32, ptr %t954
-  %t956 = icmp slt i32 %t949, %t955
-  br i1 %t956, label %L206, label %L207
-L206:
-  %t957 = load i32, ptr %t838
-  %t958 = sext i32 %t957 to i64
-  %t959 = load ptr, ptr @g_nodes
-  %t960 = getelementptr %ASTNode, ptr %t959, i64 %t958
-  %t961 = getelementptr %ASTNode, ptr %t960, i32 0, i32 13
-  %t962 = load i32, ptr %t961
-  %t963 = load i32, ptr %t948
-  %t964 = add i32 %t962, %t963
-  %t965 = sext i32 %t964 to i64
-  %t966 = load ptr, ptr @g_args
-  %t967 = getelementptr i32, ptr %t966, i64 %t965
-  %t968 = load i32, ptr %t967
-  store i32 %t968, ptr %t969
-  %t970 = load ptr, ptr %t0
-  %t971 = load i32, ptr %t969
-  %t972 = sext i32 %t971 to i64
-  %t973 = load ptr, ptr @g_nodes
-  %t974 = getelementptr %ASTNode, ptr %t973, i64 %t972
-  %t975 = getelementptr %ASTNode, ptr %t974, i32 0, i32 10
-  %t976 = load i32, ptr %t975
-  %t977 = load i32, ptr %t969
-  %t978 = load i32, ptr @P0_BIND_LOCAL
-  %t979 = load i32, ptr %t969
-  %t980 = sext i32 %t979 to i64
-  %t981 = load ptr, ptr @g_nodes
-  %t982 = getelementptr %ASTNode, ptr %t981, i64 %t980
-  %t983 = getelementptr %ASTNode, ptr %t982, i32 0, i32 11
-  %t984 = load i32, ptr %t983
-  %t985 = call i32 @resolve_type_sub(i32 %t984)
-  %t986 = call i32 @proof0_bind(ptr %t970, i32 %t976, i32 %t977, i32 %t978, i32 %t985)
-  %t987 = load i32, ptr %t948
-  %t988 = add i32 0, 1
-  %t989 = add i32 %t987, %t988
-  store i32 %t989, ptr %t948
-  br label %L205
-L207:
-  %t990 = load ptr, ptr %t0
-  %t991 = load i32, ptr %t899
-  %t992 = load i32, ptr %t2
-  %t993 = add i32 0, 1
-  %t994 = add i32 %t992, %t993
-  %t995 = load i32, ptr %t3
-  %t996 = call i32 @proof0_c1_closure_stmt(ptr %t990, i32 %t991, i32 %t994, i32 %t995)
-  %t997 = add i32 0, 1
-  %t998 = icmp eq i32 %t996, %t997
-  br i1 %t998, label %L208, label %L209
-L208:
-  %t999 = load ptr, ptr %t0
-  %t1000 = load ptr, ptr %t0
-  %t1001 = getelementptr %PForProof0, ptr %t1000, i32 0, i32 32
-  %t1002 = load i32, ptr %t1001
-  %t1003 = add i32 0, 1
-  %t1004 = add i32 %t1002, %t1003
-  %t1005 = load ptr, ptr %t0
-  %t1006 = getelementptr %PForProof0, ptr %t1005, i32 0, i32 32
-  store i32 %t1004, ptr %t1006
-  %t1007 = load ptr, ptr %t0
-  %t1008 = load ptr, ptr %t0
-  %t1009 = getelementptr %PForProof0, ptr %t1008, i32 0, i32 33
-  %t1010 = load i32, ptr %t1009
-  %t1011 = add i32 0, 1
-  %t1012 = add i32 %t1010, %t1011
-  %t1013 = load ptr, ptr %t0
-  %t1014 = getelementptr %PForProof0, ptr %t1013, i32 0, i32 33
-  store i32 %t1012, ptr %t1014
-  br label %L210
-L209:
-  %t1015 = load ptr, ptr %t0
-  %t1016 = add i32 0, 2
-  call void @proof0_c1_refuse(ptr %t1015, i32 %t1016)
-  %t1017 = load ptr, ptr %t0
-  %t1018 = load ptr, ptr %t0
-  %t1019 = getelementptr %PForProof0, ptr %t1018, i32 0, i32 37
-  %t1020 = load i32, ptr %t1019
-  %t1021 = add i32 0, 1
-  %t1022 = add i32 %t1020, %t1021
-  %t1023 = load ptr, ptr %t0
-  %t1024 = getelementptr %PForProof0, ptr %t1023, i32 0, i32 37
-  store i32 %t1022, ptr %t1024
-  %t1025 = load ptr, ptr %t0
-  %t1026 = load i32, ptr @PFR_UNSUPPORTED_STMT
-  call void @proof0_cpu_refuse(ptr %t1025, i32 %t1026)
-  br label %L210
-L210:
-  %t1027 = load ptr, ptr %t0
-  %t1028 = load i32, ptr %t946
-  %t1029 = load ptr, ptr %t0
-  %t1030 = getelementptr %PForProof0, ptr %t1029, i32 0, i32 2
-  store i32 %t1028, ptr %t1030
-  br label %L204
+  %t924 = load i32, ptr %t905
+  %t925 = sext i32 %t924 to i64
+  %t926 = load ptr, ptr @g_nodes
+  %t927 = getelementptr %ASTNode, ptr %t926, i64 %t925
+  %t928 = getelementptr %ASTNode, ptr %t927, i32 0, i32 0
+  %t929 = load i32, ptr %t928
+  %t930 = load i32, ptr @AST_BLOCK
+  %t931 = icmp eq i32 %t929, %t930
+  br i1 %t931, label %L201, label %L202
+L201:
+  %t932 = load i32, ptr %t905
+  %t933 = add i32 0, 0
+  %t934 = call i32 @proof0_c1_closure_shape(i32 %t932, i32 %t933)
+  %t935 = add i32 0, 0
+  %t936 = icmp eq i32 %t934, %t935
+  br i1 %t936, label %L204, label %L205
 L204:
-  br label %L201
-L200:
-  %t1032 = load i32, ptr %t899
-  %t1033 = call i32 @expr_is_pure(i32 %t1032)
-  %t1034 = add i32 0, 0
-  %t1035 = icmp eq i32 %t1033, %t1034
-  store i1 %t1035, ptr %t1031
-  br i1 %t1035, label %L212, label %L211
+  %t937 = load ptr, ptr %t0
+  %t938 = add i32 0, 2
+  call void @proof0_c1_refuse(ptr %t937, i32 %t938)
+  %t939 = load ptr, ptr %t0
+  %t940 = load ptr, ptr %t0
+  %t941 = getelementptr %PForProof0, ptr %t940, i32 0, i32 37
+  %t942 = load i32, ptr %t941
+  %t943 = add i32 0, 1
+  %t944 = add i32 %t942, %t943
+  %t945 = load ptr, ptr %t0
+  %t946 = getelementptr %PForProof0, ptr %t945, i32 0, i32 37
+  store i32 %t944, ptr %t946
+  %t947 = load ptr, ptr %t0
+  %t948 = load i32, ptr @PFR_UNSUPPORTED_STMT
+  call void @proof0_cpu_refuse(ptr %t947, i32 %t948)
+  br label %L206
+L205:
+  %t949 = load ptr, ptr %t0
+  %t950 = getelementptr %PForProof0, ptr %t949, i32 0, i32 2
+  %t951 = load i32, ptr %t950
+  store i32 %t951, ptr %t952
+  %t953 = add i32 0, 0
+  store i32 %t953, ptr %t954
+  br label %L207
+L207:
+  %t955 = load i32, ptr %t954
+  %t956 = load i32, ptr %t844
+  %t957 = sext i32 %t956 to i64
+  %t958 = load ptr, ptr @g_nodes
+  %t959 = getelementptr %ASTNode, ptr %t958, i64 %t957
+  %t960 = getelementptr %ASTNode, ptr %t959, i32 0, i32 6
+  %t961 = load i32, ptr %t960
+  %t962 = icmp slt i32 %t955, %t961
+  br i1 %t962, label %L208, label %L209
+L208:
+  %t963 = load i32, ptr %t844
+  %t964 = sext i32 %t963 to i64
+  %t965 = load ptr, ptr @g_nodes
+  %t966 = getelementptr %ASTNode, ptr %t965, i64 %t964
+  %t967 = getelementptr %ASTNode, ptr %t966, i32 0, i32 13
+  %t968 = load i32, ptr %t967
+  %t969 = load i32, ptr %t954
+  %t970 = add i32 %t968, %t969
+  %t971 = sext i32 %t970 to i64
+  %t972 = load ptr, ptr @g_args
+  %t973 = getelementptr i32, ptr %t972, i64 %t971
+  %t974 = load i32, ptr %t973
+  store i32 %t974, ptr %t975
+  %t976 = load ptr, ptr %t0
+  %t977 = load i32, ptr %t975
+  %t978 = sext i32 %t977 to i64
+  %t979 = load ptr, ptr @g_nodes
+  %t980 = getelementptr %ASTNode, ptr %t979, i64 %t978
+  %t981 = getelementptr %ASTNode, ptr %t980, i32 0, i32 10
+  %t982 = load i32, ptr %t981
+  %t983 = load i32, ptr %t975
+  %t984 = load i32, ptr @P0_BIND_LOCAL
+  %t985 = load i32, ptr %t975
+  %t986 = sext i32 %t985 to i64
+  %t987 = load ptr, ptr @g_nodes
+  %t988 = getelementptr %ASTNode, ptr %t987, i64 %t986
+  %t989 = getelementptr %ASTNode, ptr %t988, i32 0, i32 11
+  %t990 = load i32, ptr %t989
+  %t991 = call i32 @resolve_type_sub(i32 %t990)
+  %t992 = call i32 @proof0_bind(ptr %t976, i32 %t982, i32 %t983, i32 %t984, i32 %t991)
+  %t993 = load i32, ptr %t954
+  %t994 = add i32 0, 1
+  %t995 = add i32 %t993, %t994
+  store i32 %t995, ptr %t954
+  br label %L207
+L209:
+  %t996 = load ptr, ptr %t0
+  %t997 = load i32, ptr %t905
+  %t998 = load i32, ptr %t2
+  %t999 = add i32 0, 1
+  %t1000 = add i32 %t998, %t999
+  %t1001 = load i32, ptr %t3
+  %t1002 = call i32 @proof0_c1_closure_stmt(ptr %t996, i32 %t997, i32 %t1000, i32 %t1001)
+  %t1003 = add i32 0, 1
+  %t1004 = icmp eq i32 %t1002, %t1003
+  br i1 %t1004, label %L210, label %L211
+L210:
+  %t1005 = load ptr, ptr %t0
+  %t1006 = load ptr, ptr %t0
+  %t1007 = getelementptr %PForProof0, ptr %t1006, i32 0, i32 32
+  %t1008 = load i32, ptr %t1007
+  %t1009 = add i32 0, 1
+  %t1010 = add i32 %t1008, %t1009
+  %t1011 = load ptr, ptr %t0
+  %t1012 = getelementptr %PForProof0, ptr %t1011, i32 0, i32 32
+  store i32 %t1010, ptr %t1012
+  %t1013 = load ptr, ptr %t0
+  %t1014 = load ptr, ptr %t0
+  %t1015 = getelementptr %PForProof0, ptr %t1014, i32 0, i32 33
+  %t1016 = load i32, ptr %t1015
+  %t1017 = add i32 0, 1
+  %t1018 = add i32 %t1016, %t1017
+  %t1019 = load ptr, ptr %t0
+  %t1020 = getelementptr %PForProof0, ptr %t1019, i32 0, i32 33
+  store i32 %t1018, ptr %t1020
+  br label %L212
 L211:
-  %t1036 = load i32, ptr %t899
-  %t1037 = call i32 @expr_calls_array_writer(i32 %t1036)
-  %t1038 = add i32 0, 1
-  %t1039 = icmp eq i32 %t1037, %t1038
-  store i1 %t1039, ptr %t1031
+  %t1021 = load ptr, ptr %t0
+  %t1022 = add i32 0, 2
+  call void @proof0_c1_refuse(ptr %t1021, i32 %t1022)
+  %t1023 = load ptr, ptr %t0
+  %t1024 = load ptr, ptr %t0
+  %t1025 = getelementptr %PForProof0, ptr %t1024, i32 0, i32 37
+  %t1026 = load i32, ptr %t1025
+  %t1027 = add i32 0, 1
+  %t1028 = add i32 %t1026, %t1027
+  %t1029 = load ptr, ptr %t0
+  %t1030 = getelementptr %PForProof0, ptr %t1029, i32 0, i32 37
+  store i32 %t1028, ptr %t1030
+  %t1031 = load ptr, ptr %t0
+  %t1032 = load i32, ptr @PFR_UNSUPPORTED_STMT
+  call void @proof0_cpu_refuse(ptr %t1031, i32 %t1032)
   br label %L212
 L212:
-  %t1040 = load i1, ptr %t1031
-  br i1 %t1040, label %L213, label %L214
+  %t1033 = load ptr, ptr %t0
+  %t1034 = load i32, ptr %t952
+  %t1035 = load ptr, ptr %t0
+  %t1036 = getelementptr %PForProof0, ptr %t1035, i32 0, i32 2
+  store i32 %t1034, ptr %t1036
+  br label %L206
+L206:
+  br label %L203
+L202:
+  %t1038 = load i32, ptr %t905
+  %t1039 = call i32 @expr_is_pure(i32 %t1038)
+  %t1040 = add i32 0, 0
+  %t1041 = icmp eq i32 %t1039, %t1040
+  store i1 %t1041, ptr %t1037
+  br i1 %t1041, label %L214, label %L213
 L213:
-  %t1041 = load ptr, ptr %t0
-  %t1042 = load ptr, ptr %t0
-  %t1043 = getelementptr %PForProof0, ptr %t1042, i32 0, i32 38
-  %t1044 = load i32, ptr %t1043
-  %t1045 = add i32 0, 1
-  %t1046 = add i32 %t1044, %t1045
-  %t1047 = load ptr, ptr %t0
-  %t1048 = getelementptr %PForProof0, ptr %t1047, i32 0, i32 38
-  store i32 %t1046, ptr %t1048
-  %t1049 = load ptr, ptr %t0
-  %t1050 = load i32, ptr @PFR_MUTATING_CALL
-  call void @proof0_cpu_refuse(ptr %t1049, i32 %t1050)
-  br label %L215
+  %t1042 = load i32, ptr %t905
+  %t1043 = call i32 @expr_calls_array_writer(i32 %t1042)
+  %t1044 = add i32 0, 1
+  %t1045 = icmp eq i32 %t1043, %t1044
+  store i1 %t1045, ptr %t1037
+  br label %L214
 L214:
-  %t1051 = load ptr, ptr %t0
-  %t1052 = load ptr, ptr %t0
-  %t1053 = getelementptr %PForProof0, ptr %t1052, i32 0, i32 32
-  %t1054 = load i32, ptr %t1053
-  %t1055 = add i32 0, 1
-  %t1056 = add i32 %t1054, %t1055
-  %t1057 = load ptr, ptr %t0
-  %t1058 = getelementptr %PForProof0, ptr %t1057, i32 0, i32 32
-  store i32 %t1056, ptr %t1058
-  %t1059 = load ptr, ptr %t0
-  %t1060 = load ptr, ptr %t0
-  %t1061 = getelementptr %PForProof0, ptr %t1060, i32 0, i32 33
-  %t1062 = load i32, ptr %t1061
-  %t1063 = add i32 0, 1
-  %t1064 = add i32 %t1062, %t1063
-  %t1065 = load ptr, ptr %t0
-  %t1066 = getelementptr %PForProof0, ptr %t1065, i32 0, i32 33
-  store i32 %t1064, ptr %t1066
-  %t1067 = load ptr, ptr %t0
-  %t1068 = getelementptr %PForProof0, ptr %t1067, i32 0, i32 2
-  %t1069 = load i32, ptr %t1068
-  store i32 %t1069, ptr %t1070
-  %t1071 = add i32 0, 0
-  store i32 %t1071, ptr %t1072
-  br label %L216
-L216:
-  %t1073 = load i32, ptr %t1072
-  %t1074 = load i32, ptr %t838
-  %t1075 = sext i32 %t1074 to i64
-  %t1076 = load ptr, ptr @g_nodes
-  %t1077 = getelementptr %ASTNode, ptr %t1076, i64 %t1075
-  %t1078 = getelementptr %ASTNode, ptr %t1077, i32 0, i32 6
-  %t1079 = load i32, ptr %t1078
-  %t1080 = icmp slt i32 %t1073, %t1079
-  br i1 %t1080, label %L217, label %L218
-L217:
-  %t1081 = load i32, ptr %t838
-  %t1082 = sext i32 %t1081 to i64
-  %t1083 = load ptr, ptr @g_nodes
-  %t1084 = getelementptr %ASTNode, ptr %t1083, i64 %t1082
-  %t1085 = getelementptr %ASTNode, ptr %t1084, i32 0, i32 13
-  %t1086 = load i32, ptr %t1085
-  %t1087 = load i32, ptr %t1072
-  %t1088 = add i32 %t1086, %t1087
-  %t1089 = sext i32 %t1088 to i64
-  %t1090 = load ptr, ptr @g_args
-  %t1091 = getelementptr i32, ptr %t1090, i64 %t1089
-  %t1092 = load i32, ptr %t1091
-  store i32 %t1092, ptr %t1093
-  %t1094 = load ptr, ptr %t0
-  %t1095 = load i32, ptr %t1093
-  %t1096 = sext i32 %t1095 to i64
-  %t1097 = load ptr, ptr @g_nodes
-  %t1098 = getelementptr %ASTNode, ptr %t1097, i64 %t1096
-  %t1099 = getelementptr %ASTNode, ptr %t1098, i32 0, i32 10
-  %t1100 = load i32, ptr %t1099
-  %t1101 = load i32, ptr %t1093
-  %t1102 = load i32, ptr @P0_BIND_LOCAL
-  %t1103 = load i32, ptr %t1093
-  %t1104 = sext i32 %t1103 to i64
-  %t1105 = load ptr, ptr @g_nodes
-  %t1106 = getelementptr %ASTNode, ptr %t1105, i64 %t1104
-  %t1107 = getelementptr %ASTNode, ptr %t1106, i32 0, i32 11
-  %t1108 = load i32, ptr %t1107
-  %t1109 = call i32 @resolve_type_sub(i32 %t1108)
-  %t1110 = call i32 @proof0_bind(ptr %t1094, i32 %t1100, i32 %t1101, i32 %t1102, i32 %t1109)
-  %t1111 = load i32, ptr %t1072
-  %t1112 = add i32 0, 1
-  %t1113 = add i32 %t1111, %t1112
-  store i32 %t1113, ptr %t1072
-  br label %L216
-L218:
-  %t1114 = load ptr, ptr %t0
-  %t1115 = load i32, ptr %t899
-  %t1116 = load i32, ptr %t2
-  %t1117 = add i32 0, 1
-  %t1118 = add i32 %t1116, %t1117
-  %t1119 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t1114, i32 %t1115, i32 %t1118, i32 %t1119)
-  %t1120 = load ptr, ptr %t0
-  %t1121 = load i32, ptr %t1070
-  %t1122 = load ptr, ptr %t0
-  %t1123 = getelementptr %PForProof0, ptr %t1122, i32 0, i32 2
-  store i32 %t1121, ptr %t1123
-  br label %L215
+  %t1046 = load i1, ptr %t1037
+  br i1 %t1046, label %L215, label %L216
 L215:
-  br label %L201
-L201:
-  br label %L198
-L198:
-  br label %L193
-L193:
-  br label %L174
-L173:
-  %t1124 = load i32, ptr %t708
-  %t1125 = call i32 @sym_find(i32 %t1124)
-  store i32 %t1125, ptr %t1126
-  %t1127 = load i32, ptr %t1126
-  %t1128 = add i32 0, 0
-  %t1129 = icmp sge i32 %t1127, %t1128
-  br i1 %t1129, label %L219, label %L221
+  %t1047 = load ptr, ptr %t0
+  %t1048 = load ptr, ptr %t0
+  %t1049 = getelementptr %PForProof0, ptr %t1048, i32 0, i32 38
+  %t1050 = load i32, ptr %t1049
+  %t1051 = add i32 0, 1
+  %t1052 = add i32 %t1050, %t1051
+  %t1053 = load ptr, ptr %t0
+  %t1054 = getelementptr %PForProof0, ptr %t1053, i32 0, i32 38
+  store i32 %t1052, ptr %t1054
+  %t1055 = load ptr, ptr %t0
+  %t1056 = load i32, ptr @PFR_MUTATING_CALL
+  call void @proof0_cpu_refuse(ptr %t1055, i32 %t1056)
+  br label %L217
+L216:
+  %t1057 = load ptr, ptr %t0
+  %t1058 = load ptr, ptr %t0
+  %t1059 = getelementptr %PForProof0, ptr %t1058, i32 0, i32 32
+  %t1060 = load i32, ptr %t1059
+  %t1061 = add i32 0, 1
+  %t1062 = add i32 %t1060, %t1061
+  %t1063 = load ptr, ptr %t0
+  %t1064 = getelementptr %PForProof0, ptr %t1063, i32 0, i32 32
+  store i32 %t1062, ptr %t1064
+  %t1065 = load ptr, ptr %t0
+  %t1066 = load ptr, ptr %t0
+  %t1067 = getelementptr %PForProof0, ptr %t1066, i32 0, i32 33
+  %t1068 = load i32, ptr %t1067
+  %t1069 = add i32 0, 1
+  %t1070 = add i32 %t1068, %t1069
+  %t1071 = load ptr, ptr %t0
+  %t1072 = getelementptr %PForProof0, ptr %t1071, i32 0, i32 33
+  store i32 %t1070, ptr %t1072
+  %t1073 = load ptr, ptr %t0
+  %t1074 = getelementptr %PForProof0, ptr %t1073, i32 0, i32 2
+  %t1075 = load i32, ptr %t1074
+  store i32 %t1075, ptr %t1076
+  %t1077 = add i32 0, 0
+  store i32 %t1077, ptr %t1078
+  br label %L218
+L218:
+  %t1079 = load i32, ptr %t1078
+  %t1080 = load i32, ptr %t844
+  %t1081 = sext i32 %t1080 to i64
+  %t1082 = load ptr, ptr @g_nodes
+  %t1083 = getelementptr %ASTNode, ptr %t1082, i64 %t1081
+  %t1084 = getelementptr %ASTNode, ptr %t1083, i32 0, i32 6
+  %t1085 = load i32, ptr %t1084
+  %t1086 = icmp slt i32 %t1079, %t1085
+  br i1 %t1086, label %L219, label %L220
 L219:
-  %t1130 = load i32, ptr %t1126
-  %t1131 = sext i32 %t1130 to i64
-  %t1132 = load ptr, ptr @g_syms
-  %t1133 = getelementptr %SymEntry, ptr %t1132, i64 %t1131
-  %t1134 = getelementptr %SymEntry, ptr %t1133, i32 0, i32 1
-  %t1135 = load i32, ptr %t1134
-  %t1136 = call i32 @resolve_type_sub(i32 %t1135)
-  store i32 %t1136, ptr %t820
-  %t1137 = load i32, ptr %t820
-  %t1138 = call i32 @type_is_closure(i32 %t1137)
-  %t1139 = add i32 0, 1
-  %t1140 = icmp eq i32 %t1138, %t1139
-  br i1 %t1140, label %L222, label %L224
-L222:
-  %t1141 = load ptr, ptr %t0
-  %t1142 = load ptr, ptr %t0
-  %t1143 = getelementptr %PForProof0, ptr %t1142, i32 0, i32 11
-  %t1144 = load i32, ptr %t1143
-  %t1145 = add i32 0, 1
-  %t1146 = add i32 %t1144, %t1145
-  %t1147 = load ptr, ptr %t0
-  %t1148 = getelementptr %PForProof0, ptr %t1147, i32 0, i32 11
-  store i32 %t1146, ptr %t1148
-  %t1149 = load i32, ptr %t708
-  store i32 %t1149, ptr %t716
-  br label %L224
-L224:
-  br label %L221
+  %t1087 = load i32, ptr %t844
+  %t1088 = sext i32 %t1087 to i64
+  %t1089 = load ptr, ptr @g_nodes
+  %t1090 = getelementptr %ASTNode, ptr %t1089, i64 %t1088
+  %t1091 = getelementptr %ASTNode, ptr %t1090, i32 0, i32 13
+  %t1092 = load i32, ptr %t1091
+  %t1093 = load i32, ptr %t1078
+  %t1094 = add i32 %t1092, %t1093
+  %t1095 = sext i32 %t1094 to i64
+  %t1096 = load ptr, ptr @g_args
+  %t1097 = getelementptr i32, ptr %t1096, i64 %t1095
+  %t1098 = load i32, ptr %t1097
+  store i32 %t1098, ptr %t1099
+  %t1100 = load ptr, ptr %t0
+  %t1101 = load i32, ptr %t1099
+  %t1102 = sext i32 %t1101 to i64
+  %t1103 = load ptr, ptr @g_nodes
+  %t1104 = getelementptr %ASTNode, ptr %t1103, i64 %t1102
+  %t1105 = getelementptr %ASTNode, ptr %t1104, i32 0, i32 10
+  %t1106 = load i32, ptr %t1105
+  %t1107 = load i32, ptr %t1099
+  %t1108 = load i32, ptr @P0_BIND_LOCAL
+  %t1109 = load i32, ptr %t1099
+  %t1110 = sext i32 %t1109 to i64
+  %t1111 = load ptr, ptr @g_nodes
+  %t1112 = getelementptr %ASTNode, ptr %t1111, i64 %t1110
+  %t1113 = getelementptr %ASTNode, ptr %t1112, i32 0, i32 11
+  %t1114 = load i32, ptr %t1113
+  %t1115 = call i32 @resolve_type_sub(i32 %t1114)
+  %t1116 = call i32 @proof0_bind(ptr %t1100, i32 %t1106, i32 %t1107, i32 %t1108, i32 %t1115)
+  %t1117 = load i32, ptr %t1078
+  %t1118 = add i32 0, 1
+  %t1119 = add i32 %t1117, %t1118
+  store i32 %t1119, ptr %t1078
+  br label %L218
+L220:
+  %t1120 = load ptr, ptr %t0
+  %t1121 = load i32, ptr %t905
+  %t1122 = load i32, ptr %t2
+  %t1123 = add i32 0, 1
+  %t1124 = add i32 %t1122, %t1123
+  %t1125 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t1120, i32 %t1121, i32 %t1124, i32 %t1125)
+  %t1126 = load ptr, ptr %t0
+  %t1127 = load i32, ptr %t1076
+  %t1128 = load ptr, ptr %t0
+  %t1129 = getelementptr %PForProof0, ptr %t1128, i32 0, i32 2
+  store i32 %t1127, ptr %t1129
+  br label %L217
+L217:
+  br label %L203
+L203:
+  br label %L200
+L200:
+  br label %L195
+L195:
+  br label %L176
+L175:
+  %t1130 = load i32, ptr %t708
+  %t1131 = call i32 @sym_find(i32 %t1130)
+  store i32 %t1131, ptr %t1132
+  %t1133 = load i32, ptr %t1132
+  %t1134 = add i32 0, 0
+  %t1135 = icmp sge i32 %t1133, %t1134
+  br i1 %t1135, label %L221, label %L223
 L221:
-  br label %L174
-L174:
-  %t1151 = load i32, ptr %t710
-  %t1152 = add i32 0, 0
-  %t1153 = icmp eq i32 %t1151, %t1152
-  store i1 %t1153, ptr %t1150
-  br i1 %t1153, label %L225, label %L226
-L225:
-  %t1154 = load i32, ptr %t820
-  %t1155 = call i32 @type_is_closure(i32 %t1154)
-  %t1156 = add i32 0, 1
-  %t1157 = icmp eq i32 %t1155, %t1156
-  store i1 %t1157, ptr %t1150
+  %t1136 = load i32, ptr %t1132
+  %t1137 = sext i32 %t1136 to i64
+  %t1138 = load ptr, ptr @g_syms
+  %t1139 = getelementptr %SymEntry, ptr %t1138, i64 %t1137
+  %t1140 = getelementptr %SymEntry, ptr %t1139, i32 0, i32 1
+  %t1141 = load i32, ptr %t1140
+  %t1142 = call i32 @resolve_type_sub(i32 %t1141)
+  store i32 %t1142, ptr %t826
+  %t1143 = load i32, ptr %t826
+  %t1144 = call i32 @type_is_closure(i32 %t1143)
+  %t1145 = add i32 0, 1
+  %t1146 = icmp eq i32 %t1144, %t1145
+  br i1 %t1146, label %L224, label %L226
+L224:
+  %t1147 = load ptr, ptr %t0
+  %t1148 = load ptr, ptr %t0
+  %t1149 = getelementptr %PForProof0, ptr %t1148, i32 0, i32 11
+  %t1150 = load i32, ptr %t1149
+  %t1151 = add i32 0, 1
+  %t1152 = add i32 %t1150, %t1151
+  %t1153 = load ptr, ptr %t0
+  %t1154 = getelementptr %PForProof0, ptr %t1153, i32 0, i32 11
+  store i32 %t1152, ptr %t1154
+  %t1155 = load i32, ptr %t708
+  store i32 %t1155, ptr %t716
   br label %L226
 L226:
-  %t1158 = load i1, ptr %t1150
-  br i1 %t1158, label %L227, label %L229
+  br label %L223
+L223:
+  br label %L176
+L176:
+  %t1157 = load i32, ptr %t710
+  %t1158 = add i32 0, 0
+  %t1159 = icmp eq i32 %t1157, %t1158
+  store i1 %t1159, ptr %t1156
+  br i1 %t1159, label %L227, label %L228
 L227:
-  %t1159 = add i32 0, 1
-  store i32 %t1159, ptr %t710
-  %t1160 = load i32, ptr %t820
-  %t1161 = call i32 @pfor_closure_effect(i32 %t1160)
-  store i32 %t1161, ptr %t1162
-  %t1163 = load i32, ptr %t1162
-  %t1164 = load i32, ptr @PFOR_CLO_UNKNOWN
-  %t1165 = icmp eq i32 %t1163, %t1164
-  br i1 %t1165, label %L230, label %L231
-L230:
-  %t1166 = load ptr, ptr %t0
-  %t1167 = load ptr, ptr %t0
-  %t1168 = getelementptr %PForProof0, ptr %t1167, i32 0, i32 37
-  %t1169 = load i32, ptr %t1168
-  %t1170 = add i32 0, 1
-  %t1171 = add i32 %t1169, %t1170
-  %t1172 = load ptr, ptr %t0
-  %t1173 = getelementptr %PForProof0, ptr %t1172, i32 0, i32 37
-  store i32 %t1171, ptr %t1173
-  %t1174 = load ptr, ptr %t0
-  %t1175 = load i32, ptr @PFR_INDIRECT_CALL
-  call void @proof0_cpu_refuse(ptr %t1174, i32 %t1175)
-  br label %L232
-L231:
-  %t1176 = load i32, ptr %t1162
-  %t1177 = load i32, ptr @PFOR_CLO_MUTATING
-  %t1178 = icmp eq i32 %t1176, %t1177
-  br i1 %t1178, label %L233, label %L234
-L233:
-  %t1179 = load ptr, ptr %t0
-  %t1180 = load ptr, ptr %t0
-  %t1181 = getelementptr %PForProof0, ptr %t1180, i32 0, i32 38
-  %t1182 = load i32, ptr %t1181
-  %t1183 = add i32 0, 1
-  %t1184 = add i32 %t1182, %t1183
-  %t1185 = load ptr, ptr %t0
-  %t1186 = getelementptr %PForProof0, ptr %t1185, i32 0, i32 38
-  store i32 %t1184, ptr %t1186
-  %t1187 = load ptr, ptr %t0
-  %t1188 = load i32, ptr @PFR_MUTATING_CALL
-  call void @proof0_cpu_refuse(ptr %t1187, i32 %t1188)
-  br label %L235
-L234:
-  %t1189 = load i32, ptr %t1162
-  %t1190 = load i32, ptr @PFOR_CLO_READ
-  %t1191 = icmp eq i32 %t1189, %t1190
-  br i1 %t1191, label %L236, label %L237
-L236:
-  %t1192 = load ptr, ptr %t0
-  %t1193 = load ptr, ptr %t0
-  %t1194 = getelementptr %PForProof0, ptr %t1193, i32 0, i32 36
-  %t1195 = load i32, ptr %t1194
-  %t1196 = add i32 0, 1
-  %t1197 = add i32 %t1195, %t1196
-  %t1198 = load ptr, ptr %t0
-  %t1199 = getelementptr %PForProof0, ptr %t1198, i32 0, i32 36
-  store i32 %t1197, ptr %t1199
-  %t1200 = load ptr, ptr %t0
-  %t1201 = load i32, ptr @P0A_CALL_READ
-  call void @proof0_affine_refuse(ptr %t1200, i32 %t1201)
-  br label %L238
-L237:
-  %t1202 = load ptr, ptr %t0
-  %t1203 = load ptr, ptr %t0
-  %t1204 = getelementptr %PForProof0, ptr %t1203, i32 0, i32 32
-  %t1205 = load i32, ptr %t1204
-  %t1206 = add i32 0, 1
-  %t1207 = add i32 %t1205, %t1206
-  %t1208 = load ptr, ptr %t0
-  %t1209 = getelementptr %PForProof0, ptr %t1208, i32 0, i32 32
-  store i32 %t1207, ptr %t1209
-  %t1210 = load ptr, ptr %t0
-  %t1211 = add i32 0, 2
-  call void @proof0_c1_refuse(ptr %t1210, i32 %t1211)
-  br label %L238
-L238:
-  br label %L235
-L235:
-  br label %L232
-L232:
-  br label %L229
+  %t1160 = load i32, ptr %t826
+  %t1161 = call i32 @type_is_closure(i32 %t1160)
+  %t1162 = add i32 0, 1
+  %t1163 = icmp eq i32 %t1161, %t1162
+  store i1 %t1163, ptr %t1156
+  br label %L228
+L228:
+  %t1164 = load i1, ptr %t1156
+  br i1 %t1164, label %L229, label %L231
 L229:
-  br label %L171
-L171:
-  %t1212 = load i32, ptr %t710
-  %t1213 = add i32 0, 0
-  %t1214 = icmp eq i32 %t1212, %t1213
-  br i1 %t1214, label %L239, label %L241
+  %t1165 = add i32 0, 1
+  store i32 %t1165, ptr %t710
+  %t1166 = load i32, ptr %t826
+  %t1167 = call i32 @pfor_closure_effect(i32 %t1166)
+  store i32 %t1167, ptr %t1168
+  %t1169 = load i32, ptr %t1168
+  %t1170 = load i32, ptr @PFOR_CLO_UNKNOWN
+  %t1171 = icmp eq i32 %t1169, %t1170
+  br i1 %t1171, label %L232, label %L233
+L232:
+  %t1172 = load ptr, ptr %t0
+  %t1173 = load ptr, ptr %t0
+  %t1174 = getelementptr %PForProof0, ptr %t1173, i32 0, i32 37
+  %t1175 = load i32, ptr %t1174
+  %t1176 = add i32 0, 1
+  %t1177 = add i32 %t1175, %t1176
+  %t1178 = load ptr, ptr %t0
+  %t1179 = getelementptr %PForProof0, ptr %t1178, i32 0, i32 37
+  store i32 %t1177, ptr %t1179
+  %t1180 = load ptr, ptr %t0
+  %t1181 = load i32, ptr @PFR_INDIRECT_CALL
+  call void @proof0_cpu_refuse(ptr %t1180, i32 %t1181)
+  br label %L234
+L233:
+  %t1182 = load i32, ptr %t1168
+  %t1183 = load i32, ptr @PFOR_CLO_MUTATING
+  %t1184 = icmp eq i32 %t1182, %t1183
+  br i1 %t1184, label %L235, label %L236
+L235:
+  %t1185 = load ptr, ptr %t0
+  %t1186 = load ptr, ptr %t0
+  %t1187 = getelementptr %PForProof0, ptr %t1186, i32 0, i32 38
+  %t1188 = load i32, ptr %t1187
+  %t1189 = add i32 0, 1
+  %t1190 = add i32 %t1188, %t1189
+  %t1191 = load ptr, ptr %t0
+  %t1192 = getelementptr %PForProof0, ptr %t1191, i32 0, i32 38
+  store i32 %t1190, ptr %t1192
+  %t1193 = load ptr, ptr %t0
+  %t1194 = load i32, ptr @PFR_MUTATING_CALL
+  call void @proof0_cpu_refuse(ptr %t1193, i32 %t1194)
+  br label %L237
+L236:
+  %t1195 = load i32, ptr %t1168
+  %t1196 = load i32, ptr @PFOR_CLO_READ
+  %t1197 = icmp eq i32 %t1195, %t1196
+  br i1 %t1197, label %L238, label %L239
+L238:
+  %t1198 = load ptr, ptr %t0
+  %t1199 = load ptr, ptr %t0
+  %t1200 = getelementptr %PForProof0, ptr %t1199, i32 0, i32 36
+  %t1201 = load i32, ptr %t1200
+  %t1202 = add i32 0, 1
+  %t1203 = add i32 %t1201, %t1202
+  %t1204 = load ptr, ptr %t0
+  %t1205 = getelementptr %PForProof0, ptr %t1204, i32 0, i32 36
+  store i32 %t1203, ptr %t1205
+  %t1206 = load ptr, ptr %t0
+  %t1207 = load i32, ptr @P0A_CALL_READ
+  call void @proof0_affine_refuse(ptr %t1206, i32 %t1207)
+  br label %L240
 L239:
-  %t1215 = load i32, ptr %t708
-  store i32 %t1215, ptr %t1216
-  %t1217 = load i32, ptr @NULL_STR
-  store i32 %t1217, ptr %t1218
-  %t1223 = load ptr, ptr %t0
-  %t1224 = load i32, ptr %t708
-  %t1225 = call i32 @proof0_resolve(ptr %t1223, i32 %t1224)
-  %t1226 = add i32 0, 0
-  %t1227 = icmp slt i32 %t1225, %t1226
-  store i1 %t1227, ptr %t1222
-  br i1 %t1227, label %L242, label %L243
-L242:
-  %t1228 = load i32, ptr %t708
-  %t1229 = call i32 @sym_find(i32 %t1228)
-  %t1230 = add i32 0, 0
-  %t1231 = icmp slt i32 %t1229, %t1230
-  store i1 %t1231, ptr %t1222
-  br label %L243
-L243:
-  %t1232 = load i1, ptr %t1222
-  store i1 %t1232, ptr %t1221
-  br i1 %t1232, label %L244, label %L245
+  %t1208 = load ptr, ptr %t0
+  %t1209 = load ptr, ptr %t0
+  %t1210 = getelementptr %PForProof0, ptr %t1209, i32 0, i32 32
+  %t1211 = load i32, ptr %t1210
+  %t1212 = add i32 0, 1
+  %t1213 = add i32 %t1211, %t1212
+  %t1214 = load ptr, ptr %t0
+  %t1215 = getelementptr %PForProof0, ptr %t1214, i32 0, i32 32
+  store i32 %t1213, ptr %t1215
+  %t1216 = load ptr, ptr %t0
+  %t1217 = add i32 0, 2
+  call void @proof0_c1_refuse(ptr %t1216, i32 %t1217)
+  br label %L240
+L240:
+  br label %L237
+L237:
+  br label %L234
+L234:
+  br label %L231
+L231:
+  br label %L173
+L173:
+  %t1218 = load i32, ptr %t710
+  %t1219 = add i32 0, 0
+  %t1220 = icmp eq i32 %t1218, %t1219
+  br i1 %t1220, label %L241, label %L243
+L241:
+  %t1221 = load i32, ptr %t708
+  store i32 %t1221, ptr %t1222
+  %t1223 = load i32, ptr @NULL_STR
+  store i32 %t1223, ptr %t1224
+  %t1229 = load ptr, ptr %t0
+  %t1230 = load i32, ptr %t708
+  %t1231 = call i32 @proof0_resolve(ptr %t1229, i32 %t1230)
+  %t1232 = add i32 0, 0
+  %t1233 = icmp slt i32 %t1231, %t1232
+  store i1 %t1233, ptr %t1228
+  br i1 %t1233, label %L244, label %L245
 L244:
-  %t1233 = load i32, ptr %t708
-  %t1234 = call i32 @find_func(i32 %t1233)
-  %t1235 = add i32 0, 0
-  %t1236 = icmp slt i32 %t1234, %t1235
-  store i1 %t1236, ptr %t1221
+  %t1234 = load i32, ptr %t708
+  %t1235 = call i32 @sym_find(i32 %t1234)
+  %t1236 = add i32 0, 0
+  %t1237 = icmp slt i32 %t1235, %t1236
+  store i1 %t1237, ptr %t1228
   br label %L245
 L245:
-  %t1237 = load i1, ptr %t1221
-  store i1 %t1237, ptr %t1220
-  br i1 %t1237, label %L246, label %L247
+  %t1238 = load i1, ptr %t1228
+  store i1 %t1238, ptr %t1227
+  br i1 %t1238, label %L246, label %L247
 L246:
-  %t1238 = load i32, ptr %t1
-  %t1239 = sext i32 %t1238 to i64
-  %t1240 = load ptr, ptr @g_nodes
-  %t1241 = getelementptr %ASTNode, ptr %t1240, i64 %t1239
-  %t1242 = getelementptr %ASTNode, ptr %t1241, i32 0, i32 6
-  %t1243 = load i32, ptr %t1242
-  %t1244 = add i32 0, 0
-  %t1245 = icmp sgt i32 %t1243, %t1244
-  store i1 %t1245, ptr %t1220
+  %t1239 = load i32, ptr %t708
+  %t1240 = call i32 @find_func(i32 %t1239)
+  %t1241 = add i32 0, 0
+  %t1242 = icmp slt i32 %t1240, %t1241
+  store i1 %t1242, ptr %t1227
   br label %L247
 L247:
-  %t1246 = load i1, ptr %t1220
-  store i1 %t1246, ptr %t1219
-  br i1 %t1246, label %L248, label %L249
+  %t1243 = load i1, ptr %t1227
+  store i1 %t1243, ptr %t1226
+  br i1 %t1243, label %L248, label %L249
 L248:
-  %t1247 = load i32, ptr @g_nimpls
-  %t1248 = add i32 0, 0
-  %t1249 = icmp sgt i32 %t1247, %t1248
-  store i1 %t1249, ptr %t1219
+  %t1244 = load i32, ptr %t1
+  %t1245 = sext i32 %t1244 to i64
+  %t1246 = load ptr, ptr @g_nodes
+  %t1247 = getelementptr %ASTNode, ptr %t1246, i64 %t1245
+  %t1248 = getelementptr %ASTNode, ptr %t1247, i32 0, i32 6
+  %t1249 = load i32, ptr %t1248
+  %t1250 = add i32 0, 0
+  %t1251 = icmp sgt i32 %t1249, %t1250
+  store i1 %t1251, ptr %t1226
   br label %L249
 L249:
-  %t1250 = load i1, ptr %t1219
-  br i1 %t1250, label %L250, label %L252
+  %t1252 = load i1, ptr %t1226
+  store i1 %t1252, ptr %t1225
+  br i1 %t1252, label %L250, label %L251
 L250:
-  %t1251 = load i32, ptr %t1
-  %t1252 = sext i32 %t1251 to i64
-  %t1253 = load ptr, ptr @g_nodes
-  %t1254 = getelementptr %ASTNode, ptr %t1253, i64 %t1252
-  %t1255 = getelementptr %ASTNode, ptr %t1254, i32 0, i32 13
-  %t1256 = load i32, ptr %t1255
-  %t1257 = sext i32 %t1256 to i64
-  %t1258 = load ptr, ptr @g_args
-  %t1259 = getelementptr i32, ptr %t1258, i64 %t1257
-  %t1260 = load i32, ptr %t1259
-  store i32 %t1260, ptr %t1261
-  %t1266 = load i32, ptr %t1261
-  %t1267 = add i32 0, 0
-  %t1268 = icmp sgt i32 %t1266, %t1267
-  store i1 %t1268, ptr %t1265
-  br i1 %t1268, label %L253, label %L254
-L253:
-  %t1269 = load i32, ptr %t1261
-  %t1270 = load i32, ptr @g_nnodes
-  %t1271 = icmp slt i32 %t1269, %t1270
-  store i1 %t1271, ptr %t1265
-  br label %L254
-L254:
-  %t1272 = load i1, ptr %t1265
-  store i1 %t1272, ptr %t1264
-  br i1 %t1272, label %L255, label %L256
+  %t1253 = load i32, ptr @g_nimpls
+  %t1254 = add i32 0, 0
+  %t1255 = icmp sgt i32 %t1253, %t1254
+  store i1 %t1255, ptr %t1225
+  br label %L251
+L251:
+  %t1256 = load i1, ptr %t1225
+  br i1 %t1256, label %L252, label %L254
+L252:
+  %t1257 = load i32, ptr %t1
+  %t1258 = sext i32 %t1257 to i64
+  %t1259 = load ptr, ptr @g_nodes
+  %t1260 = getelementptr %ASTNode, ptr %t1259, i64 %t1258
+  %t1261 = getelementptr %ASTNode, ptr %t1260, i32 0, i32 13
+  %t1262 = load i32, ptr %t1261
+  %t1263 = sext i32 %t1262 to i64
+  %t1264 = load ptr, ptr @g_args
+  %t1265 = getelementptr i32, ptr %t1264, i64 %t1263
+  %t1266 = load i32, ptr %t1265
+  store i32 %t1266, ptr %t1267
+  %t1272 = load i32, ptr %t1267
+  %t1273 = add i32 0, 0
+  %t1274 = icmp sgt i32 %t1272, %t1273
+  store i1 %t1274, ptr %t1271
+  br i1 %t1274, label %L255, label %L256
 L255:
-  %t1273 = load i32, ptr %t1261
-  %t1274 = sext i32 %t1273 to i64
-  %t1275 = load ptr, ptr @g_nodes
-  %t1276 = getelementptr %ASTNode, ptr %t1275, i64 %t1274
-  %t1277 = getelementptr %ASTNode, ptr %t1276, i32 0, i32 0
-  %t1278 = load i32, ptr %t1277
-  %t1279 = load i32, ptr @AST_UNARY
-  %t1280 = icmp eq i32 %t1278, %t1279
-  store i1 %t1280, ptr %t1264
+  %t1275 = load i32, ptr %t1267
+  %t1276 = load i32, ptr @g_nnodes
+  %t1277 = icmp slt i32 %t1275, %t1276
+  store i1 %t1277, ptr %t1271
   br label %L256
 L256:
-  %t1281 = load i1, ptr %t1264
-  store i1 %t1281, ptr %t1263
-  br i1 %t1281, label %L257, label %L258
+  %t1278 = load i1, ptr %t1271
+  store i1 %t1278, ptr %t1270
+  br i1 %t1278, label %L257, label %L258
 L257:
-  %t1282 = load i32, ptr %t1261
-  %t1283 = sext i32 %t1282 to i64
-  %t1284 = load ptr, ptr @g_nodes
-  %t1285 = getelementptr %ASTNode, ptr %t1284, i64 %t1283
-  %t1286 = getelementptr %ASTNode, ptr %t1285, i32 0, i32 3
-  %t1287 = load i32, ptr %t1286
-  %t1288 = load i32, ptr @OP_ADDR
-  %t1289 = icmp eq i32 %t1287, %t1288
-  store i1 %t1289, ptr %t1263
+  %t1279 = load i32, ptr %t1267
+  %t1280 = sext i32 %t1279 to i64
+  %t1281 = load ptr, ptr @g_nodes
+  %t1282 = getelementptr %ASTNode, ptr %t1281, i64 %t1280
+  %t1283 = getelementptr %ASTNode, ptr %t1282, i32 0, i32 0
+  %t1284 = load i32, ptr %t1283
+  %t1285 = load i32, ptr @AST_UNARY
+  %t1286 = icmp eq i32 %t1284, %t1285
+  store i1 %t1286, ptr %t1270
   br label %L258
 L258:
-  %t1290 = load i1, ptr %t1263
-  store i1 %t1290, ptr %t1262
-  br i1 %t1290, label %L259, label %L260
+  %t1287 = load i1, ptr %t1270
+  store i1 %t1287, ptr %t1269
+  br i1 %t1287, label %L259, label %L260
 L259:
-  %t1291 = load i32, ptr %t1261
-  %t1292 = sext i32 %t1291 to i64
-  %t1293 = load ptr, ptr @g_nodes
-  %t1294 = getelementptr %ASTNode, ptr %t1293, i64 %t1292
-  %t1295 = getelementptr %ASTNode, ptr %t1294, i32 0, i32 5
-  %t1296 = load i32, ptr %t1295
-  %t1297 = load i32, ptr @OP_ADDR
-  %t1298 = icmp eq i32 %t1296, %t1297
-  store i1 %t1298, ptr %t1262
+  %t1288 = load i32, ptr %t1267
+  %t1289 = sext i32 %t1288 to i64
+  %t1290 = load ptr, ptr @g_nodes
+  %t1291 = getelementptr %ASTNode, ptr %t1290, i64 %t1289
+  %t1292 = getelementptr %ASTNode, ptr %t1291, i32 0, i32 3
+  %t1293 = load i32, ptr %t1292
+  %t1294 = load i32, ptr @OP_ADDR
+  %t1295 = icmp eq i32 %t1293, %t1294
+  store i1 %t1295, ptr %t1269
   br label %L260
 L260:
-  %t1299 = load i1, ptr %t1262
-  br i1 %t1299, label %L261, label %L263
+  %t1296 = load i1, ptr %t1269
+  store i1 %t1296, ptr %t1268
+  br i1 %t1296, label %L261, label %L262
 L261:
-  %t1300 = load i32, ptr %t1261
-  %t1301 = sext i32 %t1300 to i64
-  %t1302 = load ptr, ptr @g_nodes
-  %t1303 = getelementptr %ASTNode, ptr %t1302, i64 %t1301
-  %t1304 = getelementptr %ASTNode, ptr %t1303, i32 0, i32 7
-  %t1305 = load i32, ptr %t1304
-  store i32 %t1305, ptr %t1306
-  %t1309 = load i32, ptr %t1306
-  %t1310 = add i32 0, 0
-  %t1311 = icmp sgt i32 %t1309, %t1310
-  store i1 %t1311, ptr %t1308
-  br i1 %t1311, label %L264, label %L265
-L264:
-  %t1312 = load i32, ptr %t1306
-  %t1313 = load i32, ptr @g_nnodes
-  %t1314 = icmp slt i32 %t1312, %t1313
-  store i1 %t1314, ptr %t1308
-  br label %L265
-L265:
-  %t1315 = load i1, ptr %t1308
-  store i1 %t1315, ptr %t1307
-  br i1 %t1315, label %L266, label %L267
+  %t1297 = load i32, ptr %t1267
+  %t1298 = sext i32 %t1297 to i64
+  %t1299 = load ptr, ptr @g_nodes
+  %t1300 = getelementptr %ASTNode, ptr %t1299, i64 %t1298
+  %t1301 = getelementptr %ASTNode, ptr %t1300, i32 0, i32 5
+  %t1302 = load i32, ptr %t1301
+  %t1303 = load i32, ptr @OP_ADDR
+  %t1304 = icmp eq i32 %t1302, %t1303
+  store i1 %t1304, ptr %t1268
+  br label %L262
+L262:
+  %t1305 = load i1, ptr %t1268
+  br i1 %t1305, label %L263, label %L265
+L263:
+  %t1306 = load i32, ptr %t1267
+  %t1307 = sext i32 %t1306 to i64
+  %t1308 = load ptr, ptr @g_nodes
+  %t1309 = getelementptr %ASTNode, ptr %t1308, i64 %t1307
+  %t1310 = getelementptr %ASTNode, ptr %t1309, i32 0, i32 7
+  %t1311 = load i32, ptr %t1310
+  store i32 %t1311, ptr %t1312
+  %t1315 = load i32, ptr %t1312
+  %t1316 = add i32 0, 0
+  %t1317 = icmp sgt i32 %t1315, %t1316
+  store i1 %t1317, ptr %t1314
+  br i1 %t1317, label %L266, label %L267
 L266:
-  %t1316 = load i32, ptr %t1306
-  %t1317 = sext i32 %t1316 to i64
-  %t1318 = load ptr, ptr @g_nodes
-  %t1319 = getelementptr %ASTNode, ptr %t1318, i64 %t1317
-  %t1320 = getelementptr %ASTNode, ptr %t1319, i32 0, i32 0
-  %t1321 = load i32, ptr %t1320
-  %t1322 = load i32, ptr @AST_IDENT
-  %t1323 = icmp eq i32 %t1321, %t1322
-  store i1 %t1323, ptr %t1307
+  %t1318 = load i32, ptr %t1312
+  %t1319 = load i32, ptr @g_nnodes
+  %t1320 = icmp slt i32 %t1318, %t1319
+  store i1 %t1320, ptr %t1314
   br label %L267
 L267:
-  %t1324 = load i1, ptr %t1307
-  br i1 %t1324, label %L268, label %L270
+  %t1321 = load i1, ptr %t1314
+  store i1 %t1321, ptr %t1313
+  br i1 %t1321, label %L268, label %L269
 L268:
-  %t1325 = load ptr, ptr %t0
-  %t1326 = load i32, ptr %t1306
-  %t1327 = sext i32 %t1326 to i64
-  %t1328 = load ptr, ptr @g_nodes
-  %t1329 = getelementptr %ASTNode, ptr %t1328, i64 %t1327
-  %t1330 = getelementptr %ASTNode, ptr %t1329, i32 0, i32 10
-  %t1331 = load i32, ptr %t1330
-  %t1332 = call i32 @proof0_name_type(ptr %t1325, i32 %t1331)
-  store i32 %t1332, ptr %t1218
-  br label %L270
+  %t1322 = load i32, ptr %t1312
+  %t1323 = sext i32 %t1322 to i64
+  %t1324 = load ptr, ptr @g_nodes
+  %t1325 = getelementptr %ASTNode, ptr %t1324, i64 %t1323
+  %t1326 = getelementptr %ASTNode, ptr %t1325, i32 0, i32 0
+  %t1327 = load i32, ptr %t1326
+  %t1328 = load i32, ptr @AST_IDENT
+  %t1329 = icmp eq i32 %t1327, %t1328
+  store i1 %t1329, ptr %t1313
+  br label %L269
+L269:
+  %t1330 = load i1, ptr %t1313
+  br i1 %t1330, label %L270, label %L272
 L270:
-  br label %L263
-L263:
-  %t1333 = load i32, ptr %t1218
-  %t1334 = load i32, ptr @NULL_STR
-  %t1335 = icmp ne i32 %t1333, %t1334
-  br i1 %t1335, label %L271, label %L273
-L271:
-  %t1336 = load i32, ptr %t708
-  %t1337 = load i32, ptr %t1218
-  %t1338 = call i32 @resolve_trait_method(i32 %t1336, i32 %t1337)
-  store i32 %t1338, ptr %t1339
-  %t1340 = load i32, ptr %t1339
-  %t1341 = load i32, ptr @NULL_STR
-  %t1342 = icmp ne i32 %t1340, %t1341
-  br i1 %t1342, label %L274, label %L276
-L274:
-  %t1343 = load i32, ptr %t1339
-  store i32 %t1343, ptr %t1216
-  br label %L276
-L276:
-  br label %L273
+  %t1331 = load ptr, ptr %t0
+  %t1332 = load i32, ptr %t1312
+  %t1333 = sext i32 %t1332 to i64
+  %t1334 = load ptr, ptr @g_nodes
+  %t1335 = getelementptr %ASTNode, ptr %t1334, i64 %t1333
+  %t1336 = getelementptr %ASTNode, ptr %t1335, i32 0, i32 10
+  %t1337 = load i32, ptr %t1336
+  %t1338 = call i32 @proof0_name_type(ptr %t1331, i32 %t1337)
+  store i32 %t1338, ptr %t1224
+  br label %L272
+L272:
+  br label %L265
+L265:
+  %t1339 = load i32, ptr %t1224
+  %t1340 = load i32, ptr @NULL_STR
+  %t1341 = icmp ne i32 %t1339, %t1340
+  br i1 %t1341, label %L273, label %L275
 L273:
-  br label %L252
-L252:
-  %t1344 = load i32, ptr %t1216
-  %t1345 = call i32 @find_func_idx(i32 %t1344)
-  store i32 %t1345, ptr %t1346
-  %t1347 = load ptr, ptr %t0
-  %t1348 = load ptr, ptr @g_pf0_affine
-  %t1349 = load i32, ptr %t1
-  %t1350 = load i32, ptr %t1346
-  %t1351 = add i32 0, 1
-  call void @proof0_function_effect(ptr %t1347, ptr %t1348, i32 %t1349, i32 %t1350, i32 %t1351)
-  %t1352 = add i32 0, 1
-  store i32 %t1352, ptr %t1353
-  %t1356 = load i32, ptr %t1346
-  %t1357 = add i32 0, 0
-  %t1358 = icmp sge i32 %t1356, %t1357
-  store i1 %t1358, ptr %t1355
-  br i1 %t1358, label %L277, label %L278
-L277:
-  %t1359 = load i32, ptr %t1218
-  %t1360 = load i32, ptr @NULL_STR
-  %t1361 = icmp eq i32 %t1359, %t1360
-  store i1 %t1361, ptr %t1355
+  %t1342 = load i32, ptr %t708
+  %t1343 = load i32, ptr %t1224
+  %t1344 = call i32 @resolve_trait_method(i32 %t1342, i32 %t1343)
+  store i32 %t1344, ptr %t1345
+  %t1346 = load i32, ptr %t1345
+  %t1347 = load i32, ptr @NULL_STR
+  %t1348 = icmp ne i32 %t1346, %t1347
+  br i1 %t1348, label %L276, label %L278
+L276:
+  %t1349 = load i32, ptr %t1345
+  store i32 %t1349, ptr %t1222
   br label %L278
 L278:
-  %t1362 = load i1, ptr %t1355
-  store i1 %t1362, ptr %t1354
-  br i1 %t1362, label %L279, label %L280
+  br label %L275
+L275:
+  br label %L254
+L254:
+  %t1350 = load i32, ptr %t1222
+  %t1351 = call i32 @find_func_idx(i32 %t1350)
+  store i32 %t1351, ptr %t1352
+  %t1353 = load ptr, ptr %t0
+  %t1354 = load ptr, ptr @g_pf0_affine
+  %t1355 = load i32, ptr %t1
+  %t1356 = load i32, ptr %t1352
+  %t1357 = add i32 0, 1
+  call void @proof0_function_effect(ptr %t1353, ptr %t1354, i32 %t1355, i32 %t1356, i32 %t1357)
+  %t1358 = add i32 0, 1
+  store i32 %t1358, ptr %t1359
+  %t1362 = load i32, ptr %t1352
+  %t1363 = add i32 0, 0
+  %t1364 = icmp sge i32 %t1362, %t1363
+  store i1 %t1364, ptr %t1361
+  br i1 %t1364, label %L279, label %L280
 L279:
-  %t1363 = load i32, ptr %t1
-  %t1364 = sext i32 %t1363 to i64
-  %t1365 = load ptr, ptr @g_nodes
-  %t1366 = getelementptr %ASTNode, ptr %t1365, i64 %t1364
-  %t1367 = getelementptr %ASTNode, ptr %t1366, i32 0, i32 6
-  %t1368 = load i32, ptr %t1367
-  %t1369 = add i32 0, 0
-  %t1370 = icmp sgt i32 %t1368, %t1369
-  store i1 %t1370, ptr %t1354
+  %t1365 = load i32, ptr %t1224
+  %t1366 = load i32, ptr @NULL_STR
+  %t1367 = icmp eq i32 %t1365, %t1366
+  store i1 %t1367, ptr %t1361
   br label %L280
 L280:
-  %t1371 = load i1, ptr %t1354
-  br i1 %t1371, label %L281, label %L283
+  %t1368 = load i1, ptr %t1361
+  store i1 %t1368, ptr %t1360
+  br i1 %t1368, label %L281, label %L282
 L281:
-  %t1372 = load i32, ptr %t1
-  %t1373 = sext i32 %t1372 to i64
-  %t1374 = load ptr, ptr @g_nodes
-  %t1375 = getelementptr %ASTNode, ptr %t1374, i64 %t1373
-  %t1376 = getelementptr %ASTNode, ptr %t1375, i32 0, i32 13
-  %t1377 = load i32, ptr %t1376
-  %t1378 = sext i32 %t1377 to i64
-  %t1379 = load ptr, ptr @g_args
-  %t1380 = getelementptr i32, ptr %t1379, i64 %t1378
-  %t1381 = load i32, ptr %t1380
-  store i32 %t1381, ptr %t1382
-  %t1386 = load i32, ptr %t1382
-  %t1387 = add i32 0, 0
-  %t1388 = icmp sgt i32 %t1386, %t1387
-  store i1 %t1388, ptr %t1385
-  br i1 %t1388, label %L284, label %L285
-L284:
-  %t1389 = load i32, ptr %t1382
-  %t1390 = load i32, ptr @g_nnodes
-  %t1391 = icmp slt i32 %t1389, %t1390
-  store i1 %t1391, ptr %t1385
-  br label %L285
-L285:
-  %t1392 = load i1, ptr %t1385
-  store i1 %t1392, ptr %t1384
-  br i1 %t1392, label %L286, label %L287
+  %t1369 = load i32, ptr %t1
+  %t1370 = sext i32 %t1369 to i64
+  %t1371 = load ptr, ptr @g_nodes
+  %t1372 = getelementptr %ASTNode, ptr %t1371, i64 %t1370
+  %t1373 = getelementptr %ASTNode, ptr %t1372, i32 0, i32 6
+  %t1374 = load i32, ptr %t1373
+  %t1375 = add i32 0, 0
+  %t1376 = icmp sgt i32 %t1374, %t1375
+  store i1 %t1376, ptr %t1360
+  br label %L282
+L282:
+  %t1377 = load i1, ptr %t1360
+  br i1 %t1377, label %L283, label %L285
+L283:
+  %t1378 = load i32, ptr %t1
+  %t1379 = sext i32 %t1378 to i64
+  %t1380 = load ptr, ptr @g_nodes
+  %t1381 = getelementptr %ASTNode, ptr %t1380, i64 %t1379
+  %t1382 = getelementptr %ASTNode, ptr %t1381, i32 0, i32 13
+  %t1383 = load i32, ptr %t1382
+  %t1384 = sext i32 %t1383 to i64
+  %t1385 = load ptr, ptr @g_args
+  %t1386 = getelementptr i32, ptr %t1385, i64 %t1384
+  %t1387 = load i32, ptr %t1386
+  store i32 %t1387, ptr %t1388
+  %t1392 = load i32, ptr %t1388
+  %t1393 = add i32 0, 0
+  %t1394 = icmp sgt i32 %t1392, %t1393
+  store i1 %t1394, ptr %t1391
+  br i1 %t1394, label %L286, label %L287
 L286:
-  %t1393 = load i32, ptr %t1382
-  %t1394 = sext i32 %t1393 to i64
-  %t1395 = load ptr, ptr @g_nodes
-  %t1396 = getelementptr %ASTNode, ptr %t1395, i64 %t1394
-  %t1397 = getelementptr %ASTNode, ptr %t1396, i32 0, i32 0
-  %t1398 = load i32, ptr %t1397
-  %t1399 = load i32, ptr @AST_UNARY
-  %t1400 = icmp eq i32 %t1398, %t1399
-  store i1 %t1400, ptr %t1384
+  %t1395 = load i32, ptr %t1388
+  %t1396 = load i32, ptr @g_nnodes
+  %t1397 = icmp slt i32 %t1395, %t1396
+  store i1 %t1397, ptr %t1391
   br label %L287
 L287:
-  %t1401 = load i1, ptr %t1384
-  store i1 %t1401, ptr %t1383
-  br i1 %t1401, label %L288, label %L289
+  %t1398 = load i1, ptr %t1391
+  store i1 %t1398, ptr %t1390
+  br i1 %t1398, label %L288, label %L289
 L288:
-  %t1402 = load i32, ptr %t1382
-  %t1403 = sext i32 %t1402 to i64
-  %t1404 = load ptr, ptr @g_nodes
-  %t1405 = getelementptr %ASTNode, ptr %t1404, i64 %t1403
-  %t1406 = getelementptr %ASTNode, ptr %t1405, i32 0, i32 3
-  %t1407 = load i32, ptr %t1406
-  %t1408 = load i32, ptr @OP_ADDR
-  %t1409 = icmp eq i32 %t1407, %t1408
-  store i1 %t1409, ptr %t1383
+  %t1399 = load i32, ptr %t1388
+  %t1400 = sext i32 %t1399 to i64
+  %t1401 = load ptr, ptr @g_nodes
+  %t1402 = getelementptr %ASTNode, ptr %t1401, i64 %t1400
+  %t1403 = getelementptr %ASTNode, ptr %t1402, i32 0, i32 0
+  %t1404 = load i32, ptr %t1403
+  %t1405 = load i32, ptr @AST_UNARY
+  %t1406 = icmp eq i32 %t1404, %t1405
+  store i1 %t1406, ptr %t1390
   br label %L289
 L289:
-  %t1410 = load i1, ptr %t1383
-  br i1 %t1410, label %L290, label %L292
+  %t1407 = load i1, ptr %t1390
+  store i1 %t1407, ptr %t1389
+  br i1 %t1407, label %L290, label %L291
 L290:
-  %t1411 = load i32, ptr %t1382
-  %t1412 = sext i32 %t1411 to i64
-  %t1413 = load ptr, ptr @g_nodes
-  %t1414 = getelementptr %ASTNode, ptr %t1413, i64 %t1412
-  %t1415 = getelementptr %ASTNode, ptr %t1414, i32 0, i32 7
-  %t1416 = load i32, ptr %t1415
-  store i32 %t1416, ptr %t1417
-  %t1420 = load i32, ptr %t1417
-  %t1421 = add i32 0, 0
-  %t1422 = icmp sgt i32 %t1420, %t1421
-  store i1 %t1422, ptr %t1419
-  br i1 %t1422, label %L293, label %L294
-L293:
-  %t1423 = load i32, ptr %t1417
-  %t1424 = load i32, ptr @g_nnodes
-  %t1425 = icmp slt i32 %t1423, %t1424
-  store i1 %t1425, ptr %t1419
-  br label %L294
-L294:
-  %t1426 = load i1, ptr %t1419
-  store i1 %t1426, ptr %t1418
-  br i1 %t1426, label %L295, label %L296
+  %t1408 = load i32, ptr %t1388
+  %t1409 = sext i32 %t1408 to i64
+  %t1410 = load ptr, ptr @g_nodes
+  %t1411 = getelementptr %ASTNode, ptr %t1410, i64 %t1409
+  %t1412 = getelementptr %ASTNode, ptr %t1411, i32 0, i32 3
+  %t1413 = load i32, ptr %t1412
+  %t1414 = load i32, ptr @OP_ADDR
+  %t1415 = icmp eq i32 %t1413, %t1414
+  store i1 %t1415, ptr %t1389
+  br label %L291
+L291:
+  %t1416 = load i1, ptr %t1389
+  br i1 %t1416, label %L292, label %L294
+L292:
+  %t1417 = load i32, ptr %t1388
+  %t1418 = sext i32 %t1417 to i64
+  %t1419 = load ptr, ptr @g_nodes
+  %t1420 = getelementptr %ASTNode, ptr %t1419, i64 %t1418
+  %t1421 = getelementptr %ASTNode, ptr %t1420, i32 0, i32 7
+  %t1422 = load i32, ptr %t1421
+  store i32 %t1422, ptr %t1423
+  %t1426 = load i32, ptr %t1423
+  %t1427 = add i32 0, 0
+  %t1428 = icmp sgt i32 %t1426, %t1427
+  store i1 %t1428, ptr %t1425
+  br i1 %t1428, label %L295, label %L296
 L295:
-  %t1427 = load i32, ptr %t1417
-  %t1428 = sext i32 %t1427 to i64
-  %t1429 = load ptr, ptr @g_nodes
-  %t1430 = getelementptr %ASTNode, ptr %t1429, i64 %t1428
-  %t1431 = getelementptr %ASTNode, ptr %t1430, i32 0, i32 0
-  %t1432 = load i32, ptr %t1431
-  %t1433 = load i32, ptr @AST_IDENT
-  %t1434 = icmp eq i32 %t1432, %t1433
-  store i1 %t1434, ptr %t1418
+  %t1429 = load i32, ptr %t1423
+  %t1430 = load i32, ptr @g_nnodes
+  %t1431 = icmp slt i32 %t1429, %t1430
+  store i1 %t1431, ptr %t1425
   br label %L296
 L296:
-  %t1435 = load i1, ptr %t1418
-  br i1 %t1435, label %L297, label %L299
+  %t1432 = load i1, ptr %t1425
+  store i1 %t1432, ptr %t1424
+  br i1 %t1432, label %L297, label %L298
 L297:
-  %t1436 = load ptr, ptr %t0
-  %t1437 = load i32, ptr %t1417
-  %t1438 = sext i32 %t1437 to i64
-  %t1439 = load ptr, ptr @g_nodes
-  %t1440 = getelementptr %ASTNode, ptr %t1439, i64 %t1438
-  %t1441 = getelementptr %ASTNode, ptr %t1440, i32 0, i32 10
-  %t1442 = load i32, ptr %t1441
-  %t1443 = call i32 @proof0_name_type(ptr %t1436, i32 %t1442)
-  store i32 %t1443, ptr %t1218
-  br label %L299
+  %t1433 = load i32, ptr %t1423
+  %t1434 = sext i32 %t1433 to i64
+  %t1435 = load ptr, ptr @g_nodes
+  %t1436 = getelementptr %ASTNode, ptr %t1435, i64 %t1434
+  %t1437 = getelementptr %ASTNode, ptr %t1436, i32 0, i32 0
+  %t1438 = load i32, ptr %t1437
+  %t1439 = load i32, ptr @AST_IDENT
+  %t1440 = icmp eq i32 %t1438, %t1439
+  store i1 %t1440, ptr %t1424
+  br label %L298
+L298:
+  %t1441 = load i1, ptr %t1424
+  br i1 %t1441, label %L299, label %L301
 L299:
-  br label %L292
-L292:
-  br label %L283
-L283:
-  %t1445 = load i32, ptr %t1346
-  %t1446 = add i32 0, 0
-  %t1447 = icmp sge i32 %t1445, %t1446
-  store i1 %t1447, ptr %t1444
-  br i1 %t1447, label %L300, label %L301
-L300:
-  %t1448 = load i32, ptr %t1218
-  %t1449 = load i32, ptr @NULL_STR
-  %t1450 = icmp ne i32 %t1448, %t1449
-  store i1 %t1450, ptr %t1444
+  %t1442 = load ptr, ptr %t0
+  %t1443 = load i32, ptr %t1423
+  %t1444 = sext i32 %t1443 to i64
+  %t1445 = load ptr, ptr @g_nodes
+  %t1446 = getelementptr %ASTNode, ptr %t1445, i64 %t1444
+  %t1447 = getelementptr %ASTNode, ptr %t1446, i32 0, i32 10
+  %t1448 = load i32, ptr %t1447
+  %t1449 = call i32 @proof0_name_type(ptr %t1442, i32 %t1448)
+  store i32 %t1449, ptr %t1224
   br label %L301
 L301:
-  %t1451 = load i1, ptr %t1444
-  br i1 %t1451, label %L302, label %L304
+  br label %L294
+L294:
+  br label %L285
+L285:
+  %t1451 = load i32, ptr %t1352
+  %t1452 = add i32 0, 0
+  %t1453 = icmp sge i32 %t1451, %t1452
+  store i1 %t1453, ptr %t1450
+  br i1 %t1453, label %L302, label %L303
 L302:
-  %t1452 = load i32, ptr %t1346
-  %t1453 = sext i32 %t1452 to i64
-  %t1454 = load ptr, ptr @g_funcs
-  %t1455 = getelementptr %FuncEntry, ptr %t1454, i64 %t1453
-  %t1456 = getelementptr %FuncEntry, ptr %t1455, i32 0, i32 2
-  %t1457 = load i32, ptr %t1456
-  store i32 %t1457, ptr %t1458
-  %t1461 = load i32, ptr %t1458
-  %t1462 = add i32 0, 0
-  %t1463 = icmp sgt i32 %t1461, %t1462
-  store i1 %t1463, ptr %t1460
-  br i1 %t1463, label %L305, label %L306
-L305:
-  %t1464 = load i32, ptr %t1458
-  %t1465 = load i32, ptr @g_nnodes
-  %t1466 = icmp slt i32 %t1464, %t1465
-  store i1 %t1466, ptr %t1460
-  br label %L306
-L306:
-  %t1467 = load i1, ptr %t1460
-  store i1 %t1467, ptr %t1459
-  br i1 %t1467, label %L307, label %L308
+  %t1454 = load i32, ptr %t1224
+  %t1455 = load i32, ptr @NULL_STR
+  %t1456 = icmp ne i32 %t1454, %t1455
+  store i1 %t1456, ptr %t1450
+  br label %L303
+L303:
+  %t1457 = load i1, ptr %t1450
+  br i1 %t1457, label %L304, label %L306
+L304:
+  %t1458 = load i32, ptr %t1352
+  %t1459 = sext i32 %t1458 to i64
+  %t1460 = load ptr, ptr @g_funcs
+  %t1461 = getelementptr %FuncEntry, ptr %t1460, i64 %t1459
+  %t1462 = getelementptr %FuncEntry, ptr %t1461, i32 0, i32 2
+  %t1463 = load i32, ptr %t1462
+  store i32 %t1463, ptr %t1464
+  %t1467 = load i32, ptr %t1464
+  %t1468 = add i32 0, 0
+  %t1469 = icmp sgt i32 %t1467, %t1468
+  store i1 %t1469, ptr %t1466
+  br i1 %t1469, label %L307, label %L308
 L307:
-  %t1468 = load i32, ptr %t1458
-  %t1469 = sext i32 %t1468 to i64
-  %t1470 = load ptr, ptr @g_nodes
-  %t1471 = getelementptr %ASTNode, ptr %t1470, i64 %t1469
-  %t1472 = getelementptr %ASTNode, ptr %t1471, i32 0, i32 6
-  %t1473 = load i32, ptr %t1472
-  %t1474 = add i32 0, 0
-  %t1475 = icmp sgt i32 %t1473, %t1474
-  store i1 %t1475, ptr %t1459
+  %t1470 = load i32, ptr %t1464
+  %t1471 = load i32, ptr @g_nnodes
+  %t1472 = icmp slt i32 %t1470, %t1471
+  store i1 %t1472, ptr %t1466
   br label %L308
 L308:
-  %t1476 = load i1, ptr %t1459
-  br i1 %t1476, label %L309, label %L311
+  %t1473 = load i1, ptr %t1466
+  store i1 %t1473, ptr %t1465
+  br i1 %t1473, label %L309, label %L310
 L309:
-  %t1477 = load i32, ptr %t1458
-  %t1478 = sext i32 %t1477 to i64
-  %t1479 = load ptr, ptr @g_nodes
-  %t1480 = getelementptr %ASTNode, ptr %t1479, i64 %t1478
-  %t1481 = getelementptr %ASTNode, ptr %t1480, i32 0, i32 13
-  %t1482 = load i32, ptr %t1481
-  %t1483 = sext i32 %t1482 to i64
-  %t1484 = load ptr, ptr @g_args
-  %t1485 = getelementptr i32, ptr %t1484, i64 %t1483
-  %t1486 = load i32, ptr %t1485
-  store i32 %t1486, ptr %t1487
-  %t1491 = load i32, ptr %t1487
-  %t1492 = add i32 0, 0
-  %t1493 = icmp sgt i32 %t1491, %t1492
-  store i1 %t1493, ptr %t1490
-  br i1 %t1493, label %L312, label %L313
-L312:
-  %t1494 = load i32, ptr %t1487
-  %t1495 = load i32, ptr @g_nnodes
-  %t1496 = icmp slt i32 %t1494, %t1495
-  store i1 %t1496, ptr %t1490
-  br label %L313
-L313:
-  %t1497 = load i1, ptr %t1490
-  store i1 %t1497, ptr %t1489
-  br i1 %t1497, label %L314, label %L315
+  %t1474 = load i32, ptr %t1464
+  %t1475 = sext i32 %t1474 to i64
+  %t1476 = load ptr, ptr @g_nodes
+  %t1477 = getelementptr %ASTNode, ptr %t1476, i64 %t1475
+  %t1478 = getelementptr %ASTNode, ptr %t1477, i32 0, i32 6
+  %t1479 = load i32, ptr %t1478
+  %t1480 = add i32 0, 0
+  %t1481 = icmp sgt i32 %t1479, %t1480
+  store i1 %t1481, ptr %t1465
+  br label %L310
+L310:
+  %t1482 = load i1, ptr %t1465
+  br i1 %t1482, label %L311, label %L313
+L311:
+  %t1483 = load i32, ptr %t1464
+  %t1484 = sext i32 %t1483 to i64
+  %t1485 = load ptr, ptr @g_nodes
+  %t1486 = getelementptr %ASTNode, ptr %t1485, i64 %t1484
+  %t1487 = getelementptr %ASTNode, ptr %t1486, i32 0, i32 13
+  %t1488 = load i32, ptr %t1487
+  %t1489 = sext i32 %t1488 to i64
+  %t1490 = load ptr, ptr @g_args
+  %t1491 = getelementptr i32, ptr %t1490, i64 %t1489
+  %t1492 = load i32, ptr %t1491
+  store i32 %t1492, ptr %t1493
+  %t1497 = load i32, ptr %t1493
+  %t1498 = add i32 0, 0
+  %t1499 = icmp sgt i32 %t1497, %t1498
+  store i1 %t1499, ptr %t1496
+  br i1 %t1499, label %L314, label %L315
 L314:
-  %t1498 = load i32, ptr %t1487
-  %t1499 = sext i32 %t1498 to i64
-  %t1500 = load ptr, ptr @g_nodes
-  %t1501 = getelementptr %ASTNode, ptr %t1500, i64 %t1499
-  %t1502 = getelementptr %ASTNode, ptr %t1501, i32 0, i32 10
-  %t1503 = load i32, ptr %t1502
-  %t1504 = getelementptr [5 x i8], ptr @.str.4067, i32 0, i32 0
-  %t1505 = call i32 @str_intern(ptr %t1504)
-  %t1506 = icmp eq i32 %t1503, %t1505
-  store i1 %t1506, ptr %t1489
+  %t1500 = load i32, ptr %t1493
+  %t1501 = load i32, ptr @g_nnodes
+  %t1502 = icmp slt i32 %t1500, %t1501
+  store i1 %t1502, ptr %t1496
   br label %L315
 L315:
-  %t1507 = load i1, ptr %t1489
-  store i1 %t1507, ptr %t1488
-  br i1 %t1507, label %L316, label %L317
+  %t1503 = load i1, ptr %t1496
+  store i1 %t1503, ptr %t1495
+  br i1 %t1503, label %L316, label %L317
 L316:
-  %t1508 = load i32, ptr %t1346
-  %t1509 = load i32, ptr %t1218
-  %t1510 = call i32 @proof0_method_receiver_noescape(i32 %t1508, i32 %t1509)
-  %t1511 = add i32 0, 1
-  %t1512 = icmp eq i32 %t1510, %t1511
-  store i1 %t1512, ptr %t1488
+  %t1504 = load i32, ptr %t1493
+  %t1505 = sext i32 %t1504 to i64
+  %t1506 = load ptr, ptr @g_nodes
+  %t1507 = getelementptr %ASTNode, ptr %t1506, i64 %t1505
+  %t1508 = getelementptr %ASTNode, ptr %t1507, i32 0, i32 10
+  %t1509 = load i32, ptr %t1508
+  %t1510 = getelementptr [5 x i8], ptr @.str.4067, i32 0, i32 0
+  %t1511 = call i32 @str_intern(ptr %t1510)
+  %t1512 = icmp eq i32 %t1509, %t1511
+  store i1 %t1512, ptr %t1495
   br label %L317
 L317:
-  %t1513 = load i1, ptr %t1488
-  br i1 %t1513, label %L318, label %L320
+  %t1513 = load i1, ptr %t1495
+  store i1 %t1513, ptr %t1494
+  br i1 %t1513, label %L318, label %L319
 L318:
-  %t1514 = load i32, ptr %t1
-  %t1515 = sext i32 %t1514 to i64
-  %t1516 = load ptr, ptr @g_nodes
-  %t1517 = getelementptr %ASTNode, ptr %t1516, i64 %t1515
-  %t1518 = getelementptr %ASTNode, ptr %t1517, i32 0, i32 13
-  %t1519 = load i32, ptr %t1518
-  %t1520 = sext i32 %t1519 to i64
-  %t1521 = load ptr, ptr @g_args
-  %t1522 = getelementptr i32, ptr %t1521, i64 %t1520
-  %t1523 = load i32, ptr %t1522
-  store i32 %t1523, ptr %t714
-  br label %L320
+  %t1514 = load i32, ptr %t1352
+  %t1515 = load i32, ptr %t1224
+  %t1516 = call i32 @proof0_method_receiver_noescape(i32 %t1514, i32 %t1515)
+  %t1517 = add i32 0, 1
+  %t1518 = icmp eq i32 %t1516, %t1517
+  store i1 %t1518, ptr %t1494
+  br label %L319
+L319:
+  %t1519 = load i1, ptr %t1494
+  br i1 %t1519, label %L320, label %L322
 L320:
-  br label %L311
-L311:
-  br label %L304
-L304:
-  %t1524 = load i32, ptr %t1216
-  %t1525 = load i32, ptr %t708
-  %t1526 = icmp ne i32 %t1524, %t1525
-  br i1 %t1526, label %L321, label %L323
-L321:
-  %t1527 = load i32, ptr %t714
-  %t1528 = add i32 0, 0
-  %t1529 = icmp sge i32 %t1527, %t1528
-  %t1530 = zext i1 %t1529 to i32
-  store i32 %t1530, ptr %t1353
-  br label %L323
+  %t1520 = load i32, ptr %t1
+  %t1521 = sext i32 %t1520 to i64
+  %t1522 = load ptr, ptr @g_nodes
+  %t1523 = getelementptr %ASTNode, ptr %t1522, i64 %t1521
+  %t1524 = getelementptr %ASTNode, ptr %t1523, i32 0, i32 13
+  %t1525 = load i32, ptr %t1524
+  %t1526 = sext i32 %t1525 to i64
+  %t1527 = load ptr, ptr @g_args
+  %t1528 = getelementptr i32, ptr %t1527, i64 %t1526
+  %t1529 = load i32, ptr %t1528
+  store i32 %t1529, ptr %t714
+  br label %L322
+L322:
+  br label %L313
+L313:
+  br label %L306
+L306:
+  %t1530 = load i32, ptr %t1222
+  %t1531 = load i32, ptr %t708
+  %t1532 = icmp ne i32 %t1530, %t1531
+  br i1 %t1532, label %L323, label %L325
 L323:
-  %t1532 = load i32, ptr %t1346
-  %t1533 = call i32 @proof0_call_inlineable(i32 %t1532)
-  %t1534 = add i32 0, 1
-  %t1535 = icmp eq i32 %t1533, %t1534
-  store i1 %t1535, ptr %t1531
-  br i1 %t1535, label %L324, label %L325
-L324:
-  %t1536 = load i32, ptr %t1353
-  %t1537 = add i32 0, 1
-  %t1538 = icmp eq i32 %t1536, %t1537
-  store i1 %t1538, ptr %t1531
+  %t1533 = load i32, ptr %t714
+  %t1534 = add i32 0, 0
+  %t1535 = icmp sge i32 %t1533, %t1534
+  %t1536 = zext i1 %t1535 to i32
+  store i32 %t1536, ptr %t1359
   br label %L325
 L325:
-  %t1539 = load i1, ptr %t1531
-  br i1 %t1539, label %L326, label %L328
+  %t1538 = load i32, ptr %t1352
+  %t1539 = call i32 @proof0_call_inlineable(i32 %t1538)
+  %t1540 = add i32 0, 1
+  %t1541 = icmp eq i32 %t1539, %t1540
+  store i1 %t1541, ptr %t1537
+  br i1 %t1541, label %L326, label %L327
 L326:
-  %t1540 = load ptr, ptr %t0
-  %t1541 = load ptr, ptr %t0
-  %t1542 = getelementptr %PForProof0, ptr %t1541, i32 0, i32 32
-  %t1543 = load i32, ptr %t1542
-  %t1544 = add i32 0, 1
-  %t1545 = add i32 %t1543, %t1544
-  %t1546 = load ptr, ptr %t0
-  %t1547 = getelementptr %PForProof0, ptr %t1546, i32 0, i32 32
-  store i32 %t1545, ptr %t1547
-  %t1548 = load i32, ptr %t1346
-  %t1549 = call i32 @proof0_call_c1_inlineable(i32 %t1548)
-  %t1550 = add i32 0, 1
-  %t1551 = icmp eq i32 %t1549, %t1550
-  br i1 %t1551, label %L329, label %L330
-L329:
-  %t1552 = load ptr, ptr %t0
-  %t1553 = load ptr, ptr %t0
-  %t1554 = getelementptr %PForProof0, ptr %t1553, i32 0, i32 33
-  %t1555 = load i32, ptr %t1554
-  %t1556 = add i32 0, 1
-  %t1557 = add i32 %t1555, %t1556
-  %t1558 = load ptr, ptr %t0
-  %t1559 = getelementptr %PForProof0, ptr %t1558, i32 0, i32 33
-  store i32 %t1557, ptr %t1559
-  %t1560 = load ptr, ptr %t0
-  %t1561 = add i32 0, 0
-  %t1562 = load i32, ptr %t3
-  %t1563 = load i32, ptr %t1346
-  %t1564 = call i32 @proof0_call_c1_depth(i32 %t1563)
-  %t1565 = add i32 %t1562, %t1564
-  call void @proof0_note_depth(ptr %t1560, i32 %t1561, i32 %t1565)
-  br label %L331
-L330:
-  %t1566 = load ptr, ptr %t0
-  %t1567 = add i32 0, 1
-  call void @proof0_c1_refuse(ptr %t1566, i32 %t1567)
-  br label %L331
-L331:
-  br label %L328
+  %t1542 = load i32, ptr %t1359
+  %t1543 = add i32 0, 1
+  %t1544 = icmp eq i32 %t1542, %t1543
+  store i1 %t1544, ptr %t1537
+  br label %L327
+L327:
+  %t1545 = load i1, ptr %t1537
+  br i1 %t1545, label %L328, label %L330
 L328:
-  br label %L241
-L241:
-  %t1568 = add i32 0, 0
-  store i32 %t1568, ptr %t1569
-  br label %L332
+  %t1546 = load ptr, ptr %t0
+  %t1547 = load ptr, ptr %t0
+  %t1548 = getelementptr %PForProof0, ptr %t1547, i32 0, i32 32
+  %t1549 = load i32, ptr %t1548
+  %t1550 = add i32 0, 1
+  %t1551 = add i32 %t1549, %t1550
+  %t1552 = load ptr, ptr %t0
+  %t1553 = getelementptr %PForProof0, ptr %t1552, i32 0, i32 32
+  store i32 %t1551, ptr %t1553
+  %t1554 = load i32, ptr %t1352
+  %t1555 = call i32 @proof0_call_c1_inlineable(i32 %t1554)
+  %t1556 = add i32 0, 1
+  %t1557 = icmp eq i32 %t1555, %t1556
+  br i1 %t1557, label %L331, label %L332
+L331:
+  %t1558 = load ptr, ptr %t0
+  %t1559 = load ptr, ptr %t0
+  %t1560 = getelementptr %PForProof0, ptr %t1559, i32 0, i32 33
+  %t1561 = load i32, ptr %t1560
+  %t1562 = add i32 0, 1
+  %t1563 = add i32 %t1561, %t1562
+  %t1564 = load ptr, ptr %t0
+  %t1565 = getelementptr %PForProof0, ptr %t1564, i32 0, i32 33
+  store i32 %t1563, ptr %t1565
+  %t1566 = load ptr, ptr %t0
+  %t1567 = add i32 0, 0
+  %t1568 = load i32, ptr %t3
+  %t1569 = load i32, ptr %t1352
+  %t1570 = call i32 @proof0_call_c1_depth(i32 %t1569)
+  %t1571 = add i32 %t1568, %t1570
+  call void @proof0_note_depth(ptr %t1566, i32 %t1567, i32 %t1571)
+  br label %L333
 L332:
-  %t1570 = load i32, ptr %t1569
-  %t1571 = load i32, ptr %t1
-  %t1572 = sext i32 %t1571 to i64
-  %t1573 = load ptr, ptr @g_nodes
-  %t1574 = getelementptr %ASTNode, ptr %t1573, i64 %t1572
-  %t1575 = getelementptr %ASTNode, ptr %t1574, i32 0, i32 6
-  %t1576 = load i32, ptr %t1575
-  %t1577 = icmp slt i32 %t1570, %t1576
-  br i1 %t1577, label %L333, label %L334
+  %t1572 = load ptr, ptr %t0
+  %t1573 = add i32 0, 1
+  call void @proof0_c1_refuse(ptr %t1572, i32 %t1573)
+  br label %L333
 L333:
-  %t1578 = load i32, ptr %t1
-  %t1579 = sext i32 %t1578 to i64
-  %t1580 = load ptr, ptr @g_nodes
-  %t1581 = getelementptr %ASTNode, ptr %t1580, i64 %t1579
-  %t1582 = getelementptr %ASTNode, ptr %t1581, i32 0, i32 13
-  %t1583 = load i32, ptr %t1582
-  %t1584 = load i32, ptr %t1569
-  %t1585 = add i32 %t1583, %t1584
-  %t1586 = sext i32 %t1585 to i64
-  %t1587 = load ptr, ptr @g_args
-  %t1588 = getelementptr i32, ptr %t1587, i64 %t1586
-  %t1589 = load i32, ptr %t1588
-  store i32 %t1589, ptr %t1590
-  %t1591 = load i32, ptr %t1590
-  %t1592 = load i32, ptr %t714
-  %t1593 = icmp eq i32 %t1591, %t1592
-  br i1 %t1593, label %L335, label %L336
+  br label %L330
+L330:
+  br label %L243
+L243:
+  %t1574 = add i32 0, 0
+  store i32 %t1574, ptr %t1575
+  br label %L334
+L334:
+  %t1576 = load i32, ptr %t1575
+  %t1577 = load i32, ptr %t1
+  %t1578 = sext i32 %t1577 to i64
+  %t1579 = load ptr, ptr @g_nodes
+  %t1580 = getelementptr %ASTNode, ptr %t1579, i64 %t1578
+  %t1581 = getelementptr %ASTNode, ptr %t1580, i32 0, i32 6
+  %t1582 = load i32, ptr %t1581
+  %t1583 = icmp slt i32 %t1576, %t1582
+  br i1 %t1583, label %L335, label %L336
 L335:
-  %t1594 = load ptr, ptr %t0
-  %t1595 = load i32, ptr %t1590
-  %t1596 = sext i32 %t1595 to i64
-  %t1597 = load ptr, ptr @g_nodes
-  %t1598 = getelementptr %ASTNode, ptr %t1597, i64 %t1596
-  %t1599 = getelementptr %ASTNode, ptr %t1598, i32 0, i32 7
-  %t1600 = load i32, ptr %t1599
-  %t1601 = load i32, ptr %t2
-  %t1602 = add i32 0, 1
-  %t1603 = add i32 %t1601, %t1602
-  %t1604 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t1594, i32 %t1600, i32 %t1603, i32 %t1604)
-  br label %L337
-L336:
-  %t1605 = load ptr, ptr %t0
-  %t1606 = load i32, ptr %t1590
+  %t1584 = load i32, ptr %t1
+  %t1585 = sext i32 %t1584 to i64
+  %t1586 = load ptr, ptr @g_nodes
+  %t1587 = getelementptr %ASTNode, ptr %t1586, i64 %t1585
+  %t1588 = getelementptr %ASTNode, ptr %t1587, i32 0, i32 13
+  %t1589 = load i32, ptr %t1588
+  %t1590 = load i32, ptr %t1575
+  %t1591 = add i32 %t1589, %t1590
+  %t1592 = sext i32 %t1591 to i64
+  %t1593 = load ptr, ptr @g_args
+  %t1594 = getelementptr i32, ptr %t1593, i64 %t1592
+  %t1595 = load i32, ptr %t1594
+  store i32 %t1595, ptr %t1596
+  %t1597 = load i32, ptr %t1596
+  %t1598 = load i32, ptr %t714
+  %t1599 = icmp eq i32 %t1597, %t1598
+  br i1 %t1599, label %L337, label %L338
+L337:
+  %t1600 = load ptr, ptr %t0
+  %t1601 = load i32, ptr %t1596
+  %t1602 = sext i32 %t1601 to i64
+  %t1603 = load ptr, ptr @g_nodes
+  %t1604 = getelementptr %ASTNode, ptr %t1603, i64 %t1602
+  %t1605 = getelementptr %ASTNode, ptr %t1604, i32 0, i32 7
+  %t1606 = load i32, ptr %t1605
   %t1607 = load i32, ptr %t2
   %t1608 = add i32 0, 1
   %t1609 = add i32 %t1607, %t1608
   %t1610 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t1605, i32 %t1606, i32 %t1609, i32 %t1610)
-  br label %L337
-L337:
-  %t1611 = load i32, ptr %t1569
-  %t1612 = add i32 0, 1
-  %t1613 = add i32 %t1611, %t1612
-  store i32 %t1613, ptr %t1569
-  br label %L332
-L334:
-  %t1614 = load i32, ptr %t716
-  %t1615 = load i32, ptr @NULL_STR
-  %t1616 = icmp ne i32 %t1614, %t1615
-  br i1 %t1616, label %L338, label %L340
+  call void @proof0_expr(ptr %t1600, i32 %t1606, i32 %t1609, i32 %t1610)
+  br label %L339
 L338:
-  %t1617 = load ptr, ptr %t0
-  %t1618 = load ptr, ptr @g_pf0_affine
-  %t1619 = load i32, ptr %t716
-  %t1620 = call i32 @proof0_add_capture(ptr %t1617, ptr %t1618, i32 %t1619)
-  br label %L340
+  %t1611 = load ptr, ptr %t0
+  %t1612 = load i32, ptr %t1596
+  %t1613 = load i32, ptr %t2
+  %t1614 = add i32 0, 1
+  %t1615 = add i32 %t1613, %t1614
+  %t1616 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t1611, i32 %t1612, i32 %t1615, i32 %t1616)
+  br label %L339
+L339:
+  %t1617 = load i32, ptr %t1575
+  %t1618 = add i32 0, 1
+  %t1619 = add i32 %t1617, %t1618
+  store i32 %t1619, ptr %t1575
+  br label %L334
+L336:
+  %t1620 = load i32, ptr %t716
+  %t1621 = load i32, ptr @NULL_STR
+  %t1622 = icmp ne i32 %t1620, %t1621
+  br i1 %t1622, label %L340, label %L342
 L340:
+  %t1623 = load ptr, ptr %t0
+  %t1624 = load ptr, ptr @g_pf0_affine
+  %t1625 = load i32, ptr %t716
+  %t1626 = call i32 @proof0_add_capture(ptr %t1623, ptr %t1624, i32 %t1625)
+  br label %L342
+L342:
   ret void
 L152:
-  %t1621 = load i32, ptr %t28
-  %t1622 = load i32, ptr @AST_STRUCT_LIT
-  %t1623 = icmp eq i32 %t1621, %t1622
-  br i1 %t1623, label %L341, label %L343
-L341:
-  %t1624 = load i32, ptr %t1
-  %t1625 = sext i32 %t1624 to i64
-  %t1626 = load ptr, ptr @g_nodes
-  %t1627 = getelementptr %ASTNode, ptr %t1626, i64 %t1625
-  %t1628 = getelementptr %ASTNode, ptr %t1627, i32 0, i32 13
-  %t1629 = load i32, ptr %t1628
+  %t1627 = load i32, ptr %t28
+  %t1628 = load i32, ptr @AST_STRUCT_LIT
+  %t1629 = icmp eq i32 %t1627, %t1628
+  br i1 %t1629, label %L343, label %L345
+L343:
   %t1630 = load i32, ptr %t1
   %t1631 = sext i32 %t1630 to i64
   %t1632 = load ptr, ptr @g_nodes
   %t1633 = getelementptr %ASTNode, ptr %t1632, i64 %t1631
-  %t1634 = getelementptr %ASTNode, ptr %t1633, i32 0, i32 6
+  %t1634 = getelementptr %ASTNode, ptr %t1633, i32 0, i32 13
   %t1635 = load i32, ptr %t1634
-  %t1636 = add i32 0, 2
-  %t1637 = call i32 @proof0_args_ok(i32 %t1629, i32 %t1635, i32 %t1636)
-  %t1638 = add i32 0, 0
-  %t1639 = icmp eq i32 %t1637, %t1638
-  br i1 %t1639, label %L344, label %L346
-L344:
-  %t1640 = load ptr, ptr %t0
-  %t1641 = load i32, ptr @P0R_NODE
-  call void @proof0_mark(ptr %t1640, i32 %t1641)
-  ret void
+  %t1636 = load i32, ptr %t1
+  %t1637 = sext i32 %t1636 to i64
+  %t1638 = load ptr, ptr @g_nodes
+  %t1639 = getelementptr %ASTNode, ptr %t1638, i64 %t1637
+  %t1640 = getelementptr %ASTNode, ptr %t1639, i32 0, i32 6
+  %t1641 = load i32, ptr %t1640
+  %t1642 = add i32 0, 2
+  %t1643 = call i32 @proof0_args_ok(i32 %t1635, i32 %t1641, i32 %t1642)
+  %t1644 = add i32 0, 0
+  %t1645 = icmp eq i32 %t1643, %t1644
+  br i1 %t1645, label %L346, label %L348
 L346:
-  %t1642 = add i32 0, 0
-  store i32 %t1642, ptr %t1643
-  br label %L347
-L347:
-  %t1644 = load i32, ptr %t1643
-  %t1645 = load i32, ptr %t1
-  %t1646 = sext i32 %t1645 to i64
-  %t1647 = load ptr, ptr @g_nodes
-  %t1648 = getelementptr %ASTNode, ptr %t1647, i64 %t1646
-  %t1649 = getelementptr %ASTNode, ptr %t1648, i32 0, i32 6
-  %t1650 = load i32, ptr %t1649
-  %t1651 = icmp slt i32 %t1644, %t1650
-  br i1 %t1651, label %L348, label %L349
-L348:
-  %t1652 = load ptr, ptr %t0
-  %t1653 = load i32, ptr %t1
-  %t1654 = sext i32 %t1653 to i64
-  %t1655 = load ptr, ptr @g_nodes
-  %t1656 = getelementptr %ASTNode, ptr %t1655, i64 %t1654
-  %t1657 = getelementptr %ASTNode, ptr %t1656, i32 0, i32 13
-  %t1658 = load i32, ptr %t1657
-  %t1659 = load i32, ptr %t1643
-  %t1660 = add i32 0, 2
-  %t1661 = mul i32 %t1659, %t1660
-  %t1662 = add i32 %t1658, %t1661
-  %t1663 = add i32 0, 1
-  %t1664 = add i32 %t1662, %t1663
-  %t1665 = sext i32 %t1664 to i64
-  %t1666 = load ptr, ptr @g_args
-  %t1667 = getelementptr i32, ptr %t1666, i64 %t1665
-  %t1668 = load i32, ptr %t1667
-  %t1669 = load i32, ptr %t2
-  %t1670 = add i32 0, 1
-  %t1671 = add i32 %t1669, %t1670
-  %t1672 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t1652, i32 %t1668, i32 %t1671, i32 %t1672)
-  %t1673 = load i32, ptr %t1643
-  %t1674 = add i32 0, 1
-  %t1675 = add i32 %t1673, %t1674
-  store i32 %t1675, ptr %t1643
-  br label %L347
-L349:
+  %t1646 = load ptr, ptr %t0
+  %t1647 = load i32, ptr @P0R_NODE
+  call void @proof0_mark(ptr %t1646, i32 %t1647)
   ret void
-L343:
-  %t1676 = load i32, ptr %t28
-  %t1677 = load i32, ptr @AST_ENUM_CONSTRUCT
-  %t1678 = icmp eq i32 %t1676, %t1677
-  br i1 %t1678, label %L350, label %L352
+L348:
+  %t1648 = add i32 0, 0
+  store i32 %t1648, ptr %t1649
+  br label %L349
+L349:
+  %t1650 = load i32, ptr %t1649
+  %t1651 = load i32, ptr %t1
+  %t1652 = sext i32 %t1651 to i64
+  %t1653 = load ptr, ptr @g_nodes
+  %t1654 = getelementptr %ASTNode, ptr %t1653, i64 %t1652
+  %t1655 = getelementptr %ASTNode, ptr %t1654, i32 0, i32 6
+  %t1656 = load i32, ptr %t1655
+  %t1657 = icmp slt i32 %t1650, %t1656
+  br i1 %t1657, label %L350, label %L351
 L350:
-  %t1679 = load i32, ptr %t1
-  %t1680 = sext i32 %t1679 to i64
-  %t1681 = load ptr, ptr @g_nodes
-  %t1682 = getelementptr %ASTNode, ptr %t1681, i64 %t1680
-  %t1683 = getelementptr %ASTNode, ptr %t1682, i32 0, i32 13
-  %t1684 = load i32, ptr %t1683
+  %t1658 = load ptr, ptr %t0
+  %t1659 = load i32, ptr %t1
+  %t1660 = sext i32 %t1659 to i64
+  %t1661 = load ptr, ptr @g_nodes
+  %t1662 = getelementptr %ASTNode, ptr %t1661, i64 %t1660
+  %t1663 = getelementptr %ASTNode, ptr %t1662, i32 0, i32 13
+  %t1664 = load i32, ptr %t1663
+  %t1665 = load i32, ptr %t1649
+  %t1666 = add i32 0, 2
+  %t1667 = mul i32 %t1665, %t1666
+  %t1668 = add i32 %t1664, %t1667
+  %t1669 = add i32 0, 1
+  %t1670 = add i32 %t1668, %t1669
+  %t1671 = sext i32 %t1670 to i64
+  %t1672 = load ptr, ptr @g_args
+  %t1673 = getelementptr i32, ptr %t1672, i64 %t1671
+  %t1674 = load i32, ptr %t1673
+  %t1675 = load i32, ptr %t2
+  %t1676 = add i32 0, 1
+  %t1677 = add i32 %t1675, %t1676
+  %t1678 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t1658, i32 %t1674, i32 %t1677, i32 %t1678)
+  %t1679 = load i32, ptr %t1649
+  %t1680 = add i32 0, 1
+  %t1681 = add i32 %t1679, %t1680
+  store i32 %t1681, ptr %t1649
+  br label %L349
+L351:
+  ret void
+L345:
+  %t1682 = load i32, ptr %t28
+  %t1683 = load i32, ptr @AST_ENUM_CONSTRUCT
+  %t1684 = icmp eq i32 %t1682, %t1683
+  br i1 %t1684, label %L352, label %L354
+L352:
   %t1685 = load i32, ptr %t1
   %t1686 = sext i32 %t1685 to i64
   %t1687 = load ptr, ptr @g_nodes
   %t1688 = getelementptr %ASTNode, ptr %t1687, i64 %t1686
-  %t1689 = getelementptr %ASTNode, ptr %t1688, i32 0, i32 6
+  %t1689 = getelementptr %ASTNode, ptr %t1688, i32 0, i32 13
   %t1690 = load i32, ptr %t1689
-  %t1691 = add i32 0, 1
-  %t1692 = call i32 @proof0_args_ok(i32 %t1684, i32 %t1690, i32 %t1691)
-  %t1693 = add i32 0, 0
-  %t1694 = icmp eq i32 %t1692, %t1693
-  br i1 %t1694, label %L353, label %L355
-L353:
-  %t1695 = load ptr, ptr %t0
-  %t1696 = load i32, ptr @P0R_NODE
-  call void @proof0_mark(ptr %t1695, i32 %t1696)
-  ret void
+  %t1691 = load i32, ptr %t1
+  %t1692 = sext i32 %t1691 to i64
+  %t1693 = load ptr, ptr @g_nodes
+  %t1694 = getelementptr %ASTNode, ptr %t1693, i64 %t1692
+  %t1695 = getelementptr %ASTNode, ptr %t1694, i32 0, i32 6
+  %t1696 = load i32, ptr %t1695
+  %t1697 = add i32 0, 1
+  %t1698 = call i32 @proof0_args_ok(i32 %t1690, i32 %t1696, i32 %t1697)
+  %t1699 = add i32 0, 0
+  %t1700 = icmp eq i32 %t1698, %t1699
+  br i1 %t1700, label %L355, label %L357
 L355:
-  %t1697 = add i32 0, 0
-  store i32 %t1697, ptr %t1698
-  br label %L356
-L356:
-  %t1699 = load i32, ptr %t1698
-  %t1700 = load i32, ptr %t1
-  %t1701 = sext i32 %t1700 to i64
-  %t1702 = load ptr, ptr @g_nodes
-  %t1703 = getelementptr %ASTNode, ptr %t1702, i64 %t1701
-  %t1704 = getelementptr %ASTNode, ptr %t1703, i32 0, i32 6
-  %t1705 = load i32, ptr %t1704
-  %t1706 = icmp slt i32 %t1699, %t1705
-  br i1 %t1706, label %L357, label %L358
-L357:
-  %t1707 = load ptr, ptr %t0
-  %t1708 = load i32, ptr %t1
-  %t1709 = sext i32 %t1708 to i64
-  %t1710 = load ptr, ptr @g_nodes
-  %t1711 = getelementptr %ASTNode, ptr %t1710, i64 %t1709
-  %t1712 = getelementptr %ASTNode, ptr %t1711, i32 0, i32 13
-  %t1713 = load i32, ptr %t1712
-  %t1714 = load i32, ptr %t1698
-  %t1715 = add i32 %t1713, %t1714
-  %t1716 = sext i32 %t1715 to i64
-  %t1717 = load ptr, ptr @g_args
-  %t1718 = getelementptr i32, ptr %t1717, i64 %t1716
-  %t1719 = load i32, ptr %t1718
-  %t1720 = load i32, ptr %t2
-  %t1721 = add i32 0, 1
-  %t1722 = add i32 %t1720, %t1721
-  %t1723 = load i32, ptr %t3
-  call void @proof0_expr(ptr %t1707, i32 %t1719, i32 %t1722, i32 %t1723)
-  %t1724 = load i32, ptr %t1698
-  %t1725 = add i32 0, 1
-  %t1726 = add i32 %t1724, %t1725
-  store i32 %t1726, ptr %t1698
-  br label %L356
-L358:
+  %t1701 = load ptr, ptr %t0
+  %t1702 = load i32, ptr @P0R_NODE
+  call void @proof0_mark(ptr %t1701, i32 %t1702)
   ret void
-L352:
-  %t1727 = load ptr, ptr %t0
-  %t1728 = load i32, ptr @P0R_NODE
-  call void @proof0_mark(ptr %t1727, i32 %t1728)
+L357:
+  %t1703 = add i32 0, 0
+  store i32 %t1703, ptr %t1704
+  br label %L358
+L358:
+  %t1705 = load i32, ptr %t1704
+  %t1706 = load i32, ptr %t1
+  %t1707 = sext i32 %t1706 to i64
+  %t1708 = load ptr, ptr @g_nodes
+  %t1709 = getelementptr %ASTNode, ptr %t1708, i64 %t1707
+  %t1710 = getelementptr %ASTNode, ptr %t1709, i32 0, i32 6
+  %t1711 = load i32, ptr %t1710
+  %t1712 = icmp slt i32 %t1705, %t1711
+  br i1 %t1712, label %L359, label %L360
+L359:
+  %t1713 = load ptr, ptr %t0
+  %t1714 = load i32, ptr %t1
+  %t1715 = sext i32 %t1714 to i64
+  %t1716 = load ptr, ptr @g_nodes
+  %t1717 = getelementptr %ASTNode, ptr %t1716, i64 %t1715
+  %t1718 = getelementptr %ASTNode, ptr %t1717, i32 0, i32 13
+  %t1719 = load i32, ptr %t1718
+  %t1720 = load i32, ptr %t1704
+  %t1721 = add i32 %t1719, %t1720
+  %t1722 = sext i32 %t1721 to i64
+  %t1723 = load ptr, ptr @g_args
+  %t1724 = getelementptr i32, ptr %t1723, i64 %t1722
+  %t1725 = load i32, ptr %t1724
+  %t1726 = load i32, ptr %t2
+  %t1727 = add i32 0, 1
+  %t1728 = add i32 %t1726, %t1727
+  %t1729 = load i32, ptr %t3
+  call void @proof0_expr(ptr %t1713, i32 %t1725, i32 %t1728, i32 %t1729)
+  %t1730 = load i32, ptr %t1704
+  %t1731 = add i32 0, 1
+  %t1732 = add i32 %t1730, %t1731
+  store i32 %t1732, ptr %t1704
+  br label %L358
+L360:
+  ret void
+L354:
+  %t1733 = load ptr, ptr %t0
+  %t1734 = load i32, ptr @P0R_NODE
+  call void @proof0_mark(ptr %t1733, i32 %t1734)
   ret void
 }
 
@@ -144011,7 +144035,8 @@ entry:
   %t18 = alloca i1
   %t31 = alloca i1
   %t93 = alloca i1
-  %t122 = alloca i32
+  %t94 = alloca i1
+  %t133 = alloca i32
   %t2 = load i32, ptr %t0
   %t3 = add i32 0, 0
   %t4 = icmp slt i32 %t2, %t3
@@ -144154,59 +144179,60 @@ L25:
   %t92 = icmp eq i32 %t90, %t91
   br i1 %t92, label %L29, label %L31
 L29:
-  %t94 = load i32, ptr %t0
-  %t95 = sext i32 %t94 to i64
-  %t96 = load ptr, ptr @g_nodes
-  %t97 = getelementptr %ASTNode, ptr %t96, i64 %t95
-  %t98 = getelementptr %ASTNode, ptr %t97, i32 0, i32 10
-  %t99 = load i32, ptr %t98
-  %t100 = sext i32 %t99 to i64
-  %t101 = load ptr, ptr @g_strings
-  %t102 = getelementptr i8, ptr %t101, i64 %t100
-  %t103 = getelementptr [6 x i8], ptr @.str.5961, i32 0, i32 0
-  %t104 = call i32 @str_eq(ptr %t102, ptr %t103)
-  %t105 = add i32 0, 1
-  %t106 = icmp eq i32 %t104, %t105
-  store i1 %t106, ptr %t93
-  br i1 %t106, label %L32, label %L33
+  %t95 = load i32, ptr %t0
+  %t96 = sext i32 %t95 to i64
+  %t97 = load ptr, ptr @g_nodes
+  %t98 = getelementptr %ASTNode, ptr %t97, i64 %t96
+  %t99 = getelementptr %ASTNode, ptr %t98, i32 0, i32 10
+  %t100 = load i32, ptr %t99
+  %t101 = sext i32 %t100 to i64
+  %t102 = load ptr, ptr @g_strings
+  %t103 = getelementptr i8, ptr %t102, i64 %t101
+  %t104 = getelementptr [6 x i8], ptr @.str.5961, i32 0, i32 0
+  %t105 = call i32 @str_eq(ptr %t103, ptr %t104)
+  %t106 = add i32 0, 1
+  %t107 = icmp eq i32 %t105, %t106
+  store i1 %t107, ptr %t94
+  br i1 %t107, label %L32, label %L33
 L32:
-  %t107 = load i32, ptr %t0
-  %t108 = sext i32 %t107 to i64
-  %t109 = load ptr, ptr @g_nodes
-  %t110 = getelementptr %ASTNode, ptr %t109, i64 %t108
-  %t111 = getelementptr %ASTNode, ptr %t110, i32 0, i32 6
-  %t112 = load i32, ptr %t111
-  %t113 = add i32 0, 3
-  %t114 = icmp eq i32 %t112, %t113
-  store i1 %t114, ptr %t93
+  %t108 = load i32, ptr %t0
+  %t109 = sext i32 %t108 to i64
+  %t110 = load ptr, ptr @g_nodes
+  %t111 = getelementptr %ASTNode, ptr %t110, i64 %t109
+  %t112 = getelementptr %ASTNode, ptr %t111, i32 0, i32 10
+  %t113 = load i32, ptr %t112
+  %t114 = call i32 @find_func(i32 %t113)
+  %t115 = add i32 0, 0
+  %t116 = icmp slt i32 %t114, %t115
+  store i1 %t116, ptr %t94
   br label %L33
 L33:
-  %t115 = load i1, ptr %t93
-  br i1 %t115, label %L34, label %L36
+  %t117 = load i1, ptr %t94
+  store i1 %t117, ptr %t93
+  br i1 %t117, label %L34, label %L35
 L34:
-  %t116 = load i32, ptr %t0
-  %t117 = sext i32 %t116 to i64
-  %t118 = load ptr, ptr @g_nodes
-  %t119 = getelementptr %ASTNode, ptr %t118, i64 %t117
-  %t120 = getelementptr %ASTNode, ptr %t119, i32 0, i32 13
-  %t121 = load i32, ptr %t120
-  store i32 %t121, ptr %t122
+  %t118 = load i32, ptr %t0
+  %t119 = sext i32 %t118 to i64
+  %t120 = load ptr, ptr @g_nodes
+  %t121 = getelementptr %ASTNode, ptr %t120, i64 %t119
+  %t122 = getelementptr %ASTNode, ptr %t121, i32 0, i32 6
   %t123 = load i32, ptr %t122
-  %t124 = sext i32 %t123 to i64
-  %t125 = load ptr, ptr @g_args
-  %t126 = getelementptr i32, ptr %t125, i64 %t124
-  %t127 = load i32, ptr %t126
-  %t128 = call i32 @gpu_dot_expr_ok(i32 %t127)
-  %t129 = add i32 0, 0
-  %t130 = icmp eq i32 %t128, %t129
-  br i1 %t130, label %L37, label %L39
-L37:
-  %t131 = add i32 0, 0
-  ret i32 %t131
-L39:
-  %t132 = load i32, ptr %t122
-  %t133 = add i32 0, 1
-  %t134 = add i32 %t132, %t133
+  %t124 = add i32 0, 3
+  %t125 = icmp eq i32 %t123, %t124
+  store i1 %t125, ptr %t93
+  br label %L35
+L35:
+  %t126 = load i1, ptr %t93
+  br i1 %t126, label %L36, label %L38
+L36:
+  %t127 = load i32, ptr %t0
+  %t128 = sext i32 %t127 to i64
+  %t129 = load ptr, ptr @g_nodes
+  %t130 = getelementptr %ASTNode, ptr %t129, i64 %t128
+  %t131 = getelementptr %ASTNode, ptr %t130, i32 0, i32 13
+  %t132 = load i32, ptr %t131
+  store i32 %t132, ptr %t133
+  %t134 = load i32, ptr %t133
   %t135 = sext i32 %t134 to i64
   %t136 = load ptr, ptr @g_args
   %t137 = getelementptr i32, ptr %t136, i64 %t135
@@ -144214,26 +144240,41 @@ L39:
   %t139 = call i32 @gpu_dot_expr_ok(i32 %t138)
   %t140 = add i32 0, 0
   %t141 = icmp eq i32 %t139, %t140
-  br i1 %t141, label %L40, label %L42
-L40:
+  br i1 %t141, label %L39, label %L41
+L39:
   %t142 = add i32 0, 0
   ret i32 %t142
-L42:
-  %t143 = load i32, ptr %t122
-  %t144 = add i32 0, 2
+L41:
+  %t143 = load i32, ptr %t133
+  %t144 = add i32 0, 1
   %t145 = add i32 %t143, %t144
   %t146 = sext i32 %t145 to i64
   %t147 = load ptr, ptr @g_args
   %t148 = getelementptr i32, ptr %t147, i64 %t146
   %t149 = load i32, ptr %t148
   %t150 = call i32 @gpu_dot_expr_ok(i32 %t149)
-  ret i32 %t150
-L36:
   %t151 = add i32 0, 0
-  ret i32 %t151
+  %t152 = icmp eq i32 %t150, %t151
+  br i1 %t152, label %L42, label %L44
+L42:
+  %t153 = add i32 0, 0
+  ret i32 %t153
+L44:
+  %t154 = load i32, ptr %t133
+  %t155 = add i32 0, 2
+  %t156 = add i32 %t154, %t155
+  %t157 = sext i32 %t156 to i64
+  %t158 = load ptr, ptr @g_args
+  %t159 = getelementptr i32, ptr %t158, i64 %t157
+  %t160 = load i32, ptr %t159
+  %t161 = call i32 @gpu_dot_expr_ok(i32 %t160)
+  ret i32 %t161
+L38:
+  %t162 = add i32 0, 0
+  ret i32 %t162
 L31:
-  %t152 = add i32 0, 0
-  ret i32 %t152
+  %t163 = add i32 0, 0
+  ret i32 %t163
 }
 
 define internal i32 @gpu_elem_expr_call_free(i32 %p0) {

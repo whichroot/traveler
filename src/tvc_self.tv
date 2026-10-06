@@ -17288,7 +17288,7 @@ fn pfor_walk_expr(pf: *PForState, expr: i32, loop_var: i32) -> i32 {
         // udot4: pure packed-byte dot builtin — its three argument expressions
         // are the whole footprint.
         if str_eq(&g_strings[fn_name], "udot4") == 1
-            && g_nodes[expr].nargs == 3 {
+            && find_func(fn_name) < 0 && g_nodes[expr].nargs == 3 {
 
             let uab: i32 = g_nodes[expr].args_start;
             if pfor_walk_expr(pf, g_args[uab], loop_var) == 0 { return 0; }
@@ -19184,7 +19184,7 @@ fn proof0_expr(P: *PForProof0, node: i32, depth: i32,
         // argument loop below would re-walk the same three subtrees, which
         // grows as 2^depth on nested udot4 chains.
         if str_eq(&g_strings[call_name], "udot4") == 1
-            && g_nodes[node].nargs == 3 {
+            && find_func(call_name) < 0 && g_nodes[node].nargs == 3 {
             call_handled = 1;
             let uab: i32 = g_nodes[node].args_start;
             proof0_expr(P, g_args[uab], depth + 1, control_depth);
@@ -26544,7 +26544,7 @@ fn gpu_dot_expr_ok(node: i32) -> i32 {
     }
     if kind == AST_CALL {
         if str_eq(&g_strings[g_nodes[node].name0], "udot4") == 1
-            && g_nodes[node].nargs == 3 {
+            && find_func(g_nodes[node].name0) < 0 && g_nodes[node].nargs == 3 {
             let uab: i32 = g_nodes[node].args_start;
             if gpu_dot_expr_ok(g_args[uab]) == 0 { return 0; }
             if gpu_dot_expr_ok(g_args[uab + 1]) == 0 { return 0; }
