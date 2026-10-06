@@ -10257,7 +10257,7 @@ fn ptr_fresh_origin() -> i32 {
     return origin;
 }
 
-// Static element size used by evaluator allocation and alias-range emission.
+// Static element size used by alias-range emission.
 // Native allocation byte counts are computed by LLVM in emit_alloc_bytes.
 fn ctx_elem_size(ctx_type: i32) -> i32 {
     var elem_sz: i32 = 1;
@@ -34149,6 +34149,12 @@ fn lw_type_size(t: i32, line: i32, col: i32) -> i32 {
     return b / 8;
 }
 
+fn lw_alloc_stride(ctx_type: i32, line: i32, col: i32) -> i32 {
+    let t: i32 = resolve_type_sub(ctx_type);
+    if type_is_ptr(t) == 0 { return 1; }
+    return lw_type_size(type_pointee(t), line, col);
+}
+
 fn lw_struct_align(si: i32, line: i32, col: i32) -> i32 {
     var mal: i32 = 1;
     let nf: i32 = g_structs[si].nfields;
@@ -35344,13 +35350,13 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
     let abase: i32 = g_nodes[node].args_start;
 
     // Unguarded builtins (fire BEFORE the fn registry, codegen precedence).
-    // alloc(n): elem size from context (ctx_elem_size), zero-initialized.
+    // alloc(n): use the access layout for the context's element type.
     if str_eq(&g_strings[call_name], "alloc") == 1 && nargs >= 1 {
         let cnt0: LowVal = lower_expr(g_args[abase], str_intern("i64"));
         let cnt: LowVal = lw_conv(cnt0, str_intern("i64"), ln, cl);
         let e: i32 = eir_new(EIR_BUILTIN, ln, cl);
         g_eir[e].ival = EB_ALLOC as u64;
-        g_eir[e].a = ctx_elem_size(resolve_type_sub(ctx_type));
+        g_eir[e].a = lw_alloc_stride(ctx_type, ln, cl);
         g_eir[e].type_off = str_intern("ptr");
         let start: i32 = g_nevargs;
         evargs_push(cnt.e);
@@ -35365,7 +35371,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
         let rc: LowVal = lw_conv(rc0, str_intern("i64"), ln, cl);
         let e: i32 = eir_new(EIR_BUILTIN, ln, cl);
         g_eir[e].ival = EB_REALLOC as u64;
-        g_eir[e].a = ctx_elem_size(resolve_type_sub(ctx_type));
+        g_eir[e].a = lw_alloc_stride(ctx_type, ln, cl);
         g_eir[e].type_off = str_intern("ptr");
         let start: i32 = g_nevargs;
         evargs_push(rp.e);
