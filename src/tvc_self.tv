@@ -12076,6 +12076,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             return IRValue { reg: r, type_off: eff_type };
         }
+        if type_is_bounded_int(eff_type) == 1 || type_is_fix(eff_type) == 1 {
+            if val > 9223372036854775807 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "literal magnitude exceeds family bound capacity (i64 maximum)");
+                exit(1);
+            }
+        }
         // Int<B> context: emit i64 literal, type as Int<|val|>.
         if type_is_bounded_int(eff_type) == 1 {
             var abs_val: i64 = val as i64;
