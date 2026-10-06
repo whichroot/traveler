@@ -12609,7 +12609,13 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 }
                 let cur_e: i64 = exp_scale(el.type_off);
                 var new_e: i64 = cur_e;
-                if op == OP_SHL { new_e = cur_e + shift_k; }
+                if op == OP_SHL {
+                    new_e = cur_e + shift_k;
+                    if new_e > 62 {
+                        diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                            "left shift would exceed the Exp scale ceiling (62)");
+                    }
+                }
                 if op == OP_SHR {
                     if shift_k > cur_e {
                         diag_error_at(g_nodes[node].line, g_nodes[node].col,
@@ -14394,7 +14400,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             return IRValue { reg: r0_v, type_off: field_alias };
         }
         // requant(x) builtin: rescale Exp<E> -> Exp<D>, D from ctx_type.
-        // Emits round-to-nearest: (x + (1 << (E-D-1))) >> (E-D).
+        // Round from the shifted quotient and highest discarded bit, without overflow.
         if str_eq(&g_strings[call_name], "requant") == 1
         && g_nodes[node].nargs >= 1
         && type_is_exp(resolve_type_sub(ctx_type)) == 1 {
@@ -14426,17 +14432,24 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let rq_half: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(rq_half); ir_wr(" = add i64 0, ");
             ir_wr_int(half_val); ir_wr("\n");
-            // biased = x + half
-            let rq_biased: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(rq_biased); ir_wr(" = add i64 ");
+            let rq_discarded: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_discarded); ir_wr(" = and i64 ");
             ir_wr_reg(rq_arg.reg); ir_wr(", "); ir_wr_reg(rq_half); ir_wr("\n");
-            // result = biased >> shift_amt
+            let rq_round: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_round); ir_wr(" = icmp ne i64 ");
+            ir_wr_reg(rq_discarded); ir_wr(", 0\n");
+            let rq_increment: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_increment); ir_wr(" = zext i1 ");
+            ir_wr_reg(rq_round); ir_wr(" to i64\n");
             let rq_shift: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(rq_shift); ir_wr(" = add i64 0, ");
             ir_wr_int(shift_amt); ir_wr("\n");
+            let rq_quotient: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(rq_quotient); ir_wr(" = ashr i64 ");
+            ir_wr_reg(rq_arg.reg); ir_wr(", "); ir_wr_reg(rq_shift); ir_wr("\n");
             let rq_r: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(rq_r); ir_wr(" = ashr i64 ");
-            ir_wr_reg(rq_biased); ir_wr(", "); ir_wr_reg(rq_shift); ir_wr("\n");
+            ir_wr("  "); ir_wr_reg(rq_r); ir_wr(" = add i64 ");
+            ir_wr_reg(rq_quotient); ir_wr(", "); ir_wr_reg(rq_increment); ir_wr("\n");
             return IRValue { reg: rq_r, type_off: resolve_type_sub(ctx_type) };
         }
         // requant(x) for Fix: rescale Fix<B,E> -> Fix<B',D>, D from ctx.
