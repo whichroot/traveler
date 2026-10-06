@@ -21140,8 +21140,14 @@ fn codegen_stmt(stmt: i32) {
         if actual_type == NULL_STR {
             actual_type = val.type_off;
         }
-        // Struct bindings own a snapshot; the initializer may point into live memory.
-        if resolve_struct_type(actual_type) >= 0 {
+        // Preserve the concrete enum instance type for match resolution.
+        if resolve_enum_type(actual_type) >= 0 || find_enum(actual_type) >= 0 {
+            if val.type_off != NULL_STR && find_enum(val.type_off) >= 0 {
+                actual_type = val.type_off;
+            }
+        }
+        // Aggregate bindings own a snapshot of the initializer's value.
+        if resolve_struct_type(actual_type) >= 0 || resolve_enum_type(actual_type) >= 0 {
             let storage: i32 = ir_tmp();
             g_use_prelude = 1;
             ir_wr("  "); ir_wr_reg(storage); ir_wr(" = alloca "); ir_wr_type(actual_type); ir_wr("\n");
@@ -21151,15 +21157,6 @@ fn codegen_stmt(stmt: i32) {
             ir_wr(", ptr "); ir_wr_reg(val.reg); ir_wr("\n  store "); ir_wr_type(actual_type);
             ir_wr(" "); ir_wr_reg(copied); ir_wr(", ptr "); ir_wr_reg(storage); ir_wr("\n");
             sym_add(var_name, actual_type, storage, 1);
-            return;
-        }
-        // Enum bindings retain the concrete instance type for match resolution.
-        if resolve_enum_type(actual_type) >= 0 || find_enum(actual_type) >= 0 {
-            var enum_bind_type: i32 = actual_type;
-            if val.type_off != NULL_STR && find_enum(val.type_off) >= 0 {
-                enum_bind_type = val.type_off;
-            }
-            sym_add(var_name, enum_bind_type, val.reg, 1);
             return;
         }
         // Poly types: alias to alloca and record repr tag
@@ -44088,7 +44085,7 @@ fn ev_stmt(s: i32, fr: *EvFrame) -> i32 {
         let v: EvalVal = ev_expr(g_eir[s].b, fr);
         if fr.unwinding == 1 { return 3; }
         let slot: i32 = g_eir[s].a;
-        if kind == EIR_LET && resolve_struct_type(g_eir[s].type_off) >= 0 {
+        if kind == EIR_LET && lw_is_agg(g_eir[s].type_off) == 1 {
             let size: i32 = lw_type_size(g_eir[s].type_off, g_eir[s].line, g_eir[s].col);
             var storage: u64 = fbits[slot];
             if ftags[slot] != EV_PTR || storage == 0 {
