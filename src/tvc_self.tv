@@ -10301,9 +10301,13 @@ fn ctx_elem_size(ctx_type: i32) -> i32 {
 // LLVM scales allocation counts using the same layout as indexed accesses.
 fn emit_alloc_bytes(ctx_type: i32, count: i32) -> i32 {
     if type_is_ptr(ctx_type) == 0 { return count; }
+    return emit_type_bytes(type_pointee(ctx_type), count);
+}
+
+fn emit_type_bytes(type_off: i32, count: i32) -> i32 {
     let end: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(end); ir_wr(" = getelementptr ");
-    ir_wr_type(type_pointee(ctx_type)); ir_wr(", ptr null, i64 ");
+    ir_wr_type(type_off); ir_wr(", ptr null, i64 ");
     ir_wr_reg(count); ir_wr("\n");
     let bytes: i32 = ir_tmp();
     ir_wr("  "); ir_wr_reg(bytes); ir_wr(" = ptrtoint ptr ");
@@ -20983,22 +20987,12 @@ fn codegen_stmt(stmt: i32) {
             ir_wr("  "); ir_wr_reg(alloca_r); ir_wr(" = alloca ");
             ir_wr_type(var_type); ir_wr("\n");
             g_use_prelude = 0;
-            // Parse N from the source type "[u8; 16]"
-            let ats: *u8 = &g_strings[var_type];
-            var asi: i32 = 0;
-            while ats[asi] != 59 && ats[asi] != 0 { asi = asi + 1; }
-            asi = asi + 1;
-            while ats[asi] == 32 { asi = asi + 1; }
-            var arr_n: i32 = 0;
-            while ats[asi] >= 48 && ats[asi] <= 57 { arr_n = arr_n * 10 + (ats[asi] as i32 - 48); asi = asi + 1; }
-            let elem_src: i32 = type_array_elem(var_type);
-            let elem_bits: i32 = type_bits(elem_src);
-            var elem_bytes: i32 = 1;
-            if elem_bits > 8 { elem_bytes = elem_bits / 8; }
-            let total_bytes: i32 = arr_n * elem_bytes;
+            let one: i32 = ir_tmp();
+            ir_wr("  "); ir_wr_reg(one); ir_wr(" = add i64 0, 1\n");
+            let total_bytes: i32 = emit_type_bytes(var_type, one);
             ir_wr("  call void @llvm.memset.p0.i64(ptr ");
             ir_wr_reg(alloca_r); ir_wr(", i8 0, i64 ");
-            ir_wr_int(total_bytes as i64); ir_wr(", i1 false)\n");
+            ir_wr_reg(total_bytes); ir_wr(", i1 false)\n");
             sym_add(var_name, var_type, alloca_r, 1);
             return;
         }
