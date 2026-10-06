@@ -13363,6 +13363,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             while efi < ec_nargs {
                 let ft: i32 = enum_variant_field_type(ec_ei, ec_vi, efi);
                 let fval: IRValue = codegen_expr(g_args[ec_abase + efi], ft);
+                check_family_coercion(fval.type_off, ft, g_nodes[node].line, g_nodes[node].col);
                 let foff: i32 = enum_payload_offset(ec_ei, ec_vi, efi);
                 let gep: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(gep);
@@ -14996,6 +14997,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let fidx: i32 = struct_field_index(sl_si, f_name);
             let ftype: i32 = struct_field_type(sl_si, fidx);
             let fval: IRValue = codegen_expr(f_expr, ftype);
+            check_family_coercion(fval.type_off, ftype, g_nodes[node].line, g_nodes[node].col);
             // Closures Rubicon (N2): no closure in a struct field — structs can
             // escape the frame, dangling the stack env. REJECT.
             if type_is_closure(fval.type_off) == 1 {
@@ -21342,6 +21344,7 @@ fn codegen_stmt(stmt: i32) {
         let mas_ftype: i32 = struct_field_type(mas_si, mas_fidx);
         // RHS first (may grow arenas / move buffers).
         let mas_val: IRValue = codegen_expr(mas_rhs, mas_ftype);
+        check_family_coercion(mas_val.type_off, mas_ftype, g_nodes[stmt].line, g_nodes[stmt].col);
         var mas_store: i32 = mas_val.reg;
         if resolve_struct_type(mas_ftype) >= 0 {
             // Snapshot the aggregate before re-evaluating the destination.
@@ -21411,6 +21414,7 @@ fn codegen_stmt(stmt: i32) {
             ir_wr(", i64 "); ir_wr_reg(ia_idx64); ir_wr("\n");
         }
         let ia_val: IRValue = codegen_expr(ia_rhs, elem_t);
+        check_family_coercion(ia_val.type_off, elem_t, g_nodes[stmt].line, g_nodes[stmt].col);
         if streaming != 0 && str_eq(&g_strings[ia_val.type_off], "u64") == 0 {
             diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col,
                 "stream_store_u64 value must have type u64");
