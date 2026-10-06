@@ -45737,8 +45737,12 @@ fn tp_struct_member(sname: *u8, k: i32) -> *u8 {
     var idx: i32 = 0;
     var i: i32 = 0;
     var ps: i32 = 0;
+    var depth: i32 = 0;
     while 1 == 1 {
-        if mems[i] == 44 || mems[i] == 0 {
+        let ch: i32 = mems[i];
+        if ch == 91 || ch == 123 || ch == 60 || ch == 40 { depth = depth + 1; }
+        if ch == 93 || ch == 125 || ch == 62 || ch == 41 { depth = depth - 1; }
+        if (ch == 44 && depth == 0) || ch == 0 {
             if idx == k { return tp_slice(mems, ps, i); }
             idx = idx + 1;
             ps = i + 1;

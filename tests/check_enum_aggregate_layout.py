@@ -89,21 +89,6 @@ with tempfile.TemporaryDirectory(prefix='enum-aggregate-layout-') as tmp:
         tools = Path(os.environ['LLVM14']) / 'bin'
         version = run(tools / 'llc', '--version')
         triple = next(line.split(':', 1)[1].strip() for line in version.splitlines() if 'Default target:' in line)
-        tv.write_text('''
-struct Inner { a: i64, b: i64, c: i64 }
-struct Outer { inner: Inner, last: i64 }
-enum Event { Value(Outer, i64) }
-enum Callback { Value(fn()->i64) }
-fn answer() -> i64 { return 121; }
-fn main() {
-    let p: *Outer = alloc(1); p[0].inner.c = 13;
-    let e: Event = Event::Value(p[0], 101);
-    match e { Event::Value(v, marker) => { print(v.inner.c); print(marker); } }
-    let cb: Callback = Callback::Value(&answer);
-    match cb { Callback::Value(f) => { print(f()); } }
-    free(p);
-}
-''')
         typed = d / 'typed.ll'
         run(tvc, tv, '-target', 'tpc', '-o', typed)
         for profile in ('raw', 'O3'):
@@ -113,7 +98,7 @@ fn main() {
                 run(tools / 'opt', '-mtriple=' + triple, '-O3', '-S', typed, '-o', selected)
             run(tools / 'llc', '-mtriple=' + triple, '-filetype=obj', selected, '-o', d / 'typed.o')
             run(linker, *flags, d / 'typed.o', '-o', d / 'typed')
-            assert run(d / 'typed') == '13\n101\n121\n', ('LLVM14', profile)
+            assert run(d / 'typed') == expected, ('LLVM14', profile)
         print('enum aggregate layout: LLVM14 typed pointers raw/O3 PASS')
     for invalid, diagnostic in (
         ('enum Huge { Value([u8; 2147483647]) } fn main() {}', 'enum payload storage exceeds'),

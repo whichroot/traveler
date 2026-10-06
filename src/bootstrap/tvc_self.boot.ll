@@ -274936,7 +274936,16 @@ entry:
   %t16 = alloca i32
   %t18 = alloca i32
   %t20 = alloca i32
-  %t24 = alloca i1
+  %t22 = alloca i32
+  %t32 = alloca i32
+  %t33 = alloca i1
+  %t34 = alloca i1
+  %t35 = alloca i1
+  %t54 = alloca i1
+  %t55 = alloca i1
+  %t56 = alloca i1
+  %t75 = alloca i1
+  %t76 = alloca i1
   %t2 = add i32 0, 1
   %t3 = getelementptr [2 x i8], ptr @.str.8414, i32 0, i32 0
   %t4 = load ptr, ptr %t0
@@ -274961,78 +274970,171 @@ L2:
   store i32 %t17, ptr %t18
   %t19 = add i32 0, 0
   store i32 %t19, ptr %t20
+  %t21 = add i32 0, 0
+  store i32 %t21, ptr %t22
   br label %L3
 L3:
-  %t21 = add i32 0, 1
-  %t22 = add i32 0, 1
-  %t23 = icmp eq i32 %t21, %t22
-  br i1 %t23, label %L4, label %L5
+  %t23 = add i32 0, 1
+  %t24 = add i32 0, 1
+  %t25 = icmp eq i32 %t23, %t24
+  br i1 %t25, label %L4, label %L5
 L4:
-  %t25 = load i32, ptr %t18
-  %t26 = sext i32 %t25 to i64
-  %t27 = load ptr, ptr %t14
-  %t28 = getelementptr i8, ptr %t27, i64 %t26
-  %t29 = load i8, ptr %t28
-  %t30 = add i8 0, 44
-  %t31 = icmp eq i8 %t29, %t30
-  store i1 %t31, ptr %t24
-  br i1 %t31, label %L7, label %L6
+  %t26 = load i32, ptr %t18
+  %t27 = sext i32 %t26 to i64
+  %t28 = load ptr, ptr %t14
+  %t29 = getelementptr i8, ptr %t28, i64 %t27
+  %t30 = load i8, ptr %t29
+  %t31 = zext i8 %t30 to i32
+  store i32 %t31, ptr %t32
+  %t36 = load i32, ptr %t32
+  %t37 = add i32 0, 91
+  %t38 = icmp eq i32 %t36, %t37
+  store i1 %t38, ptr %t35
+  br i1 %t38, label %L7, label %L6
 L6:
-  %t32 = load i32, ptr %t18
-  %t33 = sext i32 %t32 to i64
-  %t34 = load ptr, ptr %t14
-  %t35 = getelementptr i8, ptr %t34, i64 %t33
-  %t36 = load i8, ptr %t35
-  %t37 = add i8 0, 0
-  %t38 = icmp eq i8 %t36, %t37
-  store i1 %t38, ptr %t24
+  %t39 = load i32, ptr %t32
+  %t40 = add i32 0, 123
+  %t41 = icmp eq i32 %t39, %t40
+  store i1 %t41, ptr %t35
   br label %L7
 L7:
-  %t39 = load i1, ptr %t24
-  br i1 %t39, label %L8, label %L10
+  %t42 = load i1, ptr %t35
+  store i1 %t42, ptr %t34
+  br i1 %t42, label %L9, label %L8
 L8:
-  %t40 = load i32, ptr %t16
-  %t41 = load i32, ptr %t1
-  %t42 = icmp eq i32 %t40, %t41
-  br i1 %t42, label %L11, label %L13
-L11:
-  %t43 = load ptr, ptr %t14
-  %t44 = load i32, ptr %t20
-  %t45 = load i32, ptr %t18
-  %t46 = call ptr @tp_slice(ptr %t43, i32 %t44, i32 %t45)
-  ret ptr %t46
-L13:
-  %t47 = load i32, ptr %t16
-  %t48 = add i32 0, 1
-  %t49 = add i32 %t47, %t48
-  store i32 %t49, ptr %t16
-  %t50 = load i32, ptr %t18
-  %t51 = add i32 0, 1
-  %t52 = add i32 %t50, %t51
-  store i32 %t52, ptr %t20
-  br label %L10
+  %t43 = load i32, ptr %t32
+  %t44 = add i32 0, 60
+  %t45 = icmp eq i32 %t43, %t44
+  store i1 %t45, ptr %t34
+  br label %L9
+L9:
+  %t46 = load i1, ptr %t34
+  store i1 %t46, ptr %t33
+  br i1 %t46, label %L11, label %L10
 L10:
-  %t53 = load i32, ptr %t18
-  %t54 = sext i32 %t53 to i64
-  %t55 = load ptr, ptr %t14
-  %t56 = getelementptr i8, ptr %t55, i64 %t54
-  %t57 = load i8, ptr %t56
-  %t58 = add i8 0, 0
-  %t59 = icmp eq i8 %t57, %t58
-  br i1 %t59, label %L14, label %L16
+  %t47 = load i32, ptr %t32
+  %t48 = add i32 0, 40
+  %t49 = icmp eq i32 %t47, %t48
+  store i1 %t49, ptr %t33
+  br label %L11
+L11:
+  %t50 = load i1, ptr %t33
+  br i1 %t50, label %L12, label %L14
+L12:
+  %t51 = load i32, ptr %t22
+  %t52 = add i32 0, 1
+  %t53 = add i32 %t51, %t52
+  store i32 %t53, ptr %t22
+  br label %L14
 L14:
-  br label %L5
+  %t57 = load i32, ptr %t32
+  %t58 = add i32 0, 93
+  %t59 = icmp eq i32 %t57, %t58
+  store i1 %t59, ptr %t56
+  br i1 %t59, label %L16, label %L15
+L15:
+  %t60 = load i32, ptr %t32
+  %t61 = add i32 0, 125
+  %t62 = icmp eq i32 %t60, %t61
+  store i1 %t62, ptr %t56
+  br label %L16
 L16:
-  %t60 = load i32, ptr %t18
-  %t61 = add i32 0, 1
-  %t62 = add i32 %t60, %t61
-  store i32 %t62, ptr %t18
+  %t63 = load i1, ptr %t56
+  store i1 %t63, ptr %t55
+  br i1 %t63, label %L18, label %L17
+L17:
+  %t64 = load i32, ptr %t32
+  %t65 = add i32 0, 62
+  %t66 = icmp eq i32 %t64, %t65
+  store i1 %t66, ptr %t55
+  br label %L18
+L18:
+  %t67 = load i1, ptr %t55
+  store i1 %t67, ptr %t54
+  br i1 %t67, label %L20, label %L19
+L19:
+  %t68 = load i32, ptr %t32
+  %t69 = add i32 0, 41
+  %t70 = icmp eq i32 %t68, %t69
+  store i1 %t70, ptr %t54
+  br label %L20
+L20:
+  %t71 = load i1, ptr %t54
+  br i1 %t71, label %L21, label %L23
+L21:
+  %t72 = load i32, ptr %t22
+  %t73 = add i32 0, 1
+  %t74 = sub i32 %t72, %t73
+  store i32 %t74, ptr %t22
+  br label %L23
+L23:
+  %t77 = load i32, ptr %t32
+  %t78 = add i32 0, 44
+  %t79 = icmp eq i32 %t77, %t78
+  store i1 %t79, ptr %t76
+  br i1 %t79, label %L24, label %L25
+L24:
+  %t80 = load i32, ptr %t22
+  %t81 = add i32 0, 0
+  %t82 = icmp eq i32 %t80, %t81
+  store i1 %t82, ptr %t76
+  br label %L25
+L25:
+  %t83 = load i1, ptr %t76
+  store i1 %t83, ptr %t75
+  br i1 %t83, label %L27, label %L26
+L26:
+  %t84 = load i32, ptr %t32
+  %t85 = add i32 0, 0
+  %t86 = icmp eq i32 %t84, %t85
+  store i1 %t86, ptr %t75
+  br label %L27
+L27:
+  %t87 = load i1, ptr %t75
+  br i1 %t87, label %L28, label %L30
+L28:
+  %t88 = load i32, ptr %t16
+  %t89 = load i32, ptr %t1
+  %t90 = icmp eq i32 %t88, %t89
+  br i1 %t90, label %L31, label %L33
+L31:
+  %t91 = load ptr, ptr %t14
+  %t92 = load i32, ptr %t20
+  %t93 = load i32, ptr %t18
+  %t94 = call ptr @tp_slice(ptr %t91, i32 %t92, i32 %t93)
+  ret ptr %t94
+L33:
+  %t95 = load i32, ptr %t16
+  %t96 = add i32 0, 1
+  %t97 = add i32 %t95, %t96
+  store i32 %t97, ptr %t16
+  %t98 = load i32, ptr %t18
+  %t99 = add i32 0, 1
+  %t100 = add i32 %t98, %t99
+  store i32 %t100, ptr %t20
+  br label %L30
+L30:
+  %t101 = load i32, ptr %t18
+  %t102 = sext i32 %t101 to i64
+  %t103 = load ptr, ptr %t14
+  %t104 = getelementptr i8, ptr %t103, i64 %t102
+  %t105 = load i8, ptr %t104
+  %t106 = add i8 0, 0
+  %t107 = icmp eq i8 %t105, %t106
+  br i1 %t107, label %L34, label %L36
+L34:
+  br label %L5
+L36:
+  %t108 = load i32, ptr %t18
+  %t109 = add i32 0, 1
+  %t110 = add i32 %t108, %t109
+  store i32 %t110, ptr %t18
   br label %L3
 L5:
-  %t63 = load ptr, ptr %t0
-  call void @tp_die(ptr %t63)
-  %t64 = load ptr, ptr %t0
-  ret ptr %t64
+  %t111 = load ptr, ptr %t0
+  call void @tp_die(ptr %t111)
+  %t112 = load ptr, ptr %t0
+  ret ptr %t112
 }
 
 define internal ptr @tp_array_elem(ptr %p0) {
