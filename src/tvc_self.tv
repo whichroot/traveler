@@ -12052,6 +12052,25 @@ fn emit_index_to_i64(v: IRValue) -> i32 {
 }
 
 fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
+    let value: IRValue = codegen_expr_operands(node, ctx_type, null);
+    return value;
+}
+
+fn family_operand_type(node: i32, operands: *IRValue, side: i32) -> i32 {
+    if operands != null { return operands[side].type_off; }
+    return resolve_type_sub(peek_operand_type(node));
+}
+
+fn codegen_family_operand(node: i32, ctx: i32, operands: *IRValue, side: i32) -> IRValue {
+    if operands != null {
+        let value: IRValue = operands[side];
+        return value;
+    }
+    let value: IRValue = codegen_expr(node, ctx);
+    return value;
+}
+
+fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValue {
     g_arithmetic_source = node;
     let kind: i32 = g_nodes[node].kind;
     // Apply generic type substitution to context type
@@ -12423,8 +12442,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
         // Int<B> bounded-integer arithmetic: propagate bounds, emit i64 ops.
         // Trigger on ctx or EITHER operand peek (rhs-only Int with null ctx
         // otherwise falls into width harmonization and mis-types).
-        let int_lpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
-        let int_rpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child1));
+        let int_lpeek: i32 = family_operand_type(g_nodes[node].child0, operands, 0);
+        let int_rpeek: i32 = family_operand_type(g_nodes[node].child1, operands, 1);
         if type_is_bounded_int(ctx_type) == 1
         || type_is_bounded_int(int_lpeek) == 1
         || type_is_bounded_int(int_rpeek) == 1 {
@@ -12433,8 +12452,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             if type_is_bounded_int(bint_ctx) == 0 { bint_ctx = int_rpeek; }
             // Comparisons: emit i64 icmp, return i1.
             if op >= OP_EQ && op <= OP_GE {
-                let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
-                let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                let bl: IRValue = codegen_family_operand(g_nodes[node].child0, bint_ctx, operands, 0);
+                let br: IRValue = codegen_family_operand(g_nodes[node].child1, bint_ctx, operands, 1);
                 bint_check_operands(bl.type_off, br.type_off,
                     g_nodes[node].line, g_nodes[node].col);
                 let cr: i32 = ir_tmp();
@@ -12451,8 +12470,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             // Arithmetic with bound propagation (+,-,*).
             if op == OP_ADD || op == OP_SUB || op == OP_MUL {
-                let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
-                let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                let bl: IRValue = codegen_family_operand(g_nodes[node].child0, bint_ctx, operands, 0);
+                let br: IRValue = codegen_family_operand(g_nodes[node].child1, bint_ctx, operands, 1);
                 bint_check_operands(bl.type_off, br.type_off,
                     g_nodes[node].line, g_nodes[node].col);
                 let lb: i64 = bounded_int_bound(bl.type_off);
@@ -12484,8 +12503,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             // Division and arithmetic right-shift cannot grow magnitude:
             // the result keeps the LHS bound. Both still need family operands.
             if op == OP_DIV || op == OP_SHR {
-                let bl: IRValue = codegen_expr(g_nodes[node].child0, bint_ctx);
-                let br: IRValue = codegen_expr(g_nodes[node].child1, bint_ctx);
+                let bl: IRValue = codegen_family_operand(g_nodes[node].child0, bint_ctx, operands, 0);
+                let br: IRValue = codegen_family_operand(g_nodes[node].child1, bint_ctx, operands, 1);
                 bint_check_operands(bl.type_off, br.type_off,
                     g_nodes[node].line, g_nodes[node].col);
                 var cr: i32 = 0;
@@ -12501,8 +12520,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             return IRValue { reg: bint_poison, type_off: bint_ctx };
         }
         // Exp<E> scale-typed arithmetic: propagate/enforce scales.
-        let exp_lpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
-        let exp_rpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child1));
+        let exp_lpeek: i32 = family_operand_type(g_nodes[node].child0, operands, 0);
+        let exp_rpeek: i32 = family_operand_type(g_nodes[node].child1, operands, 1);
         if type_is_exp(ctx_type) == 1 || type_is_exp(exp_lpeek) == 1
         || type_is_exp(exp_rpeek) == 1 {
             var exp_ctx: i32 = ctx_type;
@@ -12511,8 +12530,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let i64_type: i32 = str_intern("i64");
             // Multiplication: both Exp -> add scales; Exp * dimless -> keep.
             if op == OP_MUL {
-                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
-                let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                let el: IRValue = codegen_family_operand(g_nodes[node].child0, exp_ctx, operands, 0);
+                let er: IRValue = codegen_family_operand(g_nodes[node].child1, exp_ctx, operands, 1);
                 exp_check_operands(el.type_off, er.type_off,
                     g_nodes[node].line, g_nodes[node].col, 1);
                 let l_is_exp: i32 = type_is_exp(el.type_off);
@@ -12548,8 +12567,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             // Add/sub: require equal scales.
             if op == OP_ADD || op == OP_SUB {
-                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
-                let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                let el: IRValue = codegen_family_operand(g_nodes[node].child0, exp_ctx, operands, 0);
+                let er: IRValue = codegen_family_operand(g_nodes[node].child1, exp_ctx, operands, 1);
                 exp_check_operands(el.type_off, er.type_off,
                     g_nodes[node].line, g_nodes[node].col, 0);
                 let l_is_exp: i32 = type_is_exp(el.type_off);
@@ -12572,8 +12591,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             // Comparisons: require equal scales, both sides Exp.
             if op >= OP_EQ && op <= OP_GE {
-                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
-                let er: IRValue = codegen_expr(g_nodes[node].child1, exp_ctx);
+                let el: IRValue = codegen_family_operand(g_nodes[node].child0, exp_ctx, operands, 0);
+                let er: IRValue = codegen_family_operand(g_nodes[node].child1, exp_ctx, operands, 1);
                 exp_check_operands(el.type_off, er.type_off,
                     g_nodes[node].line, g_nodes[node].col, 0);
                 if type_is_exp(el.type_off) == 1 && type_is_exp(er.type_off) == 1 {
@@ -12601,7 +12620,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     diag_error_at(g_nodes[node].line, g_nodes[node].col,
                         "shift amount on an Exp value must be a compile-time literal");
                 }
-                let el: IRValue = codegen_expr(g_nodes[node].child0, exp_ctx);
+                let el: IRValue = codegen_family_operand(g_nodes[node].child0, exp_ctx, operands, 0);
                 let shift_k: i64 = g_nodes[rhs_node].int_val as i64;
                 if shift_k < 0 || shift_k > 62 {
                     diag_error_at(g_nodes[node].line, g_nodes[node].col,
@@ -12642,8 +12661,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             return IRValue { reg: poison, type_off: exp_ctx };
         }
         // Fix<B,E> bound-and-scale arithmetic: both contracts at once.
-        let fix_lpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child0));
-        let fix_rpeek: i32 = resolve_type_sub(peek_operand_type(g_nodes[node].child1));
+        let fix_lpeek: i32 = family_operand_type(g_nodes[node].child0, operands, 0);
+        let fix_rpeek: i32 = family_operand_type(g_nodes[node].child1, operands, 1);
         if type_is_fix(ctx_type) == 1 || type_is_fix(fix_lpeek) == 1
         || type_is_fix(fix_rpeek) == 1 {
             var fix_ctx: i32 = ctx_type;
@@ -12652,8 +12671,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             let FIX_I64_MAX: i64 = 9223372036854775807;
             // Comparisons: both Fix, equal scales, signed icmp -> i1.
             if op >= OP_EQ && op <= OP_GE {
-                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
-                let fr: IRValue = codegen_expr(g_nodes[node].child1, fix_ctx);
+                let fl: IRValue = codegen_family_operand(g_nodes[node].child0, fix_ctx, operands, 0);
+                let fr: IRValue = codegen_family_operand(g_nodes[node].child1, fix_ctx, operands, 1);
                 fix_check_operands(fl.type_off, fr.type_off,
                     g_nodes[node].line, g_nodes[node].col, 0);
                 if fix_scale(fl.type_off) != fix_scale(fr.type_off) {
@@ -12674,8 +12693,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             // Add/sub: both Fix, equal scales -> bounds add.
             if op == OP_ADD || op == OP_SUB {
-                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
-                let fr: IRValue = codegen_expr(g_nodes[node].child1, fix_ctx);
+                let fl: IRValue = codegen_family_operand(g_nodes[node].child0, fix_ctx, operands, 0);
+                let fr: IRValue = codegen_family_operand(g_nodes[node].child1, fix_ctx, operands, 1);
                 fix_check_operands(fl.type_off, fr.type_off,
                     g_nodes[node].line, g_nodes[node].col, 0);
                 if fix_scale(fl.type_off) != fix_scale(fr.type_off) {
@@ -12698,8 +12717,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             }
             // Mul: Fix x Fix -> bounds and scales both multiply/add.
             if op == OP_MUL {
-                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
-                let fr: IRValue = codegen_expr(g_nodes[node].child1, fix_ctx);
+                let fl: IRValue = codegen_family_operand(g_nodes[node].child0, fix_ctx, operands, 0);
+                let fr: IRValue = codegen_family_operand(g_nodes[node].child1, fix_ctx, operands, 1);
                 fix_check_operands(fl.type_off, fr.type_off,
                     g_nodes[node].line, g_nodes[node].col, 1);
                 let fl_is_fix: i32 = type_is_fix(fl.type_off);
@@ -12758,7 +12777,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     diag_error_at(g_nodes[node].line, g_nodes[node].col,
                         "shift amount on a Fix value must be a compile-time literal");
                 }
-                let fl: IRValue = codegen_expr(g_nodes[node].child0, fix_ctx);
+                let fl: IRValue = codegen_family_operand(g_nodes[node].child0, fix_ctx, operands, 0);
                 fix_check_operands(fl.type_off, fl.type_off,
                     g_nodes[node].line, g_nodes[node].col, 1);
                 let shift_k: i64 = g_nodes[rhs_node].int_val as i64;
@@ -13132,6 +13151,14 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             ir_wr(" "); ir_wr_reg(rhs.reg);
             ir_wr(")\n");
             return IRValue { reg: r, type_off: lhs.type_off };
+        }
+        if type_is_family(lhs.type_off) == 1 || type_is_family(rhs.type_off) == 1 {
+            // Dispatch from actual operand types and reuse their emitted values.
+            var prepared: [IRValue; 2] = 0;
+            prepared[0] = lhs;
+            prepared[1] = rhs;
+            let result: IRValue = codegen_expr_operands(node, ctx_type, &prepared[0]);
+            return result;
         }
         // Non-field integer binops: width harmonization (widen narrower to
         // wider; seed parity) — alloc(2 * n) mixed i64 literal with i32 ident.

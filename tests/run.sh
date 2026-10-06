@@ -608,7 +608,7 @@ else
     FAILURES="$FAILURES long_literals"
 fi
 
-for gate in extern_declarations method_arguments field_primality eval_returns aggregate_alloc dyn_ntt_capacity defer_fallthrough defer_exit eval_defer_unwind defer_bindings array_zero eval_arrays enum_fnptr nested_enums eval_alloc_layout nested_arrays family_bitnot fix_shift_bound family_literals family_stores family_pointers type_const_overflow exp_limits; do
+for gate in extern_declarations method_arguments field_primality eval_returns aggregate_alloc dyn_ntt_capacity defer_fallthrough defer_exit eval_defer_unwind defer_bindings array_zero eval_arrays enum_fnptr nested_enums eval_alloc_layout nested_arrays family_bitnot fix_shift_bound family_literals family_stores family_pointers type_const_overflow exp_limits family_expressions; do
     TOTAL=$((TOTAL + 1))
     if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ] || [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ]; then
         echo "  $gate SKIP (requires python3, LLVM tools, and a linker)"
