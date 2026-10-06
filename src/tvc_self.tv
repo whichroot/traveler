@@ -1498,6 +1498,7 @@ var g_fn_ret_type: i32 = 0;
 // tracking, which we refuse to build).
 let MAX_DEFERS: i32 = 64;
 var g_defers: *i32 = null;      // alloc'd lazily in codegen_fn
+var g_defer_sym_counts: *i32 = null;
 var g_ndefers: i32 = 0;
 var g_defer_top: i32 = 0;
 var g_active_defer: i32 = 0 - 1;
@@ -20857,9 +20858,28 @@ fn emit_defers() {
     var di: i32 = g_ndefers;
     while di > 0 {
         di = di - 1;
+        let first_hidden: i32 = g_defer_sym_counts[di];
+        let exit_count: i32 = g_sym_count;
+        let saved_names: *i32 = alloc(exit_count);
+        let hidden_name: i32 = str_intern("");
+        var si: i32 = first_hidden;
+        // Hide later bindings without changing symbol slots or stored values.
+        while si < exit_count {
+            saved_names[si] = g_syms[si].name;
+            g_syms[si].name = hidden_name;
+            si = si + 1;
+        }
+        sym_push_scope();
         g_active_defer = g_defers[di];
         codegen_stmt(g_nodes[g_defers[di]].child0);
         g_active_defer = 0 - 1;
+        sym_pop_scope();
+        si = first_hidden;
+        while si < exit_count {
+            g_syms[si].name = saved_names[si];
+            si = si + 1;
+        }
+        free(saved_names);
     }
 }
 
@@ -20946,6 +20966,7 @@ fn codegen_stmt(stmt: i32) {
             return;
         }
         g_defers[g_ndefers] = stmt;
+        g_defer_sym_counts[g_ndefers] = g_sym_count;
         g_ndefers = g_ndefers + 1;
         return;
     }
@@ -22349,7 +22370,10 @@ fn codegen_fn(decl: i32) {
     // Defer collection state: reset per function; the spine (top-level block
     // statements) is emitted with g_defer_top = 1 so top-level `defer` arms
     // collect; nested blocks mark g_defer_top = 0 in the AST_BLOCK arm.
-    if g_defers == null { g_defers = alloc(MAX_DEFERS + 1); }
+    if g_defers == null {
+        g_defers = alloc(MAX_DEFERS + 1);
+        g_defer_sym_counts = alloc(MAX_DEFERS + 1);
+    }
     g_ndefers = 0;
     g_defer_top = 1;
 
