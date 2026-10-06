@@ -8401,20 +8401,10 @@ fn type_to_ir(type_off: i32) -> i32 {
     if type_is_closure(type_off) == 1 { return str_intern("ptr"); }
     // Array types: [u8; 16] -> [16 x i8]
     if s[0] == 91 {
+        let arr_size: i32 = lw_array_n(type_off);
         // Parse element type (between '[' and ';') — use type_array_elem
         let elem_src: i32 = type_array_elem(type_off);
         let elem_ir: i32 = type_to_ir(elem_src);
-        // Find ';' position to parse size
-        var ei: i32 = 1;
-        while s[ei] != 59 && s[ei] != 0 { ei = ei + 1; }
-        // Parse size (after "; ")
-        var si2: i32 = ei + 1;
-        while s[si2] == 32 { si2 = si2 + 1; } // skip spaces
-        var arr_size: i32 = 0;
-        while s[si2] >= 48 && s[si2] <= 57 {
-            arr_size = arr_size * 10 + (s[si2] as i32 - 48);
-            si2 = si2 + 1;
-        }
         // Build "[N x <ir_elem>]" in g_type_buf
         g_type_buf[0] = 91; // '['
         var pos: i32 = 1;
@@ -9020,12 +9010,24 @@ fn atomic_elem_type(node: i32, val_type: i32, line: i32, col: i32) -> i32 {
     return et;
 }
 
+// Locate the outer array separator, skipping nested array types.
+fn type_array_semi(type_off: i32) -> i32 {
+    let s: *u8 = &g_strings[type_off];
+    var depth: i32 = 0;
+    var i: i32 = 0;
+    while s[i] != 0 {
+        if s[i] == 91 { depth = depth + 1; }
+        if s[i] == 93 { depth = depth - 1; }
+        if s[i] == 59 && depth == 1 { return i; }
+        i = i + 1;
+    }
+    return i;
+}
+
 // Get the element type from an array type. "[u8; 16]" -> "u8".
 fn type_array_elem(type_off: i32) -> i32 {
     let s: *u8 = &g_strings[type_off];
-    // Find ';' after element type
-    var ei: i32 = 1;
-    while s[ei] != 59 && s[ei] != 0 { ei = ei + 1; }
+    let ei: i32 = type_array_semi(type_off);
     // Copy to g_type_buf to avoid mutating g_strings
     let len: i32 = ei - 1;
     var ci: i32 = 0;
@@ -9762,8 +9764,7 @@ fn resolve_type_sub(type_off: i32) -> i32 {
     if g_strings[type_off] == 91 {
         let s: *u8 = &g_strings[type_off];
         // Find ';' separating elem and size.
-        var semi: i32 = 1;
-        while s[semi] != 59 && s[semi] != 0 { semi = semi + 1; }
+        let semi: i32 = type_array_semi(type_off);
         if s[semi] == 59 {
             // Element substring [1, semi).
             let esave: u8 = s[semi];
@@ -10274,8 +10275,7 @@ fn ctx_elem_size(ctx_type: i32) -> i32 {
             // Array pointee (*[T; N]): N * sizeof(T) — parse N from the type
             // string like the struct-field array branch.
             let ats: *u8 = &g_strings[ptee];
-            var ai: i32 = 0;
-            while ats[ai] != 59 && ats[ai] != 0 { ai = ai + 1; }
+            var ai: i32 = type_array_semi(ptee);
             ai = ai + 1;
             while ats[ai] == 32 { ai = ai + 1; }
             var an: i32 = 0;
@@ -10332,8 +10332,7 @@ fn struct_bytes(stsi: i32) -> i32 {
             total = ((total + 7) & (~7)) + 8;
         } else if type_is_array(sft) == 1 {
             let ats2: *u8 = &g_strings[sft];
-            var asi2: i32 = 0;
-            while ats2[asi2] != 59 && ats2[asi2] != 0 { asi2 = asi2 + 1; }
+            var asi2: i32 = type_array_semi(sft);
             asi2 = asi2 + 1;
             while ats2[asi2] == 32 { asi2 = asi2 + 1; }
             var asz: i32 = 0;
@@ -10889,8 +10888,7 @@ fn unify_gen_param(decl_off: i32, actual_off: i32, gp_name: i32) -> i32 {
         if ef != NULL_STR { return ef; }
         // Try array size: extract size strings after "; ".
         let ds: *u8 = &g_strings[dd];
-        var dsi: i32 = 1;
-        while ds[dsi] != 59 && ds[dsi] != 0 { dsi = dsi + 1; }
+        var dsi: i32 = type_array_semi(dd);
         dsi = dsi + 1;
         while ds[dsi] == 32 { dsi = dsi + 1; }
         var dse: i32 = dsi;
@@ -10900,8 +10898,7 @@ fn unify_gen_param(decl_off: i32, actual_off: i32, gp_name: i32) -> i32 {
         let d_size: i32 = str_intern(&g_strings[dd + dsi]);
         g_strings[dd + dse] = dsave;
         let as2: *u8 = &g_strings[aa];
-        var asi: i32 = 1;
-        while as2[asi] != 59 && as2[asi] != 0 { asi = asi + 1; }
+        var asi: i32 = type_array_semi(aa);
         asi = asi + 1;
         while as2[asi] == 32 { asi = asi + 1; }
         var ase: i32 = asi;
@@ -11120,17 +11117,7 @@ fn infer_generic_param(fci: i32, gp_name: i32, node: i32, ctx_type: i32) -> i32 
                         if at != NULL_STR {
                             // Array type "[ElemType;N]": extract elem between [ and ;
                             if g_strings[at] == 91 {
-                                let elem_start: i32 = at + 1;
-                                // Find the ; to get elem type length
-                                var ei: i32 = 0;
-                                while g_strings[elem_start + ei] != 59 && g_strings[elem_start + ei] != 0 {
-                                    ei = ei + 1;
-                                }
-                                // Intern the element type substring
-                                let esave: u8 = g_strings[elem_start + ei];
-                                g_strings[elem_start + ei] = 0;
-                                let elem_type: i32 = str_intern(&g_strings[elem_start]);
-                                g_strings[elem_start + ei] = esave;
+                                let elem_type: i32 = type_array_elem(at);
                                 if find_field_by_alias(elem_type) >= 0 {
                                     inferred = elem_type;
                                 }
@@ -27945,8 +27932,7 @@ fn device_aggregate_node(P: *DeviceScalarPlan, t: i32, si: i32, elem: i32,
 fn device_array_count(t: i32) -> i32 {
     if type_is_array(t) == 0 { return 0; }
     let text: *u8 = &g_strings[t];
-    var pos: i32 = 0;
-    while text[pos] != 59 && text[pos] != 0 { pos = pos + 1; }
+    var pos: i32 = type_array_semi(t);
     if text[pos] == 0 { return 0; }
     pos = pos + 1;
     while text[pos] == 32 { pos = pos + 1; }
@@ -34095,8 +34081,8 @@ fn lw_is_fnptr(t: i32) -> i32 {
 // Element count N of an "[T; N]" array type (the codegen parse, mirrored).
 fn lw_array_n(t: i32) -> i32 {
     let s: *u8 = &g_strings[t];
-    var i: i32 = 0;
-    while s[i] != 59 && s[i] != 0 { i = i + 1; }
+    var i: i32 = type_array_semi(t);
+    if s[i] == 0 { return 0; }
     i = i + 1;
     while s[i] == 32 { i = i + 1; }
     var n: i32 = 0;
@@ -37939,8 +37925,7 @@ fn agx_l1_enum_let(stmt: i32) -> i32 {
 
 fn agx_l1_array_count(type_off: i32) -> i32 {
     let text: *u8 = &g_strings[type_off];
-    var i: i32 = 0;
-    while text[i] != 59 && text[i] != 0 { i = i + 1; }
+    var i: i32 = type_array_semi(type_off);
     if text[i] == 0 { return 0; }
     i = i + 1;
     while text[i] == 32 { i = i + 1; }
