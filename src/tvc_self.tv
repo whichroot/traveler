@@ -10359,10 +10359,14 @@ fn payload_field_size(ft: i32) -> i32 {
     if type_is_ptr(ft) == 1 || lw_is_fnptr(ft) == 1 { return 8; }
     let stsi: i32 = resolve_struct_type(ft);
     if stsi >= 0 { return struct_bytes(stsi); }
-    // Enum payload: DIRECT lookup only — resolve_enum_type instantiates on
-    // demand, which mid-enum_instantiate would clobber the same slot. Named limit.
-    let eni: i32 = find_enum(ft);
-    if eni >= 0 && g_enums[eni].ngen == 0 && g_enums[eni].total_size > 0 {
+    let eni: i32 = resolve_enum_type(ft);
+    if eni >= 0 && g_enums[eni].ngen == 0 {
+        if g_enums[eni].total_size == 0 {
+            let node: i32 = g_enums[eni].node;
+            diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                "recursive by-value enum payload is not supported (use a pointer)");
+            exit(1);
+        }
         return g_enums[eni].total_size;
     }
     return 4;
@@ -10598,10 +10602,15 @@ fn register_enum(decl: i32) {
     let nv: i32 = g_nodes[decl].nargs;
     let vbase: i32 = g_nodes[decl].args_start;
     if g_nenums >= MAX_ENUMS { arena_overflow("enum registry", MAX_ENUMS); }
+    if g_nenum_variants + nv > MAX_ENUM_VARIANTS { arena_overflow("enum variants", MAX_ENUM_VARIANTS); }
     let ei: i32 = g_nenums;
+    let variant_start: i32 = g_nenum_variants;
+    g_nenums = g_nenums + 1;
+    g_nenum_variants = g_nenum_variants + nv;
     g_enums[ei].name = ename;
     g_enums[ei].nvariants = nv;
-    g_enums[ei].variants_start = g_nenum_variants;
+    g_enums[ei].variants_start = variant_start;
+    g_enums[ei].total_size = 0;
     // Generic info (B2a Slice 0): ngen from flags bits 3..7, gen_start in
     // name2 (same packing parse_program writes for enums and structs).
     let engen: i32 = (g_nodes[decl].flags >> 3) & 31;
@@ -10616,8 +10625,7 @@ fn register_enum(decl: i32) {
     var vi: i32 = 0;
     while vi < nv {
         let vnode: i32 = g_args[vbase + vi];
-        if g_nenum_variants >= MAX_ENUM_VARIANTS { arena_overflow("enum variants", MAX_ENUM_VARIANTS); }
-        let vidx: i32 = g_nenum_variants;
+        let vidx: i32 = variant_start + vi;
         g_enum_variants[vidx].name = g_nodes[vnode].name0;
         g_enum_variants[vidx].tag = vi;
         g_enum_variants[vidx].nfields = g_nodes[vnode].nargs;
@@ -10638,7 +10646,6 @@ fn register_enum(decl: i32) {
         }
         g_enum_variants[vidx].payload_size = psz;
         if psz > max_payload { max_payload = psz; }
-        g_nenum_variants = g_nenum_variants + 1;
         vi = vi + 1;
     }
     // total_size = (8 + max_payload + 7) & ~7. A template stays 0 (no layout).
@@ -10647,7 +10654,6 @@ fn register_enum(decl: i32) {
     } else {
         g_enums[ei].total_size = 0;
     }
-    g_nenums = g_nenums + 1;
 }
 
 // Substitute an enum instance's tuple into a variant payload type — mirrors
@@ -10712,10 +10718,15 @@ fn enum_instantiate(base_ei: i32, conc_types: *i32, nconc: i32) -> i32 {
     g_nmono_types = g_nmono_types + nconc;
     let nv: i32 = g_enums[base_ei].nvariants;
     let bvstart: i32 = g_enums[base_ei].variants_start;
+    if g_nenum_variants + nv > MAX_ENUM_VARIANTS { arena_overflow("enum variants", MAX_ENUM_VARIANTS); }
     let ei: i32 = g_nenums;
+    let variant_start: i32 = g_nenum_variants;
+    g_nenums = g_nenums + 1;
+    g_nenum_variants = g_nenum_variants + nv;
     g_enums[ei].name = mangled;
     g_enums[ei].nvariants = nv;
-    g_enums[ei].variants_start = g_nenum_variants;
+    g_enums[ei].variants_start = variant_start;
+    g_enums[ei].total_size = 0;
     g_enums[ei].ngen = 0;
     g_enums[ei].gen_start = 0;
     g_enums[ei].base_si = base_ei;
@@ -10726,9 +10737,8 @@ fn enum_instantiate(base_ei: i32, conc_types: *i32, nconc: i32) -> i32 {
     var max_payload: i32 = 0;
     var vi: i32 = 0;
     while vi < nv {
-        if g_nenum_variants >= MAX_ENUM_VARIANTS { arena_overflow("enum variants", MAX_ENUM_VARIANTS); }
         let bv: *EnumVariant = &g_enum_variants[bvstart + vi];
-        let vidx: i32 = g_nenum_variants;
+        let vidx: i32 = variant_start + vi;
         g_enum_variants[vidx].name = bv.name;
         g_enum_variants[vidx].tag = bv.tag;
         g_enum_variants[vidx].nfields = bv.nfields;
@@ -10746,11 +10756,9 @@ fn enum_instantiate(base_ei: i32, conc_types: *i32, nconc: i32) -> i32 {
         }
         g_enum_variants[vidx].payload_size = psz;
         if psz > max_payload { max_payload = psz; }
-        g_nenum_variants = g_nenum_variants + 1;
         vi = vi + 1;
     }
     g_enums[ei].total_size = (8 + max_payload + 7) & (~7);
-    g_nenums = g_nenums + 1;
     return ei;
 }
 
@@ -13367,7 +13375,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 // Struct/enum payload comes back BY ADDRESS: load the aggregate
                 // before storing into the payload slot.
                 var fstore: i32 = fval.reg;
-                if resolve_struct_type(ft) >= 0 || find_enum(ft) >= 0 {
+                if resolve_struct_type(ft) >= 0 || resolve_enum_type(ft) >= 0 {
                     let floaded: i32 = ir_tmp();
                     ir_wr("  "); ir_wr_reg(floaded); ir_wr(" = load ");
                     ir_wr_type(ft); ir_wr(", ptr "); ir_wr_reg(fval.reg); ir_wr("\n");
