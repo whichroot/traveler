@@ -2649,8 +2649,8 @@ fn tbuf_push_u64(n: u64) {
 // Sets *has_var to 1 when any identifier appears (open expression).
 fn parse_tcx_atom(has_var: *i32) {
     if p_peek() == TOK_INT_LIT {
-        tbuf_push_u64(g_tokens[g_tok_pos].int_val);
-        p_advance();
+        let value: u64 = p_take_int_u64("type constant");
+        tbuf_push_u64(value);
         return;
     }
     if p_peek() == TOK_IDENT {
@@ -2719,15 +2719,25 @@ fn parse_tcx_add(has_var: *i32) {
     }
 }
 
-// Evaluate a closed (no variable) const-expr string to i64. Returns the
-// result in *out. Returns 1 on success, 0 on parse/overflow failure.
-// Uses i64 arithmetic (sufficient for bounds that must fit i64).
+// Evaluate a closed const expression into *out; return 0 for open/invalid text.
+// Arithmetic overflow is diagnosed before narrowing each intermediate to i64.
 fn constexpr_eval_str(s: *u8, out: *i64) -> i32 {
     let pos: *i32 = alloc(1);
     pos[0] = 0;
     let ok: i32 = ceval_add(s, pos, out);
     free(pos);
     return ok;
+}
+
+fn ceval_narrow(value: i128) -> i64 {
+    let maximum: i128 = 9223372036854775807;
+    let minimum: i128 = 0 - maximum - 1;
+    if value < minimum || value > maximum {
+        diag_error_at(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col,
+            "type-level integer overflow (must fit i64)");
+        exit(1);
+    }
+    return value as i64;
 }
 
 fn ceval_atom(s: *u8, pos: *i32, out: *i64) -> i32 {
@@ -2746,7 +2756,7 @@ fn ceval_atom(s: *u8, pos: *i32, out: *i64) -> i32 {
     if s[pos[0]] >= 48 && s[pos[0]] <= 57 {
         var v: i64 = 0;
         while s[pos[0]] >= 48 && s[pos[0]] <= 57 {
-            v = v * 10 + (s[pos[0]] as i64 - 48);
+            v = ceval_narrow((v as i128) * 10 + (s[pos[0]] as i128 - 48));
             pos[0] = pos[0] + 1;
         }
         out[0] = v;
@@ -2766,7 +2776,12 @@ fn ceval_shift(s: *u8, pos: *i32, out: *i64) -> i32 {
         var rhs: i64 = 0;
         let ok2: i32 = ceval_atom(s, pos, &rhs);
         if ok2 == 0 { return 0; }
-        if is_shl == 1 { out[0] = out[0] << rhs; }
+        if rhs < 0 || rhs > 63 {
+            diag_error_at(g_tokens[g_tok_pos].line, g_tokens[g_tok_pos].col,
+                "type-level shift amount must be in 0..63");
+            exit(1);
+        }
+        if is_shl == 1 { out[0] = ceval_narrow((out[0] as i128) << rhs); }
         else { out[0] = out[0] >> rhs; }
     }
     return 1;
@@ -2780,7 +2795,7 @@ fn ceval_mul(s: *u8, pos: *i32, out: *i64) -> i32 {
         var rhs: i64 = 0;
         let ok2: i32 = ceval_shift(s, pos, &rhs);
         if ok2 == 0 { return 0; }
-        out[0] = out[0] * rhs;
+        out[0] = ceval_narrow((out[0] as i128) * (rhs as i128));
     }
     return 1;
 }
@@ -2794,8 +2809,8 @@ fn ceval_add(s: *u8, pos: *i32, out: *i64) -> i32 {
         var rhs: i64 = 0;
         let ok2: i32 = ceval_mul(s, pos, &rhs);
         if ok2 == 0 { return 0; }
-        if is_add == 1 { out[0] = out[0] + rhs; }
-        else { out[0] = out[0] - rhs; }
+        if is_add == 1 { out[0] = ceval_narrow((out[0] as i128) + (rhs as i128)); }
+        else { out[0] = ceval_narrow((out[0] as i128) - (rhs as i128)); }
     }
     return 1;
 }
@@ -9133,7 +9148,7 @@ fn bounded_int_bound(type_off: i32) -> i64 {
     while s[pi] == 32 { pi = pi + 1; }
     var val: i64 = 0;
     while s[pi] >= 48 && s[pi] <= 57 {
-        val = val * 10 + (s[pi] as i64 - 48);
+        val = ceval_narrow((val as i128) * 10 + (s[pi] as i128 - 48));
         pi = pi + 1;
     }
     return val;
@@ -9357,7 +9372,7 @@ fn fix_bound(type_off: i32) -> i64 {
     var pi: i32 = 4;
     var val: i64 = 0;
     while s[pi] >= 48 && s[pi] <= 57 {
-        val = val * 10 + (s[pi] as i64 - 48);
+        val = ceval_narrow((val as i128) * 10 + (s[pi] as i128 - 48));
         pi = pi + 1;
     }
     return val;
