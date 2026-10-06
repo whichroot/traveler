@@ -9,6 +9,7 @@ import tempfile
 tvc, llc, opt, linker = sys.argv[1:5]
 source = '''
 var p: i32 = 900;
+fn helper() -> i32 { return 14; }
 fn local() {
     let p: *i32 = alloc(1);
     p[0] = 7;
@@ -34,9 +35,10 @@ fn main() {
     print(p);
     let p: i32 = 13;
     defer print(p);
+    defer print(helper());
 }
 '''
-expected = '8\n7\n9\n11\n12\n900\n13\n'
+expected = '8\n7\n9\n11\n12\n900\n14\n13\n'
 
 
 def run(*args):

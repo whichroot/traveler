@@ -1500,6 +1500,7 @@ let MAX_DEFERS: i32 = 64;
 var g_defers: *i32 = null;      // alloc'd lazily in codegen_fn
 var g_ndefers: i32 = 0;
 var g_defer_top: i32 = 0;
+var g_active_defer: i32 = 0 - 1;
 
 // Loop label stack for break/continue
 var g_loop_end_labels: *i32 = null;
@@ -20848,10 +20849,17 @@ fn ir_cond_i1(v: IRValue) -> i32 {
 // before every `ret` the function can take (plain return, main bare return,
 // fall-through, and each `?` Err-propagation ret).
 fn emit_defers() {
+    if g_active_defer >= 0 {
+        diag_error_at(g_nodes[g_active_defer].line, g_nodes[g_active_defer].col,
+            "a defer body cannot exit its function with `return` or `?`");
+        exit(1);
+    }
     var di: i32 = g_ndefers;
     while di > 0 {
         di = di - 1;
+        g_active_defer = g_defers[di];
         codegen_stmt(g_nodes[g_defers[di]].child0);
+        g_active_defer = 0 - 1;
     }
 }
 
