@@ -9251,15 +9251,29 @@ fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
     if val_type == NULL_STR || dst_type == NULL_STR { return; }
     var v2: i32 = resolve_type_sub(val_type);
     var d2: i32 = resolve_type_sub(dst_type);
-    // Strip one matching pointer star (call params are often *Int<B>).
+    if str_eq(&g_strings[v2], &g_strings[d2]) == 1 { return; }
+    // Mutable aliases require coercion in both directions at every level.
     if type_is_ptr(v2) == 1 && type_is_ptr(d2) == 1 {
-        v2 = type_pointee(v2);
-        d2 = type_pointee(d2);
+        let vp: i32 = type_pointee(v2);
+        let dp: i32 = type_pointee(d2);
+        check_family_coercion(vp, dp, ln, cl);
+        check_family_coercion(dp, vp, ln, cl);
+        return;
+    }
+    if type_is_array(v2) == 1 && type_is_array(d2) == 1 {
+        let ve: i32 = type_array_elem(v2);
+        let de: i32 = type_array_elem(d2);
+        check_family_coercion(ve, de, ln, cl);
+        check_family_coercion(de, ve, ln, cl);
+        return;
     }
     let d_int: i32 = type_is_bounded_int(d2);
     let d_exp: i32 = type_is_exp(d2);
     let d_fix: i32 = type_is_fix(d2);
-    if d_int == 0 && d_exp == 0 && d_fix == 0 { return; }
+    if d_int == 0 && d_exp == 0 && d_fix == 0 {
+        check_family_type_args(v2, d2, ln, cl);
+        return;
+    }
     let v_int: i32 = type_is_bounded_int(v2);
     let v_exp: i32 = type_is_exp(v2);
     let v_fix: i32 = type_is_fix(v2);
@@ -9297,6 +9311,26 @@ fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
                 "Fix bound of the value exceeds the destination bound");
         }
     }
+}
+
+// Generic wrappers can retain mutable aliases through their type arguments.
+fn check_family_type_args(v: i32, d: i32, ln: i32, cl: i32) {
+    if lw_is_fnptr(v) == 1 || lw_is_fnptr(d) == 1 { return; }
+    let vb: *i32 = alloc(1);
+    let db: *i32 = alloc(1);
+    let va: *i32 = alloc(MAX_GEN_PARAMS);
+    let da: *i32 = alloc(MAX_GEN_PARAMS);
+    let vn: i32 = struct_split_generic(v, vb, va);
+    let dn: i32 = struct_split_generic(d, db, da);
+    if vn > 0 && vn == dn && str_eq(&g_strings[vb[0]], &g_strings[db[0]]) == 1 {
+        var i: i32 = 0;
+        while i < vn {
+            check_family_coercion(va[i], da[i], ln, cl);
+            check_family_coercion(da[i], va[i], ln, cl);
+            i = i + 1;
+        }
+    }
+    free(vb); free(db); free(va); free(da);
 }
 
 // Check if a source type is Fix<B,E> (bound-and-scale integer).
@@ -11435,6 +11469,7 @@ fn codegen_indirect_call(node: i32, fpvar: i32, fpvtype: i32) -> IRValue {
         var actx: i32 = a_ctx;
         if ai < nparams { actx = param_types[ai]; }
         let av: IRValue = codegen_expr(g_args[call_abase + ai], actx);
+        check_family_coercion(av.type_off, actx, g_nodes[node].line, g_nodes[node].col);
         var areg: i32 = av.reg;
         // Aggregate args: load from alloca (struct/enum by value).
         if resolve_struct_type(av.type_off) >= 0 || resolve_enum_type(av.type_off) >= 0 {
@@ -11846,10 +11881,10 @@ fn codegen_closure_call(node: i32, clovar: i32, clotype: i32) -> IRValue {
         var pctx: i32 = NULL_STR;
         if ai < nparams { pctx = resolve_type_sub(g_nodes[g_args[pbase + ai]].name1); }
         let av: IRValue = codegen_expr(g_args[g_nodes[node].args_start + ai], pctx);
+        check_family_coercion(av.type_off, pctx, g_nodes[node].line, g_nodes[node].col);
         arg_regs[ai] = av.reg;
         if pctx != NULL_STR && pctx != av.type_off && type_is_ptr(pctx) == 0
             && resolve_struct_type(pctx) < 0 && resolve_enum_type(pctx) < 0 {
-            check_family_coercion(av.type_off, pctx, g_nodes[node].line, g_nodes[node].col);
             arg_regs[ai] = emit_implicit_convert(av.reg, av.type_off, pctx);
         }
         if pctx != NULL_STR { arg_irs[ai] = type_to_ir(pctx); }
@@ -14852,6 +14887,9 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
             while ai < call_nargs {
                 let a_ctx: i32 = arg_contexts[ai];
                 let a_val: IRValue = codegen_expr(g_args[call_abase + ai], a_ctx);
+                if callee_arg_shift != 1 || ai != 0 {
+                    check_family_coercion(a_val.type_off, a_ctx, g_nodes[node].line, g_nodes[node].col);
+                }
                 arg_regs[ai] = a_val.reg;
                 arg_types[ai] = a_val.type_off;
                 // Closures Rubicon (N6): a closure is NOT a fn pointer —
@@ -14871,8 +14909,6 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                     // carrier ptr — no convert
                 } else if type_is_ptr(a_ctx) == 0 && resolve_struct_type(a_ctx) < 0 && resolve_enum_type(a_ctx) < 0 {
                     if a_ctx != NULL_STR && a_ctx != arg_types[ai] {
-                        check_family_coercion(arg_types[ai], a_ctx,
-                            g_nodes[node].line, g_nodes[node].col);
                         let cvt: i32 = emit_implicit_convert(arg_regs[ai], arg_types[ai], a_ctx);
                         arg_regs[ai] = cvt;
                         arg_types[ai] = a_ctx;
