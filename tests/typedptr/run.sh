@@ -41,16 +41,6 @@ for p in \
     /usr/lib/llvm-14/bin; do
     if [ -x "$p/llvm-as" ] && [ -x "$p/llc" ]; then LLC14="$p"; break; fi
 done
-if [ -z "$LLC14" ]; then
-    echo "=== typed-pointer dialect gate (tests/typedptr) ==="
-    echo "  SKIP: no LLVM-14-era toolchain (set LLVM14 to an llvm@14 prefix)"
-    exit 0
-fi
-AS14="$LLC14/llvm-as"
-LLC14BIN="$LLC14/llc"
-# Host triple for the semantic leg, from the toolchain itself.
-HOST_TRIPLE="$("$LLC14BIN" --version 2>/dev/null | sed -n 's/^ *Default target: //p' | head -1)"
-[ -z "$HOST_TRIPLE" ] && HOST_TRIPLE="arm64-apple-darwin"
 
 # --- Suite llc (for the opaque side of the semantic leg) ---
 find_llc() {
@@ -74,6 +64,16 @@ fi
 if [ ! -x "$STAGE1" ]; then
     echo "  FATAL: tvc_self not built at $STAGE1 (run src/bootstrap/build.sh)"; exit 1
 fi
+
+python3 "$SCRIPT_DIR/check_atomics.py" "$STAGE1" "$LLC14" "$LINKER" || exit 1
+if [ -z "$LLC14" ]; then
+    echo "  SKIP: LLVM-14 parse/execution gates (set LLVM14 to an llvm@14 prefix)"
+    exit 0
+fi
+AS14="$LLC14/llvm-as"
+LLC14BIN="$LLC14/llc"
+HOST_TRIPLE="$("$LLC14BIN" --version 2>/dev/null | sed -n 's/^ *Default target: //p' | head -1)"
+[ -z "$HOST_TRIPLE" ] && HOST_TRIPLE="arm64-apple-darwin"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
@@ -131,11 +131,11 @@ for ex in $SEMCORPUS; do
         echo "  FAIL: $ex: opaque emission errored"; fail=1; continue
     fi
     if ! "$LLC" -filetype=obj "$TMP/$ex.op.ll" -o "$TMP/$ex.op.o" 2>/dev/null \
-       || ! "$LINKER" "$TMP/$ex.op.o" -o "$TMP/$ex.op.bin" 2>/dev/null; then
+       || ! "$LINKER" $LINK_PIE "$TMP/$ex.op.o" -o "$TMP/$ex.op.bin" 2>/dev/null; then
         echo "  FAIL: $ex: opaque module did not lower"; fail=1; continue
     fi
     if ! "$LLC14BIN" -mtriple="$HOST_TRIPLE" -filetype=obj "$TMP/$ex.tp.ll" -o "$TMP/$ex.tp.o" 2>"$TMP/$ex.lerr" \
-       || ! "$LINKER" "$TMP/$ex.tp.o" -o "$TMP/$ex.tp.bin" 2>/dev/null; then
+       || ! "$LINKER" $LINK_PIE "$TMP/$ex.tp.o" -o "$TMP/$ex.tp.bin" 2>/dev/null; then
         echo "  FAIL: $ex: typed module did not lower for host"; sed 's/^/        /' "$TMP/$ex.lerr" | head -3; fail=1; continue
     fi
     ( cd "$TMP" && "./$ex.op.bin" > op.out 2>/dev/null )

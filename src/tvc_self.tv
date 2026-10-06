@@ -45737,17 +45737,20 @@ fn tp_b_line(line: *u8) {
             satok = tp_slice(sas, 0, sasp);
             sasuf = tp_slice(sas, sasp, str_len(sas));
         }
-        if str_contains(sty, "ptr") == 1 { tp_die(line); }
-        let sd: *u8 = tp_cat(tp_tya(sty), "*");
+        if str_contains(sty, "ptr") == 1 && str_eq(sty, "ptr") == 0 { tp_die(line); }
+        let styr: *u8 = tp_tya(sty);
+        var svx: *u8 = svtok;
+        if str_eq(sty, "ptr") == 1 { svx = tp_opnd(svtok, "i8*"); }
+        let sd: *u8 = tp_cat(styr, "*");
         var sax: *u8 = null;
         if satok[0] == 37 { sax = tp_use(satok, sd); }
         else if satok[0] == 64 { sax = tp_use_at(satok, sd); }
         else { tp_die(line); }
         tp_out(tp_slice(line, 0, ls));
         tp_out("store atomic ");
-        tp_out(tp_tya(sty));
+        tp_out(styr);
         tp_out(" ");
-        tp_out(svtok);
+        tp_out(svx);
         tp_out(", ");
         tp_out(sd);
         tp_out(" ");
@@ -45842,8 +45845,9 @@ fn tp_b_line(line: *u8) {
             latok = tp_slice(las, 0, lasp);
             lasuf = tp_slice(las, lasp, str_len(las));
         }
-        if str_contains(lty, "ptr") == 1 { tp_die(line); }
+        if str_contains(lty, "ptr") == 1 && str_eq(lty, "ptr") == 0 { tp_die(line); }
         let ltyr: *u8 = tp_tya(lty);
+        if str_eq(lty, "ptr") == 1 { tp_map_put(0, rname, ltyr); }
         let ld: *u8 = tp_cat(ltyr, "*");
         var lax: *u8 = null;
         if latok[0] == 37 { lax = tp_use(latok, ld); }
