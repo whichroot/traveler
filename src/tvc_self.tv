@@ -7431,7 +7431,8 @@ fn emit_dynfield_funcs() {
     ir_wr("  %omega = call i64 @field_dyn_pow(i64 %a, i64 %v, ptr %f)\n");
     ir_wr("  %invomega = call i64 @field_dyn_inv(i64 %omega, ptr %f)\n");
     ir_wr("  %inv2 = call i64 @field_dyn_inv(i64 2, ptr %f)\n");
-    ir_wr("  %blob = call ptr @malloc(i64 776)\n");
+    ir_wr("  %blob = call ptr @malloc(i64 ");
+    ir_wr_int(((1 + 3 * MAX_NTT_LOG) * 8) as i64); ir_wr(")\n");
     ir_wr("  store i64 %kk, ptr %blob\n");
     ir_wr("  br label %rfill\n");
     // roots[s] = omega^(2^(k-1-s)), inv_roots[s] = invomega^(2^(k-1-s))
@@ -7448,7 +7449,8 @@ fn emit_dynfield_funcs() {
     ir_wr("  %ridx = add i64 1, %s\n");
     ir_wr("  %rgep = getelementptr i64, ptr %blob, i64 %ridx\n");
     ir_wr("  store i64 %rt, ptr %rgep\n");
-    ir_wr("  %iidx = add i64 33, %s\n");
+    ir_wr("  %iidx = add i64 "); ir_wr_int((1 + MAX_NTT_LOG) as i64);
+    ir_wr(", %s\n");
     ir_wr("  %igep = getelementptr i64, ptr %blob, i64 %iidx\n");
     ir_wr("  store i64 %irt, ptr %igep\n");
     ir_wr("  %sn = add i64 %s, 1\n");
@@ -7463,7 +7465,8 @@ fn emit_dynfield_funcs() {
     ir_wr("  br i1 %ndone, label %fin, label %nbody\n");
     ir_wr("nbody:\n");
     ir_wr("  %accn = call i64 @field_dyn_mul(i64 %acc, i64 %inv2, ptr %f)\n");
-    ir_wr("  %nidx = add i64 65, %s2\n");
+    ir_wr("  %nidx = add i64 "); ir_wr_int((1 + 2 * MAX_NTT_LOG) as i64);
+    ir_wr(", %s2\n");
     ir_wr("  %ngep = getelementptr i64, ptr %blob, i64 %nidx\n");
     ir_wr("  store i64 %accn, ptr %ngep\n");
     ir_wr("  %s2n = add i64 %s2, 1\n");
@@ -13885,8 +13888,8 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 ir_wr_reg(nbpd); ir_wr("\n");
                 // Table base offset within the blob.
                 var tbase: i32 = 1;
-                if str_eq(&g_strings[call_name], "__ntt_inv_root") == 1 { tbase = 33; }
-                if str_eq(&g_strings[call_name], "__ntt_n_inv") == 1 { tbase = 65; }
+                if str_eq(&g_strings[call_name], "__ntt_inv_root") == 1 { tbase = 1 + MAX_NTT_LOG; }
+                if str_eq(&g_strings[call_name], "__ntt_n_inv") == 1 { tbase = 1 + 2 * MAX_NTT_LOG; }
                 // Stage index argument (widened to i64).
                 let sidv: IRValue = codegen_expr(g_args[g_nodes[node].args_start], str_intern("i32"));
                 let sid64: i32 = emit_index_to_i64(sidv);
@@ -33586,7 +33589,7 @@ let EB_FERROR: i32 = 26;
 // E2f: dyn-field builtins.
 let EB_SIGNED_DYN: i32 = 27;   // a=__field slot; carrier half_p select -> i64
 let EB_FIELD_INIT: i32 = 28;   // field(p[,dm]) -> carrier ptr (@__field_init mirror)
-let EB_NTT_ROOT_DYN: i32 = 29; // a=__field slot, op=blob table base (1/33/65);
+let EB_NTT_ROOT_DYN: i32 = 29; // a=__field slot, op=blob table base (1/65/129);
                                // arg 0 = stage index -> blob[base+s] load
 // Four-operations surface: Poly/Register values are pointer-backed coeff
 // buffers; variable-arity builtins dispatch BEFORE the fixed a0..a3 prelude.
@@ -35508,8 +35511,8 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             let nt_ctx: i32 = resolve_type_sub(ctx_type);
             if type_is_dyn(nt_ctx) == 1 {
                 var nt_base: i32 = 1;
-                if nt_tbl == 1 { nt_base = 33; }
-                if nt_tbl == 2 { nt_base = 65; }
+                if nt_tbl == 1 { nt_base = 1 + MAX_NTT_LOG; }
+                if nt_tbl == 2 { nt_base = 1 + 2 * MAX_NTT_LOG; }
                 let nts0: LowVal = lower_expr(g_args[abase], str_intern("i32"));
                 let nts: LowVal = lw_index_to_i64(nts0, ln, cl);
                 let nte: i32 = eir_new(EIR_BUILTIN, ln, cl);
@@ -43883,20 +43886,20 @@ fn ev_builtin(e: i32, fr: *EvFrame) -> EvalVal {
             let fom: u64 = ev_powmod(fqa, fv2, a0);
             let fiom: u64 = ev_invmod(fom, a0);
             let fi2: u64 = ev_invmod(2, a0);
-            let fblob: *u64 = alloc(97);           // 776 bytes
+            let fblob: *u64 = alloc(1 + 3 * MAX_NTT_LOG);
             fblob[0] = fk;
             var fs2: i32 = 0;
             while (fs2 as u64) < fk {
                 let fpw: u64 = (1 as u64) << (fk - 1 - (fs2 as u64));
                 fblob[1 + fs2] = ev_powmod(fom, fpw, a0);
-                fblob[33 + fs2] = ev_powmod(fiom, fpw, a0);
+                fblob[1 + MAX_NTT_LOG + fs2] = ev_powmod(fiom, fpw, a0);
                 fs2 = fs2 + 1;
             }
             var facc: u64 = 1;
             fs2 = 0;
             while (fs2 as u64) < fk {
                 facc = ev_mulmod(facc, fi2, a0);
-                fblob[65 + fs2] = facc;
+                fblob[1 + 2 * MAX_NTT_LOG + fs2] = facc;
                 fs2 = fs2 + 1;
             }
             ev_store(fbase + 40, 8, fblob as u64); // ntt_blob
