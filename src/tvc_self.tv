@@ -26803,10 +26803,16 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
     let frame_start: i32 = nnames[0];
     let nstmts: i32 = g_nodes[lbody].nargs;
     let sbase: i32 = g_nodes[lbody].args_start;
+    var replacements: i32 = 0;
     var si: i32 = 0;
     while si < nstmts {
         let s: i32 = g_args[sbase + si];
         let sk: i32 = g_nodes[s].kind;
+        // Only a suffix of replacement assigns can be dead on the last pass.
+        // Later computation could consume a replacement in this iteration.
+        if replacements == 1 {
+            if sk != AST_ASSIGN || gpu_dot_accum_name(s) != 0 { return 0; }
+        }
         if sk == AST_LET {
             if (g_nodes[s].flags & 1) == 0
                 || gpu_dot_expr_ok(g_nodes[s].child0) == 0 { return 0; }
@@ -26831,6 +26837,7 @@ fn gpu_dot_body_ok(lbody: i32, names: *i32, ntypes: *i32, nnames: *i32,
                     return 0;
                 }
                 letflags[pfound] = letflags[pfound] | 2;
+                replacements = 1;
                 si = si + 1;
                 continue;
             }
