@@ -121681,14 +121681,12 @@ L48:
   store i32 %t285, ptr %t272
   br label %L47
 L49:
-  call void @sym_pop_scope()
   br label %L46
 L45:
   %t286 = load i32, ptr %t36
   call void @codegen_stmt(i32 %t286)
   br label %L46
 L46:
-  call void @sym_pop_scope()
   %t287 = load i32, ptr @g_block_terminated
   %t288 = add i32 0, 0
   %t289 = icmp eq i32 %t287, %t288
@@ -121717,30 +121715,44 @@ L58:
 L55:
   br label %L52
 L52:
-  %t298 = add i32 0, 0
-  store i32 %t298, ptr @g_body_mode
-  %t299 = load i32, ptr @g_prelude_len
-  %t300 = add i32 0, 0
-  %t301 = icmp sgt i32 %t299, %t300
-  br i1 %t301, label %L59, label %L61
+  %t298 = load i32, ptr %t36
+  %t299 = sext i32 %t298 to i64
+  %t300 = load ptr, ptr @g_nodes
+  %t301 = getelementptr %ASTNode, ptr %t300, i64 %t299
+  %t302 = getelementptr %ASTNode, ptr %t301, i32 0, i32 0
+  %t303 = load i32, ptr %t302
+  %t304 = load i32, ptr @AST_BLOCK
+  %t305 = icmp eq i32 %t303, %t304
+  br i1 %t305, label %L59, label %L61
 L59:
-  %t302 = load ptr, ptr @g_prelude
-  %t303 = load i32, ptr @g_prelude_len
-  call void @ir_write_bytes(ptr %t302, i32 %t303)
+  call void @sym_pop_scope()
   br label %L61
 L61:
-  %t304 = load i32, ptr @g_body_len
-  %t305 = add i32 0, 0
-  %t306 = icmp sgt i32 %t304, %t305
-  br i1 %t306, label %L62, label %L64
+  call void @sym_pop_scope()
+  %t306 = add i32 0, 0
+  store i32 %t306, ptr @g_body_mode
+  %t307 = load i32, ptr @g_prelude_len
+  %t308 = add i32 0, 0
+  %t309 = icmp sgt i32 %t307, %t308
+  br i1 %t309, label %L62, label %L64
 L62:
-  %t307 = load ptr, ptr @g_body_buf
-  %t308 = load i32, ptr @g_body_len
-  call void @ir_write_bytes(ptr %t307, i32 %t308)
+  %t310 = load ptr, ptr @g_prelude
+  %t311 = load i32, ptr @g_prelude_len
+  call void @ir_write_bytes(ptr %t310, i32 %t311)
   br label %L64
 L64:
-  %t309 = getelementptr [4 x i8], ptr @.str.4751, i32 0, i32 0
-  call void @ir_wr(ptr %t309)
+  %t312 = load i32, ptr @g_body_len
+  %t313 = add i32 0, 0
+  %t314 = icmp sgt i32 %t312, %t313
+  br i1 %t314, label %L65, label %L67
+L65:
+  %t315 = load ptr, ptr @g_body_buf
+  %t316 = load i32, ptr @g_body_len
+  call void @ir_write_bytes(ptr %t315, i32 %t316)
+  br label %L67
+L67:
+  %t317 = getelementptr [4 x i8], ptr @.str.4751, i32 0, i32 0
+  call void @ir_wr(ptr %t317)
   ret void
 }
 

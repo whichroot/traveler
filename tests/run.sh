@@ -608,7 +608,7 @@ else
     FAILURES="$FAILURES long_literals"
 fi
 
-for gate in extern_declarations method_arguments field_primality eval_returns aggregate_alloc dyn_ntt_capacity; do
+for gate in extern_declarations method_arguments field_primality eval_returns aggregate_alloc dyn_ntt_capacity defer_fallthrough; do
     TOTAL=$((TOTAL + 1))
     if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ] || [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ]; then
         echo "  $gate SKIP (requires python3, LLVM tools, and a linker)"

@@ -22358,13 +22358,9 @@ fn codegen_fn(decl: i32) {
             codegen_stmt(g_args[topbase + ti]);
             ti = ti + 1;
         }
-        sym_pop_scope();
     } else {
         codegen_stmt(fn_body);
     }
-
-    // Pop scope
-    sym_pop_scope();
 
     // Default return if block not terminated (still in body mode). Run the
     // defer chain first — falling off the end is an exit path.
@@ -22378,6 +22374,10 @@ fn codegen_fn(decl: i32) {
             }
         }
     }
+
+    // Fall-through defers resolve locals before their scopes are removed.
+    if g_nodes[fn_body].kind == AST_BLOCK { sym_pop_scope(); }
+    sym_pop_scope();
 
     // Disable body mode and flush: prelude (allocas) then body to fd
     g_body_mode = 0;
