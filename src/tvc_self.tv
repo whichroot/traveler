@@ -10252,8 +10252,8 @@ fn ptr_fresh_origin() -> i32 {
     return origin;
 }
 
-// Element byte size implied by a pointer context type (*Token -> sizeof, *i32
-// -> 4; non-pointer -> 1 = raw bytes). Shared by alloc AND realloc.
+// Static element size used by evaluator allocation and alias-range emission.
+// Native allocation byte counts are computed by LLVM in emit_alloc_bytes.
 fn ctx_elem_size(ctx_type: i32) -> i32 {
     var elem_sz: i32 = 1;
     if type_is_ptr(ctx_type) == 1 {
@@ -10293,8 +10293,21 @@ fn ctx_elem_size(ctx_type: i32) -> i32 {
     return elem_sz;
 }
 
-// Full laid-out byte size (8-aligned) of a registered struct — ONE layout
-// computation shared by enum payload sizing and alloc sizing.
+// LLVM scales allocation counts using the same layout as indexed accesses.
+fn emit_alloc_bytes(ctx_type: i32, count: i32) -> i32 {
+    if type_is_ptr(ctx_type) == 0 { return count; }
+    let end: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(end); ir_wr(" = getelementptr ");
+    ir_wr_type(type_pointee(ctx_type)); ir_wr(", ptr null, i64 ");
+    ir_wr_reg(count); ir_wr("\n");
+    let bytes: i32 = ir_tmp();
+    ir_wr("  "); ir_wr_reg(bytes); ir_wr(" = ptrtoint ptr ");
+    ir_wr_reg(end); ir_wr(" to i64\n");
+    return bytes;
+}
+
+// Static struct-size estimate used by enum payloads and ctx_elem_size.
+// Native allocations use LLVM layout through emit_alloc_bytes.
 fn struct_bytes(stsi: i32) -> i32 {
     var total: i32 = 0;
     let stnf: i32 = g_structs[stsi].nfields;
@@ -14438,15 +14451,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 derr("cannot size alloc: no pointer-typed destination (bind it, e.g. `let p: *T = alloc(n)`)");
                 diag_end();
             }
-            // Compute element size from context type (e.g. *Token -> sizeof(Token))
-            let elem_sz: i32 = ctx_elem_size(ctx_type);
-            var total_r: i32 = count64;
-            if elem_sz > 1 {
-                total_r = ir_tmp();
-                ir_wr("  "); ir_wr_reg(total_r); ir_wr(" = mul i64 ");
-                ir_wr_reg(count64); ir_wr(", ");
-                ir_wr_int(elem_sz as i64); ir_wr("\n");
-            }
+            let total_r: i32 = emit_alloc_bytes(ctx_type, count64);
             let ptr_r: i32 = ir_tmp();
             if g_alloc_debug == 1 {
                 // --alloc-debug: redzone helper (header + trailer canary),
@@ -14495,14 +14500,7 @@ fn codegen_expr(node: i32, ctx_type: i32) -> IRValue {
                 derr("cannot size realloc: no pointer-typed destination (bind it, e.g. `p = realloc(p, n)`)");
                 diag_end();
             }
-            let r_elem_sz: i32 = ctx_elem_size(ctx_type);
-            var r_total: i32 = rcount64;
-            if r_elem_sz > 1 {
-                r_total = ir_tmp();
-                ir_wr("  "); ir_wr_reg(r_total); ir_wr(" = mul i64 ");
-                ir_wr_reg(rcount64); ir_wr(", ");
-                ir_wr_int(r_elem_sz as i64); ir_wr("\n");
-            }
+            let r_total: i32 = emit_alloc_bytes(ctx_type, rcount64);
             let r_ptr: i32 = ir_tmp();
             if g_alloc_debug == 1 {
                 ir_wr("  "); ir_wr_reg(r_ptr); ir_wr(" = call ptr @__tv_realloc_dbg(ptr ");
@@ -45968,6 +45966,7 @@ fn tp_b_line(line: *u8) {
         var bx: *u8 = null;
         if bop[0] == 37 { bx = tp_use(bop, d); }
         else if bop[0] == 64 { bx = tp_use_at(bop, d); }
+        else if str_eq(bop, "null") == 1 { bx = "null"; }
         else { tp_die(line); }
         // result type: descend T through the indices after the first
         let idxs: *u8 = tp_slice(after, bc2 + 1, str_len(after));
