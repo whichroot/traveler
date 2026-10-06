@@ -608,16 +608,18 @@ else
     FAILURES="$FAILURES long_literals"
 fi
 
-TOTAL=$((TOTAL + 1))
-if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ] || [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ]; then
-    echo "  extern_declarations SKIP (requires python3, LLVM tools, and a linker)"
-    SKIP=$((SKIP + 1))
-elif python3 "$SCRIPT_DIR/check_extern_declarations.py" "$TVC_SELF" "$LLC" "$OPT" "$LINKER"; then
-    PASS=$((PASS + 1))
-else
-    FAIL=$((FAIL + 1))
-    FAILURES="$FAILURES extern_declarations"
-fi
+for gate in extern_declarations method_arguments; do
+    TOTAL=$((TOTAL + 1))
+    if ! command -v python3 >/dev/null 2>&1 || [ -z "$OPT" ] || [ "$HAVE_LLC" = "0" ] || [ "$HAVE_LINKER" = "0" ]; then
+        echo "  $gate SKIP (requires python3, LLVM tools, and a linker)"
+        SKIP=$((SKIP + 1))
+    elif python3 "$SCRIPT_DIR/check_$gate.py" "$TVC_SELF" "$LLC" "$OPT" "$LINKER"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES $gate"
+    fi
+done
 
 for gate in cpu_simd cpu_expert; do
     TOTAL=$((TOTAL + 1))

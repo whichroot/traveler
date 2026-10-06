@@ -3430,34 +3430,38 @@ fn parse_postfix() -> i32 {
                 p_advance(); // consume (
                 let call: i32 = node_alloc(AST_CALL, ln, cl);
                 g_nodes[call].name0 = field_off;
-                let abase: i32 = g_nargs_pool;
+                let tmp_args: *i32 = alloc(64);
                 // First arg &receiver: set BOTH .op (general AST_UNARY codegen)
                 // and .flags (register-advance fast path) — consistent for both.
                 let addr: i32 = node_alloc(AST_UNARY, ln, cl);
                 g_nodes[addr].op = OP_ADDR;
                 g_nodes[addr].flags = OP_ADDR;
                 g_nodes[addr].child0 = node;
-                args_guard();
-                g_args[g_nargs_pool] = addr;
-                g_nargs_pool = g_nargs_pool + 1;
+                tmp_args[0] = addr;
                 var nargs: i32 = 1;
                 // Parse remaining args
                 if p_peek() != TOK_RPAREN {
                     let arg: i32 = parse_expr();
-                    args_guard();
-                    g_args[g_nargs_pool] = arg;
-                    g_nargs_pool = g_nargs_pool + 1;
+                    tmp_args[nargs] = arg;
                     nargs = nargs + 1;
                     while p_peek() == TOK_COMMA {
                         p_advance();
+                        if nargs >= 64 { arena_overflow("call arguments", 64); }
                         let arg2: i32 = parse_expr();
-                        args_guard();
-                        g_args[g_nargs_pool] = arg2;
-                        g_nargs_pool = g_nargs_pool + 1;
+                        tmp_args[nargs] = arg2;
                         nargs = nargs + 1;
                     }
                 }
                 p_expect(TOK_RPAREN);
+                let abase: i32 = g_nargs_pool;
+                var ai: i32 = 0;
+                while ai < nargs {
+                    args_guard();
+                    g_args[g_nargs_pool] = tmp_args[ai];
+                    g_nargs_pool = g_nargs_pool + 1;
+                    ai = ai + 1;
+                }
+                free(tmp_args);
                 g_nodes[call].args_start = abase;
                 g_nodes[call].nargs = nargs;
                 node = call;
