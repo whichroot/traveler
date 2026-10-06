@@ -44252,6 +44252,7 @@ fn ev_call(efidx: i32, atags: *i32, atypes: *i32, abits: *u64, nargs: i32) -> Ev
     // and cannot clobber the result — matching codegen (value-then-defer).
     // Covers both the normal return (rc==3) and the `?` unwind (rc==0 with
     // unwinding) because both reach this teardown.
+    fr.unwinding = 0;
     let fd2: *i32 = fr.defers;
     while fr.ndefers > 0 {
         fr.ndefers = fr.ndefers - 1;

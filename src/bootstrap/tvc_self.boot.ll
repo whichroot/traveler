@@ -266856,8 +266856,8 @@ entry:
   %t181 = alloca ptr
   %t189 = alloca i1
   %t201 = alloca ptr
-  %t211 = alloca ptr
-  %t235 = alloca %EvalVal
+  %t215 = alloca ptr
+  %t239 = alloca %EvalVal
   %t5 = load i32, ptr %t0
   %t6 = sext i32 %t5 to i64
   %t7 = load ptr, ptr @g_evfuncs
@@ -267122,51 +267122,56 @@ L22:
   br label %L24
 L24:
   %t208 = load ptr, ptr %t27
-  %t209 = getelementptr %EvFrame, ptr %t208, i32 0, i32 6
-  %t210 = load ptr, ptr %t209
-  store ptr %t210, ptr %t211
+  %t209 = add i32 0, 0
+  %t210 = load ptr, ptr %t27
+  %t211 = getelementptr %EvFrame, ptr %t210, i32 0, i32 8
+  store i32 %t209, ptr %t211
+  %t212 = load ptr, ptr %t27
+  %t213 = getelementptr %EvFrame, ptr %t212, i32 0, i32 6
+  %t214 = load ptr, ptr %t213
+  store ptr %t214, ptr %t215
   br label %L25
 L25:
-  %t212 = load ptr, ptr %t27
-  %t213 = getelementptr %EvFrame, ptr %t212, i32 0, i32 7
-  %t214 = load i32, ptr %t213
-  %t215 = add i32 0, 0
-  %t216 = icmp sgt i32 %t214, %t215
-  br i1 %t216, label %L26, label %L27
+  %t216 = load ptr, ptr %t27
+  %t217 = getelementptr %EvFrame, ptr %t216, i32 0, i32 7
+  %t218 = load i32, ptr %t217
+  %t219 = add i32 0, 0
+  %t220 = icmp sgt i32 %t218, %t219
+  br i1 %t220, label %L26, label %L27
 L26:
-  %t217 = load ptr, ptr %t27
-  %t218 = load ptr, ptr %t27
-  %t219 = getelementptr %EvFrame, ptr %t218, i32 0, i32 7
-  %t220 = load i32, ptr %t219
-  %t221 = add i32 0, 1
-  %t222 = sub i32 %t220, %t221
-  %t223 = load ptr, ptr %t27
-  %t224 = getelementptr %EvFrame, ptr %t223, i32 0, i32 7
-  store i32 %t222, ptr %t224
-  %t225 = load ptr, ptr %t27
-  %t226 = getelementptr %EvFrame, ptr %t225, i32 0, i32 7
-  %t227 = load i32, ptr %t226
-  %t228 = sext i32 %t227 to i64
-  %t229 = load ptr, ptr %t211
-  %t230 = getelementptr i32, ptr %t229, i64 %t228
+  %t221 = load ptr, ptr %t27
+  %t222 = load ptr, ptr %t27
+  %t223 = getelementptr %EvFrame, ptr %t222, i32 0, i32 7
+  %t224 = load i32, ptr %t223
+  %t225 = add i32 0, 1
+  %t226 = sub i32 %t224, %t225
+  %t227 = load ptr, ptr %t27
+  %t228 = getelementptr %EvFrame, ptr %t227, i32 0, i32 7
+  store i32 %t226, ptr %t228
+  %t229 = load ptr, ptr %t27
+  %t230 = getelementptr %EvFrame, ptr %t229, i32 0, i32 7
   %t231 = load i32, ptr %t230
-  %t232 = load ptr, ptr %t27
-  %t233 = call i32 @ev_stmt(i32 %t231, ptr %t232)
+  %t232 = sext i32 %t231 to i64
+  %t233 = load ptr, ptr %t215
+  %t234 = getelementptr i32, ptr %t233, i64 %t232
+  %t235 = load i32, ptr %t234
+  %t236 = load ptr, ptr %t27
+  %t237 = call i32 @ev_stmt(i32 %t235, ptr %t236)
   br label %L25
 L27:
-  %t234 = load ptr, ptr %t27
-  call void @ev_frame_free(ptr %t234)
-  %t236 = load i32, ptr %t139
-  %t237 = getelementptr %EvalVal, ptr %t235, i32 0, i32 0
-  store i32 %t236, ptr %t237
-  %t238 = load i32, ptr %t141
-  %t239 = getelementptr %EvalVal, ptr %t235, i32 0, i32 1
-  store i32 %t238, ptr %t239
-  %t240 = load i64, ptr %t143
-  %t241 = getelementptr %EvalVal, ptr %t235, i32 0, i32 2
-  store i64 %t240, ptr %t241
-  %t242 = load %EvalVal, ptr %t235
-  ret %EvalVal %t242
+  %t238 = load ptr, ptr %t27
+  call void @ev_frame_free(ptr %t238)
+  %t240 = load i32, ptr %t139
+  %t241 = getelementptr %EvalVal, ptr %t239, i32 0, i32 0
+  store i32 %t240, ptr %t241
+  %t242 = load i32, ptr %t141
+  %t243 = getelementptr %EvalVal, ptr %t239, i32 0, i32 1
+  store i32 %t242, ptr %t243
+  %t244 = load i64, ptr %t143
+  %t245 = getelementptr %EvalVal, ptr %t239, i32 0, i32 2
+  store i64 %t244, ptr %t245
+  %t246 = load %EvalVal, ptr %t239
+  ret %EvalVal %t246
 }
 
 define internal void @ev_build_globals(i32 %p0) {
