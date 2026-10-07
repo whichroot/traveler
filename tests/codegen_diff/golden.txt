@@ -34,7 +34,7 @@ d4c2cbbe88903fd9e40deeb8c8480a80  examples/dyn_nested_test.tv
 d08062b843bed2a9b92da97c66f4a8be  examples/dyn_ntt_test.tv
 bc2fa61d6f5b29dd54b09ef447092c7b  examples/dyn_poseidon2_test.tv
 d89f85445582139a794f712523d3542e  examples/dyn_regime_proof_test.tv
-11e67137d77bc50bfbb9e512c37b9adb  examples/dyn_register_test.tv
+38349543d26273eddd8e9947bd9abe38  examples/dyn_register_test.tv
 fec421856bc2f9ee86aad67d57de7f37  examples/edge_cases.tv
 12f7b919d5473ce8f4208e7d08ee1b25  examples/embed_roundtrip_test.tv
 8e7cd536f712b94305d6043bd1d70dfc  examples/enum_basics.tv
@@ -101,7 +101,7 @@ d54a0a7052ca0c2e2ff466901732e5f0  examples/mds_check_test.tv
 42a6c3d77d9177d6fb0b53a1357f8912  examples/mds_live_test.tv
 330a3de122ebb2123c5c9852ab669db3  examples/mem_arena_pool.tv
 94516853dd3ee4c2b2b27afae0cc09eb  examples/merkle_test.tv
-5e67de32b7a2fbe440baebd54954bab8  examples/method_basics.tv
+2d40c6bbd275e37e2a4cea61eae996d6  examples/method_basics.tv
 712f84f34493e74edf69481bcd408541  examples/mini_lexer.tv
 60c0d93d94958dd68ba6dffe3b81e438  examples/mnist_classify.tv
 521a22c8368228d656a6446b228d0fc6  examples/mnist_genus_census.tv
@@ -167,7 +167,7 @@ ec05edf74b39ffb2973b243a7b164fa6  examples/ptr_stride_units.tv
 07989eabfd28e6dd34e5df4b96653c64  examples/read_bytes_expr.tv
 7362461b5a2244f15dd3c0bd554515b5  examples/reed_solomon_test.tv
 c27d93d782cf5dfa072d63a59e96dbd1  examples/regime_2d_test.tv
-4300d8495c6b3ac88e085d2b15b886a0  examples/regime_basics.tv
+34882b9ebbca438211d7ea9d288852c6  examples/regime_basics.tv
 85a6a883ee961b6e07b6b4c993158453  examples/regime_fri_test.tv
 d6c646adc01150b0c1ae4e58b605de90  examples/regime_fri_zk_test.tv
 7e1b406a19a7e1b01562c340f2f610b4  examples/regime_intersect_test.tv
@@ -175,10 +175,10 @@ d6c646adc01150b0c1ae4e58b605de90  examples/regime_fri_zk_test.tv
 2845c52b9fb9c9eb5a3c0e1789948de7  examples/regime_mnist_zk_test.tv
 6a59b619cac369bd9831293531689f91  examples/regime_topology_test.tv
 db9cc91a043638455988f3848964e555  examples/regime_wav_zk_test.tv
-5e67de32b7a2fbe440baebd54954bab8  examples/register_basics.tv
+2d40c6bbd275e37e2a4cea61eae996d6  examples/register_basics.tv
 28794d25333a3bbd8330b537c5e9ecc9  examples/relational_test.tv
-2363a473ec5cbe84e0943f735181075d  examples/repr_tracking_65521.tv
-a7fb1755aa955e8e5918bdf48597af86  examples/repr_tracking.tv
+c6f902047936c50719a1ad298fea88ec  examples/repr_tracking_65521.tv
+8bfbf257fd314143f9f37218e154556f  examples/repr_tracking.tv
 2b2a3ce497c71be68beb1d2c384b0417  examples/result_basics.tv
 33e96e7766c2d400017dd06d3ea08fd2  examples/rns_dyn_matmul.tv
 d58a82c624ad1d72d7a817bdea12005e  examples/rs16_errdec_test.tv

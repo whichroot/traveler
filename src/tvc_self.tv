@@ -9121,6 +9121,18 @@ fn register_degree(type_off: i32) -> i32 {
     return deg;
 }
 
+fn constructor_coeff_count(type_off: i32, supplied: i32) -> i32 {
+    var degree: i32 = poly_degree(type_off);
+    if type_is_register(type_off) == 1 { degree = register_degree(type_off); }
+    if degree < 0 || degree == 2147483647 {
+        wr(2, "error: constructor degree exceeds storage capacity\n"); exit(1);
+    }
+    if supplied > degree + 1 {
+        wr(2, "error: too many constructor coefficients\n"); exit(1);
+    }
+    return degree + 1;
+}
+
 // Check if a source type is the dyn element type ("dyn" exactly).
 // Element of a runtime-determined prime field, i64-backed.
 fn type_is_dyn(type_off: i32) -> i32 {
@@ -14033,19 +14045,20 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
             let ncoeffs: i32 = g_nodes[node].nargs;
             let abase: i32 = g_nodes[node].args_start;
             let pa: i32 = ir_tmp();
+            let capacity: i32 = constructor_coeff_count(ctx_type, ncoeffs);
             g_use_prelude = 1;
-            ir_wr("  "); ir_wr_reg(pa); ir_wr(" = alloca ["); ir_wr_int(ncoeffs as i64);
+            ir_wr("  "); ir_wr_reg(pa); ir_wr(" = alloca ["); ir_wr_int(capacity as i64);
             ir_wr(" x "); ir_wr_elem(pfi); ir_wr("]\n");
             g_use_prelude = 0;
-            ir_wr("  call void @llvm.memset.p0.i64(ptr "); ir_wr_reg(pa);
-            ir_wr(", i8 0, i64 "); ir_wr_int(ncoeffs as i64); ir_wr(", i1 false)\n");
+            ir_wr("  store "); ir_wr_type(ctx_type);
+            ir_wr(" zeroinitializer, ptr "); ir_wr_reg(pa); ir_wr("\n");
             let field_alias: i32 = g_fields[pfi].alias;
             var ci3: i32 = 0;
             while ci3 < ncoeffs {
                 let cv: IRValue = codegen_expr(g_args[abase + ci3], field_alias);
                 let cgep: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(cgep); ir_wr(" = getelementptr [");
-                ir_wr_int(ncoeffs as i64); ir_wr(" x "); ir_wr_elem(pfi);
+                ir_wr_int(capacity as i64); ir_wr(" x "); ir_wr_elem(pfi);
                 ir_wr("], ptr "); ir_wr_reg(pa); ir_wr(", i64 0, i64 ");
                 ir_wr_int(ci3 as i64); ir_wr("\n");
                 ir_wr("  store "); ir_wr_elem(pfi); ir_wr(" "); ir_wr_reg(cv.reg);
@@ -14148,7 +14161,8 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                 let dabase: i32 = g_nodes[node].args_start;
                 // Probe arg0: codegen as i64 (neutral); if it resolves to
                 // the Field carrier type we have the explicit form.
-                let arg0: IRValue = codegen_expr(g_args[dabase], str_intern("i64"));
+                var arg0: IRValue = IRValue { reg: 0, type_off: NULL_STR };
+                if dnargs > 0 { arg0 = codegen_expr(g_args[dabase], str_intern("i64")); }
                 var explicit_carrier: i32 = 0;
                 if type_is_field_value(arg0.type_off) == 1 { explicit_carrier = 1; }
                 var carrier_reg: i32 = 0;
@@ -14163,14 +14177,14 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                 }
                 // Alloca the fat register struct
                 let dr_ir: i32 = type_to_ir(ctx_type);
-                let struct_size: i32 = 8 + dncoeffs * 8;
+                let capacity: i32 = constructor_coeff_count(ctx_type, dncoeffs);
                 let dra: i32 = ir_tmp();
                 g_use_prelude = 1;
                 ir_wr("  "); ir_wr_reg(dra); ir_wr(" = alloca ");
                 ir_wr_sym(dr_ir); ir_wr("\n");
                 g_use_prelude = 0;
                 ir_wr("  call void @llvm.memset.p0.i64(ptr "); ir_wr_reg(dra);
-                ir_wr(", i8 0, i64 "); ir_wr_int(struct_size as i64);
+                ir_wr(", i8 0, i64 "); ir_wr_int(8 + (capacity as i64) * 8);
                 ir_wr(", i1 false)\n");
                 // Store carrier ptr at struct index 0
                 let cgep0: i32 = ir_tmp();
@@ -14243,19 +14257,20 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
             let ncoeffs: i32 = g_nodes[node].nargs;
             let abase: i32 = g_nodes[node].args_start;
             let ra: i32 = ir_tmp();
+            let capacity: i32 = constructor_coeff_count(ctx_type, ncoeffs);
             g_use_prelude = 1;
-            ir_wr("  "); ir_wr_reg(ra); ir_wr(" = alloca ["); ir_wr_int(ncoeffs as i64);
+            ir_wr("  "); ir_wr_reg(ra); ir_wr(" = alloca ["); ir_wr_int(capacity as i64);
             ir_wr(" x "); ir_wr_elem(rfi); ir_wr("]\n");
             g_use_prelude = 0;
-            ir_wr("  call void @llvm.memset.p0.i64(ptr "); ir_wr_reg(ra);
-            ir_wr(", i8 0, i64 "); ir_wr_int(ncoeffs as i64); ir_wr(", i1 false)\n");
+            ir_wr("  store "); ir_wr_type(ctx_type);
+            ir_wr(" zeroinitializer, ptr "); ir_wr_reg(ra); ir_wr("\n");
             let field_alias: i32 = g_fields[rfi].alias;
             var ci3: i32 = 0;
             while ci3 < ncoeffs {
                 let cv: IRValue = codegen_expr(g_args[abase + ci3], field_alias);
                 let cgep: i32 = ir_tmp();
                 ir_wr("  "); ir_wr_reg(cgep); ir_wr(" = getelementptr [");
-                ir_wr_int(ncoeffs as i64); ir_wr(" x "); ir_wr_elem(rfi);
+                ir_wr_int(capacity as i64); ir_wr(" x "); ir_wr_elem(rfi);
                 ir_wr("], ptr "); ir_wr_reg(ra); ir_wr(", i64 0, i64 ");
                 ir_wr_int(ci3 as i64); ir_wr("\n");
                 ir_wr("  store "); ir_wr_elem(rfi); ir_wr(" "); ir_wr_reg(cv.reg);
@@ -35756,8 +35771,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
         g_lw_last_repr = REPR_NEWTON;
         return LowVal { e: an_e, type_off: an_ctx };
     }
-    // poly(c0..cd) -> Poly (STANDARD): coefficient stores at elem width;
-    // ncoeffs = the ARG COUNT (codegen parity), coeffs in field-alias context.
+    // Constructors reserve the declared extent and zero omitted coefficients.
     if str_eq(&g_strings[call_name], "poly") == 1 && type_is_poly(resolve_type_sub(ctx_type)) == 1 {
         let pl_ctx: i32 = resolve_type_sub(ctx_type);
         let pl_fi: i32 = poly_field_index(pl_ctx);
@@ -35773,7 +35787,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
         let pl_e: i32 = eir_new(EIR_BUILTIN, ln, cl);
         g_eir[pl_e].ival = EB_POLY_LIT as u64;
         g_eir[pl_e].alg = pl_fi;
-        g_eir[pl_e].a = nargs;
+        g_eir[pl_e].a = constructor_coeff_count(pl_ctx, nargs);
         g_eir[pl_e].type_off = pl_ctx;
         let pl_s: i32 = g_nevargs;
         pl_i = 0;
@@ -35789,10 +35803,11 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
     // register(...) -> Register: baked = a coeff buffer; dyn = the fat
     // {carrier, [n x i64]} form (explicit carrier probed by TYPE, or implicit __field).
     if str_eq(&g_strings[call_name], "register") == 1
-    && type_is_register(resolve_type_sub(ctx_type)) == 1 && nargs >= 1 {
+    && type_is_register(resolve_type_sub(ctx_type)) == 1 {
         let rg_ctx: i32 = resolve_type_sub(ctx_type);
         if register_is_dyn(rg_ctx) == 1 {
-            let rg_a0: LowVal = lower_expr(g_args[abase], str_intern("i64"));
+            var rg_a0: LowVal = LowVal { e: 0, type_off: NULL_STR };
+            if nargs > 0 { rg_a0 = lower_expr(g_args[abase], str_intern("i64")); }
             var rg_expl: i32 = 0;
             if type_is_field_value(rg_a0.type_off) == 1 { rg_expl = 1; }
             var rg_nc: i32 = nargs;
@@ -35813,7 +35828,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
             }
             let rg_e: i32 = eir_new(EIR_BUILTIN, ln, cl);
             g_eir[rg_e].ival = EB_REG_NEW_DYN as u64;
-            g_eir[rg_e].a = rg_nc;
+            g_eir[rg_e].a = constructor_coeff_count(rg_ctx, rg_nc);
             g_eir[rg_e].b = rg_slot;
             g_eir[rg_e].type_off = rg_ctx;
             let rg_s: i32 = g_nevargs;
@@ -35839,7 +35854,7 @@ fn lower_call(node: i32, ctx_type: i32) -> LowVal {
         let rg_e: i32 = eir_new(EIR_BUILTIN, ln, cl);
         g_eir[rg_e].ival = EB_REG_NEW as u64;
         g_eir[rg_e].alg = rg_fi;
-        g_eir[rg_e].a = nargs;
+        g_eir[rg_e].a = constructor_coeff_count(rg_ctx, nargs);
         g_eir[rg_e].type_off = rg_ctx;
         let rg_s: i32 = g_nevargs;
         rg_i = 0;
@@ -43754,11 +43769,12 @@ fn ev_builtin_poly(e: i32, fr: *EvFrame) -> EvalVal {
     }
     if eb == EB_POLY_LIT || eb == EB_REG_NEW {
         let nc: i32 = g_eir[e].a;
-        let buf: *u8 = alloc((nc * esz) as i64);
+        let buf: *u8 = alloc((nc as i64) * (esz as i64));
         ev_own_push(fr, buf as u64);
         let base: u64 = buf as u64;
+        ev_zero(base, (nc as u64) * (esz as u64));
         var i: i32 = 0;
-        while i < nc {
+        while i < g_eir[e].nargs {
             let cv: EvalVal = ev_expr(g_evargs[astart + i], fr);
             if fr.unwinding == 1 { return cv; }
             ev_store(base + ((i * esz) as u64), esz, cv.bits);
@@ -43768,9 +43784,10 @@ fn ev_builtin_poly(e: i32, fr: *EvFrame) -> EvalVal {
     }
     if eb == EB_REG_NEW_DYN {
         let nc: i32 = g_eir[e].a;
-        let buf: *u8 = alloc((8 + nc * 8) as i64);
+        let buf: *u8 = alloc(8 + (nc as i64) * 8);
         ev_own_push(fr, buf as u64);
         let base: u64 = buf as u64;
+        ev_zero(base, 8 + (nc as u64) * 8);
         var carrier: u64 = 0;
         var coeff0: i32 = 0;
         if g_eir[e].b >= 0 {
@@ -43787,7 +43804,7 @@ fn ev_builtin_poly(e: i32, fr: *EvFrame) -> EvalVal {
         ev_store(base, 8, carrier);
         let dp: u64 = ev_load(carrier, 8);
         var i: i32 = 0;
-        while i < nc {
+        while i < g_eir[e].nargs - coeff0 {
             let cv: EvalVal = ev_expr(g_evargs[astart + coeff0 + i], fr);
             if fr.unwinding == 1 { return cv; }
             ev_store(base + ((8 + i * 8) as u64), 8, cv.bits % dp);

@@ -681,6 +681,11 @@ degree and field come from the binding's type annotation (there is no explicit
 let p: Poly<F, 2> = poly(c0, c1, c2)   // 3 coefficients -> Poly<F, 2>
 ```
 
+The constructor reserves all `d + 1` coefficients. Omitted trailing coefficients
+are zero; `poly()` constructs the zero polynomial at the declared degree.
+More than `d + 1` coefficients is an error. The same rules apply to `register(...)`;
+an explicit dynamic-field carrier is not counted as a coefficient.
+
 > **NOT YET IMPLEMENTED (v0.1.0 — planned).** `Poly<F, d>::from_coeffs(arr)`
 > and `Poly<F, d>::zero()` are not implemented. Construct from an explicit
 > coefficient list with `poly(...)`, or from data with `analyze(...)` (§5.5,
