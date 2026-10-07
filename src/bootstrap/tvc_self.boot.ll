@@ -83000,22 +83000,23 @@ entry:
   %t3 = alloca i1
   %t4 = alloca i1
   %t23 = alloca i32
-  %t68 = alloca i32
-  %t75 = alloca i32
-  %t76 = alloca i1
-  %t77 = alloca i1
-  %t93 = alloca i32
-  %t190 = alloca i32
-  %t197 = alloca i32
-  %t198 = alloca i1
-  %t199 = alloca i1
-  %t215 = alloca i32
-  %t222 = alloca i32
-  %t229 = alloca i32
-  %t236 = alloca i32
-  %t237 = alloca i1
-  %t238 = alloca i1
-  %t254 = alloca i32
+  %t24 = alloca i1
+  %t73 = alloca i32
+  %t80 = alloca i32
+  %t81 = alloca i1
+  %t82 = alloca i1
+  %t98 = alloca i32
+  %t195 = alloca i32
+  %t202 = alloca i32
+  %t203 = alloca i1
+  %t204 = alloca i1
+  %t220 = alloca i32
+  %t227 = alloca i32
+  %t234 = alloca i32
+  %t241 = alloca i32
+  %t242 = alloca i1
+  %t243 = alloca i1
+  %t259 = alloca i32
   %t5 = load i32, ptr %t0
   %t6 = add i32 0, 0
   %t7 = icmp sle i32 %t5, %t6
@@ -83051,387 +83052,397 @@ L6:
   %t21 = getelementptr %ASTNode, ptr %t20, i32 0, i32 0
   %t22 = load i32, ptr %t21
   store i32 %t22, ptr %t23
-  %t24 = load i32, ptr %t23
-  %t25 = load i32, ptr @AST_LET
-  %t26 = icmp eq i32 %t24, %t25
-  br i1 %t26, label %L7, label %L9
+  %t25 = load i32, ptr %t23
+  %t26 = load i32, ptr @AST_LET
+  %t27 = icmp eq i32 %t25, %t26
+  store i1 %t27, ptr %t24
+  br i1 %t27, label %L8, label %L7
 L7:
-  %t27 = load i32, ptr %t0
-  %t28 = sext i32 %t27 to i64
-  %t29 = load ptr, ptr @g_nodes
-  %t30 = getelementptr %ASTNode, ptr %t29, i64 %t28
-  %t31 = getelementptr %ASTNode, ptr %t30, i32 0, i32 10
-  %t32 = load i32, ptr %t31
-  %t33 = load i32, ptr %t1
-  %t34 = icmp eq i32 %t32, %t33
-  %t35 = zext i1 %t34 to i32
-  ret i32 %t35
+  %t28 = load i32, ptr %t23
+  %t29 = load i32, ptr @AST_ASSIGN
+  %t30 = icmp eq i32 %t28, %t29
+  store i1 %t30, ptr %t24
+  br label %L8
+L8:
+  %t31 = load i1, ptr %t24
+  br i1 %t31, label %L9, label %L11
 L9:
-  %t36 = load i32, ptr %t23
-  %t37 = load i32, ptr @AST_FOR
-  %t38 = icmp eq i32 %t36, %t37
-  br i1 %t38, label %L10, label %L12
-L10:
-  %t39 = load i32, ptr %t0
-  %t40 = sext i32 %t39 to i64
-  %t41 = load ptr, ptr @g_nodes
-  %t42 = getelementptr %ASTNode, ptr %t41, i64 %t40
-  %t43 = getelementptr %ASTNode, ptr %t42, i32 0, i32 10
-  %t44 = load i32, ptr %t43
-  %t45 = load i32, ptr %t1
-  %t46 = icmp eq i32 %t44, %t45
-  br i1 %t46, label %L13, label %L15
-L13:
-  %t47 = add i32 0, 1
-  ret i32 %t47
-L15:
-  %t48 = load i32, ptr %t0
-  %t49 = sext i32 %t48 to i64
-  %t50 = load ptr, ptr @g_nodes
-  %t51 = getelementptr %ASTNode, ptr %t50, i64 %t49
-  %t52 = getelementptr %ASTNode, ptr %t51, i32 0, i32 9
-  %t53 = load i32, ptr %t52
-  %t54 = load i32, ptr %t1
-  %t55 = load i32, ptr %t2
-  %t56 = add i32 0, 1
-  %t57 = add i32 %t55, %t56
-  %t58 = call i32 @purity_stmt_shadows_name(i32 %t53, i32 %t54, i32 %t57)
-  ret i32 %t58
+  %t32 = load i32, ptr %t0
+  %t33 = sext i32 %t32 to i64
+  %t34 = load ptr, ptr @g_nodes
+  %t35 = getelementptr %ASTNode, ptr %t34, i64 %t33
+  %t36 = getelementptr %ASTNode, ptr %t35, i32 0, i32 10
+  %t37 = load i32, ptr %t36
+  %t38 = load i32, ptr %t1
+  %t39 = icmp eq i32 %t37, %t38
+  %t40 = zext i1 %t39 to i32
+  ret i32 %t40
+L11:
+  %t41 = load i32, ptr %t23
+  %t42 = load i32, ptr @AST_FOR
+  %t43 = icmp eq i32 %t41, %t42
+  br i1 %t43, label %L12, label %L14
 L12:
-  %t59 = load i32, ptr %t23
-  %t60 = load i32, ptr @AST_BLOCK
-  %t61 = icmp eq i32 %t59, %t60
-  br i1 %t61, label %L16, label %L18
-L16:
-  %t62 = load i32, ptr %t0
-  %t63 = sext i32 %t62 to i64
-  %t64 = load ptr, ptr @g_nodes
-  %t65 = getelementptr %ASTNode, ptr %t64, i64 %t63
-  %t66 = getelementptr %ASTNode, ptr %t65, i32 0, i32 13
-  %t67 = load i32, ptr %t66
-  store i32 %t67, ptr %t68
-  %t69 = load i32, ptr %t0
-  %t70 = sext i32 %t69 to i64
-  %t71 = load ptr, ptr @g_nodes
-  %t72 = getelementptr %ASTNode, ptr %t71, i64 %t70
-  %t73 = getelementptr %ASTNode, ptr %t72, i32 0, i32 6
-  %t74 = load i32, ptr %t73
-  store i32 %t74, ptr %t75
-  %t78 = load i32, ptr %t68
-  %t79 = add i32 0, 0
-  %t80 = icmp slt i32 %t78, %t79
-  store i1 %t80, ptr %t77
-  br i1 %t80, label %L20, label %L19
-L19:
-  %t81 = load i32, ptr %t75
-  %t82 = add i32 0, 0
-  %t83 = icmp slt i32 %t81, %t82
-  store i1 %t83, ptr %t77
-  br label %L20
-L20:
-  %t84 = load i1, ptr %t77
-  store i1 %t84, ptr %t76
-  br i1 %t84, label %L22, label %L21
+  %t44 = load i32, ptr %t0
+  %t45 = sext i32 %t44 to i64
+  %t46 = load ptr, ptr @g_nodes
+  %t47 = getelementptr %ASTNode, ptr %t46, i64 %t45
+  %t48 = getelementptr %ASTNode, ptr %t47, i32 0, i32 10
+  %t49 = load i32, ptr %t48
+  %t50 = load i32, ptr %t1
+  %t51 = icmp eq i32 %t49, %t50
+  br i1 %t51, label %L15, label %L17
+L15:
+  %t52 = add i32 0, 1
+  ret i32 %t52
+L17:
+  %t53 = load i32, ptr %t0
+  %t54 = sext i32 %t53 to i64
+  %t55 = load ptr, ptr @g_nodes
+  %t56 = getelementptr %ASTNode, ptr %t55, i64 %t54
+  %t57 = getelementptr %ASTNode, ptr %t56, i32 0, i32 9
+  %t58 = load i32, ptr %t57
+  %t59 = load i32, ptr %t1
+  %t60 = load i32, ptr %t2
+  %t61 = add i32 0, 1
+  %t62 = add i32 %t60, %t61
+  %t63 = call i32 @purity_stmt_shadows_name(i32 %t58, i32 %t59, i32 %t62)
+  ret i32 %t63
+L14:
+  %t64 = load i32, ptr %t23
+  %t65 = load i32, ptr @AST_BLOCK
+  %t66 = icmp eq i32 %t64, %t65
+  br i1 %t66, label %L18, label %L20
+L18:
+  %t67 = load i32, ptr %t0
+  %t68 = sext i32 %t67 to i64
+  %t69 = load ptr, ptr @g_nodes
+  %t70 = getelementptr %ASTNode, ptr %t69, i64 %t68
+  %t71 = getelementptr %ASTNode, ptr %t70, i32 0, i32 13
+  %t72 = load i32, ptr %t71
+  store i32 %t72, ptr %t73
+  %t74 = load i32, ptr %t0
+  %t75 = sext i32 %t74 to i64
+  %t76 = load ptr, ptr @g_nodes
+  %t77 = getelementptr %ASTNode, ptr %t76, i64 %t75
+  %t78 = getelementptr %ASTNode, ptr %t77, i32 0, i32 6
+  %t79 = load i32, ptr %t78
+  store i32 %t79, ptr %t80
+  %t83 = load i32, ptr %t73
+  %t84 = add i32 0, 0
+  %t85 = icmp slt i32 %t83, %t84
+  store i1 %t85, ptr %t82
+  br i1 %t85, label %L22, label %L21
 L21:
-  %t85 = load i32, ptr %t68
-  %t86 = load i32, ptr @g_nargs_pool
-  %t87 = load i32, ptr %t75
-  %t88 = sub i32 %t86, %t87
-  %t89 = icmp sgt i32 %t85, %t88
-  store i1 %t89, ptr %t76
+  %t86 = load i32, ptr %t80
+  %t87 = add i32 0, 0
+  %t88 = icmp slt i32 %t86, %t87
+  store i1 %t88, ptr %t82
   br label %L22
 L22:
-  %t90 = load i1, ptr %t76
-  br i1 %t90, label %L23, label %L25
+  %t89 = load i1, ptr %t82
+  store i1 %t89, ptr %t81
+  br i1 %t89, label %L24, label %L23
 L23:
-  %t91 = add i32 0, 1
-  ret i32 %t91
+  %t90 = load i32, ptr %t73
+  %t91 = load i32, ptr @g_nargs_pool
+  %t92 = load i32, ptr %t80
+  %t93 = sub i32 %t91, %t92
+  %t94 = icmp sgt i32 %t90, %t93
+  store i1 %t94, ptr %t81
+  br label %L24
+L24:
+  %t95 = load i1, ptr %t81
+  br i1 %t95, label %L25, label %L27
 L25:
-  %t92 = add i32 0, 0
-  store i32 %t92, ptr %t93
-  br label %L26
-L26:
-  %t94 = load i32, ptr %t93
-  %t95 = load i32, ptr %t75
-  %t96 = icmp slt i32 %t94, %t95
-  br i1 %t96, label %L27, label %L28
+  %t96 = add i32 0, 1
+  ret i32 %t96
 L27:
-  %t97 = load i32, ptr %t68
-  %t98 = load i32, ptr %t93
-  %t99 = add i32 %t97, %t98
-  %t100 = sext i32 %t99 to i64
-  %t101 = load ptr, ptr @g_args
-  %t102 = getelementptr i32, ptr %t101, i64 %t100
-  %t103 = load i32, ptr %t102
-  %t104 = load i32, ptr %t1
-  %t105 = load i32, ptr %t2
-  %t106 = add i32 0, 1
-  %t107 = add i32 %t105, %t106
-  %t108 = call i32 @purity_stmt_shadows_name(i32 %t103, i32 %t104, i32 %t107)
-  %t109 = add i32 0, 1
-  %t110 = icmp eq i32 %t108, %t109
-  br i1 %t110, label %L29, label %L31
-L29:
-  %t111 = add i32 0, 1
-  ret i32 %t111
-L31:
-  %t112 = load i32, ptr %t93
-  %t113 = add i32 0, 1
-  %t114 = add i32 %t112, %t113
-  store i32 %t114, ptr %t93
-  br label %L26
+  %t97 = add i32 0, 0
+  store i32 %t97, ptr %t98
+  br label %L28
 L28:
-  %t115 = add i32 0, 0
-  ret i32 %t115
-L18:
-  %t116 = load i32, ptr %t23
-  %t117 = load i32, ptr @AST_IF
-  %t118 = icmp eq i32 %t116, %t117
-  br i1 %t118, label %L32, label %L34
-L32:
-  %t119 = load i32, ptr %t0
-  %t120 = sext i32 %t119 to i64
-  %t121 = load ptr, ptr @g_nodes
-  %t122 = getelementptr %ASTNode, ptr %t121, i64 %t120
-  %t123 = getelementptr %ASTNode, ptr %t122, i32 0, i32 8
-  %t124 = load i32, ptr %t123
-  %t125 = load i32, ptr %t1
-  %t126 = load i32, ptr %t2
-  %t127 = add i32 0, 1
-  %t128 = add i32 %t126, %t127
-  %t129 = call i32 @purity_stmt_shadows_name(i32 %t124, i32 %t125, i32 %t128)
-  %t130 = add i32 0, 1
-  %t131 = icmp eq i32 %t129, %t130
-  br i1 %t131, label %L35, label %L37
-L35:
-  %t132 = add i32 0, 1
-  ret i32 %t132
-L37:
-  %t133 = load i32, ptr %t0
-  %t134 = sext i32 %t133 to i64
-  %t135 = load ptr, ptr @g_nodes
-  %t136 = getelementptr %ASTNode, ptr %t135, i64 %t134
-  %t137 = getelementptr %ASTNode, ptr %t136, i32 0, i32 9
-  %t138 = load i32, ptr %t137
-  %t139 = add i32 0, 0
-  %t140 = icmp sge i32 %t138, %t139
-  br i1 %t140, label %L38, label %L40
-L38:
-  %t141 = load i32, ptr %t0
-  %t142 = sext i32 %t141 to i64
-  %t143 = load ptr, ptr @g_nodes
-  %t144 = getelementptr %ASTNode, ptr %t143, i64 %t142
-  %t145 = getelementptr %ASTNode, ptr %t144, i32 0, i32 9
-  %t146 = load i32, ptr %t145
-  %t147 = load i32, ptr %t1
-  %t148 = load i32, ptr %t2
-  %t149 = add i32 0, 1
-  %t150 = add i32 %t148, %t149
-  %t151 = call i32 @purity_stmt_shadows_name(i32 %t146, i32 %t147, i32 %t150)
-  ret i32 %t151
-L40:
-  %t152 = add i32 0, 0
-  ret i32 %t152
+  %t99 = load i32, ptr %t98
+  %t100 = load i32, ptr %t80
+  %t101 = icmp slt i32 %t99, %t100
+  br i1 %t101, label %L29, label %L30
+L29:
+  %t102 = load i32, ptr %t73
+  %t103 = load i32, ptr %t98
+  %t104 = add i32 %t102, %t103
+  %t105 = sext i32 %t104 to i64
+  %t106 = load ptr, ptr @g_args
+  %t107 = getelementptr i32, ptr %t106, i64 %t105
+  %t108 = load i32, ptr %t107
+  %t109 = load i32, ptr %t1
+  %t110 = load i32, ptr %t2
+  %t111 = add i32 0, 1
+  %t112 = add i32 %t110, %t111
+  %t113 = call i32 @purity_stmt_shadows_name(i32 %t108, i32 %t109, i32 %t112)
+  %t114 = add i32 0, 1
+  %t115 = icmp eq i32 %t113, %t114
+  br i1 %t115, label %L31, label %L33
+L31:
+  %t116 = add i32 0, 1
+  ret i32 %t116
+L33:
+  %t117 = load i32, ptr %t98
+  %t118 = add i32 0, 1
+  %t119 = add i32 %t117, %t118
+  store i32 %t119, ptr %t98
+  br label %L28
+L30:
+  %t120 = add i32 0, 0
+  ret i32 %t120
+L20:
+  %t121 = load i32, ptr %t23
+  %t122 = load i32, ptr @AST_IF
+  %t123 = icmp eq i32 %t121, %t122
+  br i1 %t123, label %L34, label %L36
 L34:
-  %t153 = load i32, ptr %t23
-  %t154 = load i32, ptr @AST_WHILE
-  %t155 = icmp eq i32 %t153, %t154
-  br i1 %t155, label %L41, label %L43
-L41:
-  %t156 = load i32, ptr %t0
-  %t157 = sext i32 %t156 to i64
-  %t158 = load ptr, ptr @g_nodes
-  %t159 = getelementptr %ASTNode, ptr %t158, i64 %t157
-  %t160 = getelementptr %ASTNode, ptr %t159, i32 0, i32 8
-  %t161 = load i32, ptr %t160
-  %t162 = load i32, ptr %t1
-  %t163 = load i32, ptr %t2
-  %t164 = add i32 0, 1
-  %t165 = add i32 %t163, %t164
-  %t166 = call i32 @purity_stmt_shadows_name(i32 %t161, i32 %t162, i32 %t165)
-  ret i32 %t166
+  %t124 = load i32, ptr %t0
+  %t125 = sext i32 %t124 to i64
+  %t126 = load ptr, ptr @g_nodes
+  %t127 = getelementptr %ASTNode, ptr %t126, i64 %t125
+  %t128 = getelementptr %ASTNode, ptr %t127, i32 0, i32 8
+  %t129 = load i32, ptr %t128
+  %t130 = load i32, ptr %t1
+  %t131 = load i32, ptr %t2
+  %t132 = add i32 0, 1
+  %t133 = add i32 %t131, %t132
+  %t134 = call i32 @purity_stmt_shadows_name(i32 %t129, i32 %t130, i32 %t133)
+  %t135 = add i32 0, 1
+  %t136 = icmp eq i32 %t134, %t135
+  br i1 %t136, label %L37, label %L39
+L37:
+  %t137 = add i32 0, 1
+  ret i32 %t137
+L39:
+  %t138 = load i32, ptr %t0
+  %t139 = sext i32 %t138 to i64
+  %t140 = load ptr, ptr @g_nodes
+  %t141 = getelementptr %ASTNode, ptr %t140, i64 %t139
+  %t142 = getelementptr %ASTNode, ptr %t141, i32 0, i32 9
+  %t143 = load i32, ptr %t142
+  %t144 = add i32 0, 0
+  %t145 = icmp sge i32 %t143, %t144
+  br i1 %t145, label %L40, label %L42
+L40:
+  %t146 = load i32, ptr %t0
+  %t147 = sext i32 %t146 to i64
+  %t148 = load ptr, ptr @g_nodes
+  %t149 = getelementptr %ASTNode, ptr %t148, i64 %t147
+  %t150 = getelementptr %ASTNode, ptr %t149, i32 0, i32 9
+  %t151 = load i32, ptr %t150
+  %t152 = load i32, ptr %t1
+  %t153 = load i32, ptr %t2
+  %t154 = add i32 0, 1
+  %t155 = add i32 %t153, %t154
+  %t156 = call i32 @purity_stmt_shadows_name(i32 %t151, i32 %t152, i32 %t155)
+  ret i32 %t156
+L42:
+  %t157 = add i32 0, 0
+  ret i32 %t157
+L36:
+  %t158 = load i32, ptr %t23
+  %t159 = load i32, ptr @AST_WHILE
+  %t160 = icmp eq i32 %t158, %t159
+  br i1 %t160, label %L43, label %L45
 L43:
-  %t167 = load i32, ptr %t23
-  %t168 = load i32, ptr @AST_DEFER
-  %t169 = icmp eq i32 %t167, %t168
-  br i1 %t169, label %L44, label %L46
-L44:
-  %t170 = load i32, ptr %t0
-  %t171 = sext i32 %t170 to i64
-  %t172 = load ptr, ptr @g_nodes
-  %t173 = getelementptr %ASTNode, ptr %t172, i64 %t171
-  %t174 = getelementptr %ASTNode, ptr %t173, i32 0, i32 7
-  %t175 = load i32, ptr %t174
-  %t176 = load i32, ptr %t1
-  %t177 = load i32, ptr %t2
-  %t178 = add i32 0, 1
-  %t179 = add i32 %t177, %t178
-  %t180 = call i32 @purity_stmt_shadows_name(i32 %t175, i32 %t176, i32 %t179)
-  ret i32 %t180
+  %t161 = load i32, ptr %t0
+  %t162 = sext i32 %t161 to i64
+  %t163 = load ptr, ptr @g_nodes
+  %t164 = getelementptr %ASTNode, ptr %t163, i64 %t162
+  %t165 = getelementptr %ASTNode, ptr %t164, i32 0, i32 8
+  %t166 = load i32, ptr %t165
+  %t167 = load i32, ptr %t1
+  %t168 = load i32, ptr %t2
+  %t169 = add i32 0, 1
+  %t170 = add i32 %t168, %t169
+  %t171 = call i32 @purity_stmt_shadows_name(i32 %t166, i32 %t167, i32 %t170)
+  ret i32 %t171
+L45:
+  %t172 = load i32, ptr %t23
+  %t173 = load i32, ptr @AST_DEFER
+  %t174 = icmp eq i32 %t172, %t173
+  br i1 %t174, label %L46, label %L48
 L46:
-  %t181 = load i32, ptr %t23
-  %t182 = load i32, ptr @AST_MATCH
-  %t183 = icmp eq i32 %t181, %t182
-  br i1 %t183, label %L47, label %L49
-L47:
-  %t184 = load i32, ptr %t0
-  %t185 = sext i32 %t184 to i64
-  %t186 = load ptr, ptr @g_nodes
-  %t187 = getelementptr %ASTNode, ptr %t186, i64 %t185
-  %t188 = getelementptr %ASTNode, ptr %t187, i32 0, i32 13
-  %t189 = load i32, ptr %t188
-  store i32 %t189, ptr %t190
-  %t191 = load i32, ptr %t0
-  %t192 = sext i32 %t191 to i64
-  %t193 = load ptr, ptr @g_nodes
-  %t194 = getelementptr %ASTNode, ptr %t193, i64 %t192
-  %t195 = getelementptr %ASTNode, ptr %t194, i32 0, i32 6
-  %t196 = load i32, ptr %t195
-  store i32 %t196, ptr %t197
-  %t200 = load i32, ptr %t190
-  %t201 = add i32 0, 0
-  %t202 = icmp slt i32 %t200, %t201
-  store i1 %t202, ptr %t199
-  br i1 %t202, label %L51, label %L50
-L50:
-  %t203 = load i32, ptr %t197
-  %t204 = add i32 0, 0
-  %t205 = icmp slt i32 %t203, %t204
-  store i1 %t205, ptr %t199
-  br label %L51
-L51:
-  %t206 = load i1, ptr %t199
-  store i1 %t206, ptr %t198
-  br i1 %t206, label %L53, label %L52
+  %t175 = load i32, ptr %t0
+  %t176 = sext i32 %t175 to i64
+  %t177 = load ptr, ptr @g_nodes
+  %t178 = getelementptr %ASTNode, ptr %t177, i64 %t176
+  %t179 = getelementptr %ASTNode, ptr %t178, i32 0, i32 7
+  %t180 = load i32, ptr %t179
+  %t181 = load i32, ptr %t1
+  %t182 = load i32, ptr %t2
+  %t183 = add i32 0, 1
+  %t184 = add i32 %t182, %t183
+  %t185 = call i32 @purity_stmt_shadows_name(i32 %t180, i32 %t181, i32 %t184)
+  ret i32 %t185
+L48:
+  %t186 = load i32, ptr %t23
+  %t187 = load i32, ptr @AST_MATCH
+  %t188 = icmp eq i32 %t186, %t187
+  br i1 %t188, label %L49, label %L51
+L49:
+  %t189 = load i32, ptr %t0
+  %t190 = sext i32 %t189 to i64
+  %t191 = load ptr, ptr @g_nodes
+  %t192 = getelementptr %ASTNode, ptr %t191, i64 %t190
+  %t193 = getelementptr %ASTNode, ptr %t192, i32 0, i32 13
+  %t194 = load i32, ptr %t193
+  store i32 %t194, ptr %t195
+  %t196 = load i32, ptr %t0
+  %t197 = sext i32 %t196 to i64
+  %t198 = load ptr, ptr @g_nodes
+  %t199 = getelementptr %ASTNode, ptr %t198, i64 %t197
+  %t200 = getelementptr %ASTNode, ptr %t199, i32 0, i32 6
+  %t201 = load i32, ptr %t200
+  store i32 %t201, ptr %t202
+  %t205 = load i32, ptr %t195
+  %t206 = add i32 0, 0
+  %t207 = icmp slt i32 %t205, %t206
+  store i1 %t207, ptr %t204
+  br i1 %t207, label %L53, label %L52
 L52:
-  %t207 = load i32, ptr %t190
-  %t208 = load i32, ptr @g_narms
-  %t209 = load i32, ptr %t197
-  %t210 = sub i32 %t208, %t209
-  %t211 = icmp sgt i32 %t207, %t210
-  store i1 %t211, ptr %t198
+  %t208 = load i32, ptr %t202
+  %t209 = add i32 0, 0
+  %t210 = icmp slt i32 %t208, %t209
+  store i1 %t210, ptr %t204
   br label %L53
 L53:
-  %t212 = load i1, ptr %t198
-  br i1 %t212, label %L54, label %L56
+  %t211 = load i1, ptr %t204
+  store i1 %t211, ptr %t203
+  br i1 %t211, label %L55, label %L54
 L54:
-  %t213 = add i32 0, 1
-  ret i32 %t213
+  %t212 = load i32, ptr %t195
+  %t213 = load i32, ptr @g_narms
+  %t214 = load i32, ptr %t202
+  %t215 = sub i32 %t213, %t214
+  %t216 = icmp sgt i32 %t212, %t215
+  store i1 %t216, ptr %t203
+  br label %L55
+L55:
+  %t217 = load i1, ptr %t203
+  br i1 %t217, label %L56, label %L58
 L56:
-  %t214 = add i32 0, 0
-  store i32 %t214, ptr %t215
-  br label %L57
-L57:
-  %t216 = load i32, ptr %t215
-  %t217 = load i32, ptr %t197
-  %t218 = icmp slt i32 %t216, %t217
-  br i1 %t218, label %L58, label %L59
+  %t218 = add i32 0, 1
+  ret i32 %t218
 L58:
-  %t219 = load i32, ptr %t190
-  %t220 = load i32, ptr %t215
-  %t221 = add i32 %t219, %t220
-  store i32 %t221, ptr %t222
-  %t223 = load i32, ptr %t222
-  %t224 = sext i32 %t223 to i64
-  %t225 = load ptr, ptr @g_arms
-  %t226 = getelementptr %MatchArm, ptr %t225, i64 %t224
-  %t227 = getelementptr %MatchArm, ptr %t226, i32 0, i32 5
-  %t228 = load i32, ptr %t227
-  store i32 %t228, ptr %t229
-  %t230 = load i32, ptr %t222
-  %t231 = sext i32 %t230 to i64
-  %t232 = load ptr, ptr @g_arms
-  %t233 = getelementptr %MatchArm, ptr %t232, i64 %t231
-  %t234 = getelementptr %MatchArm, ptr %t233, i32 0, i32 6
-  %t235 = load i32, ptr %t234
-  store i32 %t235, ptr %t236
-  %t239 = load i32, ptr %t229
-  %t240 = add i32 0, 0
-  %t241 = icmp slt i32 %t239, %t240
-  store i1 %t241, ptr %t238
-  br i1 %t241, label %L61, label %L60
+  %t219 = add i32 0, 0
+  store i32 %t219, ptr %t220
+  br label %L59
+L59:
+  %t221 = load i32, ptr %t220
+  %t222 = load i32, ptr %t202
+  %t223 = icmp slt i32 %t221, %t222
+  br i1 %t223, label %L60, label %L61
 L60:
-  %t242 = load i32, ptr %t236
-  %t243 = add i32 0, 0
-  %t244 = icmp slt i32 %t242, %t243
-  store i1 %t244, ptr %t238
-  br label %L61
-L61:
-  %t245 = load i1, ptr %t238
-  store i1 %t245, ptr %t237
-  br i1 %t245, label %L63, label %L62
+  %t224 = load i32, ptr %t195
+  %t225 = load i32, ptr %t220
+  %t226 = add i32 %t224, %t225
+  store i32 %t226, ptr %t227
+  %t228 = load i32, ptr %t227
+  %t229 = sext i32 %t228 to i64
+  %t230 = load ptr, ptr @g_arms
+  %t231 = getelementptr %MatchArm, ptr %t230, i64 %t229
+  %t232 = getelementptr %MatchArm, ptr %t231, i32 0, i32 5
+  %t233 = load i32, ptr %t232
+  store i32 %t233, ptr %t234
+  %t235 = load i32, ptr %t227
+  %t236 = sext i32 %t235 to i64
+  %t237 = load ptr, ptr @g_arms
+  %t238 = getelementptr %MatchArm, ptr %t237, i64 %t236
+  %t239 = getelementptr %MatchArm, ptr %t238, i32 0, i32 6
+  %t240 = load i32, ptr %t239
+  store i32 %t240, ptr %t241
+  %t244 = load i32, ptr %t234
+  %t245 = add i32 0, 0
+  %t246 = icmp slt i32 %t244, %t245
+  store i1 %t246, ptr %t243
+  br i1 %t246, label %L63, label %L62
 L62:
-  %t246 = load i32, ptr %t229
-  %t247 = load i32, ptr @g_nargs_pool
-  %t248 = load i32, ptr %t236
-  %t249 = sub i32 %t247, %t248
-  %t250 = icmp sgt i32 %t246, %t249
-  store i1 %t250, ptr %t237
+  %t247 = load i32, ptr %t241
+  %t248 = add i32 0, 0
+  %t249 = icmp slt i32 %t247, %t248
+  store i1 %t249, ptr %t243
   br label %L63
 L63:
-  %t251 = load i1, ptr %t237
-  br i1 %t251, label %L64, label %L66
+  %t250 = load i1, ptr %t243
+  store i1 %t250, ptr %t242
+  br i1 %t250, label %L65, label %L64
 L64:
-  %t252 = add i32 0, 1
-  ret i32 %t252
+  %t251 = load i32, ptr %t234
+  %t252 = load i32, ptr @g_nargs_pool
+  %t253 = load i32, ptr %t241
+  %t254 = sub i32 %t252, %t253
+  %t255 = icmp sgt i32 %t251, %t254
+  store i1 %t255, ptr %t242
+  br label %L65
+L65:
+  %t256 = load i1, ptr %t242
+  br i1 %t256, label %L66, label %L68
 L66:
-  %t253 = add i32 0, 0
-  store i32 %t253, ptr %t254
-  br label %L67
-L67:
-  %t255 = load i32, ptr %t254
-  %t256 = load i32, ptr %t236
-  %t257 = icmp slt i32 %t255, %t256
-  br i1 %t257, label %L68, label %L69
+  %t257 = add i32 0, 1
+  ret i32 %t257
 L68:
-  %t258 = load i32, ptr %t229
-  %t259 = load i32, ptr %t254
-  %t260 = add i32 %t258, %t259
-  %t261 = sext i32 %t260 to i64
-  %t262 = load ptr, ptr @g_args
-  %t263 = getelementptr i32, ptr %t262, i64 %t261
-  %t264 = load i32, ptr %t263
-  %t265 = load i32, ptr %t1
-  %t266 = icmp eq i32 %t264, %t265
-  br i1 %t266, label %L70, label %L72
-L70:
-  %t267 = add i32 0, 1
-  ret i32 %t267
-L72:
-  %t268 = load i32, ptr %t254
-  %t269 = add i32 0, 1
-  %t270 = add i32 %t268, %t269
-  store i32 %t270, ptr %t254
-  br label %L67
+  %t258 = add i32 0, 0
+  store i32 %t258, ptr %t259
+  br label %L69
 L69:
-  %t271 = load i32, ptr %t222
-  %t272 = sext i32 %t271 to i64
-  %t273 = load ptr, ptr @g_arms
-  %t274 = getelementptr %MatchArm, ptr %t273, i64 %t272
-  %t275 = getelementptr %MatchArm, ptr %t274, i32 0, i32 2
-  %t276 = load i32, ptr %t275
-  %t277 = load i32, ptr %t1
-  %t278 = load i32, ptr %t2
-  %t279 = add i32 0, 1
-  %t280 = add i32 %t278, %t279
-  %t281 = call i32 @purity_stmt_shadows_name(i32 %t276, i32 %t277, i32 %t280)
-  %t282 = add i32 0, 1
-  %t283 = icmp eq i32 %t281, %t282
-  br i1 %t283, label %L73, label %L75
-L73:
+  %t260 = load i32, ptr %t259
+  %t261 = load i32, ptr %t241
+  %t262 = icmp slt i32 %t260, %t261
+  br i1 %t262, label %L70, label %L71
+L70:
+  %t263 = load i32, ptr %t234
+  %t264 = load i32, ptr %t259
+  %t265 = add i32 %t263, %t264
+  %t266 = sext i32 %t265 to i64
+  %t267 = load ptr, ptr @g_args
+  %t268 = getelementptr i32, ptr %t267, i64 %t266
+  %t269 = load i32, ptr %t268
+  %t270 = load i32, ptr %t1
+  %t271 = icmp eq i32 %t269, %t270
+  br i1 %t271, label %L72, label %L74
+L72:
+  %t272 = add i32 0, 1
+  ret i32 %t272
+L74:
+  %t273 = load i32, ptr %t259
+  %t274 = add i32 0, 1
+  %t275 = add i32 %t273, %t274
+  store i32 %t275, ptr %t259
+  br label %L69
+L71:
+  %t276 = load i32, ptr %t227
+  %t277 = sext i32 %t276 to i64
+  %t278 = load ptr, ptr @g_arms
+  %t279 = getelementptr %MatchArm, ptr %t278, i64 %t277
+  %t280 = getelementptr %MatchArm, ptr %t279, i32 0, i32 2
+  %t281 = load i32, ptr %t280
+  %t282 = load i32, ptr %t1
+  %t283 = load i32, ptr %t2
   %t284 = add i32 0, 1
-  ret i32 %t284
+  %t285 = add i32 %t283, %t284
+  %t286 = call i32 @purity_stmt_shadows_name(i32 %t281, i32 %t282, i32 %t285)
+  %t287 = add i32 0, 1
+  %t288 = icmp eq i32 %t286, %t287
+  br i1 %t288, label %L75, label %L77
 L75:
-  %t285 = load i32, ptr %t215
-  %t286 = add i32 0, 1
-  %t287 = add i32 %t285, %t286
-  store i32 %t287, ptr %t215
-  br label %L57
-L59:
-  br label %L49
-L49:
-  %t288 = add i32 0, 0
-  ret i32 %t288
+  %t289 = add i32 0, 1
+  ret i32 %t289
+L77:
+  %t290 = load i32, ptr %t220
+  %t291 = add i32 0, 1
+  %t292 = add i32 %t290, %t291
+  store i32 %t292, ptr %t220
+  br label %L59
+L61:
+  br label %L51
+L51:
+  %t293 = add i32 0, 0
+  ret i32 %t293
 }
 
 define internal i64 @purity_param_shadow_mask(i32 %p0) {

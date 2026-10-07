@@ -16167,7 +16167,8 @@ fn pfor_closure_effect(clo_type: i32) -> i32 {
 fn purity_stmt_shadows_name(node: i32, name: i32, depth: i32) -> i32 {
     if node <= 0 || node >= g_nnodes || depth > 256 { return 1; }
     let kind: i32 = g_nodes[node].kind;
-    if kind == AST_LET { return (g_nodes[node].name0 == name) as i32; }
+    // Shadowing or reassignment breaks the original parameter's read identity.
+    if kind == AST_LET || kind == AST_ASSIGN { return (g_nodes[node].name0 == name) as i32; }
     if kind == AST_FOR {
         if g_nodes[node].name0 == name { return 1; }
         return purity_stmt_shadows_name(g_nodes[node].child2, name, depth + 1);

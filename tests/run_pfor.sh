@@ -876,6 +876,12 @@ if [ -x "$STAGE1" ]; then
     else
         FAIL=$((FAIL + 1)); FAILURES="$FAILURES worker_stack"
     fi
+    TOTAL=$((TOTAL + 1))
+    if [ -n "$OPT" ] && python3 "$SCRIPT_DIR/check_callee_rebinding.py" "$STAGE1" "$LLC" "$OPT" "$LINKER"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1)); FAILURES="$FAILURES callee_rebinding"
+    fi
 else
     echo "  U1 (Stage D) tests SKIPPED (stage1 not built)"
 fi
