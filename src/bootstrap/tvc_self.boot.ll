@@ -114118,76 +114118,84 @@ entry:
   store i32 %p0, ptr %t0
   %t1 = alloca i32
   store i32 %p1, ptr %t1
-  %t2 = alloca i1
-  %t11 = alloca i1
-  %t20 = alloca i1
-  %t21 = alloca i1
-  %t3 = load i32, ptr %t0
-  %t4 = add i32 0, 3
-  %t5 = icmp sge i32 %t3, %t4
-  store i1 %t5, ptr %t2
-  br i1 %t5, label %L0, label %L1
+  %t6 = alloca i1
+  %t15 = alloca i1
+  %t24 = alloca i1
+  %t25 = alloca i1
+  %t2 = load i32, ptr @g_loop_depth
+  %t3 = add i32 0, 0
+  %t4 = icmp sgt i32 %t2, %t3
+  br i1 %t4, label %L0, label %L2
 L0:
-  %t6 = load i32, ptr %t1
-  %t7 = add i32 0, 1
-  %t8 = icmp eq i32 %t6, %t7
-  store i1 %t8, ptr %t2
-  br label %L1
-L1:
-  %t9 = load i1, ptr %t2
-  br i1 %t9, label %L2, label %L4
+  %t5 = add i32 0, 0
+  ret i32 %t5
 L2:
-  %t10 = add i32 0, 1
-  ret i32 %t10
+  %t7 = load i32, ptr %t0
+  %t8 = add i32 0, 3
+  %t9 = icmp sge i32 %t7, %t8
+  store i1 %t9, ptr %t6
+  br i1 %t9, label %L3, label %L4
+L3:
+  %t10 = load i32, ptr %t1
+  %t11 = add i32 0, 1
+  %t12 = icmp eq i32 %t10, %t11
+  store i1 %t12, ptr %t6
+  br label %L4
 L4:
-  %t12 = load i32, ptr %t1
-  %t13 = add i32 0, 3
-  %t14 = icmp sge i32 %t12, %t13
-  store i1 %t14, ptr %t11
-  br i1 %t14, label %L5, label %L6
+  %t13 = load i1, ptr %t6
+  br i1 %t13, label %L5, label %L7
 L5:
-  %t15 = load i32, ptr %t0
-  %t16 = add i32 0, 1
-  %t17 = icmp eq i32 %t15, %t16
-  store i1 %t17, ptr %t11
-  br label %L6
-L6:
-  %t18 = load i1, ptr %t11
-  br i1 %t18, label %L7, label %L9
+  %t14 = add i32 0, 1
+  ret i32 %t14
 L7:
-  %t19 = add i32 0, 1
-  ret i32 %t19
+  %t16 = load i32, ptr %t1
+  %t17 = add i32 0, 3
+  %t18 = icmp sge i32 %t16, %t17
+  store i1 %t18, ptr %t15
+  br i1 %t18, label %L8, label %L9
+L8:
+  %t19 = load i32, ptr %t0
+  %t20 = add i32 0, 1
+  %t21 = icmp eq i32 %t19, %t20
+  store i1 %t21, ptr %t15
+  br label %L9
 L9:
-  %t22 = load i32, ptr %t0
-  %t23 = add i32 0, 3
-  %t24 = icmp sge i32 %t22, %t23
-  store i1 %t24, ptr %t21
-  br i1 %t24, label %L10, label %L11
+  %t22 = load i1, ptr %t15
+  br i1 %t22, label %L10, label %L12
 L10:
-  %t25 = load i32, ptr %t1
-  %t26 = add i32 0, 3
-  %t27 = icmp sge i32 %t25, %t26
-  store i1 %t27, ptr %t21
-  br label %L11
-L11:
-  %t28 = load i1, ptr %t21
-  store i1 %t28, ptr %t20
-  br i1 %t28, label %L12, label %L13
+  %t23 = add i32 0, 1
+  ret i32 %t23
 L12:
-  %t29 = load i32, ptr %t0
-  %t30 = load i32, ptr %t1
-  %t31 = icmp ne i32 %t29, %t30
-  store i1 %t31, ptr %t20
-  br label %L13
+  %t26 = load i32, ptr %t0
+  %t27 = add i32 0, 3
+  %t28 = icmp sge i32 %t26, %t27
+  store i1 %t28, ptr %t25
+  br i1 %t28, label %L13, label %L14
 L13:
-  %t32 = load i1, ptr %t20
-  br i1 %t32, label %L14, label %L16
+  %t29 = load i32, ptr %t1
+  %t30 = add i32 0, 3
+  %t31 = icmp sge i32 %t29, %t30
+  store i1 %t31, ptr %t25
+  br label %L14
 L14:
-  %t33 = add i32 0, 1
-  ret i32 %t33
+  %t32 = load i1, ptr %t25
+  store i1 %t32, ptr %t24
+  br i1 %t32, label %L15, label %L16
+L15:
+  %t33 = load i32, ptr %t0
+  %t34 = load i32, ptr %t1
+  %t35 = icmp ne i32 %t33, %t34
+  store i1 %t35, ptr %t24
+  br label %L16
 L16:
-  %t34 = add i32 0, 0
-  ret i32 %t34
+  %t36 = load i1, ptr %t24
+  br i1 %t36, label %L17, label %L19
+L17:
+  %t37 = add i32 0, 1
+  ret i32 %t37
+L19:
+  %t38 = add i32 0, 0
+  ret i32 %t38
 }
 
 define internal void @proof0_summarize(ptr %p0, ptr %p1, i32 %p2, i32 %p3, i32 %p4) {

@@ -26,9 +26,9 @@ ac33b75daba31b20d6cd210d4ecbea9b  examples/const_generic.tv
 955ae80f5a0ab6639a71f4e64c9b573c  examples/dp_test.tv
 38c05a9bcef978eb049503f0092fca7c  examples/dynfield_eval.tv
 e0baf70ede6278fefb2a8e4047218f17  examples/dynfield_spike.tv
-199cdbdc4f1061d7db7df82ec5a8fb52  examples/dyn_fri_test.tv
+55768f943e55d4b170520761e8bef3e6  examples/dyn_fri_test.tv
 2a65a077d7fc61802e0d19dba4faacc8  examples/dyn_kernel_test.tv
-088a0cdcee9f2dce3bb1458513fa07ef  examples/dyn_merkle_test.tv
+b24c95c41cdf35e1ce6c1284ba84b440  examples/dyn_merkle_test.tv
 3808c86f03282ed23c194a367898a767  examples/dyn_mul_boundary_test.tv
 d4c2cbbe88903fd9e40deeb8c8480a80  examples/dyn_nested_test.tv
 975071046b4d50e1a51603edd5d686ec  examples/dyn_ntt_test.tv
@@ -252,8 +252,8 @@ c02fd8c9beb0cac8857930e1c4e88512  examples/zk_loop_test.tv
 30bc5c310c78feebcb296d0fe0599f8f  examples/zk_range_test.tv
 ec1dc0b21b1fc77121ce86759c556349  src/lib/codec/piecewise_codec.tv
 b37884ed581355fcfd3403557781d665  src/lib/core/poly_core.tv
-af15766bb58715e325b77e119dd8a911  src/lib/crypto/mds_check.tv
-1e26fb52fd55e5a9565dc36acf620a91  src/lib/crypto/ntt.tv
+6a1524c5e68f81cda133e410823409ac  src/lib/crypto/mds_check.tv
+30eacd2a439e229fbeb73dfbd199a785  src/lib/crypto/ntt.tv
 bf81ac51c7a126d2aa9daca92315f262  src/lib/crypto/poseidon2_wide.tv
 12c0ba2a5aa3c1485a209451ed244e65  src/lib/ecc/reed_solomon.tv
 b29682c0f7fb3a03806878e509aeb457  src/lib/ecc/rs_errdec.tv

@@ -20740,6 +20740,9 @@ fn pfor_alias_capture_origin(caps: *i32, cap: i32) -> i32 {
 }
 
 fn pfor_alias_origins_disjoint(a: i32, b: i32) -> i32 {
+    // Textual origins do not cover reassignments reached through a back edge.
+    // Nested loops must check current pointer ranges at runtime.
+    if g_loop_depth > 0 { return 0; }
     // Distinct live allocation objects cannot overlap. This proof assumes the
     // memory model's valid-pointer contract; UAF is undefined on compiled code.
     if a >= 3 && b == 1 { return 1; }
