@@ -1596,6 +1596,7 @@ let PFOR_THRESHOLD: i32 = 512;
 var g_pfor_workers: *i32 = null;    // flat array of worker records
 var g_pfor_woff: i32 = 0;          // write offset into g_pfor_workers
 var g_npfor_workers: i32 = 0;      // count of workers
+var g_pfor_fallback_depth: i32 = 0;
 var g_pfor_id: i32 = 0;            // unique id counter
 var g_pfor_emitted: i32 = 0;       // has runtime been emitted?
 var g_pfor64_emitted: i32 = 0;     // #54: lazy i64 dispatch runtime pair
@@ -20739,6 +20740,61 @@ fn pfor_alias_capture_origin(caps: *i32, cap: i32) -> i32 {
     return g_syms[si].ptr_provenance;
 }
 
+fn pfor_capture_storage_overlap(pf: *PForState, loaded: *i32,
+                               start_reg: i32, end_reg: i32, bw: i32) -> i32 {
+    var overlap: i32 = 0 - 1;
+    var start64: i32 = start_reg;
+    var end64: i32 = end_reg;
+    if bw == 32 {
+        start64 = ir_tmp(); end64 = ir_tmp();
+        ir_wr("  "); ir_wr_reg(start64); ir_wr(" = sext i32 ");
+        ir_wr_reg(start_reg); ir_wr(" to i64\n  "); ir_wr_reg(end64);
+        ir_wr(" = sext i32 "); ir_wr_reg(end_reg); ir_wr(" to i64\n");
+    }
+    var wi: i32 = 0;
+    while wi < pf.nwrites {
+        let rec: *i64 = &pf.writes[wi * 16];
+        var wcap: i32 = 0 - 1;
+        var ci: i32 = 0;
+        while ci < pf.ncaps {
+            if pf.caps[ci * 4] as i64 == rec[0] { wcap = ci; }
+            ci = ci + 1;
+        }
+        if wcap >= 0 {
+            ci = 0;
+            while ci < pf.ncaps {
+                let storage: i32 = pf.caps[ci * 4 + 3];
+                if storage == 1 || storage == 2 {
+                    if rec[1] != 1 || rec[3] != 0 {
+                        let forced: i32 = ir_tmp();
+                        ir_wr("  "); ir_wr_reg(forced); ir_wr(" = icmp eq i1 0, 0\n");
+                        return forced;
+                    }
+                    let written: PForAliasRange = pfor_alias_emit_range(loaded[wcap], rec,
+                        start64, end64, pf.caps[wcap * 4 + 1], bw);
+                    var address: i32 = pf.caps[ci * 4 + 2];
+                    if storage == 2 {
+                        address = ir_tmp();
+                        ir_wr("  "); ir_wr_reg(address); ir_wr(" = getelementptr i8, ptr @");
+                        ir_wr_sym(pf.caps[ci * 4]); ir_wr(", i64 0\n");
+                    }
+                    let base: i32 = ir_tmp();
+                    ir_wr("  "); ir_wr_reg(base); ir_wr(" = ptrtoint ptr ");
+                    ir_wr_reg(address); ir_wr(" to i64\n");
+                    let one: i32 = pfor_alias_const_i64(1);
+                    let bytes: i32 = emit_type_bytes(pf.caps[ci * 4 + 1], one);
+                    let end: PForAliasChecked = pfor_alias_checked_address(base, bytes);
+                    let captured: PForAliasRange = PForAliasRange { lo: base, hi: end.value, bad: end.bad };
+                    overlap = pfor_alias_or(overlap, pfor_alias_emit_overlap(written, captured));
+                }
+                ci = ci + 1;
+            }
+        }
+        wi = wi + 1;
+    }
+    return overlap;
+}
+
 fn pfor_alias_origins_disjoint(a: i32, b: i32) -> i32 {
     // Textual origins do not cover reassignments reached through a back edge.
     // Nested loops must check current pointer ranges at runtime.
@@ -21723,10 +21779,11 @@ fn codegen_stmt(stmt: i32) {
                 dispatch_ready = 1;
             }
         }
+        if g_pfor_fallback_depth > 0 { dispatch_ready = 0; }
         let caps: *i32 = worker_pf.caps;
 
         // Preserve admission records; the alias report observes later guards.
-        if g_pfor_report_mode == 1 && g_pfor_alias_report_mode == 0 {
+        if g_pfor_report_mode == 1 && g_pfor_alias_report_mode == 0 && g_pfor_fallback_depth == 0 {
             if legacy_disp == 0 && pf.independent == 1 && g_pf_reason == 0 {
                 if pf.ncaps == 0 {
                     g_pf_reason = PFR_NO_CAPTURES;
@@ -21750,7 +21807,7 @@ fn codegen_stmt(stmt: i32) {
         }
 
         // Evaluate range bounds (#54: the iterator ADOPTS the bound width).
-        if g_pfor_alias_report_mode == 1 && dispatch_ready == 0 {
+        if g_pfor_alias_report_mode == 1 && dispatch_ready == 0 && g_pfor_fallback_depth == 0 {
             pfor_alias_report(stmt, iter_name, 0, 0, 0 - 1);
         }
         // Prepeek picks the literal-emission context; the codegen'd types are
@@ -21786,6 +21843,8 @@ fn codegen_stmt(stmt: i32) {
             end_val.type_off, iter_w);
 
         // Emit parallel dispatch from the selected proof artifact.
+        var capture_serial: i32 = 0 - 1;
+        var capture_done: i32 = 0 - 1;
         if dispatch_ready == 1 {
             // Record deferred worker
             let wid: i32 = g_pfor_id;
@@ -21908,6 +21967,19 @@ fn codegen_stmt(stmt: i32) {
                 ir_wr("  store "); ir_wr_type(cap_type); ir_wr(" ");
                 ir_wr_reg(loaded); ir_wr(", ptr "); ir_wr_reg(gep); ir_wr("\n");
                 ci = ci + 1;
+            }
+
+            // Snapshot captures are valid only while their original storage is unchanged.
+            // Overlap must execute the original loop, not a worker with copied values.
+            let capture_overlap: i32 = pfor_capture_storage_overlap(worker_pf, cap_loaded,
+                start_reg, end_reg, bw);
+            if capture_overlap >= 0 {
+                capture_serial = ir_label(); capture_done = ir_label();
+                let capture_dispatch: i32 = ir_label();
+                ir_wr("  br i1 "); ir_wr_reg(capture_overlap);
+                ir_wr(", label %"); ir_wr_label(capture_serial);
+                ir_wr(", label %"); ir_wr_label(capture_dispatch); ir_wr("\n");
+                ir_wr_label_def(capture_dispatch);
             }
 
             // ALIAS0: checked half-open byte footprints for every written-array
@@ -22111,7 +22183,8 @@ fn codegen_stmt(stmt: i32) {
                 wi = wi + 1;
             }
             if g_pfor_alias_report_mode == 1 {
-                pfor_alias_report(stmt, iter_name, 1, alias_forced, alias_acc);
+                pfor_alias_report(stmt, iter_name, 1, alias_forced,
+                    pfor_alias_or(alias_acc, capture_overlap));
             }
             if alias_forced != 0 {
                 let forced: i32 = ir_tmp();
@@ -22183,7 +22256,9 @@ fn codegen_stmt(stmt: i32) {
                 }
             }
             if agx_shape != null { free(agx_shape); }
-            return;
+            if capture_serial < 0 { return; }
+            ir_wr("  br label %"); ir_wr_label(capture_done); ir_wr("\n");
+            ir_wr_label_def(capture_serial);
         }
 
         // Sequential loop (width-parametric; i32 byte-identical to before)
@@ -22224,7 +22299,15 @@ fn codegen_stmt(stmt: i32) {
         sym_push_scope();
         sym_add(iter_name, iter_w, iter_alloca, 1);
         g_block_terminated = 0;
+        let saved_clo_off: i32 = g_clo_off;
+        let saved_nclosures: i32 = g_nclosures;
+        if capture_done >= 0 { g_pfor_fallback_depth = g_pfor_fallback_depth + 1; }
         codegen_stmt(body_node);
+        if capture_done >= 0 {
+            g_pfor_fallback_depth = g_pfor_fallback_depth - 1;
+            // The deferred worker records these same closure literals once.
+            g_clo_off = saved_clo_off; g_nclosures = saved_nclosures;
+        }
         let body_term: i32 = g_block_terminated;
         sym_pop_scope();
         if body_term == 0 {
@@ -22247,6 +22330,10 @@ fn codegen_stmt(stmt: i32) {
         ir_wr_label_def(lbl_end);
         g_loop_depth = g_loop_depth - 1;
         g_block_terminated = 0;
+        if capture_done >= 0 {
+            ir_wr("  br label %"); ir_wr_label(capture_done); ir_wr("\n");
+            ir_wr_label_def(capture_done);
+        }
         return;
     }
 

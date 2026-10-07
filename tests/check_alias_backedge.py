@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='alias-backedge-') as tmp:
         report = [json.loads(line) for line in run(tvc, tv, '--pfor-alias-report').splitlines()]
         admitted = [row for row in report if row['admitted']]
         assert len(admitted) == 1, (mode, report)
-        assert admitted[0]['alias'] == ('disjoint' if mode == 'control' else 'checked'), (mode, admitted)
+        assert admitted[0]['alias'] == 'checked', (mode, admitted)
         run(tvc, tv, '-o', ir)
         text, count = re.subn(r'  call void @__parallel_for\(ptr @__pfor_worker_\d+,',
                              lambda m: '  call void @note_dispatch()\n' + m[0], ir.read_text())
