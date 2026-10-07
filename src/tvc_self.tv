@@ -19081,22 +19081,25 @@ fn proof0_c1_refuse(P: *PForProof0, reason: i32) {
     if P.c1_refusal == 0 { P.c1_refusal = reason; }
 }
 
-fn proof0_c1_expr_calls_name(node: i32, name: i32, depth: i32) -> i32 {
-    if node < 0 || node >= g_nnodes || depth > 128 { return 0; }
+fn proof0_c1_expr_calls_name(node: i32, name: i32, depth: i32, seen: *i32) -> i32 {
+    if depth > 128 { return 1; }
+    if node < 0 || node >= g_nnodes { return 0; }
     let kind: i32 = g_nodes[node].kind;
     if kind == AST_CALL {
         if g_nodes[node].name0 == name { return 1; }
         let fi: i32 = find_func_idx(g_nodes[node].name0);
-        if fi >= 0 && fi < g_nfuncs {
+        if fi >= 0 && fi < g_nfuncs && seen[fi] == 0 {
+            // Each callee body is explored once per target-name query.
+            seen[fi] = 1;
             let decl: i32 = g_funcs[fi].node;
             if decl > 0 && decl < g_nnodes
                 && proof0_c1_stmt_calls_name(
-                    g_nodes[decl].child0, name, depth + 1) == 1 { return 1; }
+                    g_nodes[decl].child0, name, depth + 1, seen) == 1 { return 1; }
         }
         var i: i32 = 0;
         while i < g_nodes[node].nargs {
             if proof0_c1_expr_calls_name(
-                    g_args[g_nodes[node].args_start + i], name, depth + 1) == 1 {
+                    g_args[g_nodes[node].args_start + i], name, depth + 1, seen) == 1 {
                 return 1;
             }
             i = i + 1;
@@ -19104,35 +19107,36 @@ fn proof0_c1_expr_calls_name(node: i32, name: i32, depth: i32) -> i32 {
         return 0;
     }
     if kind == AST_BINARY {
-        if proof0_c1_expr_calls_name(g_nodes[node].child0, name, depth + 1) == 1 {
+        if proof0_c1_expr_calls_name(g_nodes[node].child0, name, depth + 1, seen) == 1 {
             return 1;
         }
         return proof0_c1_expr_calls_name(
-            g_nodes[node].child1, name, depth + 1);
+            g_nodes[node].child1, name, depth + 1, seen);
     }
     if kind == AST_UNARY || kind == AST_CAST || kind == AST_QMARK
         || kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
         return proof0_c1_expr_calls_name(
-            g_nodes[node].child0, name, depth + 1);
+            g_nodes[node].child0, name, depth + 1, seen);
     }
     if kind == AST_INDEX {
-        if proof0_c1_expr_calls_name(g_nodes[node].child0, name, depth + 1) == 1 {
+        if proof0_c1_expr_calls_name(g_nodes[node].child0, name, depth + 1, seen) == 1 {
             return 1;
         }
         return proof0_c1_expr_calls_name(
-            g_nodes[node].child1, name, depth + 1);
+            g_nodes[node].child1, name, depth + 1, seen);
     }
     return 0;
 }
 
-fn proof0_c1_stmt_calls_name(stmt: i32, name: i32, depth: i32) -> i32 {
-    if stmt < 0 || stmt >= g_nnodes || depth > 128 { return 0; }
+fn proof0_c1_stmt_calls_name(stmt: i32, name: i32, depth: i32, seen: *i32) -> i32 {
+    if depth > 128 { return 1; }
+    if stmt < 0 || stmt >= g_nnodes { return 0; }
     let kind: i32 = g_nodes[stmt].kind;
     if kind == AST_BLOCK {
         var i: i32 = 0;
         while i < g_nodes[stmt].nargs {
             if proof0_c1_stmt_calls_name(
-                    g_args[g_nodes[stmt].args_start + i], name, depth + 1) == 1 {
+                    g_args[g_nodes[stmt].args_start + i], name, depth + 1, seen) == 1 {
                 return 1;
             }
             i = i + 1;
@@ -19140,16 +19144,16 @@ fn proof0_c1_stmt_calls_name(stmt: i32, name: i32, depth: i32) -> i32 {
         return 0;
     }
     if kind == AST_IF {
-        if proof0_c1_expr_calls_name(g_nodes[stmt].child0, name, depth + 1) == 1
+        if proof0_c1_expr_calls_name(g_nodes[stmt].child0, name, depth + 1, seen) == 1
             || proof0_c1_stmt_calls_name(
-                g_nodes[stmt].child1, name, depth + 1) == 1 { return 1; }
+                g_nodes[stmt].child1, name, depth + 1, seen) == 1 { return 1; }
         return proof0_c1_stmt_calls_name(
-            g_nodes[stmt].child2, name, depth + 1);
+            g_nodes[stmt].child2, name, depth + 1, seen);
     }
     if kind == AST_LET || kind == AST_ASSIGN || kind == AST_RETURN
         || kind == AST_EXPR_STMT {
         return proof0_c1_expr_calls_name(
-            g_nodes[stmt].child0, name, depth + 1);
+            g_nodes[stmt].child0, name, depth + 1, seen);
     }
     return 0;
 }
@@ -19228,7 +19232,13 @@ fn proof0_call_c1_inlineable(fi: i32) -> i32 {
     let decl: i32 = g_funcs[fi].node;
     if decl <= 0 || decl >= g_nnodes { return 0; }
     let body: i32 = g_nodes[decl].child0;
-    if proof0_c1_stmt_calls_name(body, g_funcs[fi].name, 0) == 1 { return 0; }
+    let seen: *i32 = alloc(g_nfuncs);
+    var i: i32 = 0;
+    while i < g_nfuncs { seen[i] = 0; i = i + 1; }
+    seen[fi] = 1;
+    let recursive: i32 = proof0_c1_stmt_calls_name(body, g_funcs[fi].name, 0, seen);
+    free(seen);
+    if recursive == 1 { return 0; }
     return proof0_c1_closure_shape(body, 0);
 }
 
