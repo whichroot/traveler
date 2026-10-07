@@ -9805,6 +9805,10 @@ fn resolve_type_sub(type_off: i32) -> i32 {
         }
         i = i + 1;
     }
+    if g_strings[type_off] == 102 && g_strings[type_off + 1] == 110
+        && g_strings[type_off + 2] == 40 {
+        return resolve_type_sub_fnptr(type_off);
+    }
     // Pointer match "*F" / "*Vec<T>": recurse on the pointee (nested generics
     // substitute too) and rebuild "*<resolved>" when changed.
     if g_strings[type_off] == 42 {
@@ -9995,6 +9999,50 @@ fn resolve_constexpr_sub(type_off: i32) -> i32 {
     }
     // Partially substituted: intern as-is.
     return str_intern(g_type_buf);
+}
+
+fn resolve_type_sub_fnptr(type_off: i32) -> i32 {
+    let params: *i32 = alloc(64);
+    var ret: i32 = NULL_STR;
+    let count: i32 = parse_fnptr_sig(type_off, params, &ret);
+    var changed: i32 = 0;
+    var size: i64 = 8 + (count as i64);
+    var i: i32 = 0;
+    while i < count {
+        let sub: i32 = resolve_type_sub(params[i]);
+        if sub != params[i] { changed = 1; }
+        params[i] = sub;
+        size = size + (str_len(&g_strings[sub]) as i64);
+        i = i + 1;
+    }
+    let ret_sub: i32 = resolve_type_sub(ret);
+    if ret_sub != ret { changed = 1; }
+    if changed == 0 { free(params); return type_off; }
+    if ret_sub != NULL_STR { size = size + (str_len(&g_strings[ret_sub]) as i64); }
+    let buf: *u8 = alloc(size);
+    buf[0] = 102; buf[1] = 110; buf[2] = 40;
+    var pos: i64 = 3;
+    i = 0;
+    while i < count {
+        if i > 0 { buf[pos] = 44; pos = pos + 1; }
+        var j: i32 = 0;
+        while g_strings[params[i] + j] != 0 {
+            buf[pos] = g_strings[params[i] + j]; pos = pos + 1; j = j + 1;
+        }
+        i = i + 1;
+    }
+    buf[pos] = 41; pos = pos + 1;
+    if ret_sub != NULL_STR {
+        buf[pos] = 45; buf[pos + 1] = 62; pos = pos + 2;
+        var j: i32 = 0;
+        while g_strings[ret_sub + j] != 0 {
+            buf[pos] = g_strings[ret_sub + j]; pos = pos + 1; j = j + 1;
+        }
+    }
+    buf[pos] = 0;
+    let result: i32 = str_intern(buf);
+    free(buf); free(params);
+    return result;
 }
 
 // Substitute generic params into a "Base<args>" application type. Without this
@@ -11444,10 +11492,19 @@ fn codegen_operator_overload(node: i32, mangled: i32, lhs_ty: i32) -> IRValue {
     return IRValue { reg: r, type_off: ret_ty };
 }
 
+fn fnptr_intern_part(type_off: i32, start: i32, end: i32) -> i32 {
+    let buf: *u8 = alloc((end - start + 1) as i64);
+    var i: i32 = start;
+    while i < end { buf[i - start] = g_strings[type_off + i]; i = i + 1; }
+    buf[end - start] = 0;
+    let result: i32 = str_intern(buf);
+    free(buf);
+    return result;
+}
+
 // Parse "fn(t0,t1)->ret": fills param_out, returns count, *ret_out gets the
 // return type (NULL_STR if none). Nesting-aware so generic-arg commas don't split.
 fn parse_fnptr_sig(type_off: i32, param_out: *i32, ret_out: *i32) -> i32 {
-    let s: *u8 = &g_strings[type_off];
     // Skip "fn("
     var i: i32 = 3;
     var nparams: i32 = 0;
@@ -11455,17 +11512,17 @@ fn parse_fnptr_sig(type_off: i32, param_out: *i32, ret_out: *i32) -> i32 {
     var depth: i32 = 0;
     var done: i32 = 0;
     while done == 0 {
-        let c: u8 = s[i];
+        let c: u8 = g_strings[type_off + i];
         if c == 0 { done = 1; }
         else if c == 60 || c == 40 || c == 91 { depth = depth + 1; i = i + 1; } // < ( [
-        else if c == 62 || c == 93 { depth = depth - 1; i = i + 1; }            // > ]
+        else if (c == 62 && g_strings[type_off + i - 1] != 45) || c == 93 {
+            depth = depth - 1; i = i + 1;
+        }
         else if c == 41 && depth == 0 {
             // closing ')' of the param list
             if i > arg_start {
-                let save: u8 = s[i];
-                g_strings[type_off + i] = 0;
-                param_out[nparams] = str_intern(&g_strings[type_off + arg_start]);
-                g_strings[type_off + i] = save;
+                if nparams >= 64 { arena_overflow("function pointer parameters", 64); }
+                param_out[nparams] = fnptr_intern_part(type_off, arg_start, i);
                 nparams = nparams + 1;
             }
             i = i + 1;
@@ -11473,10 +11530,8 @@ fn parse_fnptr_sig(type_off: i32, param_out: *i32, ret_out: *i32) -> i32 {
         }
         else if c == 41 { depth = depth - 1; i = i + 1; } // nested ')'
         else if c == 44 && depth == 0 {
-            let save: u8 = s[i];
-            g_strings[type_off + i] = 0;
-            param_out[nparams] = str_intern(&g_strings[type_off + arg_start]);
-            g_strings[type_off + i] = save;
+            if nparams >= 64 { arena_overflow("function pointer parameters", 64); }
+            param_out[nparams] = fnptr_intern_part(type_off, arg_start, i);
             nparams = nparams + 1;
             i = i + 1;
             arg_start = i;
@@ -11485,8 +11540,11 @@ fn parse_fnptr_sig(type_off: i32, param_out: *i32, ret_out: *i32) -> i32 {
     }
     // Return type: after "->" if present.
     ret_out[0] = NULL_STR;
-    if s[i] == 45 && s[i + 1] == 62 {
-        ret_out[0] = str_intern(&g_strings[type_off + i + 2]);
+    if g_strings[type_off + i] == 45 && g_strings[type_off + i + 1] == 62 {
+        let start: i32 = i + 2;
+        i = start;
+        while g_strings[type_off + i] != 0 { i = i + 1; }
+        ret_out[0] = fnptr_intern_part(type_off, start, i);
     }
     return nparams;
 }
@@ -33498,6 +33556,9 @@ fn codegen_program(prog: i32) {
         let decl: i32 = g_args[dbase + di];
         let dk: i32 = g_nodes[decl].kind;
         if dk == AST_FN_DECL || dk == AST_EXTERN_FN {
+            // Template types acquire layouts only after their parameters resolve.
+            let fi: i32 = find_func(g_nodes[decl].name0);
+            if fi >= 0 && g_funcs[fi].is_generic == 1 { di = di + 1; continue; }
             // Return type + parameter types.
             discover_struct_type(g_nodes[decl].name1);
             let pnp: i32 = g_nodes[decl].nargs;

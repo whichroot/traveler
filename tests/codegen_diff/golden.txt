@@ -84,11 +84,11 @@ ce534e48bbf03f5897ccaaaf783cbf55  examples/gfx_window.tv
 fb2649ffc3d6975c4377ffd0173e0601  examples/gpu_field_map.tv
 2b88770fd22f1ab78e13bcca9fab31e1  examples/grain_lfsr_test.tv
 5d22f1ed7654c40bc4f25e721cefdb4f  examples/grain_poseidon2_test.tv
-7a0b8389d06848ca7f7cdd4237a39b76  examples/hashmap_test.tv
+322eaf3f4cc264f609d5386d6813c968  examples/hashmap_test.tv
 4de0dba2047159404a919066c550a322  examples/i64min_print.tv
 7ead59b84225945811f9a9fea8d0384f  examples/ieee_decode_test.tv
 71441869fff5ddec46da0ecf4f709303  examples/import_test.tv
-c797dc957f35c69a0d71f0d2f59364b0  examples/import_vec_test.tv
+31aefc3d1d5f248d153aabfe606d16ef  examples/import_vec_test.tv
 a2b4a1593a00b8a13eef19d007c49f0c  examples/intern_stress.tv
 cb3cfffa39616b340d6db86affb8ed04  examples/int_match.tv
 3cef2ee5a9f6dcd45fe8179a864bceab  examples/ir_emitter.tv
@@ -99,7 +99,7 @@ eb25c83bb61a8d4b22cd81ed2e39e88c  examples/lnbounds_selftest.tv
 9f967b14302a3cc40e50a072b8d39607  examples/match_nested_scalar.tv
 d54a0a7052ca0c2e2ff466901732e5f0  examples/mds_check_test.tv
 42a6c3d77d9177d6fb0b53a1357f8912  examples/mds_live_test.tv
-330a3de122ebb2123c5c9852ab669db3  examples/mem_arena_pool.tv
+e8aa27537a7c45c7324346b03356c392  examples/mem_arena_pool.tv
 94516853dd3ee4c2b2b27afae0cc09eb  examples/merkle_test.tv
 2d40c6bbd275e37e2a4cea61eae996d6  examples/method_basics.tv
 712f84f34493e74edf69481bcd408541  examples/mini_lexer.tv
@@ -214,7 +214,7 @@ ec8182e2cfe8b7a6d2f42136281e3c9b  examples/tvc_lexer.tv
 1edfdf26ea31f371c2c6c993c1b4b020  examples/two_fields.tv
 6cb5c92ae77575e53f82ef0b8441e3d0  examples/unix_pair.tv
 759c8d8e3f29ef98a93d4f486f075a30  examples/vec_export_test.tv
-ec8c9f4cf39c65333964e73ffd131bf3  examples/vec_test.tv
+d547a7485fe13c6c475b1498e75d913f  examples/vec_test.tv
 e5a5ecf0ae4fdb776427b7e1260d123f  examples/verify_basics.tv
 133945c068774150bf03a23a7fcfd324  examples/wav_analyze.tv
 aaaa21d37b4d9f3ea4743c939835e0a8  examples/wav_compress.tv
