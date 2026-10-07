@@ -86,6 +86,7 @@ declare i32 @atoi(ptr)
 %LowVal = type { i32, i32 }
 %EvalVal = type { i32, i32, i64 }
 %EvFrame = type { ptr, ptr, ptr, ptr, i32, i32, ptr, i32, i32, i32, i32, i64 }
+%EvWideLayout = type { i8, i128 }
 
 
 ; --- parallel dispatch runtime (persistent pool) ---
@@ -198727,6 +198728,27 @@ L11:
   ret void
 }
 
+define internal i32 @lw_wide_align() {
+entry:
+  %t0 = alloca %EvWideLayout
+  %t6 = alloca %EvWideLayout
+  %t1 = add i8 0, 0
+  %t2 = getelementptr %EvWideLayout, ptr %t0, i32 0, i32 0
+  store i8 %t1, ptr %t2
+  %t3 = add i32 0, 0
+  %t4 = sext i32 %t3 to i128
+  %t5 = getelementptr %EvWideLayout, ptr %t0, i32 0, i32 1
+  store i128 %t4, ptr %t5
+  %t7 = load %EvWideLayout, ptr %t0
+  store %EvWideLayout %t7, ptr %t6
+  %t8 = getelementptr %EvWideLayout, ptr %t6, i32 0, i32 1
+  %t9 = ptrtoint ptr %t8 to i64
+  %t10 = ptrtoint ptr %t6 to i64
+  %t11 = sub i64 %t9, %t10
+  %t12 = trunc i64 %t11 to i32
+  ret i32 %t12
+}
+
 define internal i32 @lw_type_align(i32 %p0, i32 %p1, i32 %p2) {
 entry:
   %t0 = alloca i32
@@ -198735,72 +198757,92 @@ entry:
   store i32 %p1, ptr %t1
   %t2 = alloca i32
   store i32 %p2, ptr %t2
-  %t19 = alloca i32
-  %t37 = alloca i32
-  %t3 = load i32, ptr %t0
-  %t4 = call i32 @ev_type_is_ptrish(i32 %t3)
-  %t5 = add i32 0, 1
-  %t6 = icmp eq i32 %t4, %t5
-  br i1 %t6, label %L0, label %L2
+  %t3 = alloca i1
+  %t25 = alloca i32
+  %t43 = alloca i32
+  %t4 = load i32, ptr %t0
+  %t5 = call i32 @ev_type_is_ptrish(i32 %t4)
+  %t6 = add i32 0, 1
+  %t7 = icmp eq i32 %t5, %t6
+  store i1 %t7, ptr %t3
+  br i1 %t7, label %L1, label %L0
 L0:
-  %t7 = add i32 0, 8
-  ret i32 %t7
-L2:
   %t8 = load i32, ptr %t0
-  %t9 = call i32 @type_is_array(i32 %t8)
+  %t9 = call i32 @lw_is_fnptr(i32 %t8)
   %t10 = add i32 0, 1
   %t11 = icmp eq i32 %t9, %t10
-  br i1 %t11, label %L3, label %L5
-L3:
-  %t12 = load i32, ptr %t0
-  %t13 = call i32 @type_array_elem(i32 %t12)
-  %t14 = load i32, ptr %t1
-  %t15 = load i32, ptr %t2
-  %t16 = call i32 @lw_type_align(i32 %t13, i32 %t14, i32 %t15)
-  ret i32 %t16
+  store i1 %t11, ptr %t3
+  br label %L1
+L1:
+  %t12 = load i1, ptr %t3
+  br i1 %t12, label %L2, label %L4
+L2:
+  %t13 = add i32 0, 8
+  ret i32 %t13
+L4:
+  %t14 = load i32, ptr %t0
+  %t15 = call i32 @type_is_array(i32 %t14)
+  %t16 = add i32 0, 1
+  %t17 = icmp eq i32 %t15, %t16
+  br i1 %t17, label %L5, label %L7
 L5:
-  %t17 = load i32, ptr %t0
-  %t18 = call i32 @resolve_struct_type(i32 %t17)
-  store i32 %t18, ptr %t19
-  %t20 = load i32, ptr %t19
-  %t21 = add i32 0, 0
-  %t22 = icmp sge i32 %t20, %t21
-  br i1 %t22, label %L6, label %L8
-L6:
-  %t23 = load i32, ptr %t19
-  %t24 = load i32, ptr %t1
-  %t25 = load i32, ptr %t2
-  %t26 = call i32 @lw_struct_align(i32 %t23, i32 %t24, i32 %t25)
-  ret i32 %t26
+  %t18 = load i32, ptr %t0
+  %t19 = call i32 @type_array_elem(i32 %t18)
+  %t20 = load i32, ptr %t1
+  %t21 = load i32, ptr %t2
+  %t22 = call i32 @lw_type_align(i32 %t19, i32 %t20, i32 %t21)
+  ret i32 %t22
+L7:
+  %t23 = load i32, ptr %t0
+  %t24 = call i32 @resolve_struct_type(i32 %t23)
+  store i32 %t24, ptr %t25
+  %t26 = load i32, ptr %t25
+  %t27 = add i32 0, 0
+  %t28 = icmp sge i32 %t26, %t27
+  br i1 %t28, label %L8, label %L10
 L8:
-  %t27 = load i32, ptr %t0
-  %t28 = call i32 @resolve_enum_type(i32 %t27)
-  %t29 = add i32 0, 0
-  %t30 = icmp sge i32 %t28, %t29
-  br i1 %t30, label %L9, label %L11
-L9:
-  %t31 = add i32 0, 1
-  ret i32 %t31
+  %t29 = load i32, ptr %t25
+  %t30 = load i32, ptr %t1
+  %t31 = load i32, ptr %t2
+  %t32 = call i32 @lw_struct_align(i32 %t29, i32 %t30, i32 %t31)
+  ret i32 %t32
+L10:
+  %t33 = load i32, ptr %t0
+  %t34 = call i32 @resolve_enum_type(i32 %t33)
+  %t35 = add i32 0, 0
+  %t36 = icmp sge i32 %t34, %t35
+  br i1 %t36, label %L11, label %L13
 L11:
-  %t32 = load i32, ptr %t0
-  %t33 = load i32, ptr %t1
-  %t34 = load i32, ptr %t2
-  call void @lw_layout_check(i32 %t32, i32 %t33, i32 %t34)
-  %t35 = load i32, ptr %t0
-  %t36 = call i32 @type_bits(i32 %t35)
-  store i32 %t36, ptr %t37
-  %t38 = load i32, ptr %t37
-  %t39 = add i32 0, 8
-  %t40 = icmp sle i32 %t38, %t39
-  br i1 %t40, label %L12, label %L14
-L12:
-  %t41 = add i32 0, 1
-  ret i32 %t41
+  %t37 = add i32 0, 1
+  ret i32 %t37
+L13:
+  %t38 = load i32, ptr %t0
+  %t39 = load i32, ptr %t1
+  %t40 = load i32, ptr %t2
+  call void @lw_layout_check(i32 %t38, i32 %t39, i32 %t40)
+  %t41 = load i32, ptr %t0
+  %t42 = call i32 @type_bits(i32 %t41)
+  store i32 %t42, ptr %t43
+  %t44 = load i32, ptr %t43
+  %t45 = add i32 0, 8
+  %t46 = icmp sle i32 %t44, %t45
+  br i1 %t46, label %L14, label %L16
 L14:
-  %t42 = load i32, ptr %t37
-  %t43 = add i32 0, 8
-  %t44 = call i32 @__tv_checked_0_32(i32 %t42, i32 %t43)
-  ret i32 %t44
+  %t47 = add i32 0, 1
+  ret i32 %t47
+L16:
+  %t48 = load i32, ptr %t43
+  %t49 = add i32 0, 64
+  %t50 = icmp sgt i32 %t48, %t49
+  br i1 %t50, label %L17, label %L19
+L17:
+  %t51 = call i32 @lw_wide_align()
+  ret i32 %t51
+L19:
+  %t52 = load i32, ptr %t43
+  %t53 = add i32 0, 8
+  %t54 = call i32 @__tv_checked_0_32(i32 %t52, i32 %t53)
+  ret i32 %t54
 }
 
 define internal i32 @lw_type_size(i32 %p0, i32 %p1, i32 %p2) {
@@ -198811,83 +198853,95 @@ entry:
   store i32 %p1, ptr %t1
   %t2 = alloca i32
   store i32 %p2, ptr %t2
-  %t22 = alloca i32
-  %t32 = alloca i32
-  %t47 = alloca i32
-  %t3 = load i32, ptr %t0
-  %t4 = call i32 @ev_type_is_ptrish(i32 %t3)
-  %t5 = add i32 0, 1
-  %t6 = icmp eq i32 %t4, %t5
-  br i1 %t6, label %L0, label %L2
+  %t3 = alloca i1
+  %t28 = alloca i32
+  %t38 = alloca i32
+  %t53 = alloca i32
+  %t4 = load i32, ptr %t0
+  %t5 = call i32 @ev_type_is_ptrish(i32 %t4)
+  %t6 = add i32 0, 1
+  %t7 = icmp eq i32 %t5, %t6
+  store i1 %t7, ptr %t3
+  br i1 %t7, label %L1, label %L0
 L0:
-  %t7 = add i32 0, 8
-  ret i32 %t7
-L2:
   %t8 = load i32, ptr %t0
-  %t9 = call i32 @type_is_array(i32 %t8)
+  %t9 = call i32 @lw_is_fnptr(i32 %t8)
   %t10 = add i32 0, 1
   %t11 = icmp eq i32 %t9, %t10
-  br i1 %t11, label %L3, label %L5
-L3:
-  %t12 = load i32, ptr %t0
-  %t13 = call i32 @lw_array_n(i32 %t12)
+  store i1 %t11, ptr %t3
+  br label %L1
+L1:
+  %t12 = load i1, ptr %t3
+  br i1 %t12, label %L2, label %L4
+L2:
+  %t13 = add i32 0, 8
+  ret i32 %t13
+L4:
   %t14 = load i32, ptr %t0
-  %t15 = call i32 @type_array_elem(i32 %t14)
-  %t16 = load i32, ptr %t1
-  %t17 = load i32, ptr %t2
-  %t18 = call i32 @lw_type_size(i32 %t15, i32 %t16, i32 %t17)
-  %t19 = mul i32 %t13, %t18
-  ret i32 %t19
+  %t15 = call i32 @type_is_array(i32 %t14)
+  %t16 = add i32 0, 1
+  %t17 = icmp eq i32 %t15, %t16
+  br i1 %t17, label %L5, label %L7
 L5:
+  %t18 = load i32, ptr %t0
+  %t19 = call i32 @lw_array_n(i32 %t18)
   %t20 = load i32, ptr %t0
-  %t21 = call i32 @resolve_struct_type(i32 %t20)
-  store i32 %t21, ptr %t22
-  %t23 = load i32, ptr %t22
-  %t24 = add i32 0, 0
-  %t25 = icmp sge i32 %t23, %t24
-  br i1 %t25, label %L6, label %L8
-L6:
-  %t26 = load i32, ptr %t22
-  %t27 = load i32, ptr %t1
-  %t28 = load i32, ptr %t2
-  %t29 = call i32 @lw_struct_size(i32 %t26, i32 %t27, i32 %t28)
-  ret i32 %t29
+  %t21 = call i32 @type_array_elem(i32 %t20)
+  %t22 = load i32, ptr %t1
+  %t23 = load i32, ptr %t2
+  %t24 = call i32 @lw_type_size(i32 %t21, i32 %t22, i32 %t23)
+  %t25 = mul i32 %t19, %t24
+  ret i32 %t25
+L7:
+  %t26 = load i32, ptr %t0
+  %t27 = call i32 @resolve_struct_type(i32 %t26)
+  store i32 %t27, ptr %t28
+  %t29 = load i32, ptr %t28
+  %t30 = add i32 0, 0
+  %t31 = icmp sge i32 %t29, %t30
+  br i1 %t31, label %L8, label %L10
 L8:
-  %t30 = load i32, ptr %t0
-  %t31 = call i32 @resolve_enum_type(i32 %t30)
-  store i32 %t31, ptr %t32
-  %t33 = load i32, ptr %t32
-  %t34 = add i32 0, 0
-  %t35 = icmp sge i32 %t33, %t34
-  br i1 %t35, label %L9, label %L11
-L9:
-  %t36 = load i32, ptr %t32
-  %t37 = sext i32 %t36 to i64
-  %t38 = load ptr, ptr @g_enums
-  %t39 = getelementptr %EnumInfo, ptr %t38, i64 %t37
-  %t40 = getelementptr %EnumInfo, ptr %t39, i32 0, i32 3
-  %t41 = load i32, ptr %t40
-  ret i32 %t41
+  %t32 = load i32, ptr %t28
+  %t33 = load i32, ptr %t1
+  %t34 = load i32, ptr %t2
+  %t35 = call i32 @lw_struct_size(i32 %t32, i32 %t33, i32 %t34)
+  ret i32 %t35
+L10:
+  %t36 = load i32, ptr %t0
+  %t37 = call i32 @resolve_enum_type(i32 %t36)
+  store i32 %t37, ptr %t38
+  %t39 = load i32, ptr %t38
+  %t40 = add i32 0, 0
+  %t41 = icmp sge i32 %t39, %t40
+  br i1 %t41, label %L11, label %L13
 L11:
-  %t42 = load i32, ptr %t0
-  %t43 = load i32, ptr %t1
-  %t44 = load i32, ptr %t2
-  call void @lw_layout_check(i32 %t42, i32 %t43, i32 %t44)
-  %t45 = load i32, ptr %t0
-  %t46 = call i32 @type_bits(i32 %t45)
-  store i32 %t46, ptr %t47
-  %t48 = load i32, ptr %t47
-  %t49 = add i32 0, 8
-  %t50 = icmp sle i32 %t48, %t49
-  br i1 %t50, label %L12, label %L14
-L12:
-  %t51 = add i32 0, 1
-  ret i32 %t51
+  %t42 = load i32, ptr %t38
+  %t43 = sext i32 %t42 to i64
+  %t44 = load ptr, ptr @g_enums
+  %t45 = getelementptr %EnumInfo, ptr %t44, i64 %t43
+  %t46 = getelementptr %EnumInfo, ptr %t45, i32 0, i32 3
+  %t47 = load i32, ptr %t46
+  ret i32 %t47
+L13:
+  %t48 = load i32, ptr %t0
+  %t49 = load i32, ptr %t1
+  %t50 = load i32, ptr %t2
+  call void @lw_layout_check(i32 %t48, i32 %t49, i32 %t50)
+  %t51 = load i32, ptr %t0
+  %t52 = call i32 @type_bits(i32 %t51)
+  store i32 %t52, ptr %t53
+  %t54 = load i32, ptr %t53
+  %t55 = add i32 0, 8
+  %t56 = icmp sle i32 %t54, %t55
+  br i1 %t56, label %L14, label %L16
 L14:
-  %t52 = load i32, ptr %t47
-  %t53 = add i32 0, 8
-  %t54 = call i32 @__tv_checked_0_32(i32 %t52, i32 %t53)
-  ret i32 %t54
+  %t57 = add i32 0, 1
+  ret i32 %t57
+L16:
+  %t58 = load i32, ptr %t53
+  %t59 = add i32 0, 8
+  %t60 = call i32 @__tv_checked_0_32(i32 %t58, i32 %t59)
+  ret i32 %t60
 }
 
 define internal i32 @lw_alloc_stride(i32 %p0, i32 %p1, i32 %p2) {

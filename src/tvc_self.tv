@@ -34313,8 +34313,17 @@ fn lw_layout_check(t: i32, line: i32, col: i32) {
     }
 }
 
+struct EvWideLayout { prefix: u8, value: u128 }
+
+fn lw_wide_align() -> i32 {
+    var probe: EvWideLayout = EvWideLayout { prefix: 0, value: 0 as u128 };
+    // LLVM aligns wider integers like its largest specified integer type.
+    // Measure the host ABI rather than using the integer's storage width.
+    return ((&probe.value as u64) - (&probe as u64)) as i32;
+}
+
 fn lw_type_align(t: i32, line: i32, col: i32) -> i32 {
-    if ev_type_is_ptrish(t) == 1 { return 8; }
+    if ev_type_is_ptrish(t) == 1 || lw_is_fnptr(t) == 1 { return 8; }
     if type_is_array(t) == 1 { return lw_type_align(type_array_elem(t), line, col); }
     let si: i32 = resolve_struct_type(t);
     if si >= 0 { return lw_struct_align(si, line, col); }
@@ -34323,11 +34332,12 @@ fn lw_type_align(t: i32, line: i32, col: i32) -> i32 {
     lw_layout_check(t, line, col);
     let b: i32 = type_bits(t);
     if b <= 8 { return 1; }
+    if b > 64 { return lw_wide_align(); }
     return b / 8;
 }
 
 fn lw_type_size(t: i32, line: i32, col: i32) -> i32 {
-    if ev_type_is_ptrish(t) == 1 { return 8; }
+    if ev_type_is_ptrish(t) == 1 || lw_is_fnptr(t) == 1 { return 8; }
     if type_is_array(t) == 1 {
         return lw_array_n(t) * lw_type_size(type_array_elem(t), line, col);
     }
