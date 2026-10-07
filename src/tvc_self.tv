@@ -11666,9 +11666,25 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
     return nc;
 }
 
-// Codegen a closure literal. Allocates the stack env struct, stores captures,
-// records the deferred lifted-fn descriptor, and returns the env pointer typed
-// as the synthesized closure type "closure#N".
+fn ir_wr_closure_env(types: *i32, ncaps: i32, stride: i32) {
+    ir_wr("{ ");
+    if ncaps == 0 { ir_wr("i64"); }
+    var i: i32 = 0;
+    while i < ncaps {
+        if i > 0 { ir_wr(", "); }
+        let ft: i32 = resolve_type_sub(types[i * stride]);
+        let bits: i32 = type_bits(ft);
+        // Keep eight-byte scalar slots compatible with evaluator closure layout.
+        if (bits > 0 && bits <= 64) || ev_type_is_ptrish(ft) == 1
+            || lw_is_fnptr(ft) == 1 || type_is_closure(ft) == 1 { ir_wr("i64"); }
+        else { ir_wr_type(ft); }
+        i = i + 1;
+    }
+    ir_wr(" }");
+}
+
+// Snapshot captures into a stack environment and record its lifted function.
+// The returned environment pointer has the synthesized type "closure#N".
 fn codegen_closure(node: i32) -> IRValue {
     let clo_id: i32 = g_nodes[node].name2;
     let nparams: i32 = g_nodes[node].nargs;
@@ -11688,27 +11704,27 @@ fn codegen_closure(node: i32) -> IRValue {
     nbound_box[0] = nparams;
     let ncaps: i32 = clo_collect_caps(body, caps_name, caps_type, 0, bound, nbound_box);
 
-    // Allocate the env struct: [ncaps * 8 x i8] (8-byte slots, mirrors pfor).
-    var env_sz: i32 = ncaps * 8;
-    if env_sz == 0 { env_sz = 8; }   // avoid zero-size alloca; harmless slot
+    // LLVM lays out full-width fields, including aggregate padding and alignment.
     let env: i32 = ir_tmp();
     g_use_prelude = 1;
-    ir_wr("  "); ir_wr_reg(env); ir_wr(" = alloca [");
-    ir_wr_int(env_sz as i64); ir_wr(" x i8]\n");
+    ir_wr("  "); ir_wr_reg(env); ir_wr(" = alloca ");
+    ir_wr_closure_env(caps_type, ncaps, 1); ir_wr("\n");
     g_use_prelude = 0;
 
-    // Store each captured value into the env at offset ci*8.
+    // Store a value snapshot into each typed environment field.
     var ci: i32 = 0;
     while ci < ncaps {
         let cname: i32 = caps_name[ci];
         let ctype: i32 = caps_type[ci];
         let csi: i32 = sym_find(cname);
         let gep: i32 = ir_tmp();
-        ir_wr("  "); ir_wr_reg(gep); ir_wr(" = getelementptr i8, ptr ");
-        ir_wr_reg(env); ir_wr(", i64 "); ir_wr_int((ci * 8) as i64); ir_wr("\n");
+        ir_wr("  "); ir_wr_reg(gep); ir_wr(" = getelementptr ");
+        ir_wr_closure_env(caps_type, ncaps, 1); ir_wr(", ptr ");
+        ir_wr_reg(env); ir_wr(", i32 0, i32 "); ir_wr_int(ci as i64); ir_wr("\n");
         // Load the captured value (symbols are alloca-backed).
         var loaded: i32 = g_syms[csi].reg;
-        if g_syms[csi].is_alloca == 1 {
+        if g_syms[csi].is_alloca == 1 || (g_syms[csi].is_alloca == 0
+            && (type_is_poly(ctype) == 1 || type_is_register(ctype) == 1)) {
             loaded = ir_tmp();
             ir_wr("  "); ir_wr_reg(loaded); ir_wr(" = load ");
             ir_wr_type(ctype); ir_wr(", ptr "); ir_wr_reg(g_syms[csi].reg); ir_wr("\n");
@@ -31040,8 +31056,7 @@ fn emit_gpu_module() {
 }
 
 // ===== CLOSURE LIFTED-FN EMISSION (deferred) =====
-// @__closure_N(ptr %__env, <params>): reload captures from %__env by offset
-// (the pfor capture protocol), then run the body.
+// @__closure_N(ptr %__env, <params>) reloads typed environment fields.
 
 fn emit_closures() {
     var roff: i32 = g_clo_emit_off;
@@ -31100,15 +31115,17 @@ fn emit_closures() {
 
         sym_push_scope();
 
-        // Reload captures from %__env at offset ci*8 (mirror of the store site).
+        // Use the same LLVM field layout as the capture stores.
+        let env_types: *i32 = &g_closures[roff + 1];
         var ci: i32 = 0;
         while ci < ncaps {
             let cap_name: i32 = g_closures[roff];
             let cap_type: i32 = g_closures[roff + 1];
             roff = roff + 2;
             let gep: i32 = ir_tmp();
-            ir_wr("  "); ir_wr_reg(gep); ir_wr(" = getelementptr i8, ptr %__env, i64 ");
-            ir_wr_int((ci * 8) as i64); ir_wr("\n");
+            ir_wr("  "); ir_wr_reg(gep); ir_wr(" = getelementptr ");
+            ir_wr_closure_env(env_types, ncaps, 2); ir_wr(", ptr %__env, i32 0, i32 ");
+            ir_wr_int(ci as i64); ir_wr("\n");
             let loaded: i32 = ir_tmp();
             ir_wr("  "); ir_wr_reg(loaded); ir_wr(" = load ");
             ir_wr_type(cap_type); ir_wr(", ptr "); ir_wr_reg(gep); ir_wr("\n");
@@ -45871,9 +45888,7 @@ fn tp_lit_member(ty: *u8, k: i32) -> *u8 {
     var depth: i32 = 0;
     while i < n {
         let ch: i32 = ty[i];
-        if ch == 91 { depth = depth + 1; }
-        if ch == 93 { depth = depth - 1; }
-        if (ch == 44 && depth == 0) || ch == 125 {
+        if (ch == 44 || ch == 125) && depth == 0 {
             var s2: i32 = ps;
             var e2: i32 = i;
             while s2 < e2 && ty[s2] == 32 { s2 = s2 + 1; }
@@ -45882,6 +45897,9 @@ fn tp_lit_member(ty: *u8, k: i32) -> *u8 {
             idx = idx + 1;
             ps = i + 1;
         }
+        if ch == 125 && depth == 0 { break; }
+        if ch == 91 || ch == 123 || ch == 60 || ch == 40 { depth = depth + 1; }
+        if ch == 93 || ch == 125 || ch == 62 || ch == 41 { depth = depth - 1; }
         i = i + 1;
     }
     tp_die(ty);

@@ -14,9 +14,9 @@ d04f518b7bd97982f9b50931f1079b7d  examples/alloc_ptr_table.tv
 5377e0c4b4c106a01797761df8031519  examples/bool_branch.tv
 eb49739f5c18be6dba57819cb183da03  examples/builtin_shadow.tv
 16b4f04583b9d97d68e8b9d293b20e98  examples/cascade_shape.tv
-fae21b13bb92a90e2f6a66ff3ef66837  examples/closure_basics.tv
-0f2d4c14325ea91aa7532a404defafa5  examples/closure_eval.tv
-7fcf54e56780ebbc31da88e1fe10bc20  examples/closure_prove_through.tv
+53f5f7e7cb43cd986f889ae979d696b9  examples/closure_basics.tv
+7a2fa5edac400234e1e6f90d052eec56  examples/closure_eval.tv
+b7b45fe611b7142da8fd9d87f0a7ece1  examples/closure_prove_through.tv
 6045af3b0d0338a2698b70578781998c  examples/compare_let.tv
 ac33b75daba31b20d6cd210d4ecbea9b  examples/const_generic.tv
 06dd4885fcf9923b3154cd1fe6d0352a  examples/convergence_test.tv
