@@ -23944,6 +23944,12 @@ fn emit_pfor_workers() {
         let lbl_incr: i32 = ir_label();
         let lbl_end: i32 = ir_label();
 
+        // Buffer the loop so its allocation prelude stays in the entry block.
+        // Initialization stores remain in the body and execute each iteration.
+        g_body_len = 0;
+        g_prelude_len = 0;
+        g_body_mode = 1;
+        g_use_prelude = 0;
         ir_wr("  br label %"); ir_wr_label(lbl_cond); ir_wr("\n");
 
         // Condition
@@ -23968,10 +23974,6 @@ fn emit_pfor_workers() {
         g_loop_cond_labels[g_loop_depth] = lbl_incr;
         g_loop_depth = g_loop_depth + 1;
 
-        // Enable body buffering for internal allocas
-        g_body_len = 0;
-        g_prelude_len = 0;
-        g_body_mode = 1;
         g_block_terminated = 0;
 
         let stream_count: i64 = g_stream_store_count;

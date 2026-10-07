@@ -126924,11 +126924,11 @@ entry:
   %t291 = alloca i32
   %t293 = alloca i32
   %t295 = alloca i32
-  %t301 = alloca i32
-  %t310 = alloca i32
-  %t350 = alloca i64
-  %t374 = alloca i32
-  %t383 = alloca i32
+  %t305 = alloca i32
+  %t314 = alloca i32
+  %t351 = alloca i64
+  %t375 = alloca i32
+  %t384 = alloca i32
   %t0 = load i32, ptr @g_pfor_emit_roff
   store i32 %t0, ptr %t1
   %t2 = load i32, ptr @g_pfor_emit_w
@@ -127352,233 +127352,235 @@ L11:
   store i32 %t292, ptr %t293
   %t294 = call i32 @ir_label()
   store i32 %t294, ptr %t295
-  %t296 = getelementptr [13 x i8], ptr @.str.5881, i32 0, i32 0
-  call void @ir_wr(ptr %t296)
-  %t297 = load i32, ptr %t289
-  call void @ir_wr_label(i32 %t297)
-  %t298 = getelementptr [2 x i8], ptr @.str.5882, i32 0, i32 0
-  call void @ir_wr(ptr %t298)
-  %t299 = load i32, ptr %t289
-  call void @ir_wr_label_def(i32 %t299)
-  %t300 = call i32 @ir_tmp()
-  store i32 %t300, ptr %t301
-  %t302 = getelementptr [3 x i8], ptr @.str.5883, i32 0, i32 0
+  %t296 = add i32 0, 0
+  store i32 %t296, ptr @g_body_len
+  %t297 = add i32 0, 0
+  store i32 %t297, ptr @g_prelude_len
+  %t298 = add i32 0, 1
+  store i32 %t298, ptr @g_body_mode
+  %t299 = add i32 0, 0
+  store i32 %t299, ptr @g_use_prelude
+  %t300 = getelementptr [13 x i8], ptr @.str.5881, i32 0, i32 0
+  call void @ir_wr(ptr %t300)
+  %t301 = load i32, ptr %t289
+  call void @ir_wr_label(i32 %t301)
+  %t302 = getelementptr [2 x i8], ptr @.str.5882, i32 0, i32 0
   call void @ir_wr(ptr %t302)
-  %t303 = load i32, ptr %t301
-  call void @ir_wr_reg(i32 %t303)
-  %t304 = getelementptr [9 x i8], ptr @.str.5884, i32 0, i32 0
-  call void @ir_wr(ptr %t304)
-  %t305 = load i32, ptr %t66
-  call void @ir_wr_type(i32 %t305)
-  %t306 = getelementptr [7 x i8], ptr @.str.5885, i32 0, i32 0
+  %t303 = load i32, ptr %t289
+  call void @ir_wr_label_def(i32 %t303)
+  %t304 = call i32 @ir_tmp()
+  store i32 %t304, ptr %t305
+  %t306 = getelementptr [3 x i8], ptr @.str.5883, i32 0, i32 0
   call void @ir_wr(ptr %t306)
-  %t307 = load i32, ptr %t257
+  %t307 = load i32, ptr %t305
   call void @ir_wr_reg(i32 %t307)
-  %t308 = getelementptr [2 x i8], ptr @.str.5886, i32 0, i32 0
+  %t308 = getelementptr [9 x i8], ptr @.str.5884, i32 0, i32 0
   call void @ir_wr(ptr %t308)
-  %t309 = call i32 @ir_tmp()
-  store i32 %t309, ptr %t310
-  %t311 = getelementptr [3 x i8], ptr @.str.5887, i32 0, i32 0
-  call void @ir_wr(ptr %t311)
-  %t312 = load i32, ptr %t310
-  call void @ir_wr_reg(i32 %t312)
-  %t313 = getelementptr [13 x i8], ptr @.str.5888, i32 0, i32 0
-  call void @ir_wr(ptr %t313)
-  %t314 = load i32, ptr %t66
-  call void @ir_wr_type(i32 %t314)
-  %t315 = getelementptr [2 x i8], ptr @.str.5889, i32 0, i32 0
+  %t309 = load i32, ptr %t66
+  call void @ir_wr_type(i32 %t309)
+  %t310 = getelementptr [7 x i8], ptr @.str.5885, i32 0, i32 0
+  call void @ir_wr(ptr %t310)
+  %t311 = load i32, ptr %t257
+  call void @ir_wr_reg(i32 %t311)
+  %t312 = getelementptr [2 x i8], ptr @.str.5886, i32 0, i32 0
+  call void @ir_wr(ptr %t312)
+  %t313 = call i32 @ir_tmp()
+  store i32 %t313, ptr %t314
+  %t315 = getelementptr [3 x i8], ptr @.str.5887, i32 0, i32 0
   call void @ir_wr(ptr %t315)
-  %t316 = load i32, ptr %t301
+  %t316 = load i32, ptr %t314
   call void @ir_wr_reg(i32 %t316)
-  %t317 = getelementptr [3 x i8], ptr @.str.5890, i32 0, i32 0
+  %t317 = getelementptr [13 x i8], ptr @.str.5888, i32 0, i32 0
   call void @ir_wr(ptr %t317)
-  %t318 = load i32, ptr %t280
-  call void @ir_wr_reg(i32 %t318)
-  %t319 = getelementptr [2 x i8], ptr @.str.5891, i32 0, i32 0
+  %t318 = load i32, ptr %t66
+  call void @ir_wr_type(i32 %t318)
+  %t319 = getelementptr [2 x i8], ptr @.str.5889, i32 0, i32 0
   call void @ir_wr(ptr %t319)
-  %t320 = getelementptr [9 x i8], ptr @.str.5892, i32 0, i32 0
-  call void @ir_wr(ptr %t320)
-  %t321 = load i32, ptr %t310
-  call void @ir_wr_reg(i32 %t321)
-  %t322 = getelementptr [10 x i8], ptr @.str.5893, i32 0, i32 0
-  call void @ir_wr(ptr %t322)
-  %t323 = load i32, ptr %t291
-  call void @ir_wr_label(i32 %t323)
-  %t324 = getelementptr [10 x i8], ptr @.str.5894, i32 0, i32 0
+  %t320 = load i32, ptr %t305
+  call void @ir_wr_reg(i32 %t320)
+  %t321 = getelementptr [3 x i8], ptr @.str.5890, i32 0, i32 0
+  call void @ir_wr(ptr %t321)
+  %t322 = load i32, ptr %t280
+  call void @ir_wr_reg(i32 %t322)
+  %t323 = getelementptr [2 x i8], ptr @.str.5891, i32 0, i32 0
+  call void @ir_wr(ptr %t323)
+  %t324 = getelementptr [9 x i8], ptr @.str.5892, i32 0, i32 0
   call void @ir_wr(ptr %t324)
-  %t325 = load i32, ptr %t295
-  call void @ir_wr_label(i32 %t325)
-  %t326 = getelementptr [2 x i8], ptr @.str.5895, i32 0, i32 0
+  %t325 = load i32, ptr %t314
+  call void @ir_wr_reg(i32 %t325)
+  %t326 = getelementptr [10 x i8], ptr @.str.5893, i32 0, i32 0
   call void @ir_wr(ptr %t326)
   %t327 = load i32, ptr %t291
-  call void @ir_wr_label_def(i32 %t327)
-  %t328 = load i32, ptr %t28
-  %t329 = load i32, ptr %t66
-  %t330 = load i32, ptr %t257
-  %t331 = add i32 0, 1
-  call void @sym_add(i32 %t328, i32 %t329, i32 %t330, i32 %t331)
-  %t332 = load i32, ptr @g_loop_depth
-  %t333 = sext i32 %t332 to i64
-  %t334 = load ptr, ptr @g_loop_end_labels
-  %t335 = getelementptr i32, ptr %t334, i64 %t333
-  %t336 = load i32, ptr %t295
-  store i32 %t336, ptr %t335
-  %t337 = load i32, ptr @g_loop_depth
-  %t338 = sext i32 %t337 to i64
-  %t339 = load ptr, ptr @g_loop_cond_labels
-  %t340 = getelementptr i32, ptr %t339, i64 %t338
-  %t341 = load i32, ptr %t293
-  store i32 %t341, ptr %t340
-  %t342 = load i32, ptr @g_loop_depth
-  %t343 = add i32 0, 1
-  %t344 = add i32 %t342, %t343
-  store i32 %t344, ptr @g_loop_depth
-  %t345 = add i32 0, 0
-  store i32 %t345, ptr @g_body_len
-  %t346 = add i32 0, 0
-  store i32 %t346, ptr @g_prelude_len
+  call void @ir_wr_label(i32 %t327)
+  %t328 = getelementptr [10 x i8], ptr @.str.5894, i32 0, i32 0
+  call void @ir_wr(ptr %t328)
+  %t329 = load i32, ptr %t295
+  call void @ir_wr_label(i32 %t329)
+  %t330 = getelementptr [2 x i8], ptr @.str.5895, i32 0, i32 0
+  call void @ir_wr(ptr %t330)
+  %t331 = load i32, ptr %t291
+  call void @ir_wr_label_def(i32 %t331)
+  %t332 = load i32, ptr %t28
+  %t333 = load i32, ptr %t66
+  %t334 = load i32, ptr %t257
+  %t335 = add i32 0, 1
+  call void @sym_add(i32 %t332, i32 %t333, i32 %t334, i32 %t335)
+  %t336 = load i32, ptr @g_loop_depth
+  %t337 = sext i32 %t336 to i64
+  %t338 = load ptr, ptr @g_loop_end_labels
+  %t339 = getelementptr i32, ptr %t338, i64 %t337
+  %t340 = load i32, ptr %t295
+  store i32 %t340, ptr %t339
+  %t341 = load i32, ptr @g_loop_depth
+  %t342 = sext i32 %t341 to i64
+  %t343 = load ptr, ptr @g_loop_cond_labels
+  %t344 = getelementptr i32, ptr %t343, i64 %t342
+  %t345 = load i32, ptr %t293
+  store i32 %t345, ptr %t344
+  %t346 = load i32, ptr @g_loop_depth
   %t347 = add i32 0, 1
-  store i32 %t347, ptr @g_body_mode
-  %t348 = add i32 0, 0
-  store i32 %t348, ptr @g_block_terminated
-  %t349 = load i64, ptr @g_stream_store_count
-  store i64 %t349, ptr %t350
-  %t351 = load i32, ptr %t20
-  call void @codegen_stmt(i32 %t351)
-  %t352 = load i32, ptr @g_loop_depth
-  %t353 = add i32 0, 1
-  %t354 = sub i32 %t352, %t353
-  store i32 %t354, ptr @g_loop_depth
-  %t355 = add i32 0, 0
-  store i32 %t355, ptr @g_body_mode
-  %t356 = load i32, ptr @g_prelude_len
-  %t357 = add i32 0, 0
-  %t358 = icmp sgt i32 %t356, %t357
-  br i1 %t358, label %L12, label %L14
+  %t348 = add i32 %t346, %t347
+  store i32 %t348, ptr @g_loop_depth
+  %t349 = add i32 0, 0
+  store i32 %t349, ptr @g_block_terminated
+  %t350 = load i64, ptr @g_stream_store_count
+  store i64 %t350, ptr %t351
+  %t352 = load i32, ptr %t20
+  call void @codegen_stmt(i32 %t352)
+  %t353 = load i32, ptr @g_loop_depth
+  %t354 = add i32 0, 1
+  %t355 = sub i32 %t353, %t354
+  store i32 %t355, ptr @g_loop_depth
+  %t356 = add i32 0, 0
+  store i32 %t356, ptr @g_body_mode
+  %t357 = load i32, ptr @g_prelude_len
+  %t358 = add i32 0, 0
+  %t359 = icmp sgt i32 %t357, %t358
+  br i1 %t359, label %L12, label %L14
 L12:
-  %t359 = load ptr, ptr @g_prelude
-  %t360 = load i32, ptr @g_prelude_len
-  call void @ir_write_bytes(ptr %t359, i32 %t360)
+  %t360 = load ptr, ptr @g_prelude
+  %t361 = load i32, ptr @g_prelude_len
+  call void @ir_write_bytes(ptr %t360, i32 %t361)
   br label %L14
 L14:
-  %t361 = load i32, ptr @g_body_len
-  %t362 = add i32 0, 0
-  %t363 = icmp sgt i32 %t361, %t362
-  br i1 %t363, label %L15, label %L17
+  %t362 = load i32, ptr @g_body_len
+  %t363 = add i32 0, 0
+  %t364 = icmp sgt i32 %t362, %t363
+  br i1 %t364, label %L15, label %L17
 L15:
-  %t364 = load ptr, ptr @g_body_buf
-  %t365 = load i32, ptr @g_body_len
-  call void @ir_write_bytes(ptr %t364, i32 %t365)
+  %t365 = load ptr, ptr @g_body_buf
+  %t366 = load i32, ptr @g_body_len
+  call void @ir_write_bytes(ptr %t365, i32 %t366)
   br label %L17
 L17:
-  %t366 = load i32, ptr @g_block_terminated
-  %t367 = add i32 0, 0
-  %t368 = icmp eq i32 %t366, %t367
-  br i1 %t368, label %L18, label %L20
+  %t367 = load i32, ptr @g_block_terminated
+  %t368 = add i32 0, 0
+  %t369 = icmp eq i32 %t367, %t368
+  br i1 %t369, label %L18, label %L20
 L18:
-  %t369 = getelementptr [13 x i8], ptr @.str.5896, i32 0, i32 0
-  call void @ir_wr(ptr %t369)
-  %t370 = load i32, ptr %t293
-  call void @ir_wr_label(i32 %t370)
-  %t371 = getelementptr [2 x i8], ptr @.str.5897, i32 0, i32 0
-  call void @ir_wr(ptr %t371)
+  %t370 = getelementptr [13 x i8], ptr @.str.5896, i32 0, i32 0
+  call void @ir_wr(ptr %t370)
+  %t371 = load i32, ptr %t293
+  call void @ir_wr_label(i32 %t371)
+  %t372 = getelementptr [2 x i8], ptr @.str.5897, i32 0, i32 0
+  call void @ir_wr(ptr %t372)
   br label %L20
 L20:
-  %t372 = load i32, ptr %t293
-  call void @ir_wr_label_def(i32 %t372)
-  %t373 = call i32 @ir_tmp()
-  store i32 %t373, ptr %t374
-  %t375 = getelementptr [3 x i8], ptr @.str.5898, i32 0, i32 0
-  call void @ir_wr(ptr %t375)
-  %t376 = load i32, ptr %t374
-  call void @ir_wr_reg(i32 %t376)
-  %t377 = getelementptr [9 x i8], ptr @.str.5899, i32 0, i32 0
-  call void @ir_wr(ptr %t377)
-  %t378 = load i32, ptr %t66
-  call void @ir_wr_type(i32 %t378)
-  %t379 = getelementptr [7 x i8], ptr @.str.5900, i32 0, i32 0
-  call void @ir_wr(ptr %t379)
-  %t380 = load i32, ptr %t257
-  call void @ir_wr_reg(i32 %t380)
-  %t381 = getelementptr [2 x i8], ptr @.str.5901, i32 0, i32 0
-  call void @ir_wr(ptr %t381)
-  %t382 = call i32 @ir_tmp()
-  store i32 %t382, ptr %t383
-  %t384 = getelementptr [3 x i8], ptr @.str.5902, i32 0, i32 0
-  call void @ir_wr(ptr %t384)
-  %t385 = load i32, ptr %t383
-  call void @ir_wr_reg(i32 %t385)
-  %t386 = getelementptr [8 x i8], ptr @.str.5903, i32 0, i32 0
-  call void @ir_wr(ptr %t386)
-  %t387 = load i32, ptr %t66
-  call void @ir_wr_type(i32 %t387)
-  %t388 = getelementptr [2 x i8], ptr @.str.5904, i32 0, i32 0
-  call void @ir_wr(ptr %t388)
-  %t389 = load i32, ptr %t374
-  call void @ir_wr_reg(i32 %t389)
-  %t390 = getelementptr [5 x i8], ptr @.str.5905, i32 0, i32 0
-  call void @ir_wr(ptr %t390)
-  %t391 = getelementptr [9 x i8], ptr @.str.5906, i32 0, i32 0
+  %t373 = load i32, ptr %t293
+  call void @ir_wr_label_def(i32 %t373)
+  %t374 = call i32 @ir_tmp()
+  store i32 %t374, ptr %t375
+  %t376 = getelementptr [3 x i8], ptr @.str.5898, i32 0, i32 0
+  call void @ir_wr(ptr %t376)
+  %t377 = load i32, ptr %t375
+  call void @ir_wr_reg(i32 %t377)
+  %t378 = getelementptr [9 x i8], ptr @.str.5899, i32 0, i32 0
+  call void @ir_wr(ptr %t378)
+  %t379 = load i32, ptr %t66
+  call void @ir_wr_type(i32 %t379)
+  %t380 = getelementptr [7 x i8], ptr @.str.5900, i32 0, i32 0
+  call void @ir_wr(ptr %t380)
+  %t381 = load i32, ptr %t257
+  call void @ir_wr_reg(i32 %t381)
+  %t382 = getelementptr [2 x i8], ptr @.str.5901, i32 0, i32 0
+  call void @ir_wr(ptr %t382)
+  %t383 = call i32 @ir_tmp()
+  store i32 %t383, ptr %t384
+  %t385 = getelementptr [3 x i8], ptr @.str.5902, i32 0, i32 0
+  call void @ir_wr(ptr %t385)
+  %t386 = load i32, ptr %t384
+  call void @ir_wr_reg(i32 %t386)
+  %t387 = getelementptr [8 x i8], ptr @.str.5903, i32 0, i32 0
+  call void @ir_wr(ptr %t387)
+  %t388 = load i32, ptr %t66
+  call void @ir_wr_type(i32 %t388)
+  %t389 = getelementptr [2 x i8], ptr @.str.5904, i32 0, i32 0
+  call void @ir_wr(ptr %t389)
+  %t390 = load i32, ptr %t375
+  call void @ir_wr_reg(i32 %t390)
+  %t391 = getelementptr [5 x i8], ptr @.str.5905, i32 0, i32 0
   call void @ir_wr(ptr %t391)
-  %t392 = load i32, ptr %t66
-  call void @ir_wr_type(i32 %t392)
-  %t393 = getelementptr [2 x i8], ptr @.str.5907, i32 0, i32 0
-  call void @ir_wr(ptr %t393)
-  %t394 = load i32, ptr %t383
-  call void @ir_wr_reg(i32 %t394)
-  %t395 = getelementptr [7 x i8], ptr @.str.5908, i32 0, i32 0
-  call void @ir_wr(ptr %t395)
-  %t396 = load i32, ptr %t257
-  call void @ir_wr_reg(i32 %t396)
-  %t397 = getelementptr [2 x i8], ptr @.str.5909, i32 0, i32 0
-  call void @ir_wr(ptr %t397)
-  %t398 = getelementptr [13 x i8], ptr @.str.5910, i32 0, i32 0
+  %t392 = getelementptr [9 x i8], ptr @.str.5906, i32 0, i32 0
+  call void @ir_wr(ptr %t392)
+  %t393 = load i32, ptr %t66
+  call void @ir_wr_type(i32 %t393)
+  %t394 = getelementptr [2 x i8], ptr @.str.5907, i32 0, i32 0
+  call void @ir_wr(ptr %t394)
+  %t395 = load i32, ptr %t384
+  call void @ir_wr_reg(i32 %t395)
+  %t396 = getelementptr [7 x i8], ptr @.str.5908, i32 0, i32 0
+  call void @ir_wr(ptr %t396)
+  %t397 = load i32, ptr %t257
+  call void @ir_wr_reg(i32 %t397)
+  %t398 = getelementptr [2 x i8], ptr @.str.5909, i32 0, i32 0
   call void @ir_wr(ptr %t398)
-  %t399 = load i32, ptr %t289
-  call void @ir_wr_label(i32 %t399)
-  %t400 = getelementptr [2 x i8], ptr @.str.5911, i32 0, i32 0
-  call void @ir_wr(ptr %t400)
-  %t401 = load i32, ptr %t295
-  call void @ir_wr_label_def(i32 %t401)
+  %t399 = getelementptr [13 x i8], ptr @.str.5910, i32 0, i32 0
+  call void @ir_wr(ptr %t399)
+  %t400 = load i32, ptr %t289
+  call void @ir_wr_label(i32 %t400)
+  %t401 = getelementptr [2 x i8], ptr @.str.5911, i32 0, i32 0
+  call void @ir_wr(ptr %t401)
+  %t402 = load i32, ptr %t295
+  call void @ir_wr_label_def(i32 %t402)
   call void @sym_pop_scope()
-  %t402 = load i64, ptr @g_stream_store_count
-  %t403 = load i64, ptr %t350
-  %t404 = icmp ne i64 %t402, %t403
-  br i1 %t404, label %L21, label %L23
+  %t403 = load i64, ptr @g_stream_store_count
+  %t404 = load i64, ptr %t351
+  %t405 = icmp ne i64 %t403, %t404
+  br i1 %t405, label %L21, label %L23
 L21:
   call void @emit_stream_store_fence()
   br label %L23
 L23:
-  %t405 = getelementptr [14 x i8], ptr @.str.5912, i32 0, i32 0
-  call void @ir_wr(ptr %t405)
-  %t406 = load i32, ptr %t109
-  store i32 %t406, ptr @g_tmp
-  %t407 = load i32, ptr %t111
-  store i32 %t407, ptr @g_label
-  %t408 = load i32, ptr %t113
-  store i32 %t408, ptr @g_block_terminated
-  %t409 = load i32, ptr %t115
-  store i32 %t409, ptr @g_body_mode
-  %t410 = load i32, ptr %t117
-  store i32 %t410, ptr @g_body_len
-  %t411 = load i32, ptr %t119
-  store i32 %t411, ptr @g_prelude_len
-  %t412 = load i32, ptr %t121
-  store i32 %t412, ptr @g_use_prelude
-  %t413 = load i32, ptr %t123
-  store i32 %t413, ptr @g_cur_fn
-  %t414 = load i32, ptr %t75
-  store i32 %t414, ptr @g_gen_nsub
-  %t415 = load i32, ptr %t3
-  %t416 = add i32 0, 1
-  %t417 = add i32 %t415, %t416
-  store i32 %t417, ptr %t3
+  %t406 = getelementptr [14 x i8], ptr @.str.5912, i32 0, i32 0
+  call void @ir_wr(ptr %t406)
+  %t407 = load i32, ptr %t109
+  store i32 %t407, ptr @g_tmp
+  %t408 = load i32, ptr %t111
+  store i32 %t408, ptr @g_label
+  %t409 = load i32, ptr %t113
+  store i32 %t409, ptr @g_block_terminated
+  %t410 = load i32, ptr %t115
+  store i32 %t410, ptr @g_body_mode
+  %t411 = load i32, ptr %t117
+  store i32 %t411, ptr @g_body_len
+  %t412 = load i32, ptr %t119
+  store i32 %t412, ptr @g_prelude_len
+  %t413 = load i32, ptr %t121
+  store i32 %t413, ptr @g_use_prelude
+  %t414 = load i32, ptr %t123
+  store i32 %t414, ptr @g_cur_fn
+  %t415 = load i32, ptr %t75
+  store i32 %t415, ptr @g_gen_nsub
+  %t416 = load i32, ptr %t3
+  %t417 = add i32 0, 1
+  %t418 = add i32 %t416, %t417
+  store i32 %t418, ptr %t3
   br label %L0
 L2:
-  %t418 = load i32, ptr %t3
-  store i32 %t418, ptr @g_pfor_emit_w
-  %t419 = load i32, ptr %t1
-  store i32 %t419, ptr @g_pfor_emit_roff
+  %t419 = load i32, ptr %t3
+  store i32 %t419, ptr @g_pfor_emit_w
+  %t420 = load i32, ptr %t1
+  store i32 %t420, ptr @g_pfor_emit_roff
   ret void
 }
 
