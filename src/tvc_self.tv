@@ -22450,6 +22450,10 @@ fn codegen_stmt(stmt: i32) {
 
     // ---- Break ----
     if kind == AST_BREAK {
+        if g_loop_depth == 0 {
+            diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col, "break outside a loop");
+            exit(1);
+        }
         ir_wr("  br label %"); ir_wr_label(g_loop_end_labels[g_loop_depth - 1]);
         ir_wr("\n");
         g_block_terminated = 1;
@@ -22458,6 +22462,10 @@ fn codegen_stmt(stmt: i32) {
 
     // ---- Continue ----
     if kind == AST_CONTINUE {
+        if g_loop_depth == 0 {
+            diag_error_at(g_nodes[stmt].line, g_nodes[stmt].col, "continue outside a loop");
+            exit(1);
+        }
         ir_wr("  br label %"); ir_wr_label(g_loop_cond_labels[g_loop_depth - 1]);
         ir_wr("\n");
         g_block_terminated = 1;
@@ -31186,11 +31194,26 @@ fn emit_closures() {
         let saved_pl: i32 = g_prelude_len;
         let saved_up: i32 = g_use_prelude;
         let saved_ret: i32 = g_fn_ret_type;
+        let saved_fn: i32 = g_cur_fn;
+        let saved_ndefers: i32 = g_ndefers;
+        let saved_defer_top: i32 = g_defer_top;
+        let saved_active_defer: i32 = g_active_defer;
+        let saved_loop_depth: i32 = g_loop_depth;
 
         g_tmp = 0;
         g_label = 0;
         g_block_terminated = 0;
         g_body_mode = 0;
+        g_use_prelude = 0;
+        // A lifted closure starts a new function's control-flow context.
+        g_ndefers = 0;
+        g_defer_top = 0;
+        g_active_defer = 0 - 1;
+        g_loop_depth = 0;
+        g_type_pos = 0;
+        tbuf_push_str("__closure_"); tbuf_push_u64(cid as u64);
+        g_type_buf[g_type_pos] = 0;
+        g_cur_fn = str_intern(g_type_buf);
 
         let pbase: i32 = g_nodes[cnode].args_start;
         let body: i32 = g_nodes[cnode].child0;
@@ -31286,6 +31309,11 @@ fn emit_closures() {
         g_prelude_len = saved_pl;
         g_use_prelude = saved_up;
         g_fn_ret_type = saved_ret;
+        g_cur_fn = saved_fn;
+        g_ndefers = saved_ndefers;
+        g_defer_top = saved_defer_top;
+        g_active_defer = saved_active_defer;
+        g_loop_depth = saved_loop_depth;
         g_gen_nsub = saved_gen_nsub;
 
         c = c + 1;
