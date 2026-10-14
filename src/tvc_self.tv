@@ -11871,6 +11871,8 @@ fn clo_infer_ret(node: i32) -> i32 {
     let saved_bl: i32 = g_body_len;
     let saved_pl: i32 = g_prelude_len;
     let saved_tmp: i32 = g_tmp;
+    let saved_nclosures: i32 = g_nclosures;
+    let saved_clo_off: i32 = g_clo_off;
     sym_push_scope();
     // Bind params to dummy alloca regs (reg value irrelevant for type inference;
     // type inference reads only g_syms[*].type_off).
@@ -11915,6 +11917,9 @@ fn clo_infer_ret(node: i32) -> i32 {
     g_body_len = saved_bl;
     g_prelude_len = saved_pl;
     g_tmp = saved_tmp;
+    // Nested closure descriptors belong to the discarded inference emission.
+    g_nclosures = saved_nclosures;
+    g_clo_off = saved_clo_off;
     return rt;
 }
 
@@ -11982,8 +11987,15 @@ fn clo_find_record(id: i32) -> i32 {
 // The lifted-fn AST node for a closure id (carries params + body + ret type).
 fn clo_body_node(id: i32) -> i32 {
     let off: i32 = clo_find_record(id);
-    if off < 0 { return NULL_NODE; }
-    return g_closures[off + 1];
+    if off >= 0 { return g_closures[off + 1]; }
+    // Inference can queue a generic caller before the closure is registered.
+    // Its signature remains available on the parsed closure node.
+    var node: i32 = 0;
+    while node < g_nnodes {
+        if g_nodes[node].kind == AST_CLOSURE && g_nodes[node].name2 == id { return node; }
+        node = node + 1;
+    }
+    return NULL_NODE;
 }
 
 // Emit a name "__closure_<id>" into IR (the lifted fn symbol).

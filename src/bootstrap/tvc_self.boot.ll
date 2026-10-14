@@ -58022,21 +58022,23 @@ entry:
   %t25 = alloca i32
   %t27 = alloca i32
   %t29 = alloca i32
-  %t40 = alloca i32
-  %t48 = alloca i32
-  %t62 = alloca i32
-  %t72 = alloca i32
-  %t74 = alloca i32
-  %t75 = alloca i1
-  %t100 = alloca i32
-  %t107 = alloca i32
-  %t118 = alloca i32
-  %t130 = alloca %IRValue
-  %t131 = alloca %IRValue
-  %t163 = alloca %IRValue
-  %t164 = alloca %IRValue
-  %t175 = alloca %IRValue
-  %t176 = alloca %IRValue
+  %t31 = alloca i32
+  %t33 = alloca i32
+  %t44 = alloca i32
+  %t52 = alloca i32
+  %t66 = alloca i32
+  %t76 = alloca i32
+  %t78 = alloca i32
+  %t79 = alloca i1
+  %t104 = alloca i32
+  %t111 = alloca i32
+  %t122 = alloca i32
+  %t134 = alloca %IRValue
+  %t135 = alloca %IRValue
+  %t167 = alloca %IRValue
+  %t168 = alloca %IRValue
+  %t179 = alloca %IRValue
+  %t180 = alloca %IRValue
   %t1 = load i32, ptr %t0
   %t2 = sext i32 %t1 to i64
   %t3 = load ptr, ptr @g_nodes
@@ -58064,217 +58066,225 @@ entry:
   store i32 %t24, ptr %t25
   %t26 = load i32, ptr @g_tmp
   store i32 %t26, ptr %t27
-  call void @sym_push_scope()
-  %t28 = add i32 0, 0
+  %t28 = load i32, ptr @g_nclosures
   store i32 %t28, ptr %t29
+  %t30 = load i32, ptr @g_clo_off
+  store i32 %t30, ptr %t31
+  call void @sym_push_scope()
+  %t32 = add i32 0, 0
+  store i32 %t32, ptr %t33
   br label %L0
 L0:
-  %t30 = load i32, ptr %t29
-  %t31 = load i32, ptr %t7
-  %t32 = icmp slt i32 %t30, %t31
-  br i1 %t32, label %L1, label %L2
+  %t34 = load i32, ptr %t33
+  %t35 = load i32, ptr %t7
+  %t36 = icmp slt i32 %t34, %t35
+  br i1 %t36, label %L1, label %L2
 L1:
-  %t33 = load i32, ptr %t14
-  %t34 = load i32, ptr %t29
-  %t35 = add i32 %t33, %t34
-  %t36 = sext i32 %t35 to i64
-  %t37 = load ptr, ptr @g_args
-  %t38 = getelementptr i32, ptr %t37, i64 %t36
-  %t39 = load i32, ptr %t38
-  store i32 %t39, ptr %t40
-  %t41 = load i32, ptr %t40
-  %t42 = sext i32 %t41 to i64
-  %t43 = load ptr, ptr @g_nodes
-  %t44 = getelementptr %ASTNode, ptr %t43, i64 %t42
-  %t45 = getelementptr %ASTNode, ptr %t44, i32 0, i32 11
-  %t46 = load i32, ptr %t45
-  %t47 = call i32 @resolve_type_sub(i32 %t46)
-  store i32 %t47, ptr %t48
-  %t49 = load i32, ptr %t40
-  %t50 = sext i32 %t49 to i64
-  %t51 = load ptr, ptr @g_nodes
-  %t52 = getelementptr %ASTNode, ptr %t51, i64 %t50
-  %t53 = getelementptr %ASTNode, ptr %t52, i32 0, i32 10
-  %t54 = load i32, ptr %t53
-  %t55 = load i32, ptr %t48
-  %t56 = add i32 0, 0
-  %t57 = add i32 0, 1
-  call void @sym_add(i32 %t54, i32 %t55, i32 %t56, i32 %t57)
-  %t58 = load i32, ptr %t29
-  %t59 = add i32 0, 1
-  %t60 = add i32 %t58, %t59
-  store i32 %t60, ptr %t29
+  %t37 = load i32, ptr %t14
+  %t38 = load i32, ptr %t33
+  %t39 = add i32 %t37, %t38
+  %t40 = sext i32 %t39 to i64
+  %t41 = load ptr, ptr @g_args
+  %t42 = getelementptr i32, ptr %t41, i64 %t40
+  %t43 = load i32, ptr %t42
+  store i32 %t43, ptr %t44
+  %t45 = load i32, ptr %t44
+  %t46 = sext i32 %t45 to i64
+  %t47 = load ptr, ptr @g_nodes
+  %t48 = getelementptr %ASTNode, ptr %t47, i64 %t46
+  %t49 = getelementptr %ASTNode, ptr %t48, i32 0, i32 11
+  %t50 = load i32, ptr %t49
+  %t51 = call i32 @resolve_type_sub(i32 %t50)
+  store i32 %t51, ptr %t52
+  %t53 = load i32, ptr %t44
+  %t54 = sext i32 %t53 to i64
+  %t55 = load ptr, ptr @g_nodes
+  %t56 = getelementptr %ASTNode, ptr %t55, i64 %t54
+  %t57 = getelementptr %ASTNode, ptr %t56, i32 0, i32 10
+  %t58 = load i32, ptr %t57
+  %t59 = load i32, ptr %t52
+  %t60 = add i32 0, 0
+  %t61 = add i32 0, 1
+  call void @sym_add(i32 %t58, i32 %t59, i32 %t60, i32 %t61)
+  %t62 = load i32, ptr %t33
+  %t63 = add i32 0, 1
+  %t64 = add i32 %t62, %t63
+  store i32 %t64, ptr %t33
   br label %L0
 L2:
-  %t61 = load i32, ptr @NULL_STR
-  store i32 %t61, ptr %t62
-  %t63 = load i32, ptr %t21
-  %t64 = sext i32 %t63 to i64
-  %t65 = load ptr, ptr @g_nodes
-  %t66 = getelementptr %ASTNode, ptr %t65, i64 %t64
-  %t67 = getelementptr %ASTNode, ptr %t66, i32 0, i32 0
-  %t68 = load i32, ptr %t67
-  %t69 = load i32, ptr @AST_BLOCK
-  %t70 = icmp eq i32 %t68, %t69
-  br i1 %t70, label %L3, label %L4
+  %t65 = load i32, ptr @NULL_STR
+  store i32 %t65, ptr %t66
+  %t67 = load i32, ptr %t21
+  %t68 = sext i32 %t67 to i64
+  %t69 = load ptr, ptr @g_nodes
+  %t70 = getelementptr %ASTNode, ptr %t69, i64 %t68
+  %t71 = getelementptr %ASTNode, ptr %t70, i32 0, i32 0
+  %t72 = load i32, ptr %t71
+  %t73 = load i32, ptr @AST_BLOCK
+  %t74 = icmp eq i32 %t72, %t73
+  br i1 %t74, label %L3, label %L4
 L3:
-  %t71 = add i32 0, 0
-  store i32 %t71, ptr %t72
-  %t73 = add i32 0, 0
-  store i32 %t73, ptr %t74
+  %t75 = add i32 0, 0
+  store i32 %t75, ptr %t76
+  %t77 = add i32 0, 0
+  store i32 %t77, ptr %t78
   br label %L6
 L6:
-  %t76 = load i32, ptr %t72
-  %t77 = load i32, ptr %t21
-  %t78 = sext i32 %t77 to i64
-  %t79 = load ptr, ptr @g_nodes
-  %t80 = getelementptr %ASTNode, ptr %t79, i64 %t78
-  %t81 = getelementptr %ASTNode, ptr %t80, i32 0, i32 6
-  %t82 = load i32, ptr %t81
-  %t83 = icmp slt i32 %t76, %t82
-  store i1 %t83, ptr %t75
-  br i1 %t83, label %L9, label %L10
+  %t80 = load i32, ptr %t76
+  %t81 = load i32, ptr %t21
+  %t82 = sext i32 %t81 to i64
+  %t83 = load ptr, ptr @g_nodes
+  %t84 = getelementptr %ASTNode, ptr %t83, i64 %t82
+  %t85 = getelementptr %ASTNode, ptr %t84, i32 0, i32 6
+  %t86 = load i32, ptr %t85
+  %t87 = icmp slt i32 %t80, %t86
+  store i1 %t87, ptr %t79
+  br i1 %t87, label %L9, label %L10
 L9:
-  %t84 = load i32, ptr %t74
-  %t85 = add i32 0, 0
-  %t86 = icmp eq i32 %t84, %t85
-  store i1 %t86, ptr %t75
+  %t88 = load i32, ptr %t78
+  %t89 = add i32 0, 0
+  %t90 = icmp eq i32 %t88, %t89
+  store i1 %t90, ptr %t79
   br label %L10
 L10:
-  %t87 = load i1, ptr %t75
-  br i1 %t87, label %L7, label %L8
+  %t91 = load i1, ptr %t79
+  br i1 %t91, label %L7, label %L8
 L7:
-  %t88 = load i32, ptr %t21
-  %t89 = sext i32 %t88 to i64
-  %t90 = load ptr, ptr @g_nodes
-  %t91 = getelementptr %ASTNode, ptr %t90, i64 %t89
-  %t92 = getelementptr %ASTNode, ptr %t91, i32 0, i32 13
-  %t93 = load i32, ptr %t92
-  %t94 = load i32, ptr %t72
-  %t95 = add i32 %t93, %t94
-  %t96 = sext i32 %t95 to i64
-  %t97 = load ptr, ptr @g_args
-  %t98 = getelementptr i32, ptr %t97, i64 %t96
-  %t99 = load i32, ptr %t98
-  store i32 %t99, ptr %t100
-  %t101 = load i32, ptr %t100
-  %t102 = sext i32 %t101 to i64
-  %t103 = load ptr, ptr @g_nodes
-  %t104 = getelementptr %ASTNode, ptr %t103, i64 %t102
-  %t105 = getelementptr %ASTNode, ptr %t104, i32 0, i32 0
-  %t106 = load i32, ptr %t105
-  store i32 %t106, ptr %t107
-  %t108 = load i32, ptr %t107
-  %t109 = load i32, ptr @AST_LET
-  %t110 = icmp eq i32 %t108, %t109
-  br i1 %t110, label %L11, label %L12
+  %t92 = load i32, ptr %t21
+  %t93 = sext i32 %t92 to i64
+  %t94 = load ptr, ptr @g_nodes
+  %t95 = getelementptr %ASTNode, ptr %t94, i64 %t93
+  %t96 = getelementptr %ASTNode, ptr %t95, i32 0, i32 13
+  %t97 = load i32, ptr %t96
+  %t98 = load i32, ptr %t76
+  %t99 = add i32 %t97, %t98
+  %t100 = sext i32 %t99 to i64
+  %t101 = load ptr, ptr @g_args
+  %t102 = getelementptr i32, ptr %t101, i64 %t100
+  %t103 = load i32, ptr %t102
+  store i32 %t103, ptr %t104
+  %t105 = load i32, ptr %t104
+  %t106 = sext i32 %t105 to i64
+  %t107 = load ptr, ptr @g_nodes
+  %t108 = getelementptr %ASTNode, ptr %t107, i64 %t106
+  %t109 = getelementptr %ASTNode, ptr %t108, i32 0, i32 0
+  %t110 = load i32, ptr %t109
+  store i32 %t110, ptr %t111
+  %t112 = load i32, ptr %t111
+  %t113 = load i32, ptr @AST_LET
+  %t114 = icmp eq i32 %t112, %t113
+  br i1 %t114, label %L11, label %L12
 L11:
-  %t111 = load i32, ptr %t100
-  %t112 = sext i32 %t111 to i64
-  %t113 = load ptr, ptr @g_nodes
-  %t114 = getelementptr %ASTNode, ptr %t113, i64 %t112
-  %t115 = getelementptr %ASTNode, ptr %t114, i32 0, i32 11
-  %t116 = load i32, ptr %t115
-  %t117 = call i32 @resolve_type_sub(i32 %t116)
-  store i32 %t117, ptr %t118
-  %t119 = load i32, ptr %t118
-  %t120 = load i32, ptr @NULL_STR
-  %t121 = icmp eq i32 %t119, %t120
-  br i1 %t121, label %L14, label %L16
+  %t115 = load i32, ptr %t104
+  %t116 = sext i32 %t115 to i64
+  %t117 = load ptr, ptr @g_nodes
+  %t118 = getelementptr %ASTNode, ptr %t117, i64 %t116
+  %t119 = getelementptr %ASTNode, ptr %t118, i32 0, i32 11
+  %t120 = load i32, ptr %t119
+  %t121 = call i32 @resolve_type_sub(i32 %t120)
+  store i32 %t121, ptr %t122
+  %t123 = load i32, ptr %t122
+  %t124 = load i32, ptr @NULL_STR
+  %t125 = icmp eq i32 %t123, %t124
+  br i1 %t125, label %L14, label %L16
 L14:
-  %t122 = load i32, ptr %t100
-  %t123 = sext i32 %t122 to i64
-  %t124 = load ptr, ptr @g_nodes
-  %t125 = getelementptr %ASTNode, ptr %t124, i64 %t123
-  %t126 = getelementptr %ASTNode, ptr %t125, i32 0, i32 7
-  %t127 = load i32, ptr %t126
-  %t128 = load i32, ptr @NULL_STR
-  %t129 = call %IRValue @codegen_expr(i32 %t127, i32 %t128)
-  store %IRValue %t129, ptr %t130
-  %t132 = load %IRValue, ptr %t130
-  store %IRValue %t132, ptr %t131
-  %t133 = getelementptr %IRValue, ptr %t131, i32 0, i32 1
-  %t134 = load i32, ptr %t133
-  store i32 %t134, ptr %t118
+  %t126 = load i32, ptr %t104
+  %t127 = sext i32 %t126 to i64
+  %t128 = load ptr, ptr @g_nodes
+  %t129 = getelementptr %ASTNode, ptr %t128, i64 %t127
+  %t130 = getelementptr %ASTNode, ptr %t129, i32 0, i32 7
+  %t131 = load i32, ptr %t130
+  %t132 = load i32, ptr @NULL_STR
+  %t133 = call %IRValue @codegen_expr(i32 %t131, i32 %t132)
+  store %IRValue %t133, ptr %t134
+  %t136 = load %IRValue, ptr %t134
+  store %IRValue %t136, ptr %t135
+  %t137 = getelementptr %IRValue, ptr %t135, i32 0, i32 1
+  %t138 = load i32, ptr %t137
+  store i32 %t138, ptr %t122
   br label %L16
 L16:
-  %t135 = load i32, ptr %t100
-  %t136 = sext i32 %t135 to i64
-  %t137 = load ptr, ptr @g_nodes
-  %t138 = getelementptr %ASTNode, ptr %t137, i64 %t136
-  %t139 = getelementptr %ASTNode, ptr %t138, i32 0, i32 10
-  %t140 = load i32, ptr %t139
-  %t141 = load i32, ptr %t118
-  %t142 = add i32 0, 0
-  %t143 = add i32 0, 1
-  call void @sym_add(i32 %t140, i32 %t141, i32 %t142, i32 %t143)
+  %t139 = load i32, ptr %t104
+  %t140 = sext i32 %t139 to i64
+  %t141 = load ptr, ptr @g_nodes
+  %t142 = getelementptr %ASTNode, ptr %t141, i64 %t140
+  %t143 = getelementptr %ASTNode, ptr %t142, i32 0, i32 10
+  %t144 = load i32, ptr %t143
+  %t145 = load i32, ptr %t122
+  %t146 = add i32 0, 0
+  %t147 = add i32 0, 1
+  call void @sym_add(i32 %t144, i32 %t145, i32 %t146, i32 %t147)
   br label %L13
 L12:
-  %t144 = load i32, ptr %t107
-  %t145 = load i32, ptr @AST_RETURN
-  %t146 = icmp eq i32 %t144, %t145
-  br i1 %t146, label %L17, label %L19
+  %t148 = load i32, ptr %t111
+  %t149 = load i32, ptr @AST_RETURN
+  %t150 = icmp eq i32 %t148, %t149
+  br i1 %t150, label %L17, label %L19
 L17:
-  %t147 = load i32, ptr %t100
-  %t148 = sext i32 %t147 to i64
-  %t149 = load ptr, ptr @g_nodes
-  %t150 = getelementptr %ASTNode, ptr %t149, i64 %t148
-  %t151 = getelementptr %ASTNode, ptr %t150, i32 0, i32 7
-  %t152 = load i32, ptr %t151
-  %t153 = load i32, ptr @NULL_NODE
-  %t154 = icmp ne i32 %t152, %t153
-  br i1 %t154, label %L20, label %L22
+  %t151 = load i32, ptr %t104
+  %t152 = sext i32 %t151 to i64
+  %t153 = load ptr, ptr @g_nodes
+  %t154 = getelementptr %ASTNode, ptr %t153, i64 %t152
+  %t155 = getelementptr %ASTNode, ptr %t154, i32 0, i32 7
+  %t156 = load i32, ptr %t155
+  %t157 = load i32, ptr @NULL_NODE
+  %t158 = icmp ne i32 %t156, %t157
+  br i1 %t158, label %L20, label %L22
 L20:
-  %t155 = load i32, ptr %t100
-  %t156 = sext i32 %t155 to i64
-  %t157 = load ptr, ptr @g_nodes
-  %t158 = getelementptr %ASTNode, ptr %t157, i64 %t156
-  %t159 = getelementptr %ASTNode, ptr %t158, i32 0, i32 7
-  %t160 = load i32, ptr %t159
-  %t161 = load i32, ptr @NULL_STR
-  %t162 = call %IRValue @codegen_expr(i32 %t160, i32 %t161)
-  store %IRValue %t162, ptr %t163
-  %t165 = load %IRValue, ptr %t163
-  store %IRValue %t165, ptr %t164
-  %t166 = getelementptr %IRValue, ptr %t164, i32 0, i32 1
-  %t167 = load i32, ptr %t166
-  store i32 %t167, ptr %t62
+  %t159 = load i32, ptr %t104
+  %t160 = sext i32 %t159 to i64
+  %t161 = load ptr, ptr @g_nodes
+  %t162 = getelementptr %ASTNode, ptr %t161, i64 %t160
+  %t163 = getelementptr %ASTNode, ptr %t162, i32 0, i32 7
+  %t164 = load i32, ptr %t163
+  %t165 = load i32, ptr @NULL_STR
+  %t166 = call %IRValue @codegen_expr(i32 %t164, i32 %t165)
+  store %IRValue %t166, ptr %t167
+  %t169 = load %IRValue, ptr %t167
+  store %IRValue %t169, ptr %t168
+  %t170 = getelementptr %IRValue, ptr %t168, i32 0, i32 1
+  %t171 = load i32, ptr %t170
+  store i32 %t171, ptr %t66
   br label %L22
 L22:
-  %t168 = add i32 0, 1
-  store i32 %t168, ptr %t74
+  %t172 = add i32 0, 1
+  store i32 %t172, ptr %t78
   br label %L19
 L19:
   br label %L13
 L13:
-  %t169 = load i32, ptr %t72
-  %t170 = add i32 0, 1
-  %t171 = add i32 %t169, %t170
-  store i32 %t171, ptr %t72
+  %t173 = load i32, ptr %t76
+  %t174 = add i32 0, 1
+  %t175 = add i32 %t173, %t174
+  store i32 %t175, ptr %t76
   br label %L6
 L8:
   br label %L5
 L4:
-  %t172 = load i32, ptr %t21
-  %t173 = load i32, ptr @NULL_STR
-  %t174 = call %IRValue @codegen_expr(i32 %t172, i32 %t173)
-  store %IRValue %t174, ptr %t175
-  %t177 = load %IRValue, ptr %t175
-  store %IRValue %t177, ptr %t176
-  %t178 = getelementptr %IRValue, ptr %t176, i32 0, i32 1
-  %t179 = load i32, ptr %t178
-  store i32 %t179, ptr %t62
+  %t176 = load i32, ptr %t21
+  %t177 = load i32, ptr @NULL_STR
+  %t178 = call %IRValue @codegen_expr(i32 %t176, i32 %t177)
+  store %IRValue %t178, ptr %t179
+  %t181 = load %IRValue, ptr %t179
+  store %IRValue %t181, ptr %t180
+  %t182 = getelementptr %IRValue, ptr %t180, i32 0, i32 1
+  %t183 = load i32, ptr %t182
+  store i32 %t183, ptr %t66
   br label %L5
 L5:
   call void @sym_pop_scope()
-  %t180 = load i32, ptr %t23
-  store i32 %t180, ptr @g_body_len
-  %t181 = load i32, ptr %t25
-  store i32 %t181, ptr @g_prelude_len
-  %t182 = load i32, ptr %t27
-  store i32 %t182, ptr @g_tmp
-  %t183 = load i32, ptr %t62
-  ret i32 %t183
+  %t184 = load i32, ptr %t23
+  store i32 %t184, ptr @g_body_len
+  %t185 = load i32, ptr %t25
+  store i32 %t185, ptr @g_prelude_len
+  %t186 = load i32, ptr %t27
+  store i32 %t186, ptr @g_tmp
+  %t187 = load i32, ptr %t29
+  store i32 %t187, ptr @g_nclosures
+  %t188 = load i32, ptr %t31
+  store i32 %t188, ptr @g_clo_off
+  %t189 = load i32, ptr %t66
+  ret i32 %t189
 }
 
 define internal i32 @clo_type_string(i32 %p0) {
@@ -58721,25 +58731,70 @@ entry:
   %t0 = alloca i32
   store i32 %p0, ptr %t0
   %t3 = alloca i32
+  %t15 = alloca i32
+  %t19 = alloca i1
   %t1 = load i32, ptr %t0
   %t2 = call i32 @clo_find_record(i32 %t1)
   store i32 %t2, ptr %t3
   %t4 = load i32, ptr %t3
   %t5 = add i32 0, 0
-  %t6 = icmp slt i32 %t4, %t5
+  %t6 = icmp sge i32 %t4, %t5
   br i1 %t6, label %L0, label %L2
 L0:
-  %t7 = load i32, ptr @NULL_NODE
-  ret i32 %t7
+  %t7 = load i32, ptr %t3
+  %t8 = add i32 0, 1
+  %t9 = add i32 %t7, %t8
+  %t10 = sext i32 %t9 to i64
+  %t11 = load ptr, ptr @g_closures
+  %t12 = getelementptr i32, ptr %t11, i64 %t10
+  %t13 = load i32, ptr %t12
+  ret i32 %t13
 L2:
-  %t8 = load i32, ptr %t3
-  %t9 = add i32 0, 1
-  %t10 = add i32 %t8, %t9
-  %t11 = sext i32 %t10 to i64
-  %t12 = load ptr, ptr @g_closures
-  %t13 = getelementptr i32, ptr %t12, i64 %t11
-  %t14 = load i32, ptr %t13
-  ret i32 %t14
+  %t14 = add i32 0, 0
+  store i32 %t14, ptr %t15
+  br label %L3
+L3:
+  %t16 = load i32, ptr %t15
+  %t17 = load i32, ptr @g_nnodes
+  %t18 = icmp slt i32 %t16, %t17
+  br i1 %t18, label %L4, label %L5
+L4:
+  %t20 = load i32, ptr %t15
+  %t21 = sext i32 %t20 to i64
+  %t22 = load ptr, ptr @g_nodes
+  %t23 = getelementptr %ASTNode, ptr %t22, i64 %t21
+  %t24 = getelementptr %ASTNode, ptr %t23, i32 0, i32 0
+  %t25 = load i32, ptr %t24
+  %t26 = load i32, ptr @AST_CLOSURE
+  %t27 = icmp eq i32 %t25, %t26
+  store i1 %t27, ptr %t19
+  br i1 %t27, label %L6, label %L7
+L6:
+  %t28 = load i32, ptr %t15
+  %t29 = sext i32 %t28 to i64
+  %t30 = load ptr, ptr @g_nodes
+  %t31 = getelementptr %ASTNode, ptr %t30, i64 %t29
+  %t32 = getelementptr %ASTNode, ptr %t31, i32 0, i32 12
+  %t33 = load i32, ptr %t32
+  %t34 = load i32, ptr %t0
+  %t35 = icmp eq i32 %t33, %t34
+  store i1 %t35, ptr %t19
+  br label %L7
+L7:
+  %t36 = load i1, ptr %t19
+  br i1 %t36, label %L8, label %L10
+L8:
+  %t37 = load i32, ptr %t15
+  ret i32 %t37
+L10:
+  %t38 = load i32, ptr %t15
+  %t39 = add i32 0, 1
+  %t40 = add i32 %t38, %t39
+  store i32 %t40, ptr %t15
+  br label %L3
+L5:
+  %t41 = load i32, ptr @NULL_NODE
+  ret i32 %t41
 }
 
 define internal void @ir_wr_closure_name(i32 %p0) {
