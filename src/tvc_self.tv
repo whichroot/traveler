@@ -31284,12 +31284,14 @@ fn emit_closures() {
                 if ret_type == NULL_STR { ir_wr("  ret void\n"); }
             }
         } else {
-            // Expression body: evaluate and return the value.
-            let bv: IRValue = codegen_expr(body, ret_type);
             if ret_type == NULL_STR {
+                let discarded: IRValue = codegen_expr(body, ret_type);
                 ir_wr("  ret void\n");
             } else {
-                ir_wr("  ret "); ir_wr_type(ret_type); ir_wr(" "); ir_wr_reg(bv.reg); ir_wr("\n");
+                // Reuse explicit return conversion, aggregate loads, and checks.
+                let ret_node: i32 = node_alloc(AST_RETURN, g_nodes[body].line, g_nodes[body].col);
+                g_nodes[ret_node].child0 = body;
+                codegen_stmt(ret_node);
             }
             g_block_terminated = 1;
         }
