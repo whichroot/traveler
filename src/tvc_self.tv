@@ -11891,7 +11891,11 @@ fn clo_infer_ret(node: i32) -> i32 {
             let stmt: i32 = g_args[g_nodes[body].args_start + si];
             let sk: i32 = g_nodes[stmt].kind;
             if sk == AST_LET {
-                let lt: i32 = resolve_type_sub(g_nodes[stmt].name1);
+                var lt: i32 = resolve_type_sub(g_nodes[stmt].name1);
+                if lt == NULL_STR {
+                    let init: IRValue = codegen_expr(g_nodes[stmt].child0, NULL_STR);
+                    lt = init.type_off;
+                }
                 sym_add(g_nodes[stmt].name0, lt, 0, 1);
             } else if sk == AST_RETURN {
                 if g_nodes[stmt].child0 != NULL_NODE {
