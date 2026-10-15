@@ -35,9 +35,9 @@ below is retained for that compatibility effort.
 
 | Tool | Version | Purpose |
 |---|---|---|
-| C compiler | clang or gcc | builds the `tvc` seed from `tvc.c` |
+| Linker driver | cc, clang, or gcc | links the canonical compiler and programs; compiles no C source |
 | LLVM | **15+** (required) | `llc` (IR → object); `opt` is optional for raw IR |
-| make | any | drives `src-legacy/Makefile` |
+| make + C compiler | optional | builds the historical seed via `src-legacy/Makefile` |
 | bash + coreutils | any | running the test suites |
 
 LLVM 15+ is required to run the build. The `promote`, `o1`, and `o3` CPU middle-end
@@ -48,7 +48,7 @@ LLVM 15+ contract.
 
 ```sh
 brew install llvm@21
-# Apple clang (from Xcode Command Line Tools) is fine for compiling tvc.c.
+# Xcode Command Line Tools supply the system linker driver.
 ```
 
 LLVM tools land in `/opt/homebrew/opt/llvm@21/bin` (Apple Silicon) or
@@ -97,8 +97,7 @@ cross-build.
 Use the resulting compiler for everything:
 
 ```sh
-src/bootstrap/out/stage1 examples/field_basics.tv -o /tmp/fb.ll
-$LLC -filetype=obj /tmp/fb.ll -o /tmp/fb.o && cc /tmp/fb.o -o /tmp/fb
+src/bootstrap/out/stage1 examples/field_basics.tv --emit exe -llc "$LLC" -o /tmp/fb
 /tmp/fb        # expected: 49 100 171 2 123 1
 ```
 
@@ -115,8 +114,9 @@ See `src/bootstrap/PROVENANCE.md` for the full trust model.
 ## 3. (Optional) The legacy C-seed path
 
 `src-legacy/tvc.c` is the original bootstrap seed — no longer required, kept as an
-independent provenance/audit path. It produces a byte-identical compiler to the
-C-free path (asserted by `tests/run_bootstrap.sh`).
+independent provenance/audit path. Its compatibility with current compiler
+source is a separate check, requested with
+`tests/run_bootstrap.sh --legacy-seed`; the canonical build does not require it.
 
 ```sh
 cd src-legacy
@@ -138,9 +138,7 @@ Use the canonical compiler from §2 (run these from the repo root):
 
 ```sh
 TVC=src/bootstrap/out/stage1
-$TVC examples/field_basics.tv -o /tmp/fb.ll
-$LLC -filetype=obj /tmp/fb.ll -o /tmp/fb.o
-cc /tmp/fb.o -o /tmp/fb
+$TVC examples/field_basics.tv --emit exe -llc "$LLC" -o /tmp/fb
 /tmp/fb        # prints: 49 100 171 2 123 1
 ```
 
@@ -1294,8 +1292,9 @@ $LLC -filetype=obj /tmp/gw.ll -o /tmp/gw.o
 cc -no-pie /tmp/gw.o -o /tmp/gw && /tmp/gw
 ```
 
-`net/unix.tv` and `mem/shm.tv` are the OS floor. Do not import `net/tcp.tv`
-and `net/unix.tv` in the same unit.
+`net/unix.tv` and `mem/shm.tv` are the OS floor. Matching extern declarations
+coalesce across imports; conflicting signatures or duplicate native definitions
+remain errors. Choose one graphics backend per translation unit.
 
 ## 5. Verify self-hosting (Stage 2 / Stage 3)
 
@@ -1309,8 +1308,7 @@ TVC=src/bootstrap/out/stage1
 
 # Stage 2: the compiler compiles itself
 $TVC src/tvc_self.tv -o /tmp/s2.ll
-$LLC -filetype=obj /tmp/s2.ll -o /tmp/s2.o
-cc /tmp/s2.o -o /tmp/tvc_self2
+$TVC src/tvc_self.tv --emit exe -llc "$LLC" -o /tmp/tvc_self2
 
 # Stage 3: the Stage 2 binary compiles itself again
 /tmp/tvc_self2 src/tvc_self.tv -o /tmp/s3.ll

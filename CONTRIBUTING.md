@@ -5,8 +5,8 @@ on field arithmetic and polynomial regimes, compiled by a **self-hosting**
 compiler written in Traveler itself.
 
 Traveler is **early alpha** (`v0.1.0`) and for now, a research project. The
-codebase carries a few intersting features; a byte-identical self-hosting fixed
-point, a module size cap, dual-compiler parity that any contribution has to
+codebase maintains a byte-identical self-hosting fixed
+point, a module size cap, and regression contracts that contributions must
 respect. This document explains how to work within them so your change lands
 smoothly.
 
@@ -103,8 +103,7 @@ src/bootstrap/build.sh
 
 # 3. Compile and run a program.
 TVC=src/bootstrap/out/stage1
-$TVC examples/field_basics.tv -o /tmp/fb.ll
-$LLC -filetype=obj /tmp/fb.ll -o /tmp/fb.o && cc /tmp/fb.o -o /tmp/fb
+$TVC examples/field_basics.tv --emit exe -llc "$LLC" -o /tmp/fb
 /tmp/fb        # expected: 49 100 171 2 123 1
 ```
 
@@ -115,8 +114,8 @@ builds, shared libraries, and the legacy C-seed audit path.
 
 ## The invariants you must not break
 
-These are the rules that make Traveler what it is. CI enforces every one of
-them; breaking any is an automatic red build.
+Use these contracts when changing the compiler and library. The local canonical
+gate and the checked-in CI workflow have different entry points, described below.
 
 ### 1. The self-hosting fixed point (byte-identical)
 
@@ -133,15 +132,18 @@ git add src/bootstrap/tvc_self.boot.ll
 
 `src/bootstrap/tvc_self.boot.ll` is the **trust root** — a Traveler-produced
 snapshot of the compiler that lets the whole tree build with no C in the trust
-chain. A stale snapshot fails CI. Error-path-only changes (that leave
-valid-program codegen byte-unchanged) are parity-safe and don't need a refresh.
+chain. Use `src/bootstrap/build.sh --check` to check freshness. A change to
+compiler diagnostics can still change the compiler's own emitted IR; do not
+assume that unchanged output for one valid program makes a refresh unnecessary.
 See [`src/bootstrap/PROVENANCE.md`](src/bootstrap/PROVENANCE.md) for the full
 trust model.
 
-### 2. Dual-compiler parity
+### 2. Legacy-seed compatibility
 
-The C-free build must stay byte-identical to the legacy C-seed build. Both
-`tests/run_bootstrap.sh` and `tests/run_dual.sh` assert this.
+`tests/run_bootstrap.sh` checks the canonical snapshot-based bootstrap.
+`--legacy-seed` explicitly adds the historical seed comparison;
+`tests/run_dual.sh` is the separate legacy compatibility path. The frozen seed
+does not implement all current language features.
 
 ### 3. New language features land in `src/tvc_self.tv` only
 
@@ -171,15 +173,24 @@ conservative, comment-preserving reindenter; its contract is
 
 ## Running the tests
 
-The full gate — the same one CI runs — is a single script:
+The environment-aware local gate is:
 
 ```sh
-tests/run_dual.sh
+tests/run_all.sh --list
+tests/run_all.sh
 ```
 
-It runs the regression, parallelization, dynamic-field, and bootstrap suites,
-then builds Stage 1 and checks dual-compiler parity. **This must be green before
-you open a PR.**
+With the required toolchain, the dispatcher runs `tests/run.sh` through the
+canonical compiler and repeats applicable checks for additional link drivers.
+Record any toolchain or hardware skips. Run focused suites while developing;
+compiler/library contributions should pass the applicable full gate before a PR.
+For documentation-only changes, verify examples, commands, and links.
+
+The checked-in `.github/workflows/ci.yml` still invokes `tests/run_dual.sh`
+and a seed-driven fixed-point step on Linux and macOS, with push/PR triggers
+targeting `main`. Those are legacy
+compatibility checks in addition to the canonical local workflow; do not mistake
+them for a requirement to build normal Traveler programs through the C seed.
 
 The individual suites, if you want to run them in isolation:
 
@@ -188,7 +199,8 @@ The individual suites, if you want to run them in isolation:
 | `tests/run.sh` | regression suite (incl. LSP / doc / bootstrap gates) |
 | `tests/run_pfor.sh` | auto-parallelization **soundness** (default-deny) |
 | `tests/dynfield/run.sh` | dynamic-field + traits + closures |
-| `tests/run_bootstrap.sh` | C-free self-build == C-seed build |
+| `tests/run_bootstrap.sh` | snapshot bootstrap and self-hosting fixed point |
+| `tests/run_dual.sh` | legacy-seed compatibility |
 | `tests/run_sizegate.sh` | module size gate (≤ 1500 lines) |
 | `tests/run_fmt.sh` | formatter idempotence + meaning preservation |
 | `tests/run_lsp.sh` | language-server diagnostics/hover/references |
@@ -231,6 +243,8 @@ docs(observe): header audit verdict — the LPC header is near-incompressible at
   `mobius`, `codec`, `examples`, `lsp`, `docs`.
 - Use an **imperative** summary ("add", "fix", "split"), keep it tight, and
   reference issues as `(#NN)` where relevant.
+- Use ASD-STE100 (Simplified Technical English): short sentences, active voice,
+  one instruction or statement per sentence. Follow the root `AGENTS.md` rules.
 
 ---
 
@@ -295,12 +309,13 @@ The full text also lives at <https://developercertificate.org/>.
 
 ## Opening a pull request
 
-1. Branch from `main` in your fork (e.g. `fix/codegen-shadowing` or
+1. Branch from `staging` in your fork (e.g. `fix/codegen-shadowing` or
    `feat/nt-zeta`).
 2. Keep the PR focused — one logical change. Unrelated cleanups belong in their
    own PR.
 3. Make sure, locally:
-   - `tests/run_dual.sh` is green (with LLVM 21).
+   - Applicable canonical gates pass with LLVM 21; record legacy compatibility
+     results separately when running the CI/seed path.
    - Commits follow the [commit conventions](#commit-conventions) and are
      [signed off](#developer-certificate-of-origin-dco).
    - If you changed `src/tvc_self.tv` and it altered emitted IR, you ran
@@ -322,9 +337,9 @@ coverage, and whether the change belongs in `tvc_self.tv` vs the library.
 
 ## Coding conventions
 
-- **Source comments are terse and factual** — the "what," not the "why." Keep
-  the rationale and cross-domain framing in the language spec (`spec/`) or the
-  PR/issue discussion, not in long source comments.
+- **Source comments explain the mechanic in at most two lines.** Keep internal
+  design prose in `devnotes/` (gitignored). The language specification describes
+  implemented behavior; proposals live separately from that reference.
 - **Prefer legible seams over cleverness.** The size cap exists to keep modules
   splittable and readable; structure code so a reader can follow one seam at a
   time.
