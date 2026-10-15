@@ -4,7 +4,7 @@ This reference describes the implemented language in `src/tvc_self.tv`.
 Source files use the `.tv` extension. Traveler is an early-alpha systems
 language; backend admission and library contracts are part of its usable surface.
 
-Audit baseline: commit `b1bfccb`. The examples and rules below describe that
+Audit baseline: commit `47b78ca`. The examples and rules below describe that
 revision, not uncommitted work or a promise about a future release. Historical
 unimplemented proposals are indexed separately in
 [language-proposals.md](language-proposals.md).
@@ -476,6 +476,10 @@ not supported.
 innermost loop; `continue;` advances to its next iteration. Device loops
 have a separate, narrower contract.
 
+`break` and `continue` outside a loop are compile-time errors. A closure is
+a separate function: a loop surrounding its definition is not a loop in its
+body and cannot be a target of those statements.
+
 ### 6.4 Return and defer
 
 `return expression;` returns a value converted to the declared result type.
@@ -520,26 +524,67 @@ Methods resolve against the receiver's implementation, then through the
 free-function fallback `method(&receiver, arguments)`. Trait methods receive
 a pointer to the receiver. There is no dynamic trait/vtable dispatch.
 
+### 7.1 Function pointers and callback signatures
+
+Function pointers are distinct from closures. `&function_name` produces a
+pointer for an explicit indirect call. Generic substitution preserves the whole
+signature, including nested callbacks, generic aggregate types, pointer types,
+and the result type.
+
+Callback transfers require matching complete source signatures: parameter count,
+ordered parameter types, and return type. Width, signedness, and family contracts
+are part of that comparison, even when LLVM representations are equal. For
+example, `fn(i32)->i32` cannot be assigned to `fn(u32)->u32` or
+`fn(i64)->i64`. Omitted return type and `-> void` both denote a void callback.
+
+Checks apply to bindings, assignments, arguments (including indirect and closure
+calls), returns, aggregate construction, and stores through members, arrays, and
+pointers. Callback signatures are preserved through address-of and generic
+wrappers. An explicit cast cannot bypass an incompatible callback signature or
+create an incompatible pointer to callback storage. A byte view of storage does
+not grant a new callable signature.
+
+`null` can initialize a typed function pointer; it is not callable. Native
+indirect calls can return structs and enums, including generic aggregates and
+wide payloads. Such results use independent value storage, like direct-call
+results. An unknown indirect call still blocks loop parallelization because the
+analyzer cannot establish its effects.
+
+### 7.2 Closures
+
 A closure `|x: T| expression` or `|x: T| { ... }` captures its environment
-by value. It has a compiler-known identity and lowers to a lifted function
-plus stack capture storage. Generic higher-order functions specialize for that
+by value at creation. It has a compiler-known identity and lowers to a lifted
+function plus stack capture storage. Generic higher-order functions specialize for that
 identity. Closures can be called locally and passed down to generic functions;
 escaping through a return or aggregate field, changing closure identity, and
 recursive self-capture are refused.
 
-Function pointers are distinct from closures. `&function_name` produces a
-pointer for an explicit indirect call. An unknown indirect call blocks loop
-parallelization because the analyzer cannot establish its effects.
+Captures retain complete values: wide integers and aggregates are not reduced
+to pointer-sized slots. Captured arrays, structs, enums, polynomials, and
+registers are snapshots; later source mutation does not rewrite them. A captured
+pointer copies the address, not the pointee, so writes through it remain visible
+to aliases. Capture lookup follows lexical scopes, including nested closures,
+loop variables, match bindings, and initializer-before-shadowing order.
+
+Closures may declare a result with `|x: T| -> R ...`. Expression-bodied closures
+apply the same return conversions and family checks as explicit `return`.
+Block-closure inference follows local initializer types; inference does not
+execute those initializers at runtime a second time. Each lifted closure has its
+own return, loop, and defer context; it does not execute its enclosing function's
+cleanup on return.
 
 ```traveler
 fn apply<C>(f: C, x: i32) -> i32 { return f(x); }
 
 fn main() {
-    let base: i32 = 10;
+    var base: i32 = 10;
     let add = |x: i32| x + base;
+    base = 20;
     print(apply(add, 32));
 }
 ```
+
+Output: `42`; the closure captured `base` when it was 10.
 
 ## 8. Field Arithmetic Semantics
 
@@ -856,6 +901,18 @@ provenance, and possible index wrap can force serial execution. Pointer facts
 must remain valid across enclosing loop backedges; an initially fresh or
 disjoint pointer is not enough if a later iteration changes it.
 
+Guards also compare writes with the original storage of captured bindings,
+including local/global scalars and pointer slots. If a write can change a value
+that a worker would otherwise snapshot, execution uses the original serial loop
+with live bindings, not a one-thread worker holding stale copies. This distinction
+also applies when a closure inside the loop reads the captured value.
+
+A callee that reassigns a pointer parameter cannot retain the read-footprint
+identity of the incoming parameter. The check follows branches, loops, matches,
+and forwarded calls; affected loops remain serial when the footprint cannot be
+proved. A stable pointer parameter does not lose admission merely because an
+unrelated scalar parameter changes.
+
 `--pfor-report` reports source loops and admission. `dispatched:1` means
 dispatch scaffolding was emitted; it does not establish that threads ran.
 `--pfor-alias-report` distinguishes:
@@ -873,6 +930,10 @@ execution; the default uses online CPU information subject to runtime limits.
 The emitted runtime caps workers at 32 and uses a 512-iteration threshold.
 If thread creation fails, the caller executes the affected disjoint chunk;
 failure to join aborts instead of publishing an incomplete result.
+
+Worker-local stack slots are allocated once per worker call, before its iteration
+loop. Their initialization still runs on each source iteration. Stack allocation
+therefore does not accumulate one local slot per iteration in unoptimized workers.
 
 Wrapping integer semantics remain defined in workers. Arithmetic failures
 retain failure behavior across serial and parallel execution; this does not
@@ -909,6 +970,10 @@ values. Initialize it with `register(c0, ..., cd)` in a typed destination.
 `advance(reg)` **returns the current `state[0]` first**, then updates
 `state[k] += state[k+1]` in ascending order for `k < d`. The highest difference
 is unchanged. `reg.advance()` is the method spelling.
+
+As with `poly`, the destination degree determines the full allocated extent;
+omitted coefficients are zero and excess coefficients are rejected. A dynamic
+register's explicit carrier argument is separate from its coefficient count.
 
 ```traveler
 type F = Field<251>;
@@ -1096,7 +1161,14 @@ The following checks provide concrete evidence for frequently changed contracts:
 | Evaluator/native layout | `tests/check_eval_native_layout.py`, `tests/check_eval_alloc_layout.py` |
 | Deferred cleanup | `tests/check_defer_*.py`, `tests/check_eval_defer_unwind.py` |
 | Extern compatibility | `tests/check_extern_declarations.py` |
+| Complete callback signatures and storage | `tests/check_callback_signatures.py`, `tests/check_generic_callbacks.py` |
+| Indirect aggregate return values | `tests/check_indirect_aggregate_returns.py` |
+| Closure capture layout and lexical scopes | `tests/check_closure_layout.py`, `tests/check_capture_scopes.py` |
+| Closure inference, returns, and function context | `tests/check_closure_inference.py`, `tests/check_closure_returns.py`, `tests/check_closure_state.py` |
+| Polynomial/register constructor extents | `tests/check_constructor_extent.py` |
 | Alias ranges and loop backedges | `tests/check_alias_layout.py`, `tests/check_alias_backedge.py` |
+| Capture-storage aliasing and callee rebinding | `tests/check_scalar_capture_alias.py`, `tests/check_callee_rebinding.py` |
+| Worker-local allocation placement | `tests/check_worker_stack.py` |
 | Worker publication and dispatch reports | `tests/check_pfor_publication.py`, `tests/pfor_report/` |
 | Device capabilities | `tests/gpu/` and checks named by each focused spec |
 

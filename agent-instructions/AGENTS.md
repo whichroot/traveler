@@ -125,6 +125,21 @@ value, are stack-only, and can be passed to generic higher-order functions;
 they cannot escape through returns or stored aggregate fields. Function pointers
 use `fn(T) -> R` and `&function_name` and make indirect calls.
 
+Closure captures are snapshots taken at creation, including whole arrays,
+aggregates, and wide integers. Captured pointers still share their pointees.
+Nested closures follow lexical shadowing. A closure's explicit result type
+uses ordinary return conversions; its loop and defer context is independent of
+the enclosing function.
+
+Callback signatures must match in full, including signedness, widths, nested
+callback types, and family bounds/scales. Assigning, returning, storing, or
+casting a callback does not erase those checks. Use a wrapper function with the
+required signature when a conversion is needed. Native callbacks can return
+struct/enum values; the interpreter retains its separate indirect-call limits.
+
+`poly(...)` and `register(...)` reserve the full destination degree plus one
+coefficients. Omitted coefficients are zero; excess coefficients are rejected.
+
 ## Memory and imports
 
 ```traveler
@@ -166,6 +181,11 @@ not that threads ran. Alias status may be `serial`, `checked`, `disjoint`, or
 ranges can force serial execution. Loop-backedge changes matter to that proof.
 Trip count and `TRAVELER_THREADS` also affect dispatch. Use `TRAVELER_THREADS=1`
 for a serial comparison.
+
+Writes that overlap captured binding storage must use the original serial loop
+with live values, rather than a worker's snapshots. Reassigning a callee's pointer
+parameter also invalidates its original read-footprint identity and can prevent
+parallel admission. Do not infer safety from an initially disjoint pointer alone.
 
 Device support has separate admission rules. Do not infer GPU support from
 CPU pfor admission. NVIDIA supports explicit `#[kernel]` entries as well as
