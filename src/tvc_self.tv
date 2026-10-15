@@ -11669,7 +11669,7 @@ fn clo_add_capture(name: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
         if str_eq(&g_strings[caps_name[i]], &g_strings[name]) == 1 { return ncaps; }
         i = i + 1;
     }
-    if ncaps >= MAX_CLO_CAPS { return ncaps; }
+    if ncaps >= MAX_CLO_CAPS { arena_overflow("closure captures", MAX_CLO_CAPS); }
     caps_name[ncaps] = name;
     caps_type[ncaps] = captured_type;
     return ncaps + 1;
@@ -11686,6 +11686,19 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
     if kind == AST_IDENT {
         return clo_add_capture(g_nodes[node].name0, caps_name, caps_type, nc,
             bound, nbound_box[0]);
+    }
+    if kind == AST_CLOSURE {
+        let saved_bound: i32 = nbound_box[0];
+        var pi: i32 = 0;
+        while pi < g_nodes[node].nargs {
+            if nbound_box[0] >= 512 { arena_overflow("closure bindings", 512); }
+            bound[nbound_box[0]] = g_nodes[g_args[g_nodes[node].args_start + pi]].name0;
+            nbound_box[0] = nbound_box[0] + 1;
+            pi = pi + 1;
+        }
+        nc = clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
+        nbound_box[0] = saved_bound;
+        return nc;
     }
     if kind == AST_BINARY {
         nc = clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
@@ -11728,12 +11741,14 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
         return nc;
     }
     if kind == AST_BLOCK {
+        let saved_bound: i32 = nbound_box[0];
         var si: i32 = 0;
         while si < g_nodes[node].nargs {
             let stmt: i32 = g_args[g_nodes[node].args_start + si];
             // A `let` inside the body binds a new local from here on.
             if g_nodes[stmt].kind == AST_LET {
                 nc = clo_collect_caps(g_nodes[stmt].child0, caps_name, caps_type, nc, bound, nbound_box);
+                if nbound_box[0] >= 512 { arena_overflow("closure bindings", 512); }
                 bound[nbound_box[0]] = g_nodes[stmt].name0;
                 nbound_box[0] = nbound_box[0] + 1;
             } else {
@@ -11741,6 +11756,7 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
             }
             si = si + 1;
         }
+        nbound_box[0] = saved_bound;
         return nc;
     }
     // Literals, null, etc.: no captures.
