@@ -11706,7 +11706,8 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
         return nc;
     }
     if kind == AST_UNARY || kind == AST_CAST || kind == AST_RETURN
-    || kind == AST_EXPR_STMT {
+    || kind == AST_EXPR_STMT || kind == AST_DEFER || kind == AST_QMARK
+    || kind == AST_PROJECT {
         return clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
     }
     if kind == AST_INDEX {
@@ -11714,7 +11715,7 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
         nc = clo_collect_caps(g_nodes[node].child1, caps_name, caps_type, nc, bound, nbound_box);
         return nc;
     }
-    if kind == AST_FIELD_ACCESS {
+    if kind == AST_FIELD_ACCESS || kind == AST_MEMBER_ACCESS {
         return clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
     }
     if kind == AST_CALL {
@@ -11738,6 +11739,58 @@ fn clo_collect_caps(node: i32, caps_name: *i32, caps_type: *i32, ncaps: i32,
     if kind == AST_WHILE {
         nc = clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
         nc = clo_collect_caps(g_nodes[node].child1, caps_name, caps_type, nc, bound, nbound_box);
+        return nc;
+    }
+    if kind == AST_ASSIGN {
+        nc = clo_add_capture(g_nodes[node].name0, caps_name, caps_type, nc, bound, nbound_box[0]);
+        return clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
+    }
+    if kind == AST_MEMBER_ASSIGN || kind == AST_INDEX_ASSIGN {
+        nc = clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
+        nc = clo_collect_caps(g_nodes[node].child1, caps_name, caps_type, nc, bound, nbound_box);
+        if kind == AST_INDEX_ASSIGN {
+            nc = clo_collect_caps(g_nodes[node].child2, caps_name, caps_type, nc, bound, nbound_box);
+        }
+        return nc;
+    }
+    if kind == AST_FOR {
+        nc = clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
+        nc = clo_collect_caps(g_nodes[node].child1, caps_name, caps_type, nc, bound, nbound_box);
+        let saved_bound: i32 = nbound_box[0];
+        if saved_bound >= 512 { arena_overflow("closure bindings", 512); }
+        bound[saved_bound] = g_nodes[node].name0;
+        nbound_box[0] = saved_bound + 1;
+        nc = clo_collect_caps(g_nodes[node].child2, caps_name, caps_type, nc, bound, nbound_box);
+        nbound_box[0] = saved_bound;
+        return nc;
+    }
+    if kind == AST_STRUCT_LIT || kind == AST_ENUM_CONSTRUCT {
+        var ai: i32 = 0;
+        while ai < g_nodes[node].nargs {
+            var arg: i32 = g_nodes[node].args_start + ai;
+            if kind == AST_STRUCT_LIT { arg = g_nodes[node].args_start + ai * 2 + 1; }
+            nc = clo_collect_caps(g_args[arg], caps_name, caps_type, nc, bound, nbound_box);
+            ai = ai + 1;
+        }
+        return nc;
+    }
+    if kind == AST_MATCH {
+        nc = clo_collect_caps(g_nodes[node].child0, caps_name, caps_type, nc, bound, nbound_box);
+        var ai: i32 = 0;
+        while ai < g_nodes[node].nargs {
+            let arm: i32 = g_nodes[node].args_start + ai;
+            let saved_bound: i32 = nbound_box[0];
+            var bi: i32 = 0;
+            while bi < g_arms[arm].nbindings {
+                if nbound_box[0] >= 512 { arena_overflow("closure bindings", 512); }
+                bound[nbound_box[0]] = g_args[g_arms[arm].bindings_start + bi];
+                nbound_box[0] = nbound_box[0] + 1;
+                bi = bi + 1;
+            }
+            nc = clo_collect_caps(g_arms[arm].body, caps_name, caps_type, nc, bound, nbound_box);
+            nbound_box[0] = saved_bound;
+            ai = ai + 1;
+        }
         return nc;
     }
     if kind == AST_BLOCK {

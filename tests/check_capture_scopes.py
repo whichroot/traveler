@@ -9,6 +9,7 @@ import tempfile
 tvc, llc, opt, linker = sys.argv[1:5]
 SOURCE = '''
 struct Pair { a:i64, b:i64 }
+enum Choice { Value(i32), Empty }
 fn main(){
     let outer=|x:i32| -> i32 {
         let middle=|y:i32| -> i32 {let inner=|z:i32| -> i32 x+y+z;return inner(4);};
@@ -29,9 +30,21 @@ fn main(){
         return inner(a);
     };
     big=0;pair.a=0;print(snapshots(0));
+    let loop_body=|a:i32| -> i32 {var sum:i32=0;for i in 0..a {sum=sum+x;}return sum;};print(loop_body(2));
+    let assigned=|a:i32| -> i32 {var sum:i32=a;sum=x;return sum;};print(assigned(2));
+    let aggregate=|a:i32| -> i64 {let v=Pair{a:x as i64,b:2};return v.a;};print(aggregate(0));
+    let enummed=|a:i32| -> i32 {
+        let v=Choice::Value(x);
+        match v { Choice::Value(x)=>{return x;}, Choice::Empty=>{return 0;} }
+        return 0;
+    };print(enummed(0));
+    let matched=|a:i32| -> i32 {match a {0=>{return x;},_=>{return 2;}}return 0;};print(matched(0));
+    var values:[i32;2]=0;let p:*i32=&values[0];let index:i32=1;
+    let stores=|a:i32| -> i32 {p[index]=x;return a;};print(stores(3));print(values[1]);
+    let loop_shadow=|a:i32| -> i32 {for x in 0..a {print(x);}return x;};print(loop_shadow(1));
 }
 '''
-EXPECTED = '9\n1\n40\n46\n42\n18446745173221179396\n'
+EXPECTED = '9\n1\n40\n46\n42\n18446745173221179396\n80\n40\n40\n40\n40\n3\n40\n0\n40\n'
 
 
 def run(*args):
@@ -54,6 +67,9 @@ with tempfile.TemporaryDirectory(prefix='capture-scopes-') as tmp:
         run(llc, '-filetype=obj', selected, '-o', d / 'case.o')
         run(linker, *flags, d / 'case.o', '-o', d / 'case')
         assert run(d / 'case') == EXPECTED, profile
+    source.write_text('''fn main(){let x:i32=40;let f=|a:i32| -> i32 {
+        var sum:i32=0;for i in 0..a {sum=sum+x;}return sum;};print(f(2));}''')
+    assert run(tvc, '--eval', source) == '80\n'
     for count, kind in ((65, 'captures'), (513, 'bindings')):
         decls = ''.join(f'let v{i}:i32={i};' for i in range(count))
         expr = '+'.join(f'v{i}' for i in range(count))
