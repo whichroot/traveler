@@ -9279,15 +9279,49 @@ fn fix_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
     }
 }
 
-// Coercion coherence for Int<B>/Exp<E>/Fix<B,E> destinations (let, assign,
-// return, call args). Same family: Int/Fix require value bound <= dest bound;
-// Exp/Fix require equal scales. Plain-integer or cross-family sources need an
-// explicit `as` cast. Open (generic-param) bounds skip — digits unparseable.
+// Callback values retain the complete source signature, including nested callbacks.
+fn callback_types_equal(source: i32, destination: i32) -> i32 {
+    let v: i32 = resolve_type_sub(source);
+    let d: i32 = resolve_type_sub(destination);
+    let vvoid: i32 = (v == NULL_STR || v == str_intern("void")) as i32;
+    let dvoid: i32 = (d == NULL_STR || d == str_intern("void")) as i32;
+    if vvoid == 1 || dvoid == 1 { return (vvoid == dvoid) as i32; }
+    if str_eq(&g_strings[v], &g_strings[d]) == 1 { return 1; }
+    if type_is_ptr(v) == 1 && type_is_ptr(d) == 1 {
+        return callback_types_equal(type_pointee(v), type_pointee(d));
+    }
+    if lw_is_fnptr(v) == 0 || lw_is_fnptr(d) == 0 { return 0; }
+    let vp: *i32 = alloc(64);
+    let dp: *i32 = alloc(64);
+    var vr: i32 = NULL_STR;
+    var dr: i32 = NULL_STR;
+    let vn: i32 = parse_fnptr_sig(v, vp, &vr);
+    let dn: i32 = parse_fnptr_sig(d, dp, &dr);
+    var equal: i32 = (vn == dn) as i32;
+    if equal == 1 { equal = callback_types_equal(vr, dr); }
+    var i: i32 = 0;
+    while i < vn && equal == 1 {
+        equal = callback_types_equal(vp[i], dp[i]);
+        i = i + 1;
+    }
+    free(vp); free(dp);
+    return equal;
+}
+
+// Check callback signatures and family bounds/scales at value-transfer boundaries.
 fn check_family_coercion(val_type: i32, dst_type: i32, ln: i32, cl: i32) {
     if val_type == NULL_STR || dst_type == NULL_STR { return; }
     var v2: i32 = resolve_type_sub(val_type);
     var d2: i32 = resolve_type_sub(dst_type);
     if str_eq(&g_strings[v2], &g_strings[d2]) == 1 { return; }
+    if lw_is_fnptr(v2) == 1 || lw_is_fnptr(d2) == 1 {
+        if type_is_closure(v2) == 1 {
+            diag_error_at(ln, cl, "closure is not a function pointer; use a generic callback parameter");
+        } else if callback_types_equal(v2, d2) == 0 {
+            diag_error_at(ln, cl, "incompatible function-pointer signature");
+        }
+        return;
+    }
     // Mutable aliases require coercion in both directions at every level.
     if type_is_ptr(v2) == 1 && type_is_ptr(d2) == 1 {
         let vp: i32 = type_pointee(v2);
@@ -15306,6 +15340,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
     if kind == AST_NULL {
         let r: i32 = ir_tmp();
         ir_wr("  "); ir_wr_reg(r); ir_wr(" = inttoptr i64 0 to ptr\n");
+        if lw_is_fnptr(ctx_type) == 1 { return IRValue { reg: r, type_off: ctx_type }; }
         return IRValue { reg: r, type_off: str_intern("ptr") };
     }
 
