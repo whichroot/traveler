@@ -9280,6 +9280,17 @@ fn fix_check_operands(lt: i32, rt: i32, ln: i32, cl: i32, dimless_ok: i32) {
 }
 
 // Callback values retain the complete source signature, including nested callbacks.
+fn type_contains_callback(t: i32) -> i32 {
+    if t == NULL_STR { return 0; }
+    let text: *u8 = &g_strings[t];
+    var i: i32 = 0;
+    while text[i] != 0 {
+        if text[i] == 102 && text[i + 1] == 110 && text[i + 2] == 40 { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn callback_types_equal(source: i32, destination: i32) -> i32 {
     let v: i32 = resolve_type_sub(source);
     let d: i32 = resolve_type_sub(destination);
@@ -11579,6 +11590,7 @@ fn parse_fnptr_sig(type_off: i32, param_out: *i32, ret_out: *i32) -> i32 {
         i = start;
         while g_strings[type_off + i] != 0 { i = i + 1; }
         ret_out[0] = fnptr_intern_part(type_off, start, i);
+        if ret_out[0] == str_intern("void") { ret_out[0] = NULL_STR; }
     }
     return nparams;
 }
@@ -15628,7 +15640,18 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
         if node_is_sizing_call(g_nodes[node].child0) == 1 && type_is_ptr(target_type) == 1 {
             cast_ctx = target_type;
         }
+        if g_nodes[g_nodes[node].child0].kind == AST_NULL && lw_is_fnptr(target_type) == 1 {
+            cast_ctx = target_type;
+        }
         let inner: IRValue = codegen_expr(g_nodes[node].child0, cast_ctx);
+        // Byte views inspect storage without changing a callable value's signature.
+        let byte_view: i32 = (type_is_ptr(inner.type_off) == 1 && target_type == str_intern("*u8")) as i32;
+        if byte_view == 0 && (type_contains_callback(inner.type_off) == 1 || type_contains_callback(target_type) == 1) {
+            if callback_types_equal(inner.type_off, target_type) == 0 {
+                diag_error_at(g_nodes[node].line, g_nodes[node].col,
+                    "incompatible function-pointer signature in cast");
+            }
+        }
         if arithmetic_conversion_valid(inner.type_off, target_type) == 0 {
             diag_error_at(g_nodes[node].line, g_nodes[node].col,
                 "unsupported field conversion: use an explicit integer representative; wide integer reduction is not supported");
@@ -15798,7 +15821,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                         ir_wr("  "); ir_wr_reg(r);
                         ir_wr(" = getelementptr i8, ptr @");
                         ir_wr_sym(aname); ir_wr(", i64 0\n");
-                        return IRValue { reg: r, type_off: str_intern("ptr") };
+                        return IRValue { reg: r, type_off: type_add_star(g_syms[asi].type_off) };
                     }
                     // &x on an immutable scalar `let` hands out a mutable pointer
                     // to a frozen binding — refuse (seed parity; aggregates permissive).
@@ -15816,7 +15839,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                         g_syms[asi].ptr_provenance = 0;
                     }
                     // Local: alloca register IS the address
-                    return IRValue { reg: g_syms[asi].reg, type_off: str_intern("ptr") };
+                    return IRValue { reg: g_syms[asi].reg, type_off: type_add_star(g_syms[asi].type_off) };
                 }
                 // Address-of a FUNCTION: &f yields @name typed with the fn(...)
                 // signature (indirect calls recover the call type from it).
@@ -15846,7 +15869,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                     ir_wr_sym(arr_ir2); ir_wr(", ptr ");
                     ir_wr_reg(aobj_reg); ir_wr(", i64 0, i64 ");
                     ir_wr_reg(aidx64); ir_wr("\n");
-                    return IRValue { reg: gep, type_off: str_intern("ptr") };
+                    return IRValue { reg: gep, type_off: type_add_star(type_array_elem(aobj_type)) };
                 }
                 if type_is_ptr(aobj_type) == 1 {
                     let elem_t: i32 = type_pointee(aobj_type);
@@ -15854,7 +15877,7 @@ fn codegen_expr_operands(node: i32, ctx_type: i32, operands: *IRValue) -> IRValu
                     ir_wr("  "); ir_wr_reg(gep); ir_wr(" = getelementptr ");
                     ir_wr_type(elem_t); ir_wr(", ptr "); ir_wr_reg(aobj_reg);
                     ir_wr(", i64 "); ir_wr_reg(aidx64); ir_wr("\n");
-                    return IRValue { reg: gep, type_off: str_intern("ptr") };
+                    return IRValue { reg: gep, type_off: type_add_star(elem_t) };
                 }
             }
             diag_begin(g_nodes[node].line, g_nodes[node].col);
@@ -21497,12 +21520,14 @@ fn codegen_stmt(stmt: i32) {
         }
         // Preserve the concrete enum instance type for match resolution.
         if resolve_enum_type(actual_type) >= 0 || find_enum(actual_type) >= 0 {
+            check_family_coercion(val.type_off, actual_type, g_nodes[stmt].line, g_nodes[stmt].col);
             if val.type_off != NULL_STR && find_enum(val.type_off) >= 0 {
                 actual_type = val.type_off;
             }
         }
         // Aggregate bindings own a snapshot of the initializer's value.
         if resolve_struct_type(actual_type) >= 0 || resolve_enum_type(actual_type) >= 0 {
+            check_family_coercion(val.type_off, actual_type, g_nodes[stmt].line, g_nodes[stmt].col);
             let storage: i32 = ir_tmp();
             g_use_prelude = 1;
             ir_wr("  "); ir_wr_reg(storage); ir_wr(" = alloca "); ir_wr_type(actual_type); ir_wr("\n");
